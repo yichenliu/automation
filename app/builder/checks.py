@@ -419,17 +419,23 @@ def skips_approvals(engine):
         t = engine.tables.get(a["trigger"].get("table") or "")
         if not t or not t.get("workflow") or any(x.get("type") == "request_approval" for x in schema.steps_of(a["actions"])):
             continue
-        moves, seen = t["workflow"]["transitions"], set()
-        for run in _stage_runs(a["actions"], t["workflow"]["field"]):
+        key, moves, seen = t["workflow"]["field"], t["workflow"]["transitions"], set()
+        # a rule that starts when a record gets to a stage starts there (one firing at “Waiting for team lead” that moves
+        # it on is as much past the OK as one that put it there itself)
+        at = next((c.get("value") for c in a.get("conditions") or [] if isinstance(c, dict) and c.get("field") == key
+                   and c.get("op") in ("changed_to", "equals") and isinstance(c.get("value"), str)), None)
+        for run in ([at] + r if at else r for r in _stage_runs(a["actions"], key)):
             for here, there in zip(run, run[1:]):
                 ok = next((m for m in moves if here.lower() in [x.lower() for x in m.get("from") or []]
                            and m["to"].lower() == there.lower() and APPROVES.search(str(m.get("label") or ""))), None)
                 if ok is None or (here, there) in seen:
                     continue
                 seen.add((here, there))
-                out.append(_issue("fix", f"Rule {a['key']} puts {t['key']} records at “{here}” and straight on to “{there}” in the same "
-                                         f"run, so nobody ever gets to give the OK there (“{ok.get('label') or ok['to']}”): end the "
-                                         f"rule at “{here}” and leave the move on to whoever approves",
+                start = "starts when" if here == at and run[0] == at else "puts"
+                out.append(_issue("fix", f"Rule {a['key']} {'starts when ' + t['key'] + ' records get to' if start == 'starts when' else 'puts ' + t['key'] + ' records at'} "
+                                         f"“{here}” and takes them straight on to “{there}”, so nobody ever gets to give the OK there "
+                                         f"(“{ok.get('label') or ok['to']}”): leave the move on from “{here}” to whoever approves"
+                                         + (" (a rule can ask them first with request_approval)" if start == "starts when" else ""),
                                   f"The rule “{a['name']}” takes a {schema.lc(t['singular'])} past “{here}” by itself, so the "
                                   f"approval there (“{ok.get('label') or ok['to']}”) never happens", t["key"]))
     return out

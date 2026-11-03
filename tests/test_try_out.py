@@ -484,9 +484,14 @@ def test_a_rule_that_routes_a_record_to_its_approver_and_straight_past_them_is_f
                                                        "steps": [{"type": "update_record", "values": {"status": "Waiting for team lead"}}]}]},
                          {"type": "update_record", "values": {"status": "Approved"}}]}
     _built(ws, [flow, {"op": "add_automation", "automation": route}])
-    assert any("puts requests records at “Waiting for team lead” and straight on to “Approved”" in i for i in _issues(ws))
+    assert any("puts requests records at “Waiting for team lead” and takes them straight on to “Approved”" in i for i in _issues(ws))
     _built(ws, [{"op": "update_automation", "automation": {**route, "actions": route["actions"][:1]}}])
     assert not any("straight on" in i for i in _issues(ws))
+    _built(ws, [{"op": "add_automation", "automation": {  # its own rule, firing when the request gets to the team lead
+        "key": "lead", "name": "Team lead approves", "trigger": {"type": "record_updated", "table": "requests"},
+        "conditions": [{"field": "status", "op": "changed_to", "value": "Waiting for team lead"}],
+        "actions": [{"type": "update_record", "values": {"status": "Approved"}}]}}])
+    assert any("starts when requests records get to “Waiting for team lead” and takes them straight on to “Approved”" in i for i in _issues(ws)), _issues(ws)
 
 
 def test_an_ai_step_that_picks_a_record_answers_with_the_one_the_example_names(app, owner):
