@@ -365,3 +365,23 @@ def test_an_example_refused_by_a_rule_tells_the_builder_what_the_rule_saw(app, o
     assert "checks `is_empty(asset_tag)`" in refused["problem"] and 'asset_tag = "AT-1"' in refused["problem"]
     assert "written backwards" in refused["problem"]
     assert refused["plain"] == "Adding a request wasn't allowed: Capital items need an asset tag"  # people see the rule's own words
+
+
+def test_an_example_expecting_what_the_ai_drafts_hears_when_its_waiting_to_be_checked(app, owner):
+    """A reply the AI drafts and a person always checks stays empty until it's checked: the example is told so, and an
+    “approve” step (the person keeping the draft) gets it through."""
+    _, ws = owner
+    _built(ws, [{"op": "create_table", "table": "complaints", "label": "Complaints", "fields": [
+        {"key": "title", "type": "text", "required": True}, {"key": "draft_reply", "type": "long_text"}]},
+        {"op": "add_automation", "automation": {
+            "key": "draft", "name": "Draft a reply", "trigger": {"type": "record_created", "table": "complaints"},
+            "actions": [{"type": "ai_fill", "field": "draft_reply", "instructions": "Draft a reply", "review": "always",
+                         "reviewer": "admin"}]}}])
+    steps = [{"do": "add", "table": "complaints", "as": "c1", "values": {"title": "Broken mug"}}]
+    expect = [{"record": "c1", "field": "draft_reply", "equals": "non-empty"}]
+    waiting = {"title": "A reply is drafted", "steps": steps, "expect": expect}
+    checked = {"title": "A reply is drafted and kept", "steps": steps + [{"do": "approve", "record": "c1"}], "expect": expect}
+    _, (held, kept) = trial.try_out(ws, [waiting, checked], screens=False)
+    assert not held["ok"] and "waiting for someone to check it" in held["problem"] and "“approve” step for c1" in held["problem"]
+    assert held["plain"].endswith("(the AI's work is waiting for someone to check it)")
+    assert kept["ok"], kept

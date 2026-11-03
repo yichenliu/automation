@@ -989,7 +989,18 @@ def _expect(engine, c, names):
     expected = engine.display(f, schema.as_fraction(wanted) if engine.kind(f) == "percent" else wanted) \
         if wanted not in (None, "") and f["type"] not in ("link", "user") and not _shows_a_link(engine, f) else str(wanted or "empty")
     plain = f"{t['singular']}’s {label}: {shown}" if ok else f"{t['singular']}’s {label} came out {shown}, expected {expected}"
-    return ok, plain, f"{c.get('record')} ({t['key']}).{key} is {actual!r}; expected {wanted!r}"
+    said = f"{c.get('record')} ({t['key']}).{key} is {actual!r}; expected {wanted!r}"
+    if not ok and actual in (None, "", []) and len(path) == 1 and _checking(engine, record, key):
+        plain += " (the AI's work is waiting for someone to check it)"
+        said += (f" (the AI's work for it is waiting for someone to check it, as its step's review says: to try it as kept, "
+                 f"add an “approve” step for {c.get('record')} before this, as whoever checks it would)")
+    return ok, plain, said
+
+
+def _checking(engine, record, key):
+    """Whether the AI's work for this field of this record is waiting for a person to check it."""
+    return any(key in (a.fields or []) for a in Approval.query.filter_by(workspace_id=engine.ws.id, record_id=record.id,
+                                                                         status="pending", kind="review"))
 
 
 def play(trial, example):

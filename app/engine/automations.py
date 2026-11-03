@@ -701,13 +701,14 @@ def corrections(engine, automation_key, at, n=LEARN_FROM):
 
 
 def complete_review(engine, review, by, values=None, comment=None):
-    """A person checked the AI's work: what they confirm (corrected or as it was) is saved as theirs, the check is kept
-    for the step's track record, and the run carries on."""
+    """A person checked the AI's work: what they confirm (corrected or as it was; no values is as it was) is saved as theirs,
+    the check is kept for the step's track record, and the run carries on."""
     proposal = dict(review.proposal or {})
     record = engine.get(review.record_id)
     if record is None:
         raise FieldErrors({"_": "The record the AI worked on was deleted."})
-    wanted = {k: (values or {}).get(k) for k in review.fields or []}
+    given = (proposal.get("values") or {}) if values is None else values  # nothing said: kept as the AI had it
+    wanted = {k: given.get(k) for k in review.fields or []}
     changed = []
     for k, v in wanted.items():
         f = engine.field(record.table, k)
