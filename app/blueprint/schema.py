@@ -78,8 +78,9 @@ TYPE_ALIASES = {
     "e-mail": "email", "mail": "email", "email_address": "email",
 }
 FORMATS = ["number", "money", "percent", "date", "text", "checkbox"]
-AGGREGATES = ["count", "sum", "avg", "min", "max"]
-AGG_ALIASES = {"average": "avg", "mean": "avg", "total": "sum", "number": "count", "minimum": "min", "maximum": "max"}
+AGGREGATES = ["count", "sum", "avg", "min", "max", "median"]
+AGG_ALIASES = {"average": "avg", "mean": "avg", "total": "sum", "number": "count", "minimum": "min", "maximum": "max", "middle": "median",
+               "typical": "median"}
 
 CONDITION_OPS = ["equals", "not_equals", "contains", "is_empty", "not_empty", "greater_than", "less_than", "at_least",
                  "at_most", "one_of", "before_today", "after_today", "within_next_days", "within_last_days",
@@ -481,6 +482,9 @@ def normalize_field(raw):
                 field[key] = as_fraction(field[key])
     if slug(_first(raw, "display", "show_as", "style", default="")) in ("progress", "bar", "progress_bar") and ftype in ("percent", "formula", "rollup"):
         field["display"] = "progress"
+    if ftype == "url" and _first(raw, "template", "link_template", "url_template", "builds_from"):
+        # a link made from the record's own details (a parcel's tracking page from its tracking number): opened, not typed
+        field["template"] = str(_first(raw, "template", "link_template", "url_template", "builds_from"))[:500]
     if ftype in ("text", "barcode", "number") and raw.get("unique") in (True, "true", "yes", 1):
         field["unique"] = True
     if ftype in ("money", "rollup") or (ftype == "formula" and field.get("format") == "money"):
@@ -2320,6 +2324,10 @@ def _check_table(t, tables, modules, problems):
         problems.append(f"{t['label']} is shown inside another table's records, so it needs a link field to that table")
     for f in t["fields"]:
         where = f"{t['label']} › {f['label']}"
+        if f["type"] == "url" and f.get("template"):
+            if not f["template"].startswith(("https://", "http://")):
+                problems.append(f"{where}: its link must start with https:// (a web address), not “{f['template'][:40]}”")
+            _check_template(f["template"], where, problems, list(keys))
         if f["type"] == "link" and f["table"] not in tables:
             problems.append(f"{where} links to “{f['table']}”, which isn't a table (tables: {', '.join(tables)})")
         if f["type"] == "formula":

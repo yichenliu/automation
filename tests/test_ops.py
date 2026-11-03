@@ -155,3 +155,27 @@ def test_a_team_sees_its_own_menu_and_can_see_everything(app, client, owner):
     assert "Work orders" in client.get(f"{base}/").get_data(as_text=True)
     wrong = schema.check({**ws.blueprint, "spaces": [schema.normalize_space({"label": "X", "for": ["nobody"], "groups": [{"items": ["nope"]}]})]})
     assert any("isn't a team or a role" in p for p in wrong) and any("“nope”, which isn't a table" in p for p in wrong)
+
+
+def test_a_link_made_from_a_records_details_and_a_median(app, owner):
+    user, ws = owner
+    _built(ws, [
+        {"op": "create_table", "table": "shipments", "label": "Shipments", "fields": [
+            {"key": "ref", "type": "text", "required": True}, {"key": "tracking", "type": "text"},
+            {"key": "days", "type": "number"},
+            {"key": "track", "label": "Track it", "type": "url", "template": "https://track.example.com/?n={{record.tracking}}"}]},
+        {"op": "create_table", "table": "carriers", "label": "Carriers", "fields": [
+            {"key": "name", "type": "text", "required": True},
+            {"key": "typical", "type": "rollup", "table": "shipments", "via": "carrier", "aggregate": "typical", "field": "days"}]},
+        {"op": "add_field", "table": "shipments", "field": {"key": "carrier", "type": "link", "table": "carriers"}}])
+    e = Engine(ws)
+    fast = e.create("carriers", {"name": "FastFreight"})
+    a = e.create("shipments", {"ref": "S1", "tracking": "AB 12/3", "carrier": fast.id, "days": 2})
+    b = e.create("shipments", {"ref": "S2", "carrier": fast.id, "days": 3})
+    e.create("shipments", {"ref": "S3", "carrier": fast.id, "days": 30})  # one very late
+    assert e.value(a, "track") == "https://track.example.com/?n=AB%2012%2F3"  # made safe for an address
+    assert e.value(b, "track") is None  # no tracking number yet: no link
+    assert e.value(e.get(fast.id), "typical") == 3  # the middle one, not dragged up by the late one
+    problems = schema.check({**ws.blueprint, "tables": ws.blueprint["tables"] + [{"key": "x", "label": "X", "singular": "X", "fields": [
+        {"key": "go", "label": "Go", "type": "url", "template": "javascript:{{record.nope}}"}]}]})
+    assert any("must start with https://" in p for p in problems) and any("nope" in p for p in problems)

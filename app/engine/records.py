@@ -598,11 +598,31 @@ class Engine:
             raw = self._lookup(record, f)
         elif f["type"] in schema.FILES:
             raw = self.files(record, key)
+        elif f["type"] == "url" and f.get("template"):
+            raw = (record.data or {}).get(key) or self._from_template(record, f)
         else:
             raw = (record.data or {}).get(key)
         if not typed:
             return raw
         return self._typed(f, raw)
+
+    def _from_template(self, record, f):
+        """A link made from the record's details ({{record.tracking_number}}, each value made safe for an address);
+        none until every detail it uses is filled in."""
+        from urllib.parse import quote
+        missing = []
+
+        def part(m):
+            value = expr.render("{{" + m.group(1) + "}}", RecordContext(self, record, {}))
+            if value in (None, "", "None"):
+                missing.append(m.group(1))
+                return ""
+            return quote(str(value), safe="")
+        try:
+            built = expr.TEMPLATE.sub(part, f["template"])
+        except expr.ExprError:
+            return None
+        return None if missing or not built.startswith(("https://", "http://")) else built
 
     def _lookup(self, record, f):
         if "where" in f:  # found by its conditions (the limit that covers the amount, the price in force that day)
@@ -758,6 +778,9 @@ class Engine:
             return round(total, 2) if isinstance(total, float) else total
         if aggregate == "avg":
             return round(sum(numbers) / len(numbers), 2)
+        if aggregate == "median":  # the middle one: a typical delivery time, unmoved by the odd very late one
+            ordered, half = sorted(numbers), len(numbers) // 2
+            return ordered[half] if len(ordered) % 2 else round((ordered[half - 1] + ordered[half]) / 2, 2)
         return min(numbers) if aggregate == "min" else max(numbers)
 
     def summable(self, f):
@@ -765,7 +788,7 @@ class Engine:
         amounts in different currencies no."""
         if f is None or self.kind(f) not in ("money", "duration", "number") or f.get("currency_field"):
             return False
-        if f["type"] == "rollup" and f.get("aggregate") in ("count", "avg", "min", "max"):  # adding up counts or averages means nothing
+        if f["type"] == "rollup" and f.get("aggregate") in ("count", "avg", "min", "max", "median"):  # adding up counts or averages means nothing
             return False
         if self.kind(f) == "number" and (f.get("unit") or any(w in f["key"] for w in ("on_hand", "stock", "level", "balance"))):
             return False  # kilos of flour and of butter don't add up to anything

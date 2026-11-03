@@ -802,7 +802,8 @@ def reveal(wid, table, rid, key):
 
 
 def _form_fields(t):
-    return [f for f in t["fields"] if (f["type"] in schema.STORED and f["type"] != "autonumber") or f["type"] in schema.FILES]
+    return [f for f in t["fields"] if (f["type"] in schema.STORED and f["type"] != "autonumber" and not f.get("template"))
+            or f["type"] in schema.FILES]
 
 
 def _options(engine, t, extra_tables=()):

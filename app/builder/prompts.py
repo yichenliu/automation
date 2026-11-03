@@ -56,10 +56,13 @@ Field types:
              "workdays_between(received_on, today())".
              Give "format": number|money|percent|date|text|checkbox.
   rollup     totals over records that link here: "table": the other table, "via": its link field pointing here (or a
-             path through one more link, "property.owner"), "aggregate": count|sum|avg|min|max, "field": what to total,
+             path through one more link, "property.owner"), "aggregate": count|sum|avg|min|max|median (the typical one,
+             not moved by an odd one out: a carrier's usual delivery days), "field": what to total,
              optional "filters". With "where" instead of "via": every record of the table meeting conditions on
              {{{{record.x}}}}, like SUMIFS (the same requester's requests to the same supplier this month: split orders).
              e.g. on Invoices: {{"key": "subtotal", "label": "Subtotal", "type": "rollup", "table": "invoice_lines", "via": "invoice", "aggregate": "sum", "field": "amount"}}
+  url        a web address; with "template": a link made from the record's own details, opened, never typed
+             ("https://track.example.com/?n={{{{record.tracking_number}}}}": a parcel's tracking page, a map, a portal page)
   lookup     show a field of a linked record: "link": "client" (a link field of this table), "field": "email" (a field of
              the linked table; both are needed). "field" can go on through that record's links: a rent payment's
              "link": "lease", "field": "property.owner" (three links at most). Or found by conditions, like XLOOKUP:
@@ -488,7 +491,7 @@ _SORT = {"type": "object", "required": ["field"], "properties": {"field": _STRIN
 # back to an earlier one. So each object lists them in the order the model naturally writes them (a lookup's "link"
 # before its "field", a timeline's start before its end, a widget's width early): a property listed too late is lost.
 _FIELD = {"type": "object", "required": ["key", "label", "type"], "properties": {
-    "key": _STRING, "label": _STRING, "type": {"type": "string", "enum": schema.FIELD_TYPES}, "options": _STRINGS,
+    "key": _STRING, "label": _STRING, "type": {"type": "string", "enum": schema.FIELD_TYPES}, "options": _STRINGS, "template": _STRING,
     "options_by": {"type": "object", "properties": {"field": _STRING, "options": {"type": "object"}}},
     "table": _STRING, "link": _STRING, "via": _STRING, "where": _CONDITIONS, "sort": _STRING,  # a lookup by conditions: where, sort, then field
     "aggregate": {"type": "string", "enum": schema.AGGREGATES}, "field": _STRING, "filters": _CONDITIONS, "expression": _STRING, "format": {"type": "string", "enum": schema.FORMATS},
