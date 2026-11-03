@@ -139,7 +139,9 @@ outside) and:
 
 - reads the design for mistakes (`app/builder/checks.py`): a choice that isn't one, a stage nothing reaches, a stage a
   record gets stuck at, conditions that can never hold, an approval only asked when someone says no, a rule putting one
-  kind of record where another belongs (a staff member into a payment's customer);
+  kind of record where another belongs (a staff member into a payment's customer), and against the owner's own words:
+  something they said must be kept from people that's kept from no one, one kind of record they said becomes another
+  ("customer orders become work orders") that nothing makes;
 - adds a record to every list, takes each one along its stages (onward before any stop, filling in what a move asks
   for, and saying where a stage can only be left by cancelling), presses every button, runs every scheduled rule, makes
   every document and opens every screen (as the owner, and again as someone in each team), and notes every rule that

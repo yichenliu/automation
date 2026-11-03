@@ -452,3 +452,24 @@ def test_a_rule_putting_one_kind_of_record_where_another_belongs_is_found(app, o
             "actions": [{"type": "create_record", "table": "payments", "values": {"customer": "{{record.job.customer}}"}}]}}])
     assert [i["plain"] for i in checks.wrong_kind(Engine(ws))] == [  # the visit's job's customer is a customer: fine
         "“Pay run” puts a staff member where a payment needs a customer"]
+
+
+def test_one_kind_of_record_the_owner_says_becomes_another_is_made_from_it(app, owner):
+    from app.builder import chat
+    _, ws = owner
+    _built(ws, [
+        {"op": "create_table", "table": "customer_orders", "label": "Customer orders", "fields": [
+            {"key": "customer", "type": "text", "required": True},
+            {"key": "status", "type": "select", "options": ["New", "Confirmed"], "default": "New"}]},
+        {"op": "create_table", "table": "work_orders", "label": "Work orders", "fields": [
+            {"key": "order", "type": "link", "table": "customer_orders"}]}])
+    asked = "Small furniture factory. Customer orders become work orders, and work orders use up materials."
+    found = chat._made_as_asked(asked, ws.blueprint)
+    assert [i["plain"] for i in found] == ["you said “Customer orders become work orders, and work orders use up materials.”, but "
+                                           "each work order still has to be added by hand for each customer order"]
+    assert chat._made_as_asked("Track our jobs. When one is accepted it becomes a job.", ws.blueprint) == []
+    _built(ws, [{"op": "add_automation", "automation": {
+        "key": "to_work", "name": "Confirmed orders become work orders", "trigger": {"type": "record_updated", "table": "customer_orders"},
+        "conditions": [{"field": "status", "op": "changed_to", "value": "Confirmed"}],
+        "actions": [{"type": "create_record", "table": "work_orders", "values": {"order": "{{record.id}}"}}]}}])
+    assert chat._made_as_asked(asked, ws.blueprint) == []

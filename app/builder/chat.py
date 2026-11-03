@@ -610,7 +610,7 @@ def _try_out(workspace, message, asked, behaviour, carry_on, progress, note, by)
     fixes, changes, before, first = 0, [], None, None
     while True:
         walked, results = trial.try_out(workspace, examples)
-        walked["issues"] += _kept_as_asked(asked, workspace.blueprint)
+        walked["issues"] += _kept_as_asked(asked, workspace.blueprint) + _made_as_asked(asked, workspace.blueprint)
         hard = [i for i in walked["issues"] if i["level"] == "fix"]
         soft = [i for i in walked["issues"] if i["level"] == "check"]
         failing = [(x, r) for x, r in zip(examples, results) if r["kind"] == "app"]
@@ -681,6 +681,38 @@ def _kept_as_asked(asked, bp):
                                                   f"add teams for their roles (set_team) and keep those lists and fields to the teams that need them "
                                                   f"(a table's access teams, a field's access, row_access for their own records)",
              "plain": f"you said “{sentence}”, but everyone you invite to do the work can still see all of it"}]
+
+
+BECOMES = re.compile(r"\s(?:becomes?|turns? into|(?:is|are|gets?) (?:turned|made|converted) into|(?:is|are|gets?) converted to)\s+"
+                     r"(?:an? |the |their |its )?", re.I)
+MAKES = ("create_record", "create_for_each", "ai_create_record")
+
+
+def _made_as_asked(asked, bp):
+    """The owner said one kind of record becomes another ("customer orders become work orders"), but nothing in the
+    design makes the one from the other: each would be copied across by hand. A try-out issue like _kept_as_asked's."""
+    tables = {t["key"]: t for t in bp.get("tables", [])}
+    said = {(name.lower().strip(), t["key"]) for t in tables.values() for name in (t["label"], t.get("singular") or "", t["key"].replace("_", " "))}
+    names = sorted({(form, k) for n, k in said if n for form in (n, n.rstrip("s"), n.rstrip("s") + "s")}, key=lambda x: -len(x[0]))
+    out = []
+    for sentence in re.split(r"(?<=[.!?\n])\s+", asked or ""):
+        for m in BECOMES.finditer(sentence):
+            before, after = sentence[:m.start()].lower(), sentence[m.end():].lower()
+            a = next((k for n, k in names if re.search(rf"(^|\W){re.escape(n)}$", before)), None)
+            b = next((k for n, k in names if re.match(rf"{re.escape(n)}(\W|$)", after)), None)
+            if a is None or b is None or a == b:
+                continue
+            near = {a} | {k for k, t in tables.items() if any(f["type"] == "link" and f.get("table") == a for f in t["fields"])}  # its lines
+            if any(step.get("type") in MAKES and step.get("table") == b for rule in bp.get("automations", [])
+                   if rule["trigger"].get("table") in near for step in schema.steps_of(rule["actions"])):
+                continue
+            one, other = schema.lc(tables[a].get("singular") or a), schema.lc(tables[b].get("singular") or b)
+            out.append({"level": "fix", "where": a,
+                        "text": f"The owner said “{sentence.strip()[:200]}”, but nothing makes a {b} record from a {a} record: add a rule "
+                                f"on {a} (when it reaches the stage that means it goes ahead) that adds the {b} record linked back to "
+                                f"it, with its lines (create_record, then create_for_each for the lines)",
+                        "plain": f"you said “{sentence.strip()[:200]}”, but each {other} still has to be added by hand for each {one}"})
+    return out
 
 
 REVIEWING = "checking the build against what was asked"  # a step of the builder's own, never something the owner asked to have built
