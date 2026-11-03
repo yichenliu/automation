@@ -567,7 +567,7 @@ def regrade(folder, only=(), resolve=False):
             db.session.flush()
             db.session.add(Membership(workspace_id=ws.id, user_id=owner.id, role="owner"))
             db.session.commit()
-            result = {"key": key, "title": scenario["title"], "turns": saved.get(key, {}).get("turns") or [], "design": {},
+            result = {"key": key, "title": scenario["title"], "turns": _replayed(ws, saved.get(key, {}).get("turns") or []), "design": {},
                       "tryout": tried(ws) if bp.get("tables") else None, "stories": stories.run(ws, scenario["key"]) if bp.get("tables") else []}
             result["ux"] = ux.review(ws, result) if bp.get("tables") else []
         shutil.rmtree(data, ignore_errors=True)
@@ -575,6 +575,20 @@ def regrade(folder, only=(), resolve=False):
         results.append(result)
     print(totals(results))
     return results
+
+
+def _replayed(ws, turns):
+    """The turns, with the last one's own examples acted out again on the saved design by today's code (a run saved
+    before the examples were kept with their results keeps what it found then)."""
+    from app.builder import trial
+    last = next((t for t in reversed(turns) if not t.get("crash")), None)
+    shown = ((last or {}).get("tried") or {}).get("examples") or []
+    if not shown or not all(e.get("example") for e in shown):
+        return turns
+    _, results = trial.try_out(ws, [e["example"] for e in shown], screens=False)
+    again = [{**e, "ok": r["ok"], "lines": [[ok, line] for ok, line in r["lines"]], "problem": r.get("plain") or ""}
+             for e, r in zip(shown, results)]
+    return [{**t, "tried": {**t["tried"], "examples": again}} if t is last else t for t in turns]
 
 
 def totals(results):

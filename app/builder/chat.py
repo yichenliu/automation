@@ -703,7 +703,8 @@ def _try_out(workspace, message, asked, behaviour, carry_on, progress, note, by)
     workspace.state = state
     db.session.commit()
     checking.remember(workspace, walked, [r for _, r in playable], "this change", [x for x, _ in playable], tell=False)
-    shown = [{"title": r["title"], "ok": r["ok"], "lines": [[ok, line] for ok, line in r["lines"]], "problem": r.get("plain") or ""}
+    shown = [{"title": r["title"], "ok": r["ok"], "lines": [[ok, line] for ok, line in r["lines"]], "problem": r.get("plain") or "",
+              "example": x}  # what was acted out, to look into or act out again
              for x, r in playable if str(x.get("title")) in titles or not r["ok"]]  # this turn's, and earlier ones this change broke
     return {"examples": shown, "issues": [i["plain"] for i in hard], "changes": changes, "fixes": fixes,
             "crashes": len(walked["crashes"]), "first": first}

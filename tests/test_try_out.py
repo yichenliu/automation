@@ -154,7 +154,7 @@ def test_a_turn_is_tried_out_and_what_it_finds_is_fixed_before_its_handed_over(a
     assert "A wedding quote with 15% off" in scripted.asked[2][-1]["content"] and "discount" in scripted.asked[2][-1]["content"]
     assert m.checks["examples"] == [{"title": "A wedding quote with 15% off", "ok": True, "problem": "", "lines": [
         [True, "Quote’s Subtotal: $5,040.00"], [True, "Quote’s Discount: $756.00"], [True, "Quote’s GST: $428.40"],
-        [True, "Quote’s Total: $4,712.40"]]}] and m.checks["fixes"] == 1 and not m.checks["issues"]
+        [True, "Quote’s Total: $4,712.40"]], "example": EXAMPLES[0]}] and m.checks["fixes"] == 1 and not m.checks["issues"]
     assert m.checks["first"]["wrong"] == 1 and m.checks["first"]["examples"] == [0, 1]  # not right first time: the discount sum
     assert any("Discount" in c for c in m.changes) and m.version_after == ws.version == 2
     assert [x["title"] for x in ws.state["examples"]] == ["A wedding quote with 15% off"]  # played again after later changes

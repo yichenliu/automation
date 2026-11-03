@@ -74,3 +74,22 @@ def test_consistency_counts_a_business_right_on_one_run_and_wrong_on_the_next():
     assert steady["flipping"] == ["cafe: Invoices add up (1/2)"]
     assert "CONSISTENT: 2/3 businesses came out the same every run" in totals(runs)
     assert consistency([right("plumbing")]) is None  # one run each: nothing to compare
+
+
+def test_a_regrade_acts_the_last_turns_own_examples_out_again_with_todays_code(app, owner):
+    """The examples kept with their results are played again on the saved design; a run saved before they were kept
+    keeps what it found."""
+    from app.blueprint import ops
+    from app.builder import chat
+    from evals.analyst import _replayed
+    _, ws = owner
+    result = ops.apply(ws.blueprint, [{"op": "create_table", "table": "jobs", "label": "Jobs", "fields": [
+        {"key": "title", "type": "text", "required": True}, {"key": "hours", "type": "number"}]}])
+    chat.save_version(ws, result.blueprint, result.changes, "chat")
+    example = {"title": "A job's hours", "steps": [{"do": "add", "table": "jobs", "as": "j1", "values": {"title": "Tap", "hours": 2}}],
+               "expect": [{"record": "j1", "field": "hours", "equals": 2}]}
+    then = turn(examples=[{"title": "A job's hours", "ok": False, "lines": [], "problem": "a fault since fixed", "example": example}])
+    again = _replayed(ws, [then])
+    assert again[0]["tried"]["examples"][0]["ok"] and again[0]["tried"]["examples"][0]["problem"] == ""
+    old = turn(examples=[{"title": "A job's hours", "ok": False, "lines": [], "problem": "a fault since fixed"}])
+    assert _replayed(ws, [old]) == [old]
