@@ -99,6 +99,10 @@ def seal_value(text):
     return {"masked": mask(text), "secret": security.encrypt(str(text))}
 
 
+class NoRate(expr.ExprError):
+    """An exchange rate the owner hasn't set yet (Settings › Business details): theirs to add, not a fault of the design."""
+
+
 class FieldErrors(ValueError):
     """Values that can't be saved, by field: {"due_date": "“next week” isn't a date"}."""
 
@@ -840,7 +844,7 @@ class Engine:
         rates = {**self.rates, **({self.base_currency: 1.0} if self.base_currency else {})}
         for code in (source, target):
             if code not in rates:
-                raise expr.ExprError(f"there's no exchange rate for {code or 'that currency'} (add it in Settings › Business details)")
+                raise NoRate(f"there's no exchange rate for {code or 'that currency'} (add it in Settings › Business details)")
         return round(n * rates[source] / rates[target], 2)
 
     def display(self, f, value, record=None):

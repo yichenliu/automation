@@ -22,7 +22,7 @@ from flask import current_app
 from .. import database
 from ..blueprint import expr, schema
 from ..engine import automations
-from ..engine.records import Engine, FieldErrors, RecordContext, mask, masked, to_number
+from ..engine.records import Engine, FieldErrors, NoRate, RecordContext, mask, masked, to_number
 from ..extensions import db
 from ..models import Approval, Membership, Record, Run, User, Workspace
 
@@ -428,6 +428,8 @@ def _formulas(engine, t, record):
             continue
         try:
             expr.evaluate(schema.percents_fixed(t, f["expression"]), RecordContext(engine, record))
+        except NoRate:
+            continue  # the owner's to add: said once, as a check (checks.py), not a fault of the design
         except expr.ExprError as exc:
             out.append(_issue("fix", f"{t['key']}.{f['key']} = {f['expression']} can't be worked out on a {t['key']} record with every "
                                      f"field filled in: {exc}", f"{t['singular']}’s {f['label']} can't be worked out ({exc})", t["key"]))
