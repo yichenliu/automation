@@ -1098,6 +1098,9 @@ def _ai_answers(trial, engine, example, names):
         value = wanted[alias][key] if alias else None
         if value is None or (isinstance(value, str) and FILLED.match(value)):  # "anything": an ordinary value
             value = sample_value(engine, engine.tables[record.table], f, trial.owner_id, {}, 300, 0)
+        elif f["type"] == "link":  # the record the example calls inv1, as the AI would name it
+            value = [names.get(v, v) if isinstance(v, str) else v for v in value] if isinstance(value, list) \
+                else names.get(value, value) if isinstance(value, str) else value
         return value
     return answer
 

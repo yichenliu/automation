@@ -21,7 +21,7 @@ CASES = 400  # combinations of values tried for one stage's moves
 def run(engine):
     return (choices(engine) + impossible(engine) + unreachable(engine) + gaps(engine) + asked_on_no(engine) + left_to_others(engine)
             + out_of_reach(engine) + needs_rates(engine) + left_unfilled(engine) + made_only_sometimes(engine) + ai_doing_sums(engine)
-            + approval_without_stages(engine) + runs_while_true(engine) + wrong_kind(engine))
+            + approval_without_stages(engine) + skips_approvals(engine) + runs_while_true(engine) + wrong_kind(engine))
 
 
 STAGE_WORDS = re.compile(r"^(status|stage|state)$", re.I)
@@ -394,6 +394,44 @@ def impossible(engine):
                                      f"them in an \"any\" group (either one) or keep the one meant",
                               f"{where[:1].upper() + where[1:]} waits for {field.replace('_', ' ')} to be both “{first}” and “{second}” at "
                               f"once, so it would never happen", table or ""))
+    return out
+
+
+def _stage_runs(actions, key, cap=64):
+    """The stages one run of a rule puts its own record at, in order, along each way it can go (one of a branch's paths,
+    or none of them)."""
+    runs = [[]]
+    for act in actions or []:
+        if act.get("type") == "branch":
+            ways = [w for p in act.get("paths") or [] for w in _stage_runs(p["steps"], key, cap)] + _stage_runs(act.get("otherwise"), key, cap)
+            runs = [r + w for r in runs for w in ways][:cap]
+        elif act.get("type") == "update_record" and not act.get("target") and isinstance((act.get("values") or {}).get(key), str):
+            runs = [r + [act["values"][key]] for r in runs]
+    return runs
+
+
+def skips_approvals(engine):
+    """A rule that puts a record at a stage where someone gives the OK and takes it straight on in the same run, so nobody
+    ever gets to (a request routed to its team lead, and on to Approved). A rule that asks for the OK first is fine."""
+    from ..engine.automations import APPROVES
+    out = []
+    for a in engine.bp.get("automations", []):
+        t = engine.tables.get(a["trigger"].get("table") or "")
+        if not t or not t.get("workflow") or any(x.get("type") == "request_approval" for x in schema.steps_of(a["actions"])):
+            continue
+        moves, seen = t["workflow"]["transitions"], set()
+        for run in _stage_runs(a["actions"], t["workflow"]["field"]):
+            for here, there in zip(run, run[1:]):
+                ok = next((m for m in moves if here.lower() in [x.lower() for x in m.get("from") or []]
+                           and m["to"].lower() == there.lower() and APPROVES.search(str(m.get("label") or ""))), None)
+                if ok is None or (here, there) in seen:
+                    continue
+                seen.add((here, there))
+                out.append(_issue("fix", f"Rule {a['key']} puts {t['key']} records at “{here}” and straight on to “{there}” in the same "
+                                         f"run, so nobody ever gets to give the OK there (“{ok.get('label') or ok['to']}”): end the "
+                                         f"rule at “{here}” and leave the move on to whoever approves",
+                                  f"The rule “{a['name']}” takes a {schema.lc(t['singular'])} past “{here}” by itself, so the "
+                                  f"approval there (“{ok.get('label') or ok['to']}”) never happens", t["key"]))
     return out
 
 

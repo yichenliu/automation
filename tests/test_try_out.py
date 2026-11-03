@@ -462,3 +462,43 @@ def test_a_rule_calling_a_function_there_isnt_is_sent_back_rather_than_never_hol
     stages["rules"][0]["check"] = "is_empty(depends_on) or depends_on.status == 'Complete'"
     assert not ops.apply(ws.blueprint, [stages], always_check=True).problems
     assert set(RecordContext(Engine(ws), None).functions) == set(expr.RECORD_FUNCTIONS)  # what a record gives is what's known
+
+
+def test_a_rule_that_routes_a_record_to_its_approver_and_straight_past_them_is_found(app, owner):
+    """Routed to the team lead and, in the same run, on to Approved: nobody ever gives the OK. Routing alone, or a rule that
+    asks for the OK before moving on, is fine."""
+    _, ws = owner
+    flow = {"op": "create_table", "table": "requests", "label": "Requests", "fields": [
+        {"key": "title", "type": "text"}, {"key": "total", "type": "money"},
+        {"key": "status", "type": "select", "options": ["Draft", "Submitted", "Waiting for team lead", "Approved"]}],
+        "workflow": {"field": "status", "transitions": [
+            {"from": ["Draft"], "to": "Submitted", "label": "Submit"},
+            {"from": ["Submitted"], "to": "Waiting for team lead", "label": "Route"},
+            {"from": ["Waiting for team lead"], "to": "Approved", "label": "Team lead approves"}]}}
+    route = {"key": "route", "name": "Route by amount", "trigger": {"type": "record_updated", "table": "requests"},
+             "conditions": [{"field": "status", "op": "changed_to", "value": "Submitted"}],
+             "actions": [{"type": "branch", "paths": [{"label": "Any amount", "when": [{"field": "total", "op": "at_least", "value": 0}],
+                                                       "steps": [{"type": "update_record", "values": {"status": "Waiting for team lead"}}]}]},
+                         {"type": "update_record", "values": {"status": "Approved"}}]}
+    _built(ws, [flow, {"op": "add_automation", "automation": route}])
+    assert any("puts requests records at “Waiting for team lead” and straight on to “Approved”" in i for i in _issues(ws))
+    _built(ws, [{"op": "update_automation", "automation": {**route, "actions": route["actions"][:1]}}])
+    assert not any("straight on" in i for i in _issues(ws))
+
+
+def test_an_ai_step_that_picks_a_record_answers_with_the_one_the_example_names(app, owner):
+    """The AI matches a bank payment to its invoice: in the try-out it answers with what the example expects, inv1, which
+    is the invoice the example added under that name, not one called “inv1”."""
+    _, ws = owner
+    _built(ws, [{"op": "create_table", "table": "invoices", "label": "Invoices", "fields": [{"key": "title", "type": "text", "required": True}]},
+                {"op": "create_table", "table": "payments", "label": "Payments", "fields": [
+                    {"key": "reference", "type": "text"}, {"key": "invoice", "type": "link", "table": "invoices"}]},
+                {"op": "add_automation", "automation": {
+                    "key": "match", "name": "Match payments", "trigger": {"type": "record_created", "table": "payments"},
+                    "actions": [{"type": "ai_fill", "field": "invoice", "instructions": "Find the invoice this pays"}]}}])
+    example = {"title": "A payment finds its invoice", "steps": [
+        {"do": "add", "table": "invoices", "as": "inv1", "values": {"title": "Chairs"}},
+        {"do": "add", "table": "payments", "as": "pay1", "values": {"reference": "INV-001"}}],
+        "expect": [{"record": "pay1", "field": "invoice", "equals": "inv1"}]}
+    _, (matched,) = trial.try_out(ws, [example], screens=False)
+    assert matched["ok"], matched
