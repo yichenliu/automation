@@ -20,7 +20,53 @@ CASES = 400  # combinations of values tried for one stage's moves
 
 def run(engine):
     return (choices(engine) + impossible(engine) + unreachable(engine) + gaps(engine) + asked_on_no(engine) + left_to_others(engine)
-            + out_of_reach(engine) + needs_rates(engine) + left_unfilled(engine) + made_only_sometimes(engine) + ai_doing_sums(engine))
+            + out_of_reach(engine) + needs_rates(engine) + left_unfilled(engine) + made_only_sometimes(engine) + ai_doing_sums(engine)
+            + approval_without_stages(engine) + runs_while_true(engine))
+
+
+STAGE_WORDS = re.compile(r"^(status|stage|state)$", re.I)
+ONCE = ("create_record", "create_for_each", "copy_record", "request_approval", "task", "send_email", "send_sms", "webhook")
+
+
+def approval_without_stages(engine):
+    """Records a rule asks someone to approve, whose stage is a plain choice anyone can change: the approval can be skipped
+    by setting it on (a quote over 10% off set to Sent by hand). Stages with moves hold it: the move waits for the OK."""
+    out = []
+    for t in engine.tables.values():
+        stage = next((f for f in t["fields"] if f["type"] == "select" and (STAGE_WORDS.match(f["key"]) or STAGE_WORDS.match(f["label"]))), None)
+        if t.get("workflow") or stage is None:
+            continue
+        asks = next((a for a in engine.bp.get("automations", []) if a["trigger"].get("table") == t["key"]
+                     and any(x.get("type") == "request_approval" for x in schema.steps_of(a["actions"]))), None)
+        if asks is None:
+            continue
+        out.append(_issue("fix", f"{t['key']} records are approved by rule {asks['key']}, but their {stage['key']} is a plain choice "
+                                 f"anyone can change, so the approval can be skipped by setting it on: make {stage['key']} the "
+                                 f"table's workflow (stages with moves), so the move waits for the OK",
+                          f"A {schema.lc(t['singular'])} can be set on by hand without the approval “{asks['name']}” asks for",
+                          t["key"]))
+    return out
+
+
+def runs_while_true(engine):
+    """A rule on a change whose conditions only say how the record is (over 10% off, a Draft), not what changed: it runs
+    again at every save while that holds (asking again, sending again) and never for a record added that way."""
+    out = []
+    for a in engine.bp.get("automations", []):
+        if a["trigger"]["type"] not in ("record_updated", "record_created_or_updated") or not a.get("conditions"):
+            continue
+        flat = [c for c in a["conditions"] for c in (c.get("any") or c.get("all") or [c])]
+        if any(str(c.get("op", "")).startswith("changed") for c in flat):
+            continue
+        does = next((x["type"] for x in schema.steps_of(a["actions"]) if x.get("type") in ONCE), None)
+        if does is None:
+            continue
+        t = engine.tables.get(a["trigger"].get("table")) or {"singular": "record"}
+        out.append(_issue("check", f"Rule {a['key']} runs at every change while its conditions hold (none says what changed), so it "
+                                   f"does its {does} again at each save, and never for one added that way: start it when something "
+                                   f"changes to that (\"changed_to\"), or on the move that sends it on",
+                          f"“{a['name']}” runs again every time a {schema.lc(t['singular'])} like that is saved", a["trigger"].get("table", "")))
+    return out
 
 
 SUMS = re.compile(r"\b(compare|multipl\w*|subtract\w*|add (it )?up|sum of|on[ _]hand|how many|how much|short(age|fall)?|"

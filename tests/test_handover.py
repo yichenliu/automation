@@ -374,3 +374,24 @@ def test_a_change_waits_out_its_cooling_off_when_days_pass_and_a_private_number_
         "expect": [{"record": "s", "field": "bank_account", "equals": "33334444"}]}
     _, (done,) = trial.try_out(ws, [later], screens=False)
     assert done["ok"], done  # the 7 days had passed, and ••••4444 is the 33334444 it expected
+
+
+def test_an_approval_on_a_plain_status_and_a_rule_that_runs_while_true_are_found(app, owner):
+    _, ws = owner
+    _built(ws, [
+        {"op": "create_table", "table": "quotes", "label": "Quotes", "fields": [
+            {"key": "customer", "type": "text", "required": True}, {"key": "discount", "type": "number"},
+            {"key": "status", "type": "select", "options": ["Draft", "Needs approval", "Sent"], "default": "Draft"}]},
+        {"op": "add_automation", "automation": {
+            "key": "big_discount", "name": "Approve big discounts", "trigger": {"type": "record_updated", "table": "quotes"},
+            "conditions": [{"field": "discount", "op": "greater_than", "value": 10}, {"field": "status", "op": "equals", "value": "Draft"}],
+            "actions": [{"type": "request_approval", "approver": "owner", "message": "Please approve this."}]}},
+        {"op": "add_automation", "automation": {
+            "key": "tidy", "name": "Tidy the name", "trigger": {"type": "record_updated", "table": "quotes"},
+            "conditions": [{"field": "status", "op": "equals", "value": "Draft"}],
+            "actions": [{"type": "update_record", "values": {"customer": "{{record.customer}}"}}]}}])
+    e = Engine(ws)
+    assert [i["plain"] for i in checks.approval_without_stages(e)] == [
+        "A quote can be set on by hand without the approval “Approve big discounts” asks for"]
+    assert [i["plain"] for i in checks.runs_while_true(e)] == [
+        "“Approve big discounts” runs again every time a quote like that is saved"]  # updating a detail again is harmless
