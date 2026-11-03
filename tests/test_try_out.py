@@ -505,3 +505,28 @@ def test_an_ai_step_that_picks_a_record_answers_with_the_one_the_example_names(a
         "expect": [{"record": "pay1", "field": "invoice", "equals": "inv1"}]}
     _, (matched,) = trial.try_out(ws, [example], screens=False)
     assert matched["ok"], matched
+
+
+def test_item_in_a_step_done_once_reads_the_rules_own_record(app, owner):
+    """A received PO line adds stock with {{item.product}}: there's no item outside a step done for each line, so it was
+    always empty and the step stopped. It reads the line itself; a for-each step keeps its item."""
+    _, ws = owner
+    _built(ws, [{"op": "create_table", "table": "products", "label": "Products", "fields": [{"key": "name", "type": "text", "required": True}]},
+                {"op": "create_table", "table": "po_lines", "label": "PO lines", "fields": [
+                    {"key": "product", "type": "link", "table": "products", "required": True}, {"key": "received_qty", "type": "number"}]},
+                {"op": "create_table", "table": "stock_movements", "label": "Stock movements", "fields": [
+                    {"key": "product", "type": "link", "table": "products", "required": True}, {"key": "quantity", "type": "number", "required": True}]}])
+    result = ops.apply(ws.blueprint, [{"op": "add_automation", "automation": {
+        "key": "receive", "name": "Receiving adds stock", "trigger": {"type": "record_updated", "table": "po_lines"},
+        "conditions": [{"field": "received_qty", "op": "changed"}],
+        "actions": [{"type": "create_record", "table": "stock_movements",
+                     "values": {"product": "{{item.product}}", "quantity": "{{ item.received_qty * 1 }}"}}]}}])
+    assert not result.problems, result.problems
+    made = result.blueprint["automations"][0]["actions"][0]["values"]
+    assert made == {"product": "{{record.product}}", "quantity": "{{ record.received_qty * 1 }}"}
+    assert any("reads its own record where it said “item”" in c for c in result.changes)
+    chat.save_version(ws, result.blueprint, result.changes, "chat")
+    engine = Engine(ws)
+    line = engine.create("po_lines", {"product": engine.create("products", {"name": "Cheddar"}).id})
+    engine.update(engine.get(line.id), {"received_qty": 10})
+    assert [r.data["quantity"] for r in Engine(ws).rows("stock_movements")] == [10]

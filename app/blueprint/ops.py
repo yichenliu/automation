@@ -579,6 +579,7 @@ def _resolve_sense(bp, tables, changes):
     out of a stage on "more than X" and "less than X" that leave X itself stuck; a stage no button leads to."""
     for a in bp["automations"]:
         t = tables.get(a["trigger"].get("table") or "")
+        _item_outside_a_loop(a, changes)
         _then_the_same(a, changes)
         if t is not None:
             _set_when_added(a, t, changes)
@@ -623,6 +624,31 @@ APPROVED_ON = re.compile(r"(approv|authori[sz]|signed[ _]off)\w*[ _](date|on|at)
 
 WORK = {"update_record", "create_record", "create_for_each", "generate_document", "send_email", "update_each", "run_automation",
         "webhook", "assign", "task"}
+
+
+LOOPS = ("create_for_each", "update_each")  # the steps done once for each line (or person), where {{item}} is that one
+
+
+def _item_outside_a_loop(a, changes):
+    """“{{item.product}}” in a step done once (a stock movement made when a PO line is received): there's no item there, so
+    it always came out empty and the step stopped. The rule's own record was meant."""
+    def swap(value):
+        if isinstance(value, str):
+            return expr.TEMPLATE.sub(lambda m: m.group(0).replace(m.group(1), re.sub(r"(?<![.\w])item\.", "record.", m.group(1))), value)
+        if isinstance(value, list):
+            return [swap(v) for v in value]
+        if isinstance(value, dict):
+            return {k: swap(v) for k, v in value.items()}
+        return value
+    fixed = False
+    for act in schema.steps_of(a["actions"]):
+        if act.get("type") in LOOPS:
+            continue
+        for k in [k for k in act if k not in ("paths", "otherwise", "if_rejected", "steps")]:
+            if swap(act[k]) != act[k]:
+                act[k], fixed = swap(act[k]), True
+    if fixed:
+        changes.append(f"“{a['name']}” now reads its own record where it said “item” (only a step done for each line has one)")
 
 
 def _then_the_same(a, changes):
