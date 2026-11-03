@@ -32,10 +32,12 @@ class Shop:
         self.trial, self.engine, self.made, self.n = trial, trial.engine(), {}, 0
 
     # finding things by meaning
-    def table(self, *words, embedded=None, exclude=()):
+    def table(self, *words, embedded=None, exclude=(), other_than=()):
+        """The list these words name (the first word best). `other_than`: lists it mustn't be (by key: the order a work
+        order is made from, though "work orders" has "orders" in it)."""
         found = []
         for t in self.engine.tables.values():
-            if embedded is not None and bool(t.get("embedded")) != embedded:
+            if embedded is not None and bool(t.get("embedded")) != embedded or t["key"] in other_than:
                 continue
             text = f"{t['key']} {t['label']} {t['singular']}".lower().replace("_", " ")
             if any(x in text for x in exclude):
@@ -338,7 +340,7 @@ def reaches(shop, words, *stage_words):
 def makes(shop, words, made_words, *stage_words):
     """Taking a record to a stage (a job done, an order confirmed) makes a record of another kind (its invoice)."""
     t = shop.table(*words, embedded=False)
-    made = shop.table(*made_words, embedded=False, exclude=(t["label"].lower(),))
+    made = shop.table(*made_words, embedded=False, other_than=(t["key"],))
     target = shop.stage_like(t, *stage_words)
     if target is None:
         raise Missing(f"{t['label'].lower()} have no {stage_words[0]} stage")
