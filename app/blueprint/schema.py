@@ -1108,6 +1108,24 @@ def normalize_document(raw):
             doc["only_if"] = [normalize_condition(c) for c in _list(only)]
         return doc
 
+    if fmt in ("label", "labels", "sticker", "stickers", "tag", "tags", "barcode_label", "shipping_label", "bin_label", "asset_tag"):
+        # a label to stick on the thing (a product's barcode, a bin, an asset, a parcel): printed, never kept
+        from ..documents.labels import size_of
+        doc = {"key": key, "label": label or label_of(key), "format": "label",
+               "size": size_of(str(_first(raw, "size", "paper", "stock", default=""))),
+               "fields": [slug(f) for f in _list(_first(raw, "fields", "details", "lines", default=[]))][:5]}
+        for name, keys in (("title_field", ("title_field", "title", "name_field")), ("code_field", ("code_field", "barcode_field", "barcode", "code_from")),
+                           ("copies_field", ("copies_field", "copies", "quantity_field", "how_many"))):
+            value = _first(raw, *keys)
+            if isinstance(value, str) and value.strip():
+                doc[name] = slug(value)
+        code = slug(str(_first(raw, "code", "code_type", "symbology", default="")))
+        if code in ("qr", "qr_code", "qrcode"):
+            doc["code"] = "qr"
+        elif code in ("barcode", "code128", "code_128", "bar"):
+            doc["code"] = "barcode"
+        return doc
+
     doc = {"key": key, "label": label or label_of(key), "title": str(_first(raw, "title", "heading", default=label or label_of(key))).strip()[:60]}
     number = _first(raw, "number_field", "number", "reference_field")
     if number:
@@ -2214,6 +2232,13 @@ def _check_table(t, tables, modules, problems):
                 problems.append(f"{where} lists “{doc['lines']['table']}”, which isn't a table")
             elif doc.get("lines") and not reach(t, tables[doc["lines"]["table"]], doc["lines"]["via"], tables):
                 problems.append(f"{where}: “{doc['lines']['via']}” must be the link of {tables[doc['lines']['table']]['label']} to {t['label']}")
+            continue
+        if doc.get("format") == "label":
+            for k in doc.get("fields", []) + [doc[x] for x in ("title_field", "code_field", "copies_field") if doc.get(x)]:
+                if k not in keys:
+                    problems.append(f"{where} shows “{k}”, which isn't a field of {t['label']}")
+            if doc.get("copies_field") in keys and keys[doc["copies_field"]]["type"] not in ("number", "formula", "rollup", "lookup"):
+                problems.append(f"{where}: how many copies (“{doc['copies_field']}”) must be a number")
             continue
         for k in doc.get("fields", []) + doc.get("details", []) + doc.get("totals", []) + ([doc["number_field"]] if doc.get("number_field") else []):
             if k not in keys:

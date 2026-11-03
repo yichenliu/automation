@@ -62,7 +62,8 @@
     if (!btn) return;
     const input = $("input", btn.parentElement);
     if (!("BarcodeDetector" in window) || !navigator.mediaDevices?.getUserMedia) {
-      input.focus(); toast("This browser can't scan with the camera; a USB or Bluetooth scanner types straight into the box.", "error"); return;
+      input.focus(); toast(btn.dataset.scanGo ? "This browser can't scan with the camera; a USB or Bluetooth scanner can scan into the search box."
+                                             : "This browser can't scan with the camera; a USB or Bluetooth scanner types straight into the box.", "error"); return;
     }
     const detector = new window.BarcodeDetector();
     const shade = document.createElement("div");
@@ -80,6 +81,7 @@
         if (!live) return;
         try {
           const codes = await detector.detect(video);
+          if (codes.length && btn.dataset.scanGo) { stop(); location.href = `${btn.dataset.scanGo}?code=${encodeURIComponent(codes[0].rawValue)}`; return; }
           if (codes.length) { input.value = codes[0].rawValue; stop(); toast("Scanned."); input.dispatchEvent(new Event("change", {bubbles: true})); return; }
         } catch (e) { /* the next frame may work */ }
         requestAnimationFrame(look);

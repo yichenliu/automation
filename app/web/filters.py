@@ -173,7 +173,9 @@ def register(app):
     app.jinja_env.tests["blank_in"] = blank_in
     app.jinja_env.filters.update(lc=lc, ago=ago, markdown=render_markdown, size=human_size, when=when, status_words=status_words, rule_words=rule_words,
                                  json=lambda v: escape(json.dumps(v, default=str)))  # for data-* attributes: quotes escaped, decoded by the browser
-    app.jinja_env.globals.update(pill=pill, icon=icon, now=datetime.now, about_field=about_field, ask_facts=ask_facts, MORE_AFTER=MORE_AFTER)
+    from ..documents.labels import SIZES as LABEL_SIZES
+    app.jinja_env.globals.update(pill=pill, icon=icon, now=datetime.now, about_field=about_field, ask_facts=ask_facts, MORE_AFTER=MORE_AFTER,
+                                 LABEL_SIZES={k: v[0] for k, v in LABEL_SIZES.items()})
 
     @app.context_processor
     def platform():

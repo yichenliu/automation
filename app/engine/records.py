@@ -364,6 +364,25 @@ class Engine:
         fill read-only fields and may change locked records; the people who set them up decided that)."""
         return self if self.role is None else Engine(self.ws, by=self.by)
 
+    def by_code(self, code, names=True):
+        """The record a scanned or typed code is (its barcode, its number such as INV-0042, or with `names` its name),
+        among those this person may see; None if none is, or more than one."""
+        wanted, found = str(code or "").strip().lower(), []
+        if not wanted:
+            return None
+        for t in self.visible_blueprint().get("tables", []):
+            if t.get("embedded"):
+                continue
+            codes = [f for f in t["fields"] if f["type"] in ("barcode", "autonumber")]
+            for r in self.visible_rows(t["key"]):
+                said = {str((r.data or {}).get(f["key"]) or "").strip().lower() for f in codes} | \
+                    {self.display(f, (r.data or {}).get(f["key"])).lower() for f in codes} | ({self.title(r).strip().lower()} if names else set())
+                if wanted in said:
+                    found.append(r)
+            if len(found) > 1:
+                return None
+        return found[0] if found else None
+
     def visible_rows(self, table):
         rows = self.rows(table)
         if self.role is None:

@@ -3,6 +3,7 @@ everything."""
 from datetime import timedelta
 
 import json
+import re
 
 from flask import abort, flash, jsonify, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
@@ -1065,6 +1066,9 @@ def jump(wid):
 def search(wid):
     ws, engine = ctx(wid)
     q = (request.args.get("q") or "").strip()
+    exact = engine.by_code(q, names=False) if q and re.fullmatch(r"[\w./-]{3,64}", q) else None
+    if exact is not None:  # a scanner typed a record's code (its barcode, INV-0042): straight to it
+        return redirect(url_for("app.record", wid=wid, table=exact.table, rid=exact.id))
     found, passages = [], []
     if len(q) >= 2:
         for t in engine.bp.get("tables", []):

@@ -17,13 +17,18 @@
   {% if e.can(t, 'edit') %}
   <div class="row wrap">
     {% for a in buttons %}<form method="post" action="{{ url_for('app.press', wid=ws.id, table=t.key, rid=r.id, key=a.key) }}" data-busy><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn primary">{{ icon('zap') }}{{ a.trigger.label }}</button></form>{% endfor %}
-    {% for d in documents %}<form method="post" action="{{ url_for('app.document', wid=ws.id, table=t.key, rid=r.id, key=d.key) }}" data-busy="download"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn">{{ icon('file-down') }}{{ (d.label ~ ' PDF') if d.format != 'text' else ('Download the ' ~ d.label|lc) }}</button></form>{% endfor %}
+    {% for d in documents if d.format != 'label' %}<form method="post" action="{{ url_for('app.document', wid=ws.id, table=t.key, rid=r.id, key=d.key) }}" data-busy="download"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn">{{ icon('file-down') }}{{ (d.label ~ ' PDF') if d.format != 'text' else ('Download the ' ~ d.label|lc) }}</button></form>{% endfor %}
+    {% for d in documents if d.format == 'label' %}<a class="btn" href="{{ url_for('app.label', wid=ws.id, table=t.key, rid=r.id, doc=d.key) }}" target="_blank" rel="noopener">{{ icon('tag') }}Print {{ d.label|lc }}</a>{% endfor %}
     {% if can_edit %}<a class="btn" href="{{ url_for('app.edit', wid=ws.id, table=t.key, rid=r.id) }}" data-edit>{{ icon('pencil') }}Edit</a>{% endif %}
     <div class="menu-wrap"><button class="btn ghost icon" type="button" data-menu aria-label="More">{{ icon('ellipsis') }}</button>
       <div class="menu" hidden>
         <a href="{{ url_for('app.new', wid=ws.id, table=t.key) }}">{{ icon('plus') }}New {{ t.singular|lc }}</a>
         <form method="post" action="{{ url_for('app.duplicate', wid=ws.id, table=t.key, rid=r.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button>{{ icon('copy') }}Duplicate</button></form>
         <a href="#" data-print>{{ icon('printer') }}Print</a>
+        <form method="get" action="{{ url_for('app.label', wid=ws.id, table=t.key, rid=r.id) }}" target="_blank" class="menu-form">
+          <label class="faint tiny" for="label-size">A label to stick on it, with a code to scan</label>
+          <div class="row"><select name="size" id="label-size" aria-label="Label size">{% for k, name in LABEL_SIZES.items() %}<option value="{{ k }}" {{ 'selected' if k == session.get('label_size') }}>{{ name }}</option>{% endfor %}</select>
+          <button class="btn sm">{{ icon('tag') }}Print label</button></div></form>
         {% if stages and e.role == 'owner' %}<form method="post" action="{{ url_for('app.set_stage', wid=ws.id, table=t.key, rid=r.id) }}" class="menu-form"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
           <label class="faint tiny">Move it to any stage (only you can)</label><div class="row"><select name="stage" aria-label="Stage">{% for st in stages %}<option {{ 'selected' if st == stage }}>{{ st }}</option>{% endfor %}</select><button class="btn sm">Move</button></div></form>{% endif %}
         {% if can_edit %}<form method="post" action="{{ url_for('app.delete', wid=ws.id, table=t.key, rid=r.id) }}" data-confirm-text="Delete this {{ t.singular|lc }}? You can undo it straight after."><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="danger">{{ icon('trash-2') }}Delete</button></form>{% endif %}

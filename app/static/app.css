@@ -917,3 +917,5 @@ table.lines-editor .combo-button:hover { border-color: var(--border); }
 .combo-new { flex: none; border-top: 1px solid var(--border); border-radius: 0 0 7px 7px; color: var(--accent-text); font-weight: 600; }
 .combo-note { padding: 7px 10px; color: var(--faint); font-size: 13px; }
 @media (max-width: 640px) { .combo-panel { max-height: 60vh; } }
+.side-scan { border: 0; background: none; color: var(--faint); padding: 2px; display: inline-flex; cursor: pointer; border-radius: 6px; }
+.side-scan:hover, .side-scan:focus-visible { color: var(--text); background: var(--hover, rgba(0,0,0,.06)); }

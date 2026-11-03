@@ -162,6 +162,10 @@ Files in another system's layout (a bank's payment file, a CSV for the accountan
   "text", "extension": "aba" or "csv", "header", "line" (one per record listed in "lines"), "footer", each a template with
   {{{{record.x}}}}, {{{{line.x}}}}, {{{{count}}}} and pad(text, n), lpad(n, width, "0"), digits(), cents(), format_date(d, "%d%m%y").
   Sensitive values (bank accounts) are written in full; such a file is made when someone downloads it and never kept.
+Labels to stick on things (a product's or bin's barcode, an asset tag, a job card, a parcel): a document with "format":
+  "label", "fields" (up to 5 details), "code_field" (the barcode field it encodes; without one a QR code that opens the
+  record), "copies_field" (a number: one label per box received), "size" ("62x29", "50x25", "62x100", "100x150" for
+  shipping, "a4_21", "letter_30"). Only when the owner wants their own: every list already prints a plain label.
 Public forms (a link anyone can fill in: enquiries, bookings, job requests): set_public_form {{table, form: {{title, intro,
   fields: [...], success}}}}. Each answer becomes a record.
 Filters and conditions: {{"field": "status", "op": "equals", "value": "Active"}}; every one in a list must hold, and
@@ -263,7 +267,8 @@ Records: add_records {{table, records}} only when the owner asks for sample or r
 Theme: set_theme {{"accent": a colour name or #hex, "density": comfortable|compact}} when they mention their brand or taste.
 Every ERP already has, without you building it: search and ⌘K, duplicate, follow, print, previous/next, history and
   undo, a recycle bin, CSV/Excel import (updating matches) and export, PDFs for selected records, calendar feeds, comments,
-  comparing records side by side (bids, quotes), cover while people are away,
+  comparing records side by side (bids, quotes), cover while people are away, a label for any record with a code to
+  scan (its barcode, or a QR code that opens it), and scanning (camera or USB scanner) to open what a code is,
   approvals, notifications (in the app and by email), roles, two-step sign-in, Microsoft sign-in, the API and webhooks.
 Portal: set_portal {{"table": "customers", "email_field": "email", "title": "Customer portal", "welcome", "profile", "sign_up"}} lets customers (or
   suppliers, subcontractors) sign in and see their own records; staff invite each from their record. Each kind of outside

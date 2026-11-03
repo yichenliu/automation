@@ -8,7 +8,7 @@
     <div class="head"><a class="logo" href="{{ url_for('app.home', wid=ws.id) }}">{{ (ws.blueprint.get('name') or ws.name)[:1]|upper }}</a>
       <a class="name ellipsis" href="{{ url_for('app.home', wid=ws.id) }}">{{ ws.blueprint.get('name') or ws.name }}</a>
       <button class="btn sm ghost icon menu-toggle" type="button" data-toggle="#sidebar" aria-label="Menu">{{ icon('menu') }}</button></div>
-    <form class="side-search" action="{{ url_for('app.search', wid=ws.id) }}" data-jump="{{ url_for('app.jump', wid=ws.id) }}" title="Search, or press ⌘K to jump anywhere">{{ icon('search') }}<input type="search" name="q" placeholder="Search" value="{{ request.args.get('q', '') if 'search' in here else '' }}" aria-label="Search everything"><kbd>/</kbd></form>
+    <form class="side-search" action="{{ url_for('app.search', wid=ws.id) }}" data-jump="{{ url_for('app.jump', wid=ws.id) }}" title="Search, or press ⌘K to jump anywhere">{{ icon('search') }}<input type="search" name="q" placeholder="Search" value="{{ request.args.get('q', '') if 'search' in here else '' }}" aria-label="Search everything"><kbd>/</kbd><button type="button" class="side-scan" data-scan data-scan-go="{{ url_for('app.scan', wid=ws.id) }}" title="Scan a label or barcode to open it" aria-label="Scan a label">{{ icon('camera') }}</button></form>
     <nav class="nav">
       {% set home_url = url_for('app.home', wid=ws.id) %}<a href="{{ home_url }}?home=1" class="{{ 'active' if here.rstrip('/') == home_url.rstrip('/') }}">{{ icon('house') }}<span>Home</span></a>
       {% for section in nav_for(ws) %}

@@ -1105,6 +1105,8 @@ def bulk(wid, table):
                 kept.append(engine.title(r))
         flash(f"Deleted {done} {schema.lc(t['label']) if done != 1 else schema.lc(t['singular'])}."
               + (f" Locked, so not deleted: {', '.join(kept[:5])}{'…' if len(kept) > 5 else ''}" if kept else ""), "success" if not kept else "error")
+    elif action and (action == "labels" or action.startswith("labels:")):  # a label for each one selected, ready to print
+        return _labels_pdf(engine, t, rows, action[7:] or None, request.form.get("size"))
     elif action and action.startswith("pdf:"):  # one PDF per selected record, in a zip (mail merge, month-end statements)
         import zipfile
         from ..documents import build
@@ -1263,6 +1265,51 @@ def document(wid, table, rid, key):
         return redirect(url_for("app.record", wid=wid, table=t["key"], rid=r.id))
     flash(f"Produced {file.name}.", "success")
     return redirect(url_for("app.file", wid=wid, fid=file.id))
+
+
+@bp.route("/t/<table>/<int:rid>/label")
+@login_required
+def label(wid, table, rid):
+    """The record's label as a PDF to print: its own design ("doc"), or the plain one every list has."""
+    ws, engine = ctx(wid)
+    t = _table(engine, table)
+    r = _record(engine, t, rid)
+    return _labels_pdf(engine, t, [r], request.args.get("doc") or None, request.args.get("size"))
+
+
+def _labels_pdf(engine, t, rows, key, size):
+    from flask import session
+    from ..documents import labels
+    doc = next((d for d in t.get("documents", []) if d["key"] == key and d.get("format") == "label"), None)
+    if key and doc is None:
+        abort(404)
+    size = labels.size_of(size or (doc or {}).get("size") or session.get("label_size"))
+    session["label_size"] = size  # the printer they have: chosen once
+    link = lambda r: url_for("app.record", wid=engine.ws.id, table=t["key"], rid=r.id, _external=True)  # noqa: E731
+    content = labels.render(labels.for_records(engine, rows, doc, link), size)
+    name = f"{(doc or {}).get('label') or t['singular']} label{'s' if len(rows) != 1 else ''}.pdf"
+    response = Response(content, mimetype="application/pdf")
+    response.headers["Content-Disposition"] = f'inline; filename="{name}"'  # opens to print, rather than downloading
+    return response
+
+
+@bp.route("/scan")
+@login_required
+def scan(wid):
+    """What a scanned code is: one of this app's own labels (its QR code is the record's address), a barcode a record
+    has, or a record's number or name. Straight to it; to the search otherwise."""
+    ws, engine = ctx(wid)
+    code = (request.args.get("code") or "").strip()
+    if not code:
+        return redirect(url_for("app.home", wid=wid))
+    own = re.search(rf"/w/{wid}/app/t/(\w+)/(\d+)\b", code)
+    if own:
+        return redirect(url_for("app.record", wid=wid, table=own.group(1), rid=int(own.group(2))))
+    found = engine.by_code(code)
+    if found is not None:
+        return redirect(url_for("app.record", wid=wid, table=found.table, rid=found.id))
+    flash(f"Nothing has the code “{code}”, so here's everything that mentions it.", "info")
+    return redirect(url_for("app.search", wid=wid, q=code))
 
 
 @bp.route("/t/<table>/<int:rid>/files", methods=["POST"])
