@@ -425,9 +425,17 @@ def _stages(trial, engine, made, crashes):
             if later and not schema.says_no(at) and not schema.ENDED.search(str(at)) and not engine.waiting_for(record) \
                     and not any(not schema.says_no(m["to"]) for _, m, _ in engine.moves(record)):
                 stops = [m.get("label") or m["to"] for _, m in moves]
+                pressed = next((a for a in engine.bp.get("automations", []) if a["trigger"]["type"] == "button"
+                                and a["trigger"].get("table") == t["key"] and any(str((x.get("values") or {}).get(flow["field"], "")) in later
+                                                                                  for x in schema.steps_of(a["actions"]) if x.get("type") == "update_record")), None)
+                instead = (f"; the button rule {pressed['key']} sets the stage instead, which skips the stage's own move and what it "
+                           f"checks (who may, what must be filled in): make it a workflow move from {at}, and the rule's other steps a "
+                           f"rule on that move" if pressed else "")
                 out.append(_issue("fix", f"A {t['key']} record at {at} can't move on to {', '.join(later)}: the workflow has no move from "
-                                         f"{at} but {', '.join(stops) or 'none'}", f"A {schema.lc(t['singular'])} at {at} can't go on to "
-                                         f"{' or '.join(later[:2])}: the only way out is {' or '.join(stops) or 'none'}", t["key"]))
+                                         f"{at}" + (f" but {', '.join(stops)}" if stops else "") + instead,
+                                  f"A {schema.lc(t['singular'])} at {at} can't go on to {' or '.join(later[:2])}: "
+                                  + (f"the only way out is {' or '.join(stops)}" if stops else "nothing moves it on")
+                                  + (f" (“{pressed['name']}” sets it with a rule, skipping the stage's own checks)" if pressed else ""), t["key"]))
             if not moves:
                 break
             i, m = moves[0]
