@@ -378,7 +378,8 @@ def _words(text):
 
 # the app's words for what builders call tables, fields, automations and workflows (the menu says Rules, lists, details)
 OURS = {"table": "list", "tables": "lists", "field": "detail", "fields": "details", "automation": "rule", "automations": "rules",
-        "workflow": "process", "workflows": "processes", "erp": "app"}
+        "workflow": "process", "workflows": "processes", "erp": "app", "trigger": "set off", "triggers": "sets off",
+        "triggered": "set off", "triggering": "setting off"}
 JARGON = re.compile(r"\b(" + "|".join(OURS) + r")\b", re.I)
 
 

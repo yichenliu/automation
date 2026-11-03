@@ -311,6 +311,7 @@ def test_a_reply_says_lists_and_rules_unless_the_owner_or_the_app_uses_the_word(
     assert plain("I set up the fields and two automations in your ERP. Workflows run by themselves.", bp, "we sell online") \
         == "I set up the details and two rules in your app. Processes run by themselves."
     assert plain("Each table and chair has its fields.", bp, "We make tables") == "Each table and chair has its details."
+    assert plain("An overdue invoice triggers a reminder.", bp, "") == "An overdue invoice sets off a reminder."
 
 
 def test_an_ai_step_answers_as_the_example_expects_in_a_try_out_so_what_follows_is_tried(app, owner):
