@@ -182,6 +182,10 @@ Flows (work done a screen at a time on a phone or at a bench: receiving a delive
   printer chosen in Settings › Printers). Nothing is saved until the last step;
   then the form's fields and choices go on the record, scanned items become lines, counts go on the lines, and "then"
   runs. Make a flow when work happens on the floor in steps with scanning or counting; a form is enough otherwise.
+Team menus (spaces): set_space {{"space": {{"key", "label", "for": [team keys], "groups": [{{"label": "Receiving", "items":
+  [{{"table", "view"}}, {{"page"}}, {{"flow"}}]}}], "links": [{{"label", "url"}}: their SOPs, a carrier's or supplier's site]}}}}:
+  people in those teams see just their screens, grouped as they work, and can switch to everything. Give one to a team
+  whose work is a few screens of a big app (the warehouse, the drivers); the owner and admins keep the whole menu.
 Public forms (a link anyone can fill in: enquiries, bookings, job requests): set_public_form {{table, form: {{title, intro,
   fields: [...], success}}}}. Each answer becomes a record.
 Filters and conditions: {{"field": "status", "op": "equals", "value": "Active"}}; every one in a list must hold, and
@@ -593,6 +597,11 @@ _OP = {"type": "object", "required": ["op"], "properties": {  # a table's fields
     "sections": {"type": "array", "items": {"type": "object", "properties": {"label": _STRING, "fields": _STRINGS, "show_if": _CONDITIONS}}},
     "view": _VIEW, "views": {"type": "array", "items": _VIEW}, "page": _PAGE, "document": _DOCUMENT,
     "documents": {"type": "array", "items": _DOCUMENT}, "form": _FORM, "automation": _AUTOMATION, "flow": _FLOW, "name": _STRING,
+    "space": {"type": "object", "required": ["label", "for", "groups"], "properties": {
+        "key": _STRING, "label": _STRING, "for": _STRINGS, "icon": _STRING,
+        "groups": {"type": "array", "items": {"type": "object", "properties": {"label": _STRING, "items": {"type": "array", "items": {
+            "type": "object", "properties": {"table": _STRING, "view": _STRING, "page": _STRING, "flow": _STRING, "label": _STRING}}}}}},
+        "links": {"type": "array", "items": {"type": "object", "properties": {"label": _STRING, "url": _STRING}}}}},
     "team": {"type": "object", "required": ["key", "name"], "properties": {"key": _STRING, "name": _STRING, "about": _STRING}},
     "theme": {"type": "object", "properties": {"accent": _STRING, "density": {"type": "string", "enum": schema.DENSITIES}}},
     "records": {"type": "array", "items": {"type": "object"}}, "file_id": {"type": "integer"}, "sheet": _STRING,
@@ -775,6 +784,8 @@ def outline(bp, counts, extra=""):
         lines.append(f"\nPortal: {json.dumps(portal, ensure_ascii=False)}")
     if schema.teams(bp):
         lines.append("\nTeams: " + ", ".join(f"{tm['key']} \"{tm['name']}\"" for tm in schema.teams(bp)))
+    for sp in schema.spaces(bp):
+        lines.append(f"\nSpace (a team's menu): {json.dumps(sp, ensure_ascii=False)}")
     if bp.get("flows"):
         lines.append("\nFlows (full JSON, needed to update one):")
         for f in bp["flows"]:

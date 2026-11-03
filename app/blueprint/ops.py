@@ -15,7 +15,7 @@ from .schema import SchemaError, _first, _list, slug
 OPS = ["set_portal", "set_team", "create_table", "update_table", "delete_table", "add_field", "update_field", "remove_field", "add_view",
        "update_view", "remove_view", "add_page", "update_page", "remove_page", "add_automation", "update_automation",
        "remove_automation", "set_module", "rename_app", "set_theme", "add_document", "update_document", "remove_document",
-       "set_public_form", "add_records", "import_file", "find", "add_flow", "update_flow", "remove_flow"]
+       "set_public_form", "add_records", "import_file", "find", "add_flow", "update_flow", "remove_flow", "set_space", "remove_space"]
 OP_ALIASES = {"add_table": "create_table", "new_table": "create_table", "create_tables": "create_table",
               "edit_table": "update_table", "rename_table": "update_table", "drop_table": "delete_table", "remove_table": "delete_table",
               "create_field": "add_field", "new_field": "add_field", "add_column": "add_field", "add_fields": "add_field",
@@ -36,7 +36,9 @@ OP_ALIASES = {"add_table": "create_table", "new_table": "create_table", "create_
               "insert_records": "add_records", "add_data": "add_records", "query": "find", "search": "find", "list_records": "find",
               "import": "import_file", "import_spreadsheet": "import_file", "import_records": "import_file", "load_file": "import_file",
               "create_flow": "add_flow", "add_guided_flow": "add_flow", "add_process": "add_flow", "edit_flow": "update_flow",
-              "delete_flow": "remove_flow", "add_workflow_screens": "add_flow", "add_station": "add_flow"}
+              "delete_flow": "remove_flow", "add_workflow_screens": "add_flow", "add_station": "add_flow",
+              "add_space": "set_space", "create_space": "set_space", "update_space": "set_space", "team_menu": "set_space",
+              "delete_space": "remove_space"}
 
 
 @dataclass
@@ -1645,6 +1647,24 @@ def _apply_one(bp, op, raw, result, where):
         else:
             current.append(flow)
             changes.append(f"Added the steps for {flow['label']} ({len(flow['steps'])} steps, one screen each)")
+    elif op == "set_space":
+        space = schema.normalize_space(_first(raw, "space", default={k: v for k, v in raw.items() if k != "op"}))
+        current = bp.setdefault("spaces", [])
+        at = next((i for i, x in enumerate(current) if x["key"] == space["key"]), None)
+        if at is None:
+            current.append(space)
+            names = {tm["key"]: tm["name"] for tm in schema.teams(bp)}
+            changes.append(f"Gave {_and_words([names.get(t, t) for t in space['for']])} their own menu, “{space['label']}”")
+        else:
+            current[at] = space
+            changes.append(f"Changed the menu “{space['label']}”")
+    elif op == "remove_space":
+        key = slug(_first(raw, "key", "space", default=""))
+        x = next((x for x in bp.get("spaces") or [] if x["key"] == key), None)
+        if not x:
+            raise SchemaError(f"there's no space “{key}”")
+        bp["spaces"].remove(x)
+        changes.append(f"Removed the menu “{x['label']}”: they see the whole menu again")
     elif op == "remove_flow":
         key = slug(_first(raw, "key", "flow", default=""))
         f = next((f for f in bp.get("flows") or [] if f["key"] == key), None)

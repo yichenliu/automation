@@ -5,6 +5,7 @@ from flask import Blueprint, g, url_for
 from flask_login import current_user
 from sqlalchemy import or_
 
+from ..blueprint import schema
 from ..engine.records import Engine
 from ..extensions import db
 from ..models import Approval, Notification
@@ -34,10 +35,55 @@ def confirm_step_up():
     return ok
 
 
+def my_space(engine):
+    """The team menu this person sees (spaces in the design), or None for the whole menu: admins and the owner, people
+    in no team that has one, and anyone who chose to see everything."""
+    from flask import session
+    if engine is None or engine.role is None or engine._at_least("admin"):
+        return None
+    if engine.ws.id in (session.get("whole_menu") or []):
+        return None
+    return next((sp for sp in schema.spaces(engine.bp) if set(sp["for"]) & engine.teams or engine.role in sp["for"]), None)
+
+
+def _space_sections(engine, space):
+    from ..engine import flows
+    visible = engine.visible_blueprint()
+    tables = {t["key"]: t for t in visible.get("tables", [])}
+    pages = {p["key"]: p for p in visible.get("pages", [])}
+    starts = {f["key"] for f in flows.in_menu(engine)}
+    sections = []
+    for group in space["groups"]:
+        items = []
+        for item in group["items"]:
+            if item.get("table") in tables:
+                t = tables[item["table"]]
+                view = next((v for v in t.get("views", []) if v["key"] == item.get("view")), None)
+                items.append({"kind": "table", "key": t["key"], "view": item.get("view") if view else None, "icon": t.get("icon") or "table",
+                              "label": item.get("label") or (view["label"] if view and view["label"] not in ("All", t["label"]) else t["label"])})
+            elif item.get("page") in pages:
+                p = pages[item["page"]]
+                items.append({"kind": "page", "key": p["key"], "label": p["label"], "icon": p.get("icon") or "layout-dashboard"})
+            elif item.get("flow") in starts:
+                flow = flows.of(engine, item["flow"])
+                items.append({"kind": "flow", "key": flow["key"], "label": flow["label"], "icon": flow.get("icon") or "list-todo"})
+        if items:
+            sections.append({"label": group["label"] or None, "items": items})
+    if space["links"]:
+        sections.append({"label": "Useful links", "items": [{"kind": "link", "url": x["url"], "label": x["label"], "icon": "external-link"}
+                                                            for x in space["links"]]})
+    sections.append({"label": None, "items": [{"kind": "all", "label": "Everything else", "icon": "layout-grid"}]})
+    return sections
+
+
 def nav(ws):
     """The ERP's menu: its sections, each with its pages and tables, then anything without a section. Line-item tables
-    (edited inside their parent) and tables this person may not see aren't listed."""
+    (edited inside their parent) and tables this person may not see aren't listed. Someone whose team has its own menu
+    (a space) sees that instead."""
     engine = g.get("engine")
+    space = my_space(engine) if engine is not None and engine.ws.id == ws.id else None
+    if space is not None:
+        return _space_sections(engine, space)
     bp_ = engine.visible_blueprint() if engine is not None and engine.ws.id == ws.id else ws.blueprint or {}
     tables = [t for t in bp_.get("tables", []) if not t.get("embedded")]
     sections, used = [], set()
@@ -55,6 +101,9 @@ def nav(ws):
         sections.insert(0, {"label": None, "items": loose})
     if (engine is not None and engine.ws.id == ws.id and bp_.get("flows")) and _flows_offered(engine):
         sections.insert(0, {"label": None, "items": [{"kind": "flows", "key": "flows", "label": "Step by step", "icon": "list-todo"}]})
+    if engine is not None and engine.ws.id == ws.id and engine.role is not None and not engine._at_least("admin") \
+            and any(set(sp["for"]) & engine.teams or engine.role in sp["for"] for sp in schema.spaces(engine.bp)):
+        sections.append({"label": None, "items": [{"kind": "mine", "label": "Just my team's", "icon": "users"}]})
     return sections
 
 

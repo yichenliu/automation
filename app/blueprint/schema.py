@@ -977,6 +977,56 @@ def normalize_portal(raw):
     return portal
 
 
+def normalize_space(raw):
+    """A team's own menu (the Warehouse sees Receiving, Picking and Stock counts, not the books): {"key", "label", "for":
+    [teams or roles], "groups": [{"label", "items": [{"table", "view"} | {"page"} | {"flow"}]}], "links": [{"label",
+    "url"}] (their SOPs, a carrier's or supplier's site)}. People in it see it as their menu, and can switch to all."""
+    if not isinstance(raw, dict):
+        raise SchemaError("a space must be an object")
+    label = str(_first(raw, "label", "name", "title", default="")).strip()
+    key = slug(_first(raw, "key", "id", default=label or "space"))
+    who = _first(raw, "for", "teams", "who", "team", "roles", default=[])
+    space = {"key": key, "label": label or label_of(key), "for": [_person(x) for x in (_list(who) if not isinstance(who, str) else [who])][:8],
+             "icon": icons.resolve(raw.get("icon")) or "layout-grid", "groups": [], "links": []}
+    if not space["for"]:
+        raise SchemaError(f"the space “{space['label']}” needs \"for\": the teams it's the menu of")
+    groups = _first(raw, "groups", "sections", default=None)
+    if groups is None and _first(raw, "items", "screens"):  # one plain group
+        groups = [{"label": "", "items": _first(raw, "items", "screens")}]
+    for g in _list(groups or []):
+        if not isinstance(g, dict):
+            continue
+        items = []
+        for item in _list(_first(g, "items", "screens", "lists", default=[])):
+            item = {"table": item} if isinstance(item, str) else item
+            if not isinstance(item, dict):
+                continue
+            if _first(item, "flow"):
+                items.append({"flow": slug(_first(item, "flow"))})
+            elif _first(item, "page", "dashboard"):
+                items.append({"page": slug(_first(item, "page", "dashboard"))})
+            elif _first(item, "table", "list"):
+                entry = {"table": slug(_first(item, "table", "list"))}
+                if _first(item, "view", "tab"):
+                    entry["view"] = slug(_first(item, "view", "tab"))
+                if _first(item, "label", "name", "title"):
+                    entry["label"] = str(_first(item, "label", "name", "title"))[:60]
+                items.append(entry)
+        if items:
+            space["groups"].append({"label": str(_first(g, "label", "name", "title", default="")).strip()[:60], "items": items[:20]})
+    for link in _list(_first(raw, "links", "useful_links", "bookmarks", default=[])):
+        if isinstance(link, dict) and str(_first(link, "url", "href", "link", default="")).startswith(("https://", "http://")):
+            space["links"].append({"label": str(_first(link, "label", "name", "title", default=_first(link, "url", "href", "link")))[:60],
+                                   "url": str(_first(link, "url", "href", "link"))[:500]})
+    if not space["groups"]:
+        raise SchemaError(f"the space “{space['label']}” needs \"groups\" of the screens it shows")
+    return space
+
+
+def spaces(bp):
+    return list(bp.get("spaces") or [])
+
+
 def normalize_team(raw):
     """A team of people (Accounts payable, Procurement, the evaluation panel): {"key", "name", "about"}. Who is in each
     is set under Settings › People; steps, moves, approvals and tables name a team by its key."""
@@ -3060,6 +3110,22 @@ def _check_all(bp):
         problems.append(f"there are two flows called “{key}”")
     for flow in flows(bp):
         _check_flow(flow, tables, documents, problems, bp.get("pages", []), automations)
+    flow_keys = {f["key"] for f in flows(bp)}
+    for space in spaces(bp):
+        where = f"the space “{space['label']}”"
+        for who in space["for"]:
+            if who not in ROLE_NAMES and who not in _TEAM_KEYS.get():
+                problems.append(f"{where} is for “{who}”, which isn't a team or a role")
+        for g in space["groups"]:
+            for item in g["items"]:
+                if item.get("table") and item["table"] not in tables:
+                    problems.append(f"{where} shows “{item['table']}”, which isn't a table")
+                elif item.get("table") and item.get("view") and item["view"] not in {v["key"] for v in tables[item["table"]].get("views", [])}:
+                    problems.append(f"{where}: {tables[item['table']]['label']} has no view “{item['view']}”")
+                elif item.get("page") and item["page"] not in pages:
+                    problems.append(f"{where} shows the page “{item['page']}”, which isn't one")
+                elif item.get("flow") and item["flow"] not in flow_keys:
+                    problems.append(f"{where} shows the flow “{item['flow']}”, which isn't one")
     return problems
 
 

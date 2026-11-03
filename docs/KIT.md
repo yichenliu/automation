@@ -128,6 +128,10 @@ the record), "Next task" takes the next one, "Take it" keeps it from the rest of
 now" puts it off till a day, and a task can be done through a flow (starting it opens the flow; finishing the flow does
 the task).
 
+✅ **Team menus (spaces)**: a team whose work is a few screens of a big app (the warehouse, the drivers) sees just
+those, grouped as they work (Receiving, Picking, Stock counts: a list, a view of it, a page or a flow), with their useful
+links (SOPs, a carrier's site), and can switch to everything; the owner and admins keep the whole menu.
+
 ✅ **Labels**: any record's label (its name, a few details the reader may see, and its barcode, or a QR code that opens
 it), for label printers (62 × 29, 50 × 25, 62 × 100 mm, 4 × 6 in shipping) or sheets (A4 21, Letter 30); a list's own
 label designs (which details, which barcode, one per box received); many at once from a list or a flow.

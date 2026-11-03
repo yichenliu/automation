@@ -897,6 +897,19 @@ def _could_do(ws, member):
     return [a for a in pending if may_decide(a, member, current_user.id, db.session.get(Record, a.record_id) if a.record_id else None)]
 
 
+@bp.route("/menu", methods=["POST"])
+@login_required
+def menu_switch(wid):
+    """Between a team's own menu and the whole one ("Everything else" / "Just my team's"), remembered for this person."""
+    from flask import session
+    ws, engine = ctx(wid)
+    whole = [w for w in session.get("whole_menu") or [] if w != ws.id]
+    if request.form.get("show") == "all":
+        whole.append(ws.id)
+    session["whole_menu"] = whole
+    return redirect(request.referrer or url_for("app.home", wid=wid))
+
+
 @bp.route("/approvals/next", methods=["POST"])
 @login_required
 def next_task(wid):

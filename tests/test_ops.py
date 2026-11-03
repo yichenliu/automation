@@ -127,3 +127,31 @@ def test_an_inbox_lists_them_beside_the_open_one(app, client, owner):
     assert f'<iframe src="/w/{ws.id}/app/t/work_orders/' in page  # the first one open beside the list
     opened = client.get(f"/w/{ws.id}/app/t/work_orders?view=queue&open={second.id}").get_data(as_text=True)
     assert f'src="/w/{ws.id}/app/t/work_orders/{second.id}"' in opened
+
+
+def test_a_team_sees_its_own_menu_and_can_see_everything(app, client, owner):
+    from .test_wave2 import _person
+    user, ws = owner
+    _built(ws, STOCK + [
+        {"op": "set_team", "team": {"key": "warehouse", "name": "Warehouse"}},
+        {"op": "add_view", "table": "products", "view": {"key": "low", "label": "Running low", "type": "list"}},
+        {"op": "set_space", "space": {"label": "Warehouse", "for": ["warehouse"], "groups": [
+            {"label": "Stock", "items": [{"table": "products", "view": "low"}]}],
+            "links": [{"label": "Carrier bookings", "url": "https://carrier.example.com"}, {"label": "Bad", "url": "javascript:alert(1)"}]}}])
+    space = schema.spaces(ws.blueprint)[0]
+    assert space["links"] == [{"label": "Carrier bookings", "url": "https://carrier.example.com"}]  # only web addresses
+    _person(ws, "wes@example.com", "Wes", "editor", teams=["warehouse"])
+    client.post("/login", data={"email": "wes@example.com", "password": "password1234"})
+    base = f"/w/{ws.id}/app"
+    menu = client.get(f"{base}/").get_data(as_text=True)
+    assert "Running low" in menu and "Carrier bookings" in menu and "Work orders" not in menu and "Everything else" in menu
+    client.post(f"{base}/menu", data={"show": "all"})
+    menu = client.get(f"{base}/").get_data(as_text=True)
+    assert "Work orders" in menu and "Just my team" in menu
+    client.post(f"{base}/menu", data={"show": "mine"})
+    assert "Work orders" not in client.get(f"{base}/").get_data(as_text=True)
+    client.post("/logout")
+    login(client)  # the owner sees the whole menu
+    assert "Work orders" in client.get(f"{base}/").get_data(as_text=True)
+    wrong = schema.check({**ws.blueprint, "spaces": [schema.normalize_space({"label": "X", "for": ["nobody"], "groups": [{"items": ["nope"]}]})]})
+    assert any("isn't a team or a role" in p for p in wrong) and any("“nope”, which isn't a table" in p for p in wrong)

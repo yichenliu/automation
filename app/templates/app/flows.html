@@ -9,7 +9,7 @@
 {% endfor %}</div>{% endif %}
 {% if offered %}<h2 class="h3 mt-1">Start</h2>
 <div class="flow-grid">{% for flow in offered %}
-  <form method="post" action="{{ url_for('app.flow_start', wid=ws.id, key=flow.key) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  <form method="post" action="{{ url_for('app.flow_start', wid=ws.id, key=flow.key) }}" id="flow-{{ flow.key }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <button class="card card-body flow-card">{{ icon(flow.icon) }}<b>{{ flow.label }}</b>{% if flow.description %}<span class="faint small">{{ flow.description }}</span>{% endif %}
       <span class="faint small">{{ flow.steps|rejectattr('kind', 'equalto', 'print')|list|length }} steps</span></button></form>
 {% endfor %}</div>
