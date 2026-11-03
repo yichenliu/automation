@@ -524,6 +524,8 @@ def _stages(trial, engine, made, crashes):
                 break
             i, m = moves[0]
             try:
+                _attach(engine, record, t, m.get("requires") or [])  # a signature or a file it needs, as the person would
+                record = engine.get(record.id)
                 needs = {f["key"]: v for f in engine.to_fill(t, record, m)
                          for v in [sample_value(engine, t, f, trial.owner_id, made, 200 + n, 0)] if v is not None}
                 if needs:
@@ -944,7 +946,10 @@ def _attach(engine, record, t, keys):
     for key in keys:
         f = schema.field(t, key)
         if f is not None and f["type"] in schema.FILES and not engine.files(record, key):
-            save(engine.ws.id, b"%PDF-1.4 sample", f"{key}.pdf", record_id=record.id, field=key, by=engine.by)
+            if f["type"] in ("image", "signature"):  # a picture, as a signature pad or a camera gives
+                save(engine.ws.id, _PIXEL, f"{key}.png", record_id=record.id, field=key, by=engine.by, mime="image/png")
+            else:
+                save(engine.ws.id, b"%PDF-1.4 sample", f"{key}.pdf", record_id=record.id, field=key, by=engine.by)
     engine.reset()
 
 

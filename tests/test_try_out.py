@@ -547,3 +547,16 @@ def test_an_expected_duration_is_read_as_its_typed_in(app, owner):
     _, (ok, off) = trial.try_out(ws, [right, wrong], screens=False)
     assert ok["ok"], ok
     assert off["plain"] == "Project’s Hours logged came out 8h, expected 7h 30m", off["plain"]
+
+
+def test_trying_it_out_signs_what_a_move_needs_signed_before_moving_on(app, owner):
+    """“Client signs off” needs the client's signature: the try-out signs it, as the person would, rather than saying the
+    button was offered and then refused."""
+    _, ws = owner
+    _built(ws, [{"op": "create_table", "table": "variations", "label": "Variations", "fields": [
+        {"key": "title", "type": "text", "required": True}, {"key": "client_signature", "type": "signature"}, {"key": "signed_on", "type": "date"},
+        {"key": "status", "type": "select", "options": ["Proposed", "Client signed"], "default": "Proposed"}],
+        "workflow": {"field": "status", "transitions": [
+            {"from": ["Proposed"], "to": "Client signed", "label": "Client signs off", "requires": ["client_signature", "signed_on"]}]}}])
+    walked, _ = trial.try_out(ws, [], screens=False)
+    assert not [i for i in walked["issues"] if "refused although the move showed as open" in i["text"]], walked["issues"]
