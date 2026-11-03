@@ -209,3 +209,46 @@ def test_the_menus_put_each_thing_in_one_place_and_join_them_up(app, client, own
     assert "AI helpers" in client.get(f"/w/{ws.id}/settings/ai").get_data(as_text=True)
     assert "Design" in client.get(f"/w/{ws.id}/settings/health").get_data(as_text=True)
     assert prompts.looking_at(f"/w/{ws.id}/app/studio/workflows?open=rule:on_ship").endswith("the automation on_ship (\"this\" means it).")
+
+
+def test_a_choice_renamed_by_the_builder_takes_its_records_and_rules_with_it_and_undo_brings_them_back(app, client, owner):
+    from app.blueprint import ops
+    user, ws = owner
+    _built(ws, APP)
+    e = Engine(ws)
+    order = e.create("orders", {"number": "SO-1"})
+    before = ws.version
+    # the AI says it as a rename: the stage, its moves and the rule on it are renamed, and the records follow
+    result = _built(ws, [{"op": "rename_choice", "table": "orders", "key": "status", "old": "Shipped", "new": "Sent"},
+                         {"op": "rename_choice", "table": "orders", "key": "status", "old": "New", "new": "Received"}])
+    assert "Renamed Status “Shipped” to “Sent” in Orders" in result.changes and "1 record now say “Received”" in result.changes
+    assert next(a for a in ws.blueprint["automations"] if a["key"] == "on_ship")["conditions"][0]["value"] == "Sent"
+    e.reset()
+    assert e.get(order.id).data["status"] == "Received"
+    # or by rewriting the options with one changed in its place: the records still follow
+    _built(ws, [{"op": "update_field", "table": "orders", "key": "status", "changes": {"options": ["Received", "Boxed", "Sent"]}}])
+    e.reset()
+    assert schema.field(schema.table(ws.blueprint, "orders"), "status")["options"] == ["Received", "Boxed", "Sent"]
+    # undoing goes all the way back: the records are named as they were
+    chat.restore(ws, before, by=user.id)
+    e.reset()
+    assert e.get(order.id).data["status"] == "New"
+    assert not ops.apply(ws.blueprint, []).problems
+
+
+def test_staff_see_only_what_they_may_open_and_lists_they_cant_add_to_offer_no_add(app, client, owner):
+    from .test_combined import OUTLOOK
+    from .test_wave2 import _person
+    user, ws = owner
+    _built(ws, OUTLOOK)
+    e = Engine(ws)
+    flour = e.create("items", {"name": "Flour"})
+    e.create("movements", {"item": flour.id, "quantity": 5})
+    _person(ws, "wes@example.com", "Wes", "editor")
+    client.post("/login", data={"email": "wes@example.com", "password": "password1234"})
+    home = client.get(f"/w/{ws.id}/app/").get_data(as_text=True)
+    assert ">Data model<" in home and ">AI helpers<" in home
+    assert ">Checks<" not in home and ">Keep it right<" not in home and ">Settings<" not in home  # an admin's
+    item = client.get(f"/w/{ws.id}/app/t/items/{flour.id}").get_data(as_text=True)
+    assert "/t/outlook/new" not in item  # put together by itself: nothing to add to it from here
+    assert "/t/movements/new" in item

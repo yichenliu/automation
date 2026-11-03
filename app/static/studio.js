@@ -86,8 +86,8 @@
         if (m.status === "waiting_ai") said.innerHTML = `<span class="spin"></span> Waiting for the AI to be free…`;
       }
       const reply = html(`<div>${m.html || ""}</div>`);
-      $$(".actions, button, form", reply).forEach((x) => x.remove());
-      const words = (reply.textContent || "").replace(/\s+/g, " ").trim();
+      const text = $(".text", reply);  // the AI's reply itself, without the builder's progress and buttons
+      const words = ((text || reply).textContent || "").replace(/\s+/g, " ").trim();
       said.className = `studio-ask-said small ${m.status === "failed" ? "bad-text" : ""}`;
       said.textContent = words.slice(0, 600) || (m.status === "done" ? "Done." : "That didn't work: try saying it another way.");
       button.disabled = false; input.disabled = false;

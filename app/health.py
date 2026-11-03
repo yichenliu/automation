@@ -28,6 +28,24 @@ def finished(response):
     return response
 
 
+WORDS = {"t": "a list", "app": "", "studio": "", "data": "Data model", "workflows": "Workflows", "design": "Versions", "approvals": "To do",
+         "automations": "Rules", "ai": "AI helpers", "knowledge": "What the AI knows", "settings": "Settings", "new": "a new one", "edit": "changing one",
+         "search": "Search", "jump": "Jump to", "login": "Signing in", "logout": "Signing out", "flows": "Step by step", "p": "a page", "build": "Change my app", "api": "API"}
+
+
+def screen_name(rule):
+    """A screen as people know it, from its address pattern: "/w/<int:wid>/app/t/<table>/<int:rid>" is "a list › one of them"."""
+    parts = [x for x in str(rule).split("/") if x and x not in ("w", "<int:wid>")]
+    words = []
+    for x in parts:
+        if x.startswith("<"):
+            words.append("one of them" if "int" in x and words else "")
+        else:
+            words.append(WORDS.get(x, x.replace("_", " ").replace("-", " ").capitalize()))
+    named = " › ".join(w for w in words if w)
+    return named[:1].upper() + named[1:] if named else "Home"
+
+
 def screens(since_seconds=24 * 3600):
     """Requests since the app started (up to the last few thousand): how many, how many failed, how fast, the slowest."""
     now = time.time()
@@ -38,7 +56,7 @@ def screens(since_seconds=24 * 3600):
     by = {}
     for _, rule, status, ms in recent:
         by.setdefault(rule, []).append(ms)
-    slowest = sorted(((rule, sorted(v)[len(v) // 2], len(v)) for rule, v in by.items()), key=lambda x: -x[1])[:5]
+    slowest = sorted(((screen_name(rule), sorted(v)[len(v) // 2], len(v)) for rule, v in by.items()), key=lambda x: -x[1])[:5]
     return {"count": len(recent), "errors": sum(1 for x in recent if x[2] >= 500), "typical": times[len(times) // 2],
             "slow": times[int(len(times) * 0.95)] if len(times) > 1 else times[0], "slowest": slowest}
 

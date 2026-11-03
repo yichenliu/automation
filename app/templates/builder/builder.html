@@ -33,7 +33,7 @@
     <form class="composer" id="composer">
       <div class="attached" id="attached"></div>
       <div class="box">
-        <textarea id="prompt" rows="2" placeholder="{{ 'Describe your business…' if not messages else 'Ask for a change, e.g. “add a due date to invoices and email overdue ones every Monday”' }}">{{ say }}</textarea>
+        <textarea id="prompt" rows="2" placeholder="{{ 'Describe your business…' if not messages and not (ws.blueprint or {}).get('tables') else 'Ask for a change, e.g. “add a due date to invoices and email overdue ones every Monday”' }}">{{ say }}</textarea>
         <div class="row">
           <label class="btn sm ghost icon" title="Attach a spreadsheet or document">{{ icon('paperclip') }}<input type="file" id="files" multiple hidden accept=".csv,.xlsx,.xls,.xlsm,.pdf,.docx,.txt,.png,.jpg,.jpeg"></label>
           <span class="faint tiny grow">Enter to send · Shift+Enter for a new line · drop files to attach</span>

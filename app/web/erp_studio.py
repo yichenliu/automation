@@ -46,41 +46,30 @@ def _plain(problem, bp):
     return text[:1].upper() + text[1:]
 
 
-def _save(ws, ops_, renames, what):
-    """Apply the changes (and renamed choices) to the design, check it, and save it as a version. Returns (the changes
-    said, the version it was made from)."""
-    bp = copy.deepcopy(ws.blueprint or {})
-    said = []
-    for table, key, old, new in renames:
-        studio.rename_choice(bp, table, key, old, new)
-        t = schema.table(bp, table)
-        said.append(f"Renamed {schema.field(t, key)['label']} “{old}” to “{new}” in {t['label']}")
+def _save(ws, ops_, what):
+    """Apply the changes to the design, check it, and save it as a version (a choice renamed takes its records with it:
+    chat.save_version). Returns (the changes said, the version it was made from)."""
     # what's wrong already isn't this change's doing: what the design fails now, and what saving it as it is would
     # (an app made before a newer way of saying something, brought up to date on any save)
     already = schema.check(ws.blueprint or {}) + ops.apply(ws.blueprint or {}, [], always_check=True).problems
-    result = ops.apply(bp, ops_, already=already)
+    result = ops.apply(copy.deepcopy(ws.blueprint or {}), ops_, already=already)
     if result.problems:
         raise Refused(_plain(result.problems[0], ws.blueprint))
-    changes = said + list(result.changes)
+    changes = list(result.changes)
     if not changes:
         raise Refused("That's how it is already")
     before = ws.version or 0
-    for table, key, old, new in renames:  # the records too, before the version is saved (it carries values across)
-        n = studio.rename_records(ws, table, key, old, new)
-        if n:
-            changes.append(f"{n} record{'s' if n != 1 else ''} now say “{new}”")
     chat.save_version(ws, result.blueprint, changes, "studio", by=current_user.id)
-    studio.remember_renames(ws, renames)  # going back to before this version names the records as they were
     return changes, before
 
 
 def _change(ws, what, make):
-    """Run an edit: (ops, renames) from `make`, saved; a refusal answered as {"error"} with status 400."""
+    """Run an edit: the ops `make` returns, saved; a refusal answered as {"error"} with status 400."""
     if not g.member.can("admin"):
         abort(403)
     try:
-        ops_, renames = make()
-        changes, before = _save(ws, ops_, renames, what)
+        ops_, _ = make()
+        changes, before = _save(ws, ops_, what)
     except (SchemaError, Refused) as exc:
         db.session.rollback()
         return None, (jsonify(error=str(exc)), 400)

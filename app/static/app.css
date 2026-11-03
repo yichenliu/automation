@@ -490,7 +490,8 @@ table.lines-editor select { min-width: 110px; } table.lines-editor td:has(input[
   dl.fields { grid-template-columns: 1fr; } dl.fields dt { border-bottom: 0; padding-bottom: 0; } dl.fields dd { padding-left: 0; }
   .widget.wide { grid-column: auto; } .grid-2, .grid-3, .choices.two { grid-template-columns: 1fr; }
   .bar-row { grid-template-columns: 90px 1fr auto; } .donut-wrap { grid-template-columns: 1fr; justify-items: center; }
-  .settings-page { grid-template-columns: 1fr; } .settings-nav { border-right: 0; border-bottom: 1px solid var(--border); flex-direction: row; flex-wrap: wrap; }
+  .settings-page { grid-template-columns: minmax(0, 1fr); } .settings-nav { border-right: 0; border-bottom: 1px solid var(--border); flex-direction: row; flex-wrap: nowrap; overflow-x: auto; min-width: 0; }
+  .settings-nav a { flex: none; white-space: nowrap; } .settings-nav .settings-group { display: none; }
   .settings-nav h2 { display: none; } .settings-main { padding: 18px 16px 60px; }
   .cal-cell { min-height: 70px; } .cal-ev { font-size: 10.5px; }
   .search-box { width: 100%; } .page-head .row { width: 100%; }

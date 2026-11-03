@@ -34,6 +34,6 @@ curl -X PATCH {{ config.BASE_URL }}/api/v1/tables/TABLE/records/ID -H "Authoriza
 </div></div>
 <div class="card mt-2"><div class="card-head">{{ icon('webhook') }}<h2>Webhook addresses</h2></div><div class="card-body stack">
   {% for h in hooks %}<div><b class="small">{{ h.name }}</b><div class="row mt-1"><input class="keybox grow small" type="text" readonly value="{{ h.url }}" aria-label="Webhook address for {{ h.name }}"><button class="btn sm" type="button" data-copy>{{ icon('copy') }}Copy</button></div></div>
-  {% else %}<p class="faint small">None yet. Ask the builder for an automation that starts “when another system sends us an order” (or any data), and its address appears here. Whatever is sent is available to its steps as {{ '{{' }} payload.field {{ '}}' }}.</p>{% endfor %}
+  {% else %}<p class="faint small">None yet. Ask the builder for an automation that starts “when another system sends us an order” (or any data), and its address appears here. Its steps can use whatever is sent (an order's number, a customer's email).</p>{% endfor %}
 </div></div>
 {% endblock %}

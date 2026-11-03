@@ -63,6 +63,12 @@ def save_version(workspace, blueprint, changes, source, message_id=None, by=None
         db.session.rollback()
         workspace.blueprint, workspace.version = blueprint, number
         kept = []
+    from .. import studio  # a choice renamed in place: the records that had it follow (and back again, on going back)
+    renames = studio.renamed_choices(before, blueprint)
+    for table, key, old, new in renames:
+        n = studio.rename_records(workspace, table, key, old, new)
+        if n:
+            kept.append(f"{n} record{'s' if n != 1 else ''} now say “{new}”")
     from ..engine import combined
     for t in combined.changed(before, blueprint):  # a combined list new or put together differently: made again
         try:
@@ -79,6 +85,8 @@ def save_version(workspace, blueprint, changes, source, message_id=None, by=None
         current_app.logger.exception("Marking records to read again after version %s of workspace %s failed", number, workspace.id)
         db.session.rollback()
         workspace.blueprint, workspace.version = blueprint, number
+    if source != "restore":
+        studio.remember_renames(workspace, renames)
     if isinstance(changes, list):
         changes.extend(kept)
     db.session.add(Version(workspace_id=workspace.id, number=number, blueprint=blueprint, changes=list(changes or []) + ([] if isinstance(changes, list) else kept),

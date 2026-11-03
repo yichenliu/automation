@@ -248,7 +248,7 @@ def data_ops(bp, change, filled):
             raise SchemaError(f"{f['label']} has no choice “{old}” any more: reload the page")
         if new in f["options"] and new != old:
             raise SchemaError(f"{f['label']} already has a choice “{new}”")
-        return [], [(t["key"], f["key"], old, new)]
+        return [{"op": "rename_choice", "table": t["key"], "key": f["key"], "old": old, "new": new}], []
     if do == "remove_field":
         t = _table(bp, change.get("table"))
         f = _field(t, change.get("key"))
@@ -340,6 +340,27 @@ def rename_choice(bp, table, key, old, new):
             if w.get("table") == table:
                 said += _rename_in_conditions(w, key, old, new)
     return said
+
+
+def renamed_choices(before, after):
+    """Choices renamed in place between two versions of a design: [(table, field, old, new)]. A choice counts as renamed
+    when its field kept the same number of choices and it alone changed at its place (Shipped → Dispatched, everything
+    else as it was), whoever made the change: a studio, the builder, a published test copy, a suggestion."""
+    was = {t["key"]: t for t in (before or {}).get("tables", [])}
+    out = []
+    for t in (after or {}).get("tables", []):
+        for f in t["fields"]:
+            if f["type"] not in ("select", "multi_select") or t["key"] not in was:
+                continue
+            old = schema.field(was[t["key"]], f["key"])
+            if not old or old["type"] != f["type"] or len(old.get("options") or []) != len(f.get("options") or []):
+                continue
+            gone = [o for o in old["options"] if o not in f["options"]]
+            came = [o for o in f["options"] if o not in old["options"]]
+            moved = [(a, b) for a, b in zip(old["options"], f["options"]) if a != b]
+            if gone and len(gone) == len(came) == len(moved) and all(a in gone and b in came for a, b in moved):
+                out += [(t["key"], f["key"], a, b) for a, b in moved]
+    return out
 
 
 def rename_records(ws, table, key, old, new):
@@ -620,7 +641,7 @@ def stage_ops(bp, change, filled):
         new = _name(change.get("new"), "new name for the stage", 60)
         if new in names and new != old:
             raise SchemaError(f"There's a stage called {new} already")
-        return [], [(t["key"], f["key"], old, new)]
+        return [{"op": "rename_choice", "table": t["key"], "key": f["key"], "old": old, "new": new}], []
     if do == "remove_stage":
         name = change.get("name")
         if name not in names:

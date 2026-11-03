@@ -336,6 +336,8 @@ Teams: set_team {{"team": {{"key": "accounts_payable", "name": "Accounts payable
 OPERATIONS (each {{"op": ...}})
 create_table {{table, label, singular, module, icon, embedded?, sections?, fields}} · update_table {{table, changes}}
 delete_table {{table}} · add_field {{table, field}} · update_field {{table, key, changes}} · remove_field {{table, key}}
+rename_choice {{table, key, old, new}} (a choice or stage renamed everywhere: the records that have it, the stages, rules,
+  filters and flows that name it; use it rather than rewriting the options when the owner renames one) · order_fields {{table, keys}}
 add_view / update_view {{table, view}} · remove_view {{table, key}} · add_page / update_page {{page}} · remove_page {{key}}
 add_document / update_document {{table, document}} · remove_document {{table, key}} · set_public_form {{table, form}}
 add_automation / update_automation {{automation}} (always the whole automation) · remove_automation {{key}}
@@ -626,6 +628,7 @@ _FLOW = {"type": "object", "required": ["label", "table", "steps"], "properties"
     "when": _CONDITIONS, "who": _STRINGS, "again": {"type": "boolean"}, "steps": {"type": "array", "items": _FLOW_STEP}, "then": _STEPS}}
 _OP = {"type": "object", "required": ["op"], "properties": {  # a table's fields before the sections and views that arrange them
     "op": {"type": "string", "enum": ops.OPS}, "table": _STRING, "key": _STRING, "label": _STRING, "singular": _STRING,
+    "old": _STRING, "new": _STRING, "keys": _STRINGS,
     "module": _STRING, "icon": _STRING, "embedded": {"type": "boolean"}, "title_field": _STRING, "description": _STRING,
     "combines": {"type": "array", "items": {"type": "object", "required": ["table", "values"], "properties": {
         "table": _STRING, "where": _CONDITIONS, "values": {"type": "object"}}}},

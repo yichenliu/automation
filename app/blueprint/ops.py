@@ -15,7 +15,7 @@ from .schema import SchemaError, _first, _list, slug
 OPS = ["set_portal", "set_team", "create_table", "update_table", "delete_table", "add_field", "update_field", "remove_field", "add_view",
        "update_view", "remove_view", "add_page", "update_page", "remove_page", "add_automation", "update_automation",
        "remove_automation", "set_module", "rename_app", "set_theme", "add_document", "update_document", "remove_document",
-       "set_public_form", "add_records", "import_file", "find", "add_flow", "update_flow", "remove_flow", "set_space", "remove_space", "set_sync", "remove_sync", "order_fields"]
+       "set_public_form", "add_records", "import_file", "find", "add_flow", "update_flow", "remove_flow", "set_space", "remove_space", "set_sync", "remove_sync", "order_fields", "rename_choice"]
 OP_ALIASES = {"add_table": "create_table", "new_table": "create_table", "create_tables": "create_table",
               "edit_table": "update_table", "rename_table": "update_table", "drop_table": "delete_table", "remove_table": "delete_table",
               "create_field": "add_field", "new_field": "add_field", "add_column": "add_field", "add_fields": "add_field",
@@ -40,7 +40,8 @@ OP_ALIASES = {"add_table": "create_table", "new_table": "create_table", "create_
               "add_space": "set_space", "create_space": "set_space", "update_space": "set_space", "team_menu": "set_space",
               "delete_space": "remove_space", "add_sync": "set_sync", "create_sync": "set_sync", "update_sync": "set_sync",
               "sync": "set_sync", "import_from_app": "set_sync", "delete_sync": "remove_sync",
-              "reorder_fields": "order_fields", "move_fields": "order_fields", "arrange_fields": "order_fields"}
+              "reorder_fields": "order_fields", "move_fields": "order_fields", "arrange_fields": "order_fields",
+              "rename_option": "rename_choice", "rename_stage": "rename_choice", "rename_status": "rename_choice", "rename_value": "rename_choice"}
 
 
 @dataclass
@@ -1585,6 +1586,14 @@ def _apply_one(bp, op, raw, result, where):
         if "new_label" in updates or "new_name" in updates:
             updates["label"] = updates.pop("new_label", None) or updates.pop("new_name")
         new = _merge_field(old, updates)
+        if old["type"] in ("select", "multi_select") and new["type"] == old["type"]:
+            # a choice renamed in its place (the options rewritten, one changed): renamed everywhere, as rename_choice does
+            from .. import studio
+            pairs = studio.renamed_choices({"tables": [{"key": t["key"], "fields": [old]}]}, {"tables": [{"key": t["key"], "fields": [new]}]})
+            for _, _, was, now in pairs:
+                studio.rename_choice(bp, t["key"], key, was, now)
+                changes.append(f"Renamed {new['label']} “{was}” to “{now}” in {t['label']}")
+            old = schema.field(t, key)
         t["fields"][t["fields"].index(old)] = new
         what = [k for k in new if new.get(k) != old.get(k)] + [k for k in old if k not in new]
         changes.append(f"Changed {t['label']} › {new['label']} ({', '.join(sorted(set(what))) or 'no difference'})")
@@ -1604,6 +1613,24 @@ def _apply_one(bp, op, raw, result, where):
         t["views"] = [v for v in t["views"] if v.get("group_by") != key]
         changes.append(f"Removed {f['label']} from {t['label']} (the values are kept and come back if you undo)")
         result.navigate = result.navigate or f"table:{t['key']}"
+    elif op == "rename_choice":  # a choice (or a stage) renamed everywhere: its field, stages, rules, filters, flows (records follow on save)
+        t = _table(bp, _first(raw, "table", "table_key"), problems, where)
+        if not t:
+            return
+        named = _first(raw, "key", "field", "field_key", default="")
+        key = slug(_first(named, "key", "name", default="") if isinstance(named, dict) else named)
+        f = schema.field(t, key)
+        if not f or f["type"] not in ("select", "multi_select"):
+            raise SchemaError(f"{t['label']} has no choice field “{key}”")
+        old, new = str(_first(raw, "old", "from", default="")), str(_first(raw, "new", "to", default="")).strip()[:80]
+        if old not in f["options"]:
+            raise SchemaError(f"{f['label']} has no choice “{old}” (its choices: {', '.join(f['options'])})")
+        if not new or (new in f["options"] and new != old):
+            raise SchemaError(f"give a new name for “{old}” that {f['label']} hasn't got already")
+        if new != old:
+            from .. import studio
+            studio.rename_choice(bp, t["key"], key, old, new)
+            changes.append(f"Renamed {f['label']} “{old}” to “{new}” in {t['label']}")
     elif op == "order_fields":  # the order a record's fields are shown and filled in
         t = _table(bp, _first(raw, "table", "table_key"), problems, where)
         if not t:

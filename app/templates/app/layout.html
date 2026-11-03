@@ -34,9 +34,9 @@
         <div class="setup-label">AI</div>
         <a href="{{ url_for('app.ai_page', wid=ws.id) }}" class="{{ 'active' if here.endswith('/app/ai') or '/app/ai/' in here }}" title="The jobs the AI does in your processes: add one, switch it off, choose who checks it">{{ icon('bot') }}<span>AI helpers</span>{% if ai_n %}<span class="count">{{ ai_n }}</span>{% endif %}</a>
         <a href="{{ url_for('app.knowledge_page', wid=ws.id) }}" class="{{ 'active' if '/knowledge' in here }}" title="The documents, mail and lists the AI reads">{{ icon('book-open') }}<span>What the AI knows</span></a>
+        {% if member.can('admin') %}
         <div class="setup-label">Keep it right</div>
         {% if checks_for is defined %}<a href="{{ checks_for(ws) }}" class="{{ 'active' if '/checks' in here }}" title="What your app must always do, tried after every change">{{ icon('flask-conical') }}<span>Checks</span></a>{% endif %}
-        {% if member.can('admin') %}
         <a href="{{ url_for('app.improvements', wid=ws.id) }}" class="{{ 'active' if '/improvements' in here }}" title="Ideas to make your app work better, from how it's used">{{ icon('wand-sparkles') }}<span>Suggestions</span>{% if ideas %}<span class="count hot">{{ ideas }}</span>{% endif %}</a>
         <a href="{{ url_for('settings.general', wid=ws.id) }}" target="_top" class="setup-settings {{ 'active' if '/settings' in here }}">{{ icon('settings') }}<span>Settings</span></a>
         {% endif %}

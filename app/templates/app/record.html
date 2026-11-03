@@ -114,7 +114,7 @@
     {% for rel in related %}
     <div class="card"><div class="card-head"><h2 class="grow">{{ icon(rel.table.icon or 'table') }}{{ rel.table.label }}{% if rel.via.label|lc != t.singular|lc %} <span class="muted">· {{ rel.via.label }}</span>{% endif %} <span class="faint small">{{ rel.rows|length }}</span></h2>
       {% if rel.rows|length > 1 %}<a class="btn sm ghost" href="{{ url_for('app.compare', wid=ws.id, table=rel.table.key, ids=rel.rows[:8]|map(attribute='id')|list) }}">{{ icon('scale') }}Compare</a>{% endif %}
-      {% if can_edit %}<a class="btn sm" href="{{ url_for('app.new', wid=ws.id, table=rel.table.key, back=request.path, **{('f_' ~ rel.via.key): r.id}) }}">{{ icon('plus') }}Add {{ rel.table.singular|lc }}</a>{% endif %}</div>
+      {% if can_edit and e.can(rel.table, 'edit') %}<a class="btn sm" href="{{ url_for('app.new', wid=ws.id, table=rel.table.key, back=request.path, **{('f_' ~ rel.via.key): r.id}) }}">{{ icon('plus') }}Add {{ rel.table.singular|lc }}</a>{% endif %}</div>
       {% if rel.rows %}<div class="table-wrap"><table class="grid as-cards"><thead><tr>{% for f in rel.columns %}<th class="{{ is_num(e, f) }}">{{ f.label }}</th>{% endfor %}</tr></thead><tbody>
         {% for x in rel.rows %}<tr data-open="{{ url_for('app.record', wid=ws.id, table=rel.table.key, rid=x.id) }}">{% for f in rel.columns %}<td class="{{ is_num(e, f) }}" data-label="{{ f.label }}">{{ value(e, f, e.value(x, f.key)) }}</td>{% endfor %}</tr>{% endfor %}</tbody>
         {% if rel.totals %}<tfoot><tr>{% for f in rel.columns %}<td class="{{ is_num(e, f) }}">{% if f.key in rel.totals %}{{ e.display(f, rel.totals[f.key]) }}{% endif %}</td>{% endfor %}</tr></tfoot>{% endif %}
