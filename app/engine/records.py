@@ -1914,7 +1914,10 @@ class Engine:
                     if not ok:
                         where = rule.get("field") if target is r and rule.get("field") else "_"
                         prefix = "" if target is r else f"{t['singular']} “{self.title(target)}”: "
-                        raise FieldErrors({where: prefix + rule["message"]})
+                        refused = FieldErrors({where: prefix + rule["message"]})
+                        read = sorted(n for n in expr.names_in(rule["check"]) if self.field(target.table, n))
+                        refused.rule = (t["key"], rule["check"], {n: (target.data or {}).get(n) for n in read})  # what it saw
+                        raise refused
 
     # --- what was approved stays approved ---------------------------------------------------------------------------
     def _approved_amounts(self, t, record):

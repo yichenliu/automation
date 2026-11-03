@@ -346,3 +346,22 @@ def test_an_example_naming_the_record_a_lookup_shows_is_compared_by_that_record(
     _, (right, other) = trial.try_out(ws, [example, wrong], screens=False)
     assert right["ok"], right
     assert not other["ok"] and other["plain"] == "Treatment note’s Patient came out Casey, expected p2"
+
+
+def test_an_example_refused_by_a_rule_tells_the_builder_what_the_rule_saw(app, owner):
+    """“Capital items need an asset tag” written as is_empty(asset_tag): a capital item with its tag is refused, and the builder
+    hears the check and the values, so it can tell a rule written backwards from an example that left something out."""
+    _, ws = owner
+    _built(ws, [{"op": "create_table", "table": "requests", "label": "Requests", "fields": [
+        {"key": "title", "type": "text", "required": True}, {"key": "is_capital", "type": "checkbox"},
+        {"key": "asset_tag", "type": "text"}],
+        "rules": [{"check": "is_empty(asset_tag)", "message": "Capital items need an asset tag",
+                   "when": [{"field": "is_capital", "op": "equals", "value": True}]}]}])
+    example = {"title": "A capital item with its tag", "steps": [
+        {"do": "add", "table": "requests", "as": "r1", "values": {"title": "Lathe", "is_capital": True, "asset_tag": "AT-1"}}],
+        "expect": [{"record": "r1", "field": "asset_tag", "equals": "AT-1"}]}
+    _, (refused,) = trial.try_out(ws, [example], screens=False)
+    assert not refused["ok"] and refused["kind"] == "app"
+    assert "checks `is_empty(asset_tag)`" in refused["problem"] and 'asset_tag = "AT-1"' in refused["problem"]
+    assert "written backwards" in refused["problem"]
+    assert refused["plain"] == "Adding a request wasn't allowed: Capital items need an asset tag"  # people see the rule's own words

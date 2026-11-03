@@ -10,6 +10,7 @@ What's found is an issue: {"level": "fix" (it's wrong) or "check" (it may be mea
 "plain": for people}. A fault of the platform's own (a screen that crashes) is a crash: logged, never the AI's to fix.
 """
 import copy
+import json
 import re
 import shutil
 import tempfile
@@ -1030,6 +1031,17 @@ def _ai_answers(trial, engine, example, names):
     return answer
 
 
+def _rule_saw(exc):
+    """What the rule that refused a record saw, for the builder: a check written backwards (“is_empty(asset_tag)” for “capital
+    items need an asset tag”) refuses records that have just what it asks for."""
+    if not getattr(exc, "rule", None):
+        return ""
+    table, check, values = exc.rule
+    saw = ", ".join(f"{k} = {'empty' if v in (None, '', []) else json.dumps(v, default=str)}" for k, v in values.items())
+    return (f" (the rule on {table} checks `{check}`, which must come out true for a record to be saved; it came out false"
+            + (f" with {saw}" if saw else "") + ". If those values should be allowed, the check is written backwards: fix the rule)")
+
+
 def _play(trial, engine, example, names, out):
     last_run = db.session.query(db.func.max(Run.id)).filter(Run.workspace_id == trial.ws_id).scalar() or 0
     steps, by_hand = _not_by_hand(engine, example)
@@ -1049,7 +1061,8 @@ def _play(trial, engine, example, names, out):
             reason = "; ".join(exc.errors.values())
             shapes = {f.get("pattern_message") for x in engine.tables.values() for f in x["fields"] if f.get("pattern_message")}
             left_out = all(OMITTED.match(str(e)) or BAD_VALUE.search(str(e)) or str(e) in shapes for e in exc.errors.values())
-            out.update(problem=f"step {n} ({said}) was refused: {reason}" + (" (correct the example's values)" if left_out else ""),
+            out.update(problem=f"step {n} ({said}) was refused: {reason}" + (" (correct the example's values)" if left_out else "")
+                       + _rule_saw(exc),
                        kind="example" if left_out else "app", plain=f"{_plain_step(engine, step, names)} wasn't allowed: {reason}")
             return out
         except Exception as exc:  # noqa: BLE001 - a fault of ours: not the app's design, not the example's

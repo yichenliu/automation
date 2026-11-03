@@ -101,7 +101,9 @@ Table options (on create_table, or update_table changes), written after the tabl
   "rules": [{{"check": an expression that must be true, "message": what to tell people, "when": conditions}}] checked
       on every save, with the record's line items: {{"check": "total_debit == total_credit", "message": "Debits must
       equal credits", "when": [{{"field": "status", "op": "equals", "value": "Posted"}}]}}, {{"check": "is_empty(end_date)
-      or end_date >= start_date", "message": "The end can't be before the start"}}.
+      or end_date >= start_date", "message": "The end can't be before the start"}}. The check says what a good record is,
+      never the problem: "capital items need an asset tag" is {{"check": "not is_empty(asset_tag)", "when": [{{"field":
+      "is_capital", "op": "equals", "value": true}}]}}.
   "lock_if": conditions that lock a record (sent invoices, posted entries, approved orders): only admins can then change
       or delete it; "lock_except": fields people can still change (payment status, paid date).
   "colors": [{{"when": conditions, "color": red|orange|amber|yellow|green|teal|blue|indigo|violet|pink|gray, "field":

@@ -29,7 +29,7 @@ class Shop:
     """A copy of the app, as a story uses it."""
 
     def __init__(self, trial):
-        self.trial, self.engine, self.made, self.n = trial, trial.engine(), {}, 0
+        self.trial, self.engine, self.made, self.n, self.named = trial, trial.engine(), {}, 0, {}
 
     # finding things by meaning
     def table(self, *words, embedded=None, exclude=(), other_than=()):
@@ -150,8 +150,14 @@ class Shop:
         db.session.commit()
         return self.trial.engine(user_id)
 
-    def someone_else(self):
-        """Who person fields (an approver, a team lead) name: not whoever raises things, as in a real business."""
+    def someone_else(self, f=None):
+        """Who a person field (an approver, a team lead) names: not whoever raises things, and someone different for each
+        field, as in a real business, where the team lead isn't the director too, nor the director in Finance (so steps kept
+        apart from them can be answered)."""
+        if f is not None:
+            if f["key"] not in self.named:
+                self.named[f["key"]] = self.person("admin", name=f"{f['label']} (stand-in)", teams=[]).user_id
+            return self.named[f["key"]]
         other = User.query.filter_by(name=trials.STAND_IN).first()
         return other.id if other else self.trial.owner_id
 
@@ -171,7 +177,8 @@ class Shop:
                 elif f.get("required") and f["table"] != t["key"]:
                     out[f["key"]] = self.add(self.engine.tables[f["table"]]).id
                 continue
-            v = trials.sample_value(self.engine, t, f, self.someone_else(), self.made, self.n, nth)
+            raiser = f["type"] == "user" and re.search(r"request|raised|submit|created|author|prepared|logged", f"{f['key']} {f['label']}".lower())
+            v = trials.sample_value(self.engine, t, f, self.trial.owner_id if raiser else self.someone_else(f if f["type"] == "user" else None), self.made, self.n, nth)  # who raises it; approvers someone else
             nth += self.engine.kind(f) in ("date", "datetime")
             if v is not None and not (self.engine.kind(f) in ("money", "number", "percent") and not f.get("required")):
                 out[f["key"]] = v  # numbers left empty unless they must be filled: a sample price shouldn't change a story's sums
@@ -179,7 +186,15 @@ class Shop:
         try:
             record = engine.create(t["key"], out, ai=False)
         except FieldErrors as exc:
-            raise Wrong(f"a new {t['singular'].lower()} couldn't be saved: {'; '.join(exc.errors.values())}")
+            # refused with everything filled in: as people do, only what must be (an asset tag left off a consumable)
+            needed = {k: v for k, v in out.items() if k in given or (schema.field(t, k) or {}).get("required")
+                      or (schema.field(t, k) or {}).get("type") in ("link", "user")}  # who it's for and what it's about stay
+            try:
+                record = engine.create(t["key"], needed, ai=False) if needed != out else None
+            except FieldErrors:
+                record = None
+            if record is None:
+                raise Wrong(f"a new {t['singular'].lower()} couldn't be saved: {'; '.join(exc.errors.values())}") from exc
         self.made.setdefault(t["key"], record.id)
         return record
 
