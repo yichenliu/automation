@@ -699,8 +699,9 @@
       let out = "";
       steps.forEach((s, i) => {
         out += `${addHere(into, i)}<div class="wf-node wf-step ${triedClass(s.at)}" data-at="${esc(s.at)}" tabindex="0" role="button">
-          <div class="wf-kind">${icon(STEP_ICONS[s.type] || "zap")}${esc(s.kind)}</div>
+          <div class="wf-kind">${icon(STEP_ICONS[s.type] || "zap")}${esc(s.kind)}${s.ai ? ` <span class="ai-tag">${icon("sparkles")}AI</span>` : ""}</div>
           <div class="wf-text">${esc(s.text)}</div>
+          ${s.ai ? `<div class="wf-cond">${icon(s.ai.review === "never" ? "zap" : "user")}${s.ai.manual ? "Switched off: a person does it instead" : esc(s.ai.words[0].toUpperCase() + s.ai.words.slice(1))}${s.ai.checked ? ` · right ${s.ai.right} of ${s.ai.checked}` : ""}</div>` : ""}
           ${s.only_if ? `<div class="wf-cond">${icon("filter")}Only if ${esc(s.only_if)}</div>` : ""}
           ${tried && tried.steps[s.at] && tried.steps[s.at].why ? `<div class="wf-why">${esc(tried.steps[s.at].why)}</div>` : ""}
           ${counts(s.counts)}</div>`;
@@ -931,6 +932,11 @@
         case "generate_document": return `<label class="field"><span>Make</span><select name="document">${item.documents.map((d) => `<option value="${esc(d.key)}" ${d.key === s.document ? "selected" : ""}>${esc(d.label)}</option>`).join("")}</select></label>`;
         case "ai_fill": case "ai_check": return `<label class="field"><span>${type === "ai_check" ? "Its verdict goes in" : "Fill in"}</span><select name="field">${fieldsOf(r.table).filter((f) => f.stored).map((f) => `<option value="${esc(f.key)}" ${f.key === s.field ? "selected" : ""}>${esc(f.label)}</option>`).join("")}</select></label>
           <label class="field"><span>What the AI is asked</span><textarea name="instructions" rows="4">${esc(s.instructions || "")}</textarea></label>`;
+        case "ai_extract": return `<label class="field"><span>Read</span><select name="from">${[...fieldsOf(r.table).filter((f) => ["file", "image"].includes(f.type)).map((f) => [f.key, f.label]), ["email", "The email that started it"], ["file", "The file that started it"]].map(([k, l]) => `<option value="${esc(k)}" ${k === s.from ? "selected" : ""}>${esc(l)}</option>`).join("")}</select></label>
+          <label class="field"><span>And fill in</span><select name="fields" multiple size="5">${fieldsOf(r.table).filter((f) => f.stored).map((f) => `<option value="${esc(f.key)}" ${(s.fields || []).includes(f.key) ? "selected" : ""}>${esc(f.label)}</option>`).join("")}</select></label>
+          <label class="field"><span>What to look out for</span><textarea name="instructions" rows="3">${esc(s.instructions || "")}</textarea></label>`;
+        case "ai_create_record": return `<label class="field"><span>Make a new one in</span><select name="table">${tables.map((t) => `<option value="${esc(t.key)}" ${t.key === s.table ? "selected" : ""}>${esc(t.label)}</option>`).join("")}</select></label>
+          <label class="field"><span>What the AI is asked</span><textarea name="instructions" rows="3">${esc(s.instructions || "")}</textarea></label>`;
         case "webhook": return `<label class="field"><span>Send to the address</span><input type="text" name="url" value="${esc(s.url || "https://")}"></label>
           <label class="field"><span>As</span><select name="method">${["POST", "PUT", "PATCH", "GET"].map((m) => `<option ${m === s.method ? "selected" : ""}>${m}</option>`).join("")}</select></label>`;
         default: return "";
@@ -951,7 +957,9 @@
         case "assign": return {...step, field: v("field"), from: v("from")};
         case "branch": return {...step, paths: [{label: v("label"), when: readConds(form), steps: []}], otherwise: []};
         case "generate_document": keep("field", "target"); return {...step, document: v("document")};
-        case "ai_fill": case "ai_check": keep("review", "reads", "notes_field", "use_knowledge"); return {...step, field: v("field"), instructions: v("instructions")};
+        case "ai_fill": case "ai_check": keep("review", "reviewer", "reads", "notes_field", "use_knowledge"); return {...step, field: v("field"), instructions: v("instructions")};
+        case "ai_extract": keep("review", "reviewer", "use_knowledge"); return {...step, from: v("from"), fields: Array.from(form.elements.fields.selectedOptions).map((o) => o.value), instructions: v("instructions")};
+        case "ai_create_record": keep("review", "reviewer", "attach_to", "use_knowledge"); return {...step, table: v("table"), instructions: v("instructions")};
         case "webhook": keep("payload", "save", "app"); return {...step, url: v("url"), method: v("method")};
         default: return old;
       }
@@ -975,6 +983,9 @@
       const box = html(`<div class="stack"><button type="button" class="btn sm ghost" data-back>${icon("chevron-left")}About this rule</button>
         <h2 class="panel-title">${icon(STEP_ICONS[s.type] || "zap")}${esc(s.kind)}</h2><p class="small muted">${esc(s.text)}</p>
         ${s.only_if ? `<p class="small">${icon("filter")} Only if ${esc(s.only_if)}</p>` : ""}
+        ${s.ai ? `<div class="ai-trust stack"><div class="small">${s.ai.checked ? `People checked it ${plural(s.ai.checked, "time", "times")}: right ${s.ai.right} (${Math.round((s.ai.share || 0) * 100)}%).` : "Nobody has checked its work yet."}${s.ai.unchecked ? ` ${s.ai.unchecked} done without a check.` : ""}</div>
+          ${s.ai.could_trust ? `<p class="small good-text">${icon("circle-check")} It's been right ${s.ai.right} of ${s.ai.checked} times: it could run on its own when it's sure.</p>` : ""}
+          ${canEdit ? `<label class="field"><span>Who checks its work</span><select data-review>${[["always", "A person, every time"], ["when_unsure", "A person, when the AI isn't sure"], ["never", "Nobody: it runs on its own"]].map(([v, l]) => `<option value="${v}" ${v === s.ai.review ? "selected" : ""}>${l}</option>`).join("")}</select></label>` : ""}</div>` : ""}
         ${formHtml ? `<form class="stack" data-form="step">${formHtml}<button class="btn primary sm">Save</button></form>` : ""}
         ${canEdit && s.type === "branch" ? `<p class="small muted">Click a way's name in the diagram to change when records go that way, or <b>Another way</b> to add one.</p>` : ""}
         ${canEdit && !formHtml && s.type !== "branch" ? `<p class="small muted">${icon("sparkles")} This kind of step is changed by asking the AI, in the box at the top.</p>` : ""}
@@ -982,6 +993,7 @@
           <button type="button" class="btn sm danger" data-remove>${icon("trash-2")}Remove</button></div>` : ""}</div>`);
       panel.appendChild(box);
       $("[data-back]", box).addEventListener("click", rulePanel);
+      $("[data-review]", box)?.addEventListener("change", (ev) => change({do: "set_review", at, mode: ev.target.value}));
       const form = $("[data-form=step]", box);
       if (form) {
         wireStepForm(form, s.type);

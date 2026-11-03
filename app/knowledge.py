@@ -5,13 +5,14 @@ sources they used.
 
 - Indexing: anything that changes is marked (`touch`) and the worker reads it in batches. Its text is cut into passages
   (Chunk rows); each passage gets a vector from the embedding model, and its words go into a full-text index.
-- Finding (`search`): by words (SQLite FTS5, BM25 ranking) and by meaning (cosine similarity of the vectors), the two
-  rankings combined by reciprocal rank fusion, then limited to what the person asking is allowed to see. If the embedding
-  model can't be reached, finding by words still works and the vectors are added when it's back.
+- Finding (`search`): by words (PostgreSQL full-text search: stemmed, titles weighted above text, ranked by cover
+  density) and by meaning (pgvector: cosine distance, through an HNSW index for each vector length), the two rankings
+  combined by reciprocal rank fusion, then limited to what the person asking is allowed to see. If the embedding model
+  can't be reached, finding by words still works and the vectors are added when it's back.
 """
+import json
 import logging
 import re
-import threading
 from datetime import timedelta
 
 import numpy as np
@@ -35,7 +36,7 @@ FUSION_K = 60
 SKIP_FILES = {"generated"}  # PDFs the platform made from records: the records themselves are indexed
 STOP = set("a an and are as at be by can do does for from has have how i in is it its me my of on or our so that the "
            "their them there these this to was we what when where which who why will with you your".split())
-_cache, _lock = {}, threading.Lock()
+_indexed = set()  # the vector lengths with an HNSW index made (each made once, when passages of that length come)
 
 
 # --- marking things to index -------------------------------------------------------------------------------------------
@@ -47,10 +48,7 @@ def touch(workspace_id, source, refs, data=None):
     refs = [str(r) for r in (refs if isinstance(refs, (list, set, tuple)) else [refs]) if r is not None]
     if not refs or workspace_id is None:
         return
-    if db.engine.dialect.name == "sqlite":
-        from sqlalchemy.dialects.sqlite import insert
-    else:
-        from sqlalchemy.dialects.postgresql import insert
+    from sqlalchemy.dialects.postgresql import insert
     now = utcnow()
     for ref in refs:
         statement = insert(IndexTask.__table__).values(workspace_id=workspace_id, source=source, ref=ref, data=data, attempts=0,
@@ -58,6 +56,44 @@ def touch(workspace_id, source, refs, data=None):
         db.session.execute(statement.on_conflict_do_update(index_elements=["workspace_id", "source", "ref"],
                                                            set_={"created_at": now, "run_after": now, "attempts": 0, "data": data}))
     db.session.commit()
+
+
+def _reads(t):
+    """What decides how a table's records read in the index: its names, and each field's name, kind, choices and who may
+    see it."""
+    return json.dumps({"label": t["label"], "singular": t["singular"], "title": t.get("title_field"),
+                       "fields": [[f["key"], f["label"], f["type"], f.get("options"), f.get("access"), f.get("sensitive"), f.get("before"),
+                                   f.get("after"), f.get("yes_label"), f.get("no_label")] for f in t["fields"]]}, sort_keys=True, default=str)
+
+
+def _kept_from(t):
+    return {f["key"]: (f.get("access"), bool(f.get("sensitive"))) for f in t["fields"]}
+
+
+def redesigned(workspace, before, after):
+    """A new version of the design: the records it reads differently (a field renamed, a choice renamed, a field added or
+    kept from some people) are read again, so the AI answers in the app's words as they are now. A field newly kept from
+    some people takes its table's passages out at once, before they're read again without it. Returns how many."""
+    was = {t["key"]: t for t in (before or {}).get("tables", [])}
+    now = {t["key"]: t for t in (after or {}).get("tables", [])}
+    changed = [k for k, t in now.items() if k in was and _reads(was[k]) != _reads(t)]
+    if not changed:
+        return 0
+    targets = set()
+    for key in changed:
+        t = now[key]
+        parent = next((f["table"] for f in t["fields"] if f["type"] == "link"), None) if t.get("embedded") else None
+        targets.add(parent if parent in now else key)  # a line reads as part of its parent
+        hidden = {k for k, v in _kept_from(t).items() if v != _kept_from(was[key]).get(k, v) and (v[0] or v[1])}
+        if hidden:
+            Chunk.query.filter(Chunk.workspace_id == workspace.id, Chunk.source == "record", Chunk.table.in_({key, parent} - {None})
+                               ).delete(synchronize_session=False)
+    ids = [rid for (rid,) in db.session.query(Record.id).filter(Record.workspace_id == workspace.id, Record.table.in_(targets),
+                                                                 Record.deleted_at.is_(None))]
+    for start in range(0, len(ids), 500):
+        touch(workspace.id, "record", ids[start:start + 500])
+    db.session.commit()
+    return len(ids)
 
 
 def rebuild(workspace):
@@ -180,27 +216,26 @@ def _embed(texts):
     return out
 
 
-def _fts():
-    return db.engine.dialect.name == "sqlite"
+def _vector_index(dims):
+    """An HNSW index for passages of this vector length (the embedding model's), made the first time they're stored."""
+    if dims in _indexed:
+        return
+    db.session.execute(sql(f"CREATE INDEX IF NOT EXISTS ix_chunk_embedding_{int(dims)} ON chunk USING hnsw "
+                           f"((embedding::vector({int(dims)})) vector_cosine_ops) WHERE dims = {int(dims)}"))
+    _indexed.add(dims)
 
 
 def _store(workspace_id, source, ref, docs, vectors, model):
-    old = [cid for (cid,) in db.session.query(Chunk.id).filter_by(workspace_id=workspace_id, source=source, ref=ref)]
-    if old:
-        if _fts():
-            db.session.execute(sql(f"DELETE FROM chunk_fts WHERE rowid IN ({','.join(str(int(i)) for i in old)})"))
-        Chunk.query.filter(Chunk.id.in_(old)).delete(synchronize_session=False)
+    Chunk.query.filter_by(workspace_id=workspace_id, source=source, ref=ref).delete(synchronize_session=False)
     for i, doc in enumerate(docs):
         vector = vectors[i] if vectors is not None else None
-        chunk = Chunk(workspace_id=workspace_id, source=source, ref=ref, table=doc.get("table"), record_id=doc.get("record_id"),
-                      title=(doc["title"] or "")[:300], text=doc["text"], position=i, link=(doc.get("link") or "")[:500] or None,
-                      embedding=vector.astype(np.float32).tobytes() if vector is not None else None,
-                      model=model if vector is not None else None)
-        db.session.add(chunk)
-        db.session.flush()
-        if _fts():
-            db.session.execute(sql("INSERT INTO chunk_fts(rowid, title, body, ws) VALUES (:id, :title, :body, :ws)"),
-                               {"id": chunk.id, "title": chunk.title, "body": chunk.text, "ws": workspace_id})
+        db.session.add(Chunk(workspace_id=workspace_id, source=source, ref=ref, table=doc.get("table"), record_id=doc.get("record_id"),
+                             title=(doc["title"] or "")[:300], text=doc["text"], position=i, link=(doc.get("link") or "")[:500] or None,
+                             embedding=[float(x) for x in vector] if vector is not None else None,
+                             dims=len(vector) if vector is not None else None, model=model if vector is not None else None))
+    if vectors is not None and len(vectors):
+        _vector_index(len(vectors[0]))
+    db.session.flush()
 
 
 def work(limit=BATCH):
@@ -256,38 +291,9 @@ def work(limit=BATCH):
 # --- finding -----------------------------------------------------------------------------------------------------------
 
 def _match_query(text):
+    """The question's words for PostgreSQL's full-text search: any of them (OR), each stemmed by the search itself."""
     words = [w for w in re.findall(r"\w+", text.lower()) if (len(w) > 1 or not w.isascii()) and w not in STOP]
-    return " OR ".join(f'"{w}"' for w in dict.fromkeys(words[:24]))
-
-
-def _matrix(workspace_id, model):
-    """The workspace's passage vectors as one matrix, kept in memory: when passages change only the new ones are read
-    from the database and the removed ones dropped, so a busy workspace doesn't reload everything."""
-    current = np.sort(np.array([cid for (cid,) in db.session.query(Chunk.id).filter(Chunk.workspace_id == workspace_id, Chunk.model == model)],
-                               dtype=np.int64))
-    with _lock:
-        cached = _cache.get((workspace_id, model))
-    ids, matrix = (cached if cached else (np.zeros(0, dtype=np.int64), None))
-    if matrix is not None and len(ids) == len(current) and np.array_equal(ids, current):
-        return ids, matrix
-    keep = np.isin(ids, current) if len(ids) else np.zeros(0, dtype=bool)
-    fresh = np.setdiff1d(current, ids, assume_unique=True)
-    rows = []
-    for start in range(0, len(fresh), 900):
-        batch = [int(x) for x in fresh[start:start + 900]]
-        rows += db.session.query(Chunk.id, Chunk.embedding).filter(Chunk.id.in_(batch)).all()
-    parts_ids = [ids[keep]] if len(ids) else []
-    parts = [matrix[keep]] if matrix is not None and len(ids) else []
-    if rows:
-        parts_ids.append(np.array([r[0] for r in rows], dtype=np.int64))
-        parts.append(np.vstack([np.frombuffer(r[1], dtype=np.float32) for r in rows]))
-    ids = np.concatenate(parts_ids) if parts_ids else np.zeros(0, dtype=np.int64)
-    matrix = np.vstack(parts) if parts and sum(len(x) for x in parts) else np.zeros((0, 0), dtype=np.float32)
-    order = np.argsort(ids)
-    ids, matrix = ids[order], (matrix[order] if len(ids) else matrix)
-    with _lock:
-        _cache[(workspace_id, model)] = (ids, matrix)
-    return ids, matrix
+    return " OR ".join(dict.fromkeys(words[:24]))
 
 
 def _may_see(engine, chunk):
@@ -320,29 +326,25 @@ def search(engine, query, k=6, sources=None):
     ws_id = engine.ws.id
     rankings = []
     words = _match_query(query)
-    if words and _fts():
-        rows = db.session.execute(sql("SELECT rowid FROM chunk_fts WHERE chunk_fts MATCH :q AND ws = :ws ORDER BY bm25(chunk_fts) LIMIT 80"),
-                                  {"q": words, "ws": ws_id}).fetchall()
+    if words:  # PostgreSQL full-text search: stemmed words, titles counted above text, a short passage on it before a long one
+        rows = db.session.execute(sql("SELECT id FROM chunk, websearch_to_tsquery('english', :q) AS q WHERE workspace_id = :ws "
+                                      "AND words @@ q ORDER BY ts_rank_cd(words, q, 1) DESC, id LIMIT 80"), {"q": words, "ws": ws_id}).fetchall()
         rankings.append([r[0] for r in rows])
-    elif words:
-        longest = sorted(set(re.findall(r"\w{4,}", query.lower())), key=len, reverse=True)[:3]
-        if longest:
-            rows = Chunk.query.filter(Chunk.workspace_id == ws_id, db.or_(*[Chunk.text.ilike(f"%{w}%") for w in longest])).limit(80).all()
-            rankings.append([c.id for c in rows])
     model = current_app.config.get("OLLAMA_EMBED_MODEL")
     similarity = {}
-    if model:
+    if model and db.session.query(Chunk.id).filter(Chunk.workspace_id == ws_id, Chunk.model == model).first() is not None:
         try:
-            ids, matrix = _matrix(ws_id, model)
-            if len(ids):
-                q = _unit(ai.embed([query]))[0]
-                if matrix.shape[1] == q.shape[0]:
-                    sims = matrix @ q
-                    top = np.argpartition(-sims, 80)[:80] if len(sims) > 80 else np.arange(len(sims))
-                    top = top[np.argsort(-sims[top])]
-                    floor = max(MIN_SIMILARITY, float(sims[top[0]]) - CLOSE_TO_BEST) if len(top) else MIN_SIMILARITY
-                    similarity = {int(ids[i]): float(sims[i]) for i in top if sims[i] >= floor}
-                    rankings.append(list(similarity))
+            q = [float(x) for x in _unit(ai.embed([query]))[0]]
+            dims = len(q)
+            # pgvector, through the HNSW index for this length: 1 - cosine distance is the similarity
+            rows = db.session.execute(sql(f"SELECT id, 1 - ((embedding::vector({dims})) <=> CAST(:q AS vector({dims}))) AS sim FROM chunk "
+                                          f"WHERE workspace_id = :ws AND model = :model AND dims = {dims} "
+                                          f"ORDER BY (embedding::vector({dims})) <=> CAST(:q AS vector({dims})) LIMIT 80"),
+                                      {"q": str(q), "ws": ws_id, "model": model}).fetchall()
+            if rows:
+                floor = max(MIN_SIMILARITY, float(rows[0][1]) - CLOSE_TO_BEST)
+                similarity = {int(cid): float(sim) for cid, sim in rows if sim >= floor}
+                rankings.append(list(similarity))
         except ai.AIUnavailable as exc:
             log.info("Searching by words only: %s", exc)
     scores = {}

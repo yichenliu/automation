@@ -297,14 +297,17 @@ def test_other_systems_use_the_api_with_keys_and_start_automations_by_webhook(er
 
 
 def test_an_existing_database_is_upgraded_in_place(app):
+    # a database brought over from SQLite: every SQLite step taken, PostgreSQL's still to come, its indexes not made yet
     with db.engine.begin() as conn:
-        conn.execute(text("ALTER TABLE record DROP COLUMN version"))
-        conn.execute(text("PRAGMA user_version = 1"))
+        conn.execute(text("UPDATE schema_step SET number = :n"), {"n": migrate.SQLITE_STEPS})
+        conn.execute(text("DROP INDEX ix_record_data"))
+        conn.execute(text("DROP INDEX ix_chunk_words"))
     migrate.upgrade()
     with db.engine.begin() as conn:
-        columns = [row[1] for row in conn.execute(text("PRAGMA table_info(record)"))]
-        assert "version" in columns
-        assert conn.execute(text("PRAGMA user_version")).scalar() == len(migrate.STEPS)
+        assert conn.execute(text("SELECT number FROM schema_step")).scalar() == migrate.latest()
+        made = {r[0] for r in conn.execute(text("SELECT indexname FROM pg_indexes WHERE tablename IN ('record', 'chunk')"))}
+        assert {"ix_record_data", "ix_chunk_words"} <= made
+        assert conn.execute(text("SELECT extversion FROM pg_extension WHERE extname = 'vector'")).scalar()
 
 
 def test_the_knowledge_api_and_money_settings_screens(erp, client):

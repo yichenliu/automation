@@ -6,7 +6,7 @@ at most); the design only changes when everything checks out, and every change i
 """
 import json
 import re
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from flask import current_app
 
@@ -72,6 +72,13 @@ def save_version(workspace, blueprint, changes, source, message_id=None, by=None
             current_app.logger.exception("Putting together %s in workspace %s failed", t["key"], workspace.id)
             db.session.rollback()
             workspace.blueprint, workspace.version = blueprint, number
+    try:  # what the AI has read of the records, in the design's words as they are now
+        from .. import knowledge
+        knowledge.redesigned(workspace, before, blueprint)
+    except Exception:  # never a reason a design isn't saved: the records are read again as they change
+        current_app.logger.exception("Marking records to read again after version %s of workspace %s failed", number, workspace.id)
+        db.session.rollback()
+        workspace.blueprint, workspace.version = blueprint, number
     if isinstance(changes, list):
         changes.extend(kept)
     db.session.add(Version(workspace_id=workspace.id, number=number, blueprint=blueprint, changes=list(changes or []) + ([] if isinstance(changes, list) else kept),
@@ -99,16 +106,28 @@ def restore(workspace, number, by=None, why=None):
 
 
 def _history(workspace, before_id):
-    turns = (Message.query.filter(Message.workspace_id == workspace.id, Message.channel == "builder", Message.id < before_id)
-             .order_by(Message.id.desc()).limit(HISTORY).all())
+    """The conversation so far, with what was changed outside it in between (in a studio, an undo, ready-made parts,
+    a test copy published), so the AI knows those were meant and builds on them rather than putting them back."""
+    turns = list(reversed(Message.query.filter(Message.workspace_id == workspace.id, Message.channel == "builder", Message.id < before_id)
+                          .order_by(Message.id.desc()).limit(HISTORY).all()))
+    since = turns[0].created_at if turns else None
+    elsewhere = (Version.query.filter(Version.workspace_id == workspace.id, Version.source.notin_(["chat", "start"]),
+                                      *([Version.created_at >= since] if since else []))
+                 .order_by(Version.number).limit(40).all())
+    said = {"studio": "changed by hand in a studio", "manual": "changed by hand", "restore": "went back to an earlier version",
+            "parts": "added ready-made parts", "published": "published from the test copy", "import": "brought in from a file"}
+    items = [(m.created_at, 0, m) for m in turns] + [(v.created_at, 1, v) for v in elsewhere]
     out = []
-    for m in reversed(turns):
-        if m.role == "user":
-            out.append({"role": "user", "content": m.text})
-        elif m.status == "done":
-            summary = m.text or ""
-            if m.changes:
-                summary += "\n(Changes made: " + "; ".join(m.changes) + ")"
+    for _, kind, x in sorted(items, key=lambda item: (item[0] or datetime.min, item[1])):
+        if kind == 1:
+            out.append({"role": "user", "content": f"(Meanwhile the owner {said.get(x.source, 'changed the design')} (version {x.number}): "
+                                                   + "; ".join(str(c) for c in (x.changes or [])[:8]) + ". Keep it.)"})
+        elif x.role == "user":
+            out.append({"role": "user", "content": x.text})
+        elif x.status == "done":
+            summary = x.text or ""
+            if x.changes:
+                summary += "\n(Changes made: " + "; ".join(x.changes) + ")"
             out.append({"role": "assistant", "content": summary})
     return out
 

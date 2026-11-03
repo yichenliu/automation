@@ -3179,6 +3179,16 @@ def _check_all(bp):
             _check_workflow(t, tables, problems)
     pages = {p["key"] for p in bp.get("pages", [])}
     automations = {a["key"] for a in bp.get("automations", [])}
+    combined = {k for k, t in tables.items() if t.get("combines")}
+    for a in bp.get("automations", []) if combined else []:  # a combined list follows its lists: nothing else writes to it
+        on = a["trigger"].get("table")
+        for step in steps_of(a["actions"]):
+            into = step.get("table") if step["type"] in ("create_record", "create_for_each", "ai_create_record") else \
+                on if step["type"] in ("update_record", "delete_record", "copy_record", "ai_fill", "ai_extract", "ai_check") and not step.get("target") else \
+                (step.get("source") or {}).get("table") if step["type"] == "update_each" else None
+            if into in combined:
+                problems.append(f"the automation “{a['name']}” changes {tables[into]['label']}, which is put together from other lists "
+                                f"by itself: change those lists instead")
     for portal in portals(bp):
         people = tables.get(portal["table"])
         if not people:

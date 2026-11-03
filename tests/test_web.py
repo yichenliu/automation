@@ -235,10 +235,10 @@ def test_roles_and_other_peoples_erps(client, app, owner):
     assert client.get(f"/w/{ws.id}/build").status_code == 404
 
 
-def test_starts_with_default_settings_and_security_headers(tmp_path, monkeypatch):
+def test_starts_with_default_settings_and_security_headers(tmp_path, monkeypatch, database_url):
     from app import create_app
     monkeypatch.delenv("SECRET_KEY", raising=False)
-    app = create_app({"WORKER": False, "DATA_DIR": tmp_path, "SQLALCHEMY_DATABASE_URI": f"sqlite:///{tmp_path / 'x.db'}"})
+    app = create_app({"WORKER": False, "DATA_DIR": tmp_path, "SQLALCHEMY_DATABASE_URI": database_url})
     response = app.test_client().get("/login")
     assert response.status_code == 200 and "script-src 'self'" in response.headers["Content-Security-Policy"]
     assert (tmp_path / "secret_key").read_text() == app.config["SECRET_KEY"]
@@ -266,3 +266,10 @@ def test_signing_in_to_microsoft_365_goes_to_microsoft_with_pkce(client, app, ow
     assert "Mail.Send" in query["scope"][0] and "Files.ReadWrite" in query["scope"][0]
     back = client.get(f"/connect/callback?state=wrong&code=x", follow_redirects=True).get_data(as_text=True)
     assert "expired or was already used" in back
+
+
+def test_it_runs_on_postgresql_only(tmp_path):
+    import pytest
+    from app import create_app
+    with pytest.raises(RuntimeError, match="PostgreSQL only"):
+        create_app({"WORKER": False, "DATA_DIR": tmp_path, "SQLALCHEMY_DATABASE_URI": f"sqlite:///{tmp_path / 'x.db'}"})

@@ -19,6 +19,7 @@ from pathlib import Path
 
 from flask import current_app
 
+from .. import database
 from ..blueprint import expr, schema
 from ..engine import automations
 from ..engine.records import Engine, FieldErrors, RecordContext, mask, masked, to_number
@@ -76,9 +77,11 @@ def copy_of(workspace):
     folder = Path(tempfile.mkdtemp(dir=root))
     config = {k: v for k, v in current_app.config.items() if k.isupper()}
     config.update({"TESTING": True, "WORKER": False, "TRYING_OUT": True, "DATA_DIR": folder, "SECRET_KEY": "try-out",
-                   "SQLALCHEMY_DATABASE_URI": f"sqlite:///{folder / 'try-out.db'}", "SQLALCHEMY_BINDS": {}, "WTF_CSRF_ENABLED": False,
+                   "SQLALCHEMY_BINDS": {}, "WTF_CSRF_ENABLED": False, "SQLALCHEMY_ENGINE_OPTIONS": {"pool_size": 2, "max_overflow": 4},
                    "MICROSOFT_CLIENT_ID": "", "MICROSOFT_CLIENT_SECRET": "", "OLLAMA_EMBED_MODEL": "", "SERVER_NAME": None})
     try:
+        place = database.throwaway(current_app.config["SQLALCHEMY_DATABASE_URI"], "tryout")  # an empty database of its own
+        config["SQLALCHEMY_DATABASE_URI"] = place.__enter__()
         app = create_app(config)
         with app.app_context():
             if not any(p[0] == owner_id for p in people):
@@ -97,6 +100,8 @@ def copy_of(workspace):
                 db.session.add(Membership(workspace_id=ws.id, user_id=user_id, role=role, teams=member_teams or None))
             for record_id, table, data in kept:  # what rules find by name (the "Wages" account) is there as it is in the app
                 db.session.add(Record(id=record_id, workspace_id=ws.id, table=table, data=data))
+            db.session.flush()
+            database.fix_sequences(db.session)  # people and records came in with their ids: new ones carry on after them
             db.session.commit()
             try:
                 yield Trial(app, ws.id, owner_id)
@@ -104,6 +109,8 @@ def copy_of(workspace):
                 db.session.remove()
                 db.engine.dispose()  # nothing stays open on a copy that's about to be thrown away
     finally:
+        if "place" in locals():
+            place.__exit__(None, None, None)
         shutil.rmtree(folder, ignore_errors=True)
 
 

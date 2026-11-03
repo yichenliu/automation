@@ -301,12 +301,22 @@ def spreadsheet(path):
     book.save(path)
 
 
+def _database(out, key):
+    """The scenario's own PostgreSQL database, made again empty each run and kept after (for a look): named by the run's
+    folder and the scenario, so runs side by side never share one."""
+    import hashlib
+    from app import database
+    from app.config import Config
+    run_id = hashlib.sha1(str(Path(out).resolve()).encode()).hexdigest()[:8]
+    return database.fresh(Config.SQLALCHEMY_DATABASE_URI, f"eval_{run_id}_{re.sub(r'[^a-z0-9_]+', '_', key.lower())}")
+
+
 def run(scenario, out):
     from app import create_app
     data = out / scenario["key"]
     shutil.rmtree(data, ignore_errors=True)
     data.mkdir(parents=True)
-    app = create_app({"DATA_DIR": data, "SQLALCHEMY_DATABASE_URI": f"sqlite:///{data / 'erp.db'}", "WORKER": False,
+    app = create_app({"DATA_DIR": data, "SQLALCHEMY_DATABASE_URI": _database(out, scenario["key"]), "WORKER": False,
                       "WTF_CSRF_ENABLED": False, "SECRET_KEY": "eval",
                       "TRAINING_LOG": bool(scenario.get("fresh"))})  # the fixed scenarios are the exam: never lessons
     result = {"key": scenario["key"], "title": scenario["title"], "turns": []}
@@ -539,7 +549,7 @@ def regrade(folder, only=(), resolve=False):
         data = path.parent / "regrade"
         shutil.rmtree(data, ignore_errors=True)
         data.mkdir()
-        app = create_app({"DATA_DIR": data, "SQLALCHEMY_DATABASE_URI": f"sqlite:///{data / 'erp.db'}", "WORKER": False,
+        app = create_app({"DATA_DIR": data, "SQLALCHEMY_DATABASE_URI": _database(path.parent.parent, f"{key}_regrade"), "WORKER": False,
                           "WTF_CSRF_ENABLED": False, "SECRET_KEY": "eval", "TESTING": True})
         with app.app_context():
             from app.extensions import db

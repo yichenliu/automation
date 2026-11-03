@@ -10,6 +10,8 @@ from pathlib import Path
 
 from flask import current_app, g, request
 
+from .extensions import db
+
 KEPT = 3000
 _seen = deque(maxlen=KEPT)  # (when, screen, status, milliseconds)
 
@@ -76,6 +78,16 @@ def report(ws):
                           "Screens are slow: a big list may need a filtered view, or the computer may be busy." if seen["slow"] >= 2000 else "",
                     "slowest": seen["slowest"]})
     data = Path(current_app.config["DATA_DIR"])
+    try:  # PostgreSQL, with pgvector for the AI's search by meaning
+        from sqlalchemy import text as sql
+        row = db.session.execute(sql("SELECT current_setting('server_version'), pg_database_size(current_database()), "
+                                     "(SELECT extversion FROM pg_extension WHERE extname = 'vector'), "
+                                     "(SELECT count(*) FROM pg_stat_activity WHERE datname = current_database())")).one()
+        out.append({"name": "Database", "ok": bool(row[2]), "said": f"PostgreSQL {row[0].split()[0]} ({_size(row[1])}, {row[3]} connections)"
+                    + (f" with pgvector {row[2]} for search by meaning" if row[2] else ""),
+                    "do": "" if row[2] else "pgvector is missing: run ./start.sh setup, so the AI can find things by meaning."})
+    except Exception as exc:  # noqa: BLE001 - said, never a reason the page can't show
+        out.append({"name": "Database", "ok": False, "said": f"Couldn't be asked: {type(exc).__name__}", "do": "Run ./start.sh to start it."})
     free = shutil.disk_usage(data).free
     size = sum(f.stat().st_size for f in data.rglob("*") if f.is_file())
     out.append({"name": "Storage", "ok": free > 5 * 1024 ** 3, "said": f"the app's data is {_size(size)}; {_size(free)} free on this disk",

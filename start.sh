@@ -1,6 +1,7 @@
 #!/bin/sh
-# ./start.sh            start the platform in the background (http://localhost:5050)
-# ./start.sh stop       stop it
+# ./start.sh            start the platform in the background (http://localhost:5050), and its PostgreSQL
+# ./start.sh setup      make the platform's PostgreSQL (with pgvector) the first time: data/postgres, port 5433
+# ./start.sh stop       stop it (and its PostgreSQL)
 # ./start.sh status     is it running?
 # ./start.sh backup     make a backup now (data/backups)
 # ./start.sh install    start it automatically when you log in to this Mac (and restart it if it stops)
@@ -11,9 +12,17 @@ PYTHON=.venv/bin/python
 [ -x "$PYTHON" ] || PYTHON=python3
 PLIST="$HOME/Library/LaunchAgents/com.keel.erp.plist"
 case "$1" in
+  setup)
+    "$PYTHON" -m app.database setup
+    exit $? ;;
   stop)
     if [ -f "$PLIST" ]; then launchctl unload "$PLIST" 2>/dev/null; fi
-    [ -f data/server.pid ] && kill "$(cat data/server.pid)" 2>/dev/null && rm -f data/server.pid && echo "Stopped." || echo "Not running."
+    if [ -f data/server.pid ] && kill "$(cat data/server.pid)" 2>/dev/null; then
+      rm -f data/server.pid
+      for _ in 1 2 3 4 5 6 7 8 9 10; do pgrep -f "$(pwd)/run.py|python run.py" >/dev/null || break; sleep 1; done
+      echo "Stopped."
+    else echo "Not running."; fi
+    "$PYTHON" -m app.database stop
     exit 0 ;;
   status)
     if [ -f data/server.pid ] && kill -0 "$(cat data/server.pid)" 2>/dev/null; then echo "Running (pid $(cat data/server.pid))."; else echo "Not running."; fi
@@ -41,6 +50,7 @@ PLISTEOF
     exit 0 ;;
 esac
 if [ -f data/server.pid ] && kill -0 "$(cat data/server.pid)" 2>/dev/null; then echo "Already running: http://localhost:${PORT:-5050}"; exit 0; fi
+if [ ! -f data/postgres/PG_VERSION ]; then "$PYTHON" -m app.database setup || exit 1; else "$PYTHON" -m app.database start || exit 1; fi
 nohup "$PYTHON" run.py >> data/logs/server.out 2>&1 &
 echo $! > data/server.pid
 echo "Starting… open http://localhost:${PORT:-5050} (logs: data/logs)"

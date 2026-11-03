@@ -1751,7 +1751,7 @@ class Engine:
         if digits:
             n = int(digits[-1])
             params = {"w": self.ws.id, "t": t["key"], "f": f["key"], "n": n}
-            moved = db.session.execute(sql('UPDATE counter SET value = MAX(value, :n) WHERE workspace_id = :w AND "table" = :t AND field = :f'), params)
+            moved = db.session.execute(sql('UPDATE counter SET value = GREATEST(value, :n) WHERE workspace_id = :w AND "table" = :t AND field = :f'), params)
             if not moved.rowcount:
                 db.session.add(Counter(workspace_id=self.ws.id, table=t["key"], field=f["key"], value=n))
                 db.session.flush()

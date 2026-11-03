@@ -23,7 +23,9 @@ def _secret_key(data_dir):
 
 class Config:
     DATA_DIR = Path(os.getenv("DATA_DIR") or ROOT / "data")
-    SQLALCHEMY_DATABASE_URI = os.getenv("DATABASE_URL") or f"sqlite:///{DATA_DIR / 'erp.db'}"
+    # PostgreSQL only (with pgvector): made and started by ./start.sh (app/database.py), its address kept in .env
+    SQLALCHEMY_DATABASE_URI = os.getenv("DATABASE_URL")
+    SQLALCHEMY_ENGINE_OPTIONS = {"pool_pre_ping": True, "pool_size": 10, "max_overflow": 20, "pool_recycle": 1800}
     PLATFORM_NAME = os.getenv("PLATFORM_NAME") or "Keel"
     PORT = int(os.getenv("PORT") or 5050)
     BASE_URL = (os.getenv("BASE_URL") or f"http://localhost:{os.getenv('PORT') or 5050}").rstrip("/")

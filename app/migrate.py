@@ -1,40 +1,30 @@
-"""Keeping an existing database in step with the code. New tables are created automatically; changes to existing
-tables are listed here in order and applied once each (SQLite's user_version records how far a database has got). A new
-database is made complete by create_all, so it starts at the latest step."""
-import re
+"""Keeping an existing database in step with the code. New tables are created automatically (create_all); changes to
+existing tables are listed here in order and applied once each, schema_step recording how far a database has got. A
+new database is made complete by create_all, so it starts at the latest step.
 
+The platform ran on SQLite until step 15; every PostgreSQL database starts at 15 or later, so the steps from 16 on are
+PostgreSQL's. Append new steps; never edit or reorder old ones.
+"""
 from sqlalchemy import inspect, text
 
 from .extensions import db
 
-# Each step: a list of SQL statements. Append new steps; never edit or reorder old ones.
+SQLITE_STEPS = 15  # the steps taken on SQLite, before PostgreSQL (each database made since has them already)
 STEPS = [
-    [],  # 1: the first release
-    ["ALTER TABLE record ADD COLUMN version INTEGER NOT NULL DEFAULT 1"],  # 2: records refuse out-of-date saves
-    ["ALTER TABLE membership ADD COLUMN contact_id INTEGER", "ALTER TABLE invite ADD COLUMN contact_id INTEGER",
-     "ALTER TABLE comment ADD COLUMN shared BOOLEAN DEFAULT 0"],  # 3: the portal for customers and suppliers
-    ["ALTER TABLE record ADD COLUMN updated_by VARCHAR(200)"],  # 4: who last changed a record (for "modified by" fields)
-    ["ALTER TABLE user ADD COLUMN totp_secret TEXT", "ALTER TABLE user ADD COLUMN notify_email BOOLEAN DEFAULT 0"],  # 5: two-step sign-in
-    ["ALTER TABLE notification ADD COLUMN emailed_at DATETIME", "UPDATE notification SET emailed_at = created_at"],  # 6: notification emails
-    ["ALTER TABLE record ADD COLUMN created_by_id INTEGER", "ALTER TABLE file ADD COLUMN uploaded_by_id INTEGER",
-     "ALTER TABLE user ADD COLUMN ms_identity VARCHAR(120)",
-     "CREATE UNIQUE INDEX IF NOT EXISTS ix_user_ms_identity ON user (ms_identity)"],  # 7: ownership by id, linked Microsoft sign-in
-    ["ALTER TABLE approval ADD COLUMN kind VARCHAR(16) DEFAULT 'approval'", "ALTER TABLE approval ADD COLUMN step VARCHAR(40)",
-     "ALTER TABLE approval ADD COLUMN fields JSON", "ALTER TABLE approval ADD COLUMN history JSON"],  # 8: approval flows and tasks
-    ["ALTER TABLE approval ADD COLUMN proposal JSON"],  # 9: people checking the AI's work
-    ["ALTER TABLE membership ADD COLUMN teams JSON", "ALTER TABLE membership ADD COLUMN away_from DATE",
-     "ALTER TABLE membership ADD COLUMN away_until DATE", "ALTER TABLE membership ADD COLUMN cover_id INTEGER",
-     "ALTER TABLE record_change ADD COLUMN by_id INTEGER"],  # 10: teams, cover while away, separation of duties
-    ["ALTER TABLE message ADD COLUMN checks JSON"],  # 11: the builder tries each change out (the feedback table is new: created whole)
-    ["ALTER TABLE approval ADD COLUMN decided_by_id INTEGER"],  # 12: who approved, for the record's "Approved by"
-    ["ALTER TABLE invite ADD COLUMN teams JSON"],  # 13: an invitation says which teams the person joins
-    ["ALTER TABLE approval ADD COLUMN priority INTEGER DEFAULT 1", "ALTER TABLE approval ADD COLUMN deferred_until DATETIME",
-     "ALTER TABLE approval ADD COLUMN taken_by_id INTEGER", "ALTER TABLE approval ADD COLUMN flow VARCHAR(64)"],  # 14: work queues
-    ["ALTER TABLE user ADD COLUMN sso_identity VARCHAR(200)",
-     "CREATE UNIQUE INDEX IF NOT EXISTS ix_user_sso_identity ON user (sso_identity)"],  # 15: single sign-on (Google, Okta…)
+    # 16: PostgreSQL: the AI's passages found by meaning (pgvector) and by words (a full-text index)
+    ["CREATE EXTENSION IF NOT EXISTS vector"],
 ]
-# Kept up whatever the step: the full-text index of the AI's knowledge (rowid = chunk.id).
-ALWAYS = ["CREATE VIRTUAL TABLE IF NOT EXISTS chunk_fts USING fts5(title, body, ws UNINDEXED, tokenize='porter unicode61 remove_diacritics 2')"]
+# Kept up whatever the step: the indexes PostgreSQL finds things by.
+ALWAYS = [
+    "CREATE EXTENSION IF NOT EXISTS vector",
+    "CREATE INDEX IF NOT EXISTS ix_chunk_words ON chunk USING gin (words)",
+    "CREATE INDEX IF NOT EXISTS ix_record_data ON record USING gin (data jsonb_path_ops)",
+    "CREATE INDEX IF NOT EXISTS ix_record_ws_table_live ON record (workspace_id, \"table\") WHERE deleted_at IS NULL",
+]
+
+
+def latest():
+    return SQLITE_STEPS + len(STEPS)
 
 
 def is_new():
@@ -42,26 +32,18 @@ def is_new():
     return not inspect(db.engine).has_table("workspace")
 
 
-def _has_column_already(conn, statement):
-    """An ADD COLUMN whose column is there already (a step half-applied before, or a database made by a newer build)."""
-    match = re.match(r"\s*ALTER TABLE (\w+) ADD COLUMN (\w+)", statement, re.I)
-    if not match:
-        return False
-    return match.group(2) in [row[1] for row in conn.execute(text(f"PRAGMA table_info({match.group(1)})"))]
-
-
 def upgrade(new=False):
-    if db.engine.dialect.name != "sqlite":
-        return
     with db.engine.begin() as conn:
-        current = len(STEPS) if new else conn.execute(text("PRAGMA user_version")).scalar() or 0
-        for number, statements in enumerate(STEPS, start=1):
+        conn.execute(text("CREATE TABLE IF NOT EXISTS schema_step (number INTEGER NOT NULL)"))
+        current = conn.execute(text("SELECT MAX(number) FROM schema_step")).scalar()
+        if current is None:
+            current = latest() if new else SQLITE_STEPS  # a database brought over from SQLite has every SQLite step
+            conn.execute(text("INSERT INTO schema_step (number) VALUES (:n)"), {"n": current})
+        for number, statements in enumerate(STEPS, start=SQLITE_STEPS + 1):
             if number <= current:
                 continue
             for statement in statements:
-                if _has_column_already(conn, statement):
-                    continue
                 conn.execute(text(statement))
-        conn.execute(text(f"PRAGMA user_version = {len(STEPS)}"))
+        conn.execute(text("UPDATE schema_step SET number = :n"), {"n": latest()})
         for statement in ALWAYS:
             conn.execute(text(statement))

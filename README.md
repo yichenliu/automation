@@ -6,15 +6,26 @@ steps), and the platform turns that design into a working system straight away. 
 change with one click. The AI runs on this computer through Ollama, so your records and documents never leave it.
 
 ```
-./start.sh            start it (http://localhost:5050); logs in data/logs
+brew install postgresql@18 pgvector    once: the database (PostgreSQL, with pgvector for the AI)
+./start.sh setup      once: the platform's own PostgreSQL in data/postgres (port 5433), its address put in .env
+./start.sh            start it (http://localhost:5050), and its PostgreSQL; logs in data/logs
 ./start.sh install    start it automatically when you log in to this Mac, and restart it if it stops
 ./start.sh status | stop | backup | uninstall
+.venv/bin/python -m app.database import-sqlite data/erp.db   bring an app made before PostgreSQL across (once)
 .venv/bin/python -m app.tools reset-link you@example.com    a link to choose a new password
 .venv/bin/python -m pytest -q
 ```
 
-Settings live in `.env` (see `.env.example`): the Ollama address and model, timezone and currency, and the Microsoft
-365 app's details.
+Settings live in `.env` (see `.env.example`): the database's address (`DATABASE_URL`, written by `./start.sh setup`),
+the Ollama address and model, timezone and currency, and the Microsoft 365 app's details.
+
+## The database
+
+PostgreSQL only, with pgvector (`app/database.py`). The platform runs its own on this computer: kept in
+`data/postgres`, listening only on this computer (port 5433), with a login of its own. Records are JSONB with a GIN
+index; the AI's passages have a pgvector embedding (an HNSW index for each vector length, cosine distance) and a
+full-text column (PostgreSQL's English search, titles weighted above text) with a GIN index. The builder tries each
+change out in a throwaway PostgreSQL database of its own, as the tests and evals do; it's dropped after.
 
 ## What's in it
 
@@ -114,9 +125,10 @@ complete list (36 field types, 8 views, 16 widgets, 9 triggers, 15 automation st
     else's change (the screens say so; the API answers 409);
   - automatic numbers are taken in one statement, so they never repeat, and a refused save leaves no gap.
 - **What the AI knows** (`app/knowledge.py`): text is cut into passages, each with a vector from a local embedding
-  model (bge-m3 through Ollama, multilingual) and its words in a full-text index (SQLite FTS5). Look-ups combine both
-  rankings, keep to what the person asking may see, and fall back to words alone if the embedding model is away.
-  Fields kept to admins never go into the index.
+  model (bge-m3 through Ollama, multilingual) kept in pgvector, and its words in PostgreSQL's full-text index. Look-ups
+  combine both rankings, keep to what the person asking may see, and fall back to words alone if the embedding model is
+  away. Fields kept to admins never go into the index, and when the design changes how records read (a field renamed,
+  or kept from some people) they're read again.
 - **Automations, jobs and the worker:** one process runs the web server (waitress) and background threads for builder
   turns, the assistant, jobs (imports, reading documents, discovery, AI fields), indexing for the AI, automations,
   schedules, watching Microsoft 365, and daily backups. All work is in the database, and if the AI can't be reached, work waits and
@@ -129,21 +141,22 @@ complete list (36 field types, 8 views, 16 widgets, 9 triggers, 15 automation st
   - Microsoft tokens encrypted;
   - uploads size-limited and type-checked;
   - public forms rate-limited, with a robot trap.
-- **Backups:** daily copies of the database, files and the key for stored sign-ins, in `data/backups` (the last 14
-  are kept). To restore, stop the platform and unzip a backup into an empty `data` folder.
+- **Backups:** daily copies of the database (pg_dump), files and the key for stored sign-ins, in `data/backups` (the
+  last 14 are kept). To restore: unzip a backup into an empty `data` folder, `./start.sh setup`, then
+  `pg_restore --clean --if-exists --no-owner -d <DATABASE_URL without +psycopg> database.dump`.
 - **API** (`app/web/api.py`): `/api/v1/tables`, `/api/v1/tables/<table>/records` (list with filters, sort and paging;
   add with lines; change with `If-Match`; delete), and `/hooks/...` for webhook automations. Keys are made in
   Settings › API & webhooks; only their hash is kept.
-- **Upgrades:** `app/migrate.py` applies database changes once each, in order.
+- **Upgrades:** `app/migrate.py` applies database changes once each, in order (recorded in `schema_step`).
 
 ## Scale
 
 On this Mac, an ERP with 30,000 records answers in about 0.1 s for lists, 0.15 s for a record, and 0.6 s for a busy
 dashboard. The AI's look-ups take about 30 ms, and bge-m3 reads about 25 passages a second; finding by meaning stays
-under 10 ms up to 200,000 passages (about 800 MB of memory). That suits a small or medium business. For larger scale
-the next steps are:
+under 10 ms up to 200,000 passages. It runs on PostgreSQL with pgvector, so many people save at once without
+waiting on each other, and finding by meaning goes through an HNSW index rather than memory. For larger scale the next
+steps are:
 
-- running the database on PostgreSQL (`DATABASE_URL`), with pgvector for the AI's look-ups;
-- moving filtering and sorting into the database;
+- moving filtering and sorting into the database (records are JSONB with a GIN index ready for it);
 - storing calculated values instead of working them out on each view;
 - running more worker processes.

@@ -38,7 +38,7 @@ def _maker(engine):
 
 def _one(ws_id, table, tag):
     return (Record.query.filter(Record.workspace_id == ws_id, Record.table == table, Record.deleted_at.is_(None),
-                                db.func.json_extract(Record.data, f"$.{FROM}") == tag).first())
+                                Record.data[FROM].astext == tag).first())
 
 
 def _values(engine, arm, record):

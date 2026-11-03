@@ -78,7 +78,9 @@ Field types:
 Field options: "required", "unique" (e.g. ABN, email), "min"/"max", "default" (dates: "today"), "help",
   "readonly": true (filled by automations or the AI, not typed), "pattern" + "pattern_message" (a format rule, e.g.
       eleven digits for an ABN), "required_if": conditions, "decimals", "unit" ("kg", "m²"), "display": "progress" (a
-      percent shown as a bar),
+      percent shown as a bar), "option_colors": {{"Paid": "green", "Overdue": "red"}} (a choice's badge: slate, blue,
+      amber, green, violet, red, teal or pink), "before"/"after" (text shown either side of a value: "ABN ", " pcs"),
+      "yes_label"/"no_label" on a yes-or-no ("In stock" / "Out of stock"),
   "access": "admin" (or a team's key) only on sensitive values (pay rates, cost prices, margins, buyer-only supplier
       ratings); never on ordinary fields or links: everything else stays visible to everyone who can see the table,
   "sensitive": true on bank account numbers, tax file numbers and card numbers (not ABNs or emails): kept encrypted, shown masked
@@ -527,7 +529,8 @@ _FIELD = {"type": "object", "required": ["key", "label", "type"], "properties": 
     "decimals": {"type": "integer"}, "unit": _STRING, "display": {"type": "string", "enum": ["progress"]},
     "readonly": {"type": "boolean"}, "pattern": _STRING, "pattern_message": _STRING, "help": _STRING, "show_if": _CONDITIONS,
     "hide_if": _CONDITIONS, "required_if": _CONDITIONS, "readonly_if": _CONDITIONS, "access": _STRING, "sensitive": {"type": "boolean"}, "ai": _STRING,
-    "use_knowledge": {"type": "boolean"}, "automation": _STRING}}
+    "use_knowledge": {"type": "boolean"}, "automation": _STRING, "option_colors": {"type": "object"}, "before": _STRING, "after": _STRING,
+    "yes_label": _STRING, "no_label": _STRING}}
 _ROLE = {"type": "string", "enum": schema.ROLE_NAMES}
 _RULE = {"type": "object", "required": ["check", "message"], "properties": {
     "check": _STRING, "message": _STRING, "when": _CONDITIONS, "field": _STRING}}
@@ -782,6 +785,16 @@ def _field_line(f):
         bits.append("many")
     if f.get("currency") or f.get("currency_field"):
         bits.append(f"in {f.get('currency') or 'the currency in ' + f['currency_field']}")
+    if f.get("decimals") is not None or f.get("unit"):
+        bits.append(" ".join(x for x in (f"{f['decimals']} decimals" if f.get("decimals") is not None else "", f"unit {f['unit']}" if f.get("unit") else "") if x))
+    if f.get("option_colors"):
+        bits.append("colours " + json.dumps(f["option_colors"], ensure_ascii=False))
+    if f.get("before") or f.get("after"):
+        bits.append(f"shown as {f.get('before', '')}…{f.get('after', '')}")
+    if f.get("yes_label") or f.get("no_label"):
+        bits.append(f"yes/no shown as {f.get('yes_label', 'Yes')}/{f.get('no_label', 'No')}")
+    if f.get("template"):
+        bits.append(f"link made from {f['template']}")
     label = f" \"{f['label']}\"" if f["label"].lower() != f["key"].replace("_", " ") else ""
     return " ".join(bits) + label
 

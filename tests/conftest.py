@@ -16,10 +16,22 @@ def no_review(monkeypatch):
     monkeypatch.setattr(chat, "TRY_OUT", False)  # trying the app out is tested on its own (test_try_out.py)
 
 
+@pytest.fixture(scope="session")
+def database_url():
+    """A throwaway PostgreSQL database for the whole run (beside the platform's own: ./start.sh setup), dropped after."""
+    from app import database
+    from app.config import Config
+    if not Config.SQLALCHEMY_DATABASE_URI:
+        pytest.exit("The tests need PostgreSQL: run ./start.sh setup", returncode=2)
+    with database.throwaway(Config.SQLALCHEMY_DATABASE_URI, "test") as url:
+        yield url
+
+
 @pytest.fixture
-def app(tmp_path):
+def app(tmp_path, database_url):
     app = create_app({"TESTING": True, "WORKER": False, "DATA_DIR": tmp_path, "SECRET_KEY": "test",
-                      "SQLALCHEMY_DATABASE_URI": f"sqlite:///{tmp_path / 'test.db'}", "WTF_CSRF_ENABLED": False,
+                      "SQLALCHEMY_DATABASE_URI": database_url, "WTF_CSRF_ENABLED": False,
+                      "SQLALCHEMY_ENGINE_OPTIONS": {"pool_size": 5, "max_overflow": 10},
                       "DEFAULT_TIMEZONE": "Australia/Perth", "MICROSOFT_CLIENT_ID": "", "MICROSOFT_CLIENT_SECRET": "",
                       "BASE_URL": "http://localhost:5050", "OLLAMA_EMBED_MODEL": ""})
     from flask import g
@@ -37,8 +49,17 @@ def app(tmp_path):
     with app.app_context():
         yield app
         db.session.remove()
+        _empty(db)  # the next test starts with nothing, its ids from 1, as a new database would
+        db.engine.dispose()
     ai.set_backend(None)
     ai.set_embedder(None)
+
+
+def _empty(db):
+    from sqlalchemy import text
+    names = ", ".join(f'"{t.name}"' for t in db.metadata.sorted_tables)
+    with db.engine.begin() as conn:
+        conn.execute(text(f"TRUNCATE {names} RESTART IDENTITY CASCADE"))
 
 
 @pytest.fixture

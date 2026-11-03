@@ -109,7 +109,8 @@ def test_the_health_page_says_whats_wrong_and_what_to_do(app, client, owner):
     login(client)
     client.get(f"/w/{ws.id}/app/")
     page = client.get(f"/w/{ws.id}/settings/health").get_data(as_text=True)
-    for part in ("The AI", "Background work", "Rules", "Screens", "Storage", "Backups"):
+    for part in ("The AI", "Background work", "Rules", "Screens", "Database", "Storage", "Backups"):
         assert part in page, part
+    assert "PostgreSQL 18" in page and "with pgvector" in page
     assert "make one now under Data &amp; AI" in page  # no backup yet
     assert health.screens()["count"] >= 1

@@ -23,11 +23,12 @@ FIELD_SETTINGS = ("label", "help", "required", "unique", "default", "placeholder
                   "before", "after", "yes_label", "no_label")
 SIGNED = {"number", "money", "percent", "formula", "rollup", "duration"}  # what can be coloured by its sign
 STEP_TYPES = ["notify", "send_email", "task", "request_approval", "update_record", "create_record", "wait", "assign", "branch",
-              "generate_document", "ai_fill", "ai_check", "webhook"]
+              "generate_document", "ai_fill", "ai_check", "ai_extract", "ai_create_record", "webhook"]
 STEP_WORDS = {"notify": "Tell someone", "send_email": "Send an email", "task": "Ask someone to do something",
               "request_approval": "Ask for approval", "update_record": "Change this record", "create_record": "Add a record",
               "wait": "Wait", "assign": "Give it to someone", "branch": "Go one of several ways", "generate_document": "Make a document",
-              "ai_fill": "Have the AI fill in a field", "ai_check": "Have the AI check it", "webhook": "Send to another system"}
+              "ai_fill": "Have the AI fill in a field", "ai_check": "Have the AI check it", "ai_extract": "Have the AI read a document",
+              "ai_create_record": "Have the AI make a record from it", "webhook": "Send to another system"}
 TRIGGER_WORDS = {"record_created": "is added", "record_updated": "is changed", "record_created_or_updated": "is added or changed",
                  "record_deleted": "is deleted", "button": "a button is pressed on one", "schedule": "on a schedule"}
 
@@ -455,6 +456,12 @@ def rule_diagram(engine, a, runs):
                     "text": automations.describe_action(engine, a, plain) if step["type"] != "branch" else "Go one of these ways",
                     "counts": counts.get(at, {}), "editable": step["type"] in STEP_TYPES, "step": step,
                     "only_if": automations.automations_words(engine, step["only_if"], table) if step.get("only_if") else ""}
+            if step["type"] in schema.AI_STEPS:  # the AI at work: who checks it, and how it's done when they have
+                mode = step.get("review") or "never"
+                record = automations.track_record(engine, a["key"], at)
+                node["ai"] = {"review": mode, "words": automations.REVIEW_WORDS[mode], "manual": bool(step.get("manual")),
+                              "checked": record["checked"], "right": record["right"], "unchecked": record["unchecked"],
+                              "share": record["share"], "could_trust": mode == "always" and record["checked"] >= 20 and record["lower"] >= 0.9}
             if step["type"] == "branch":
                 node["ways"] = [{"label": (p.get("label") or "") or "If " + automations._path_words(engine, p, table), "when": p["when"], "n": n,
                                  "into": f"{at}.{n}.", "steps": nodes(p["steps"], f"{at}.{n}.")} for n, p in enumerate(step["paths"])]
@@ -668,6 +675,12 @@ def rule_ops(bp, change):
             if kept in old and kept not in (change.get("step") or {}):
                 new[kept] = old[kept]
         steps[i] = new
+    elif do == "set_review":  # who checks an AI step's work: every time, when it isn't sure, or nobody
+        from .engine import automations
+        changed = automations.with_review(a, str(change.get("at") or ""), change.get("mode"))
+        if changed is None:
+            raise SchemaError("Only an AI step's checking can be set, to every time, when it isn't sure, or nobody")
+        a = changed
     elif do == "remove_step":
         steps, i = _step_at(a["actions"], change.get("at"))
         if steps is a["actions"] and len(steps) == 1:

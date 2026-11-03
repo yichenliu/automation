@@ -5,18 +5,9 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 from flask import Flask, render_template, request
-from sqlalchemy import event
 
 from .config import Config, _secret_key
 from .extensions import csrf, db, login_manager
-
-
-def _sqlite_pragmas(connection, _):
-    cursor = connection.cursor()
-    cursor.execute("PRAGMA journal_mode=WAL")  # the web app and the background worker read and write side by side
-    cursor.execute("PRAGMA busy_timeout=30000")
-    cursor.execute("PRAGMA foreign_keys=ON")
-    cursor.close()
 
 
 def _logging(app):
@@ -42,6 +33,8 @@ def create_app(overrides=None):
         app.config["SECRET_KEY"] = _secret_key(app.config["DATA_DIR"])
     if not app.config.get("TESTING"):
         _logging(app)
+    if not app.config.get("SQLALCHEMY_DATABASE_URI"):
+        raise RuntimeError("There's no database set: run ./start.sh setup (it makes the platform's PostgreSQL and puts DATABASE_URL in .env)")
     db.init_app(app)
     login_manager.init_app(app)
     csrf.init_app(app)
@@ -90,9 +83,8 @@ def create_app(overrides=None):
                                text="It's not your fault, and nothing you entered was lost. Go back and try again."), 500
 
     with app.app_context():
-        if db.engine.dialect.name == "sqlite":
-            event.listen(db.engine, "connect", _sqlite_pragmas)
-            db.engine.dispose()
+        if db.engine.dialect.name != "postgresql":
+            raise RuntimeError("The platform runs on PostgreSQL only: run ./start.sh setup (it sets DATABASE_URL in .env)")
         from . import migrate
         new = migrate.is_new()
         db.create_all()

@@ -277,7 +277,9 @@ logged with its fingerprint.
 
 ## The platform underneath
 
-✅ Records stored as JSON (any table shape without database changes) · versions on every record · all-or-nothing saves
+✅ PostgreSQL only, run on this computer by the platform, with pgvector: records as JSONB with a GIN index, the AI's
+passages with an HNSW vector index and PostgreSQL full-text search, each try-out of a change in a throwaway database of
+its own · records stored as JSON (any table shape without database changes) · versions on every record · all-or-nothing saves
 · rules before commit · gap-free numbering · locks · a background worker (builder, assistant, jobs, automations,
 schedules, Microsoft 365, indexing, notification emails, daily backups) · work that waits and retries when the local AI
 is away · migrations · daily backups (database, files, key) · the design versioned with one-click undo · an installable
@@ -319,7 +321,9 @@ take them off. **Rules** drawn as a flowchart: when it starts, what it checks, e
 was skipped or stopped in its last runs. Admins change the trigger and conditions, add a step anywhere (a **+** between
 any two), change, move or remove one (telling someone, an email, a task, an approval, changing the record or adding
 another, waiting, giving it to someone, a branch, a document, an AI step, sending to another system), add and change a
-branch's ways, rename, turn on or off, or delete the rule. **Try it on a record** lights up what the rule would do for
+branch's ways, rename, turn on or off, or delete the rule. AI steps (filling in a field, checking a record, reading a
+document, making a record from an email) are marked AI, with who checks their work (every time, when the AI isn't sure,
+or nobody) and how often they've been right when people checked, and that's set there too. **Try it on a record** lights up what the rule would do for
 one of the list's records, step by step, without doing any of it (the way a branch would go, a step it would skip and
 why, what waits for an answer). **Step-by-step flows** drawn screen by screen; rename, add (instructions, fields to
 fill in, a photo, a signature), edit, order and remove screens.
@@ -331,6 +335,12 @@ notes, number and money, date and date-and-time can swap), a choice or stage in 
 and renaming a choice or stage renames it on every record and in every rule, condition, move and flow that names it
 (taking it back renames them back). People who aren't admins see the diagrams, of what they may see. Every build's
 try-out opens both studios and each diagram in them.
+
+✅ All joined up: a change in a studio is the design itself, so the rules, screens, forms, documents, API, MCP server,
+the builder and the assistant work from it at once (tested end to end in tests/test_connected.py). A renamed stage keeps
+its rules firing; a field renamed or kept from some people is read again by the AI's search (a private one leaves it at
+once); the builder is told of every change made by hand and keeps it; stages added in Workflows are a field in the Data
+model; nothing writes to a combined list but the lists it's made from.
 
 ## Trying changes safely
 

@@ -83,17 +83,34 @@ def check():
 
 
 def _holding_writes():
-    """Whether this thread has written to the database without committing. The database takes one writer at a time, so
-    asking the AI now (minutes, on a busy computer) would keep everyone else from saving all that while: their saves fail
-    with "database is locked", and work that was waiting is left half done."""
+    """Whether this thread has written to the database without committing. Asking the AI now (minutes, on a busy
+    computer) would hold what it wrote locked all that while: anyone saving the same records waits, and a failure later
+    would undo work that was done. (Each connection notes when it writes, below.)"""
     from .extensions import db
     try:
         session = db.session()
         if not session.in_transaction():
             return False
-        return bool(getattr(session.connection().connection.dbapi_connection, "in_transaction", False))
+        return bool(session.connection().info.get("wrote"))
     except Exception:
         return False
+
+
+def _note_writes():
+    """Every database connection notes when it writes, and forgets on commit or rollback (_holding_writes reads it)."""
+    from sqlalchemy import event
+    from sqlalchemy.engine import Engine
+
+    @event.listens_for(Engine, "before_cursor_execute")
+    def _wrote(conn, cursor, statement, parameters, context, executemany):
+        if statement.lstrip()[:6].upper() in ("INSERT", "UPDATE", "DELETE") or statement.lstrip()[:8].upper() == "TRUNCATE":
+            conn.info["wrote"] = True
+
+    for name in ("commit", "rollback"):
+        event.listen(Engine, name, lambda conn: conn.info.pop("wrote", None))
+
+
+_note_writes()
 
 
 def _let_go():

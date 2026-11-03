@@ -7,6 +7,8 @@ restoring an earlier version brings it back. Files are stored on disk under the 
 from datetime import datetime, timezone
 
 from flask_login import UserMixin
+from pgvector.sqlalchemy import Vector
+from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from .extensions import db
@@ -150,7 +152,7 @@ class Record(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     workspace_id = db.Column(db.Integer, db.ForeignKey("workspace.id"), nullable=False)
     table = db.Column(db.String(64), nullable=False)
-    data = db.Column(db.JSON, nullable=False, default=dict)
+    data = db.Column(JSONB, nullable=False, default=dict)  # JSONB: indexed (GIN), so records are found by what's in them
     version = db.Column(db.Integer, nullable=False, default=1, server_default="1")
     created_by = db.Column(db.String(120))
     created_by_id = db.Column(db.Integer)  # the person who added it (for "only their own" access; names can change)
@@ -345,8 +347,8 @@ class Job(db.Model):
 
 class Chunk(db.Model):
     """A passage the AI can find by meaning or by words: part of a document, a record written out as text, an email.
-    `embedding` is the passage's vector (float32, unit length) from the embedding model; the words are also kept in the
-    chunk_fts full-text index (SQLite FTS5) under the same id."""
+    `embedding` is the passage's vector (pgvector, unit length) from the embedding model, `dims` its length (each length
+    has its own HNSW index, as models differ); `words` is its full-text form (PostgreSQL's, kept up by the database)."""
     id = db.Column(db.Integer, primary_key=True)
     workspace_id = db.Column(db.Integer, nullable=False)
     source = db.Column(db.String(16), nullable=False)  # file | record | email
@@ -357,8 +359,11 @@ class Chunk(db.Model):
     text = db.Column(db.Text, nullable=False)
     position = db.Column(db.Integer, default=0)
     link = db.Column(db.String(500))  # where to see it: "table:invoices:record:7", "file:12" or a web address
-    embedding = db.Column(db.LargeBinary)
+    embedding = db.Column(Vector())
+    dims = db.Column(db.Integer)
     model = db.Column(db.String(80))
+    words = db.Column(TSVECTOR, db.Computed("setweight(to_tsvector('english', coalesce(title, '')), 'A') || "
+                                            "setweight(to_tsvector('english', coalesce(text, '')), 'B')", persisted=True))
     created_at = db.Column(db.DateTime, default=utcnow)
     __table_args__ = (db.Index("ix_chunk_ws_source_ref", "workspace_id", "source", "ref"),)
 
