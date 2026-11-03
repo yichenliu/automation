@@ -886,7 +886,7 @@ def _work(message_id):
         try:
             answer, result = design(workspace, convo, progress, note, sheet_cells, imported, asked if reviewing else None)
         except ai.AIUnavailable as exc:
-            if part > 1:  # what's built so far is saved; finish with that rather than wait
+            if replies:  # what's built so far is saved; finish with that rather than wait
                 problems.append(f"the AI stopped answering before the rest was built ({exc})")
                 unbuilt.append(plan or "the rest of what you asked for")
                 break
@@ -898,11 +898,11 @@ def _work(message_id):
             if isinstance(exc, (ai.CutOff, ai.Stuck)) and not shrunk:  # one more go, asked for a smaller piece
                 shrunk = True
                 note("That was too much in one go; building it in smaller pieces")
-                convo = smaller() if part > 1 else convo + [{"role": "user", "content": (
+                convo = smaller() if replies else convo + [{"role": "user", "content": (
                     "Your answer got stuck repeating itself and was lost. Start again with only the first part: the main "
                     "tables and their links (about four), with \"more\": true and \"plan\": the rest still to build.")}]
                 continue
-            if part > 1:
+            if replies:  # a later part: what's built so far stands
                 problems.append(str(exc))
                 unbuilt.append(plan or "the rest of what you asked for")
                 break
@@ -912,7 +912,7 @@ def _work(message_id):
         except Exception as exc:  # a fault of ours: say so, rather than leave the turn "thinking" for ever
             current_app.logger.exception("Builder turn %s failed", message.id)
             db.session.rollback()
-            if part > 1:
+            if replies:
                 problems.append("something went wrong on our side while building the rest")
                 unbuilt.append(plan or "the rest of what you asked for")
                 break
@@ -933,7 +933,7 @@ def _work(message_id):
                 convo = carry_on(f"Carry on with the next part of your plan: {plan}. Send only new changes; don't repeat earlier "
                                  f"ones. Set \"more\" to false once everything asked for is built.", plan)
                 continue
-            if part == 1:  # nothing was saved, so the AI's reply (what it meant to build) isn't shown as if it were
+            if not replies:  # nothing was saved, so the AI's reply (what it meant to build) isn't shown as if it were
                 current_app.logger.info("Builder turn %s: nothing fitted: %s", message.id, result.problems)
                 message.ops = answer.get("ops") or []
                 message.text = ""
@@ -1053,8 +1053,7 @@ def _work(message_id):
     sent = [o for o in all_ops if isinstance(o, dict) and str(o.get("op", "")) not in ("find",)]
     if sent and not changes and message.results is None:  # it meant to change something, but nothing is different: never claim it was
         message.text = NOTHING_CHANGED
-    result.navigate = navigate
     message.changes = changes
-    message.navigate = navigate_url(workspace, result.navigate)
+    message.navigate = navigate_url(workspace, navigate)
     message.status, message.finished_at, message.next_try = "done", utcnow(), None
     db.session.commit()

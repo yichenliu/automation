@@ -133,6 +133,18 @@ def test_an_answer_cut_off_at_the_length_limit_is_asked_for_again_in_parts(app, 
     assert "too long and got cut off" in scripted.asked[1][-1]["content"]
 
 
+def test_a_smaller_try_that_fails_too_says_so_rather_than_crashing(app, owner):
+    """Cut off, then asked again smaller, and that fails as well: nothing was built, so the turn fails plainly, as a
+    first part would (it isn't taken for a later part with something saved)."""
+    _, ws = owner
+    ai.set_backend(ScriptedAI(ai.CutOff("cut off"), ai.CutOff("cut off again")))
+    m = _turn(ws, "Everything for my business.")
+    assert m.status == "failed" and m.error and not ws.blueprint.get("tables")
+    ai.set_backend(ScriptedAI(ai.CutOff("cut off"), RuntimeError("a fault of ours")))
+    m = _turn(ws, "Everything for my business.")
+    assert m.status == "failed" and "went wrong on our side" in m.error
+
+
 def test_left_out_parts_get_a_second_try_and_lines_copy_across_by_themselves(app, owner):
     _, ws = owner
     tables = [
