@@ -4,7 +4,7 @@ in it, and what's wrong sent back to the AI to fix, with what was checked shown 
 import json
 
 from app import ai
-from app.blueprint import ops
+from app.blueprint import ops, schema
 from app.builder import chat, checks, trial
 from app.engine.records import Engine
 from app.extensions import db
@@ -437,3 +437,10 @@ def test_a_change_kept_from_staff_is_tried_on_a_record_they_cant_see_and_a_sum_s
     assert refused["ok"], refused
     assert not allowed["ok"] and "should have been refused" in allowed["problem"]
     assert not sum_["ok"] and "(worked out as `add_days(issue_date, terms)` from issue_date = '2026-10-01', terms = 30)" in sum_["problem"]
+
+
+def test_a_field_required_when_its_empty_is_simply_required():
+    f = schema.normalize_field({"key": "reorder_level", "type": "number", "required_if": [{"field": "reorder_level", "op": "is_empty"}]})
+    assert f.get("required") is True and "required_if" not in f
+    g = schema.normalize_field({"key": "asset_tag", "type": "text", "required_if": [{"field": "is_capital", "op": "equals", "value": True}]})
+    assert not g.get("required") and g["required_if"][0]["field"] == "is_capital"

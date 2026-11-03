@@ -467,6 +467,9 @@ def normalize_field(raw):
     required_if = _first(raw, "required_if", "required_when", "mandatory_if")
     if required_if:
         field["required_if"] = [normalize_condition(c) for c in _list(required_if)]
+        if all(c.get("field") == key and c.get("op") == "is_empty" for c in field["required_if"]):
+            field["required"] = True  # “required when it's empty” is required
+            del field["required_if"]
     decimals = expr.to_number(_first(raw, "decimals", "precision", "decimal_places"))
     if decimals is not None and ftype in ("number", "percent", "formula", "rollup"):
         field["decimals"] = int(min(max(decimals, 0), 6))

@@ -186,7 +186,16 @@ class Shop:
         out.update(given)
         engine._members = None  # whoever was just made for a person field is a member to this engine too
         try:
-            record = engine.create(t["key"], out, ai=False)
+            try:
+                record = engine.create(t["key"], out, ai=False)
+            except FieldErrors as exc:  # what it says it needs (a reorder level), filled in as a person would, and again
+                named = {k: schema.field(t, k) for k in exc.errors if schema.field(t, k) and k not in given and out.get(k) in (None, "", [])}
+                filled = {k: trials.sample_value(self.engine, t, f, self.someone_else(f if f["type"] == "user" else None), self.made, self.n, 0)
+                          for k, f in named.items()}
+                if not any(v is not None for v in filled.values()):
+                    raise
+                out.update({k: v for k, v in filled.items() if v is not None})
+                record = engine.create(t["key"], out, ai=False)
         except FieldErrors as exc:
             # refused with everything filled in: as people do, only what must be (an asset tag left off a consumable)
             needed = {k: v for k, v in out.items() if k in given or (schema.field(t, k) or {}).get("required")
