@@ -1095,9 +1095,26 @@ def _resolve_portals(bp, tables, changes):
         changes.append(f"Set up the {portal['title']} for {people['label']}, where they see their {schema.lc(t['label'])}")
 
 
-WHEN_SAID = {"record_created": "when a {} is added", "record_updated": "when a {} changes", "record_created_or_updated": "when a {} is added or changed",
-             "record_deleted": "when a {} is deleted", "email_received": "when an email arrives", "file_added": "when a file arrives",
+WHEN_SAID = {"record_created": "when {} is added", "record_updated": "when {} changes", "record_created_or_updated": "when {} is added or changed",
+             "record_deleted": "when {} is deleted", "email_received": "when an email arrives", "file_added": "when a file arrives",
              "webhook_received": "when another system sends data"}
+
+
+def _a(thing):
+    """“an order”, “a quote”."""
+    return f"{'an' if str(thing)[:1].lower() in 'aeiou' else 'a'} {thing}"
+
+
+# A field's settings as the change list says them (never their keys: "Changed Orders › Status (its colours)")
+SETTING_WORDS = {"label": "its name", "type": "what it keeps", "options": "its choices", "option_colors": "its colours", "required": "whether it must be filled in",
+                 "unique": "whether two can be the same", "help": "its help", "default": "what it starts as", "placeholder": "its hint",
+                 "sensitive": "whether it's kept private", "access": "who can see it", "decimals": "its decimal places", "unit": "its unit",
+                 "currency": "its currency", "before": "what's shown before it", "after": "what's shown after it", "yes_label": "what yes says",
+                 "no_label": "what no says", "ai": "what the AI fills in", "expression": "how it's worked out", "multiple": "whether it takes several",
+                 "table": "the list it links to", "readonly": "whether it can be changed", "show_if": "when it's shown", "hide_if": "when it's hidden",
+                 "required_if": "when it must be filled in", "readonly_if": "when it's locked", "min": "its lowest", "max": "its highest",
+                 "pattern": "its format", "pattern_message": "its format message", "format": "its format", "template": "the link it makes",
+                 "display": "how it's shown", "prefix": "its prefix", "digits": "its digits", "options_by": "which choices it offers"}
 
 
 def _automation_said(bp, a):
@@ -1110,7 +1127,7 @@ def _automation_said(bp, a):
     cond = lambda cs: " and ".join(f"{label(c['field'])} {c['op'].replace('_', ' ')} {c.get('value', '')}".strip()  # noqa: E731
                                    for c in list(schema.condition_leaves(cs))[:2])
     trig = a["trigger"]
-    when = WHEN_SAID.get(trig["type"], "").format(t["singular"].lower() if t else "record") if trig["type"] in WHEN_SAID else \
+    when = WHEN_SAID.get(trig["type"], "").format(_a(t["singular"].lower() if t else "record")) if trig["type"] in WHEN_SAID else \
         f"every {trig.get('every', 'day')}" if trig["type"] == "schedule" else f"from its “{trig.get('label') or a['name']}” button"
     if a["conditions"]:
         when += f" if {cond(a['conditions'])}"
@@ -1126,7 +1143,7 @@ def _automation_said(bp, a):
         elif kind == "ai_extract":
             said.append(f"the AI reads the attached files{how}")
         elif kind == "ai_create_record":
-            said.append(f"the AI makes a {thing(x['table'])}{how}")
+            said.append(f"the AI makes {_a(thing(x['table']))}{how}")
         elif kind == "request_approval":
             who = " and ".join(label(w) if w not in schema.APPROVER_ROLES + ["creator"] else w for w in x.get("approvers") or [x["approver"]])
             said.append(f"asks {who} to approve" + (f" if {cond(x['only_if'])}" if x.get("only_if") else "")
@@ -1596,7 +1613,8 @@ def _apply_one(bp, op, raw, result, where):
             old = schema.field(t, key)
         t["fields"][t["fields"].index(old)] = new
         what = [k for k in new if new.get(k) != old.get(k)] + [k for k in old if k not in new]
-        changes.append(f"Changed {t['label']} › {new['label']} ({', '.join(sorted(set(what))) or 'no difference'})")
+        said = list(dict.fromkeys(SETTING_WORDS.get(k, k.replace("_", " ")) for k in sorted(set(what))))
+        changes.append(f"Changed {t['label']} › {new['label']} ({', '.join(said) or 'no difference'})")
         result.navigate = result.navigate or f"table:{t['key']}"
     elif op == "remove_field":
         t = _table(bp, _first(raw, "table", "table_key"), problems, where)

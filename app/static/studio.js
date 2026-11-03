@@ -396,10 +396,23 @@
       draw(); showPanel();
     }
 
+    function reveal(key) {
+      // a list out of sight (a new one, placed beside the rest; one picked from the panel) brought into view
+      const t = tableOf(key), r = canvas.getBoundingClientRect();
+      if (!t || !places[key] || !r.width) return;
+      const [x, y] = places[key], sx = view.x + x * view.k, sy = view.y + y * view.k;
+      if (sx < 0 || sy < 0 || sx + W * view.k > r.width || sy + Math.min(height(t), 160) * view.k > r.height) {
+        view.x = r.width / 2 - (x + W / 2) * view.k;
+        view.y = Math.max(20, r.height / 3 - y * view.k);
+        apply();
+      }
+    }
+
     function select(table, field = null) {
       selected = table ? {table, field} : null;
       history.replaceState(null, "", table ? `?open=${encodeURIComponent(table)}` : location.pathname);
       draw(); showPanel();
+      if (table) reveal(table);
       if (window.matchMedia("(max-width: 900px)").matches) panel.scrollIntoView({behavior: "smooth", block: "start"});
     }
 
