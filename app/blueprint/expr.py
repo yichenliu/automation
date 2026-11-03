@@ -217,6 +217,8 @@ FUNCTIONS = {
     "format_date": lambda d, f="%d%m%y": to_date(d).strftime(str(f)) if to_date(d) else "",
 }
 ALIASES = {"if": "iif", "datediff": "days_between", "dateadd": "add_days", "edate": "add_months", "today": "today", "now": "now"}
+RECORD_FUNCTIONS = ("convert", "workday", "add_workdays", "workdays_between", "networkdays")  # a record's context gives these
+KNOWN = set(FUNCTIONS) | set(ALIASES) | {"iif", "today", "now"} | set(RECORD_FUNCTIONS)
 
 
 def normalise(source):
@@ -277,6 +279,12 @@ def names_in(source):
     tree = parse(source)
     called = {id(n.func) for n in ast.walk(tree) if isinstance(n, ast.Call)}
     return {n.id for n in ast.walk(tree) if isinstance(n, ast.Name) and id(n) not in called}
+
+
+def unknown_calls(source):
+    """The functions an expression calls that there are none of (“all(depends_on, ...)”): it would never work out."""
+    return sorted({n.func.id for n in ast.walk(parse(source)) if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+                   and n.func.id.lower() not in KNOWN})
 
 
 def evaluate(source, context):

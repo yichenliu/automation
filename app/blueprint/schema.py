@@ -2169,6 +2169,10 @@ def _check_expression(source, allowed, where, problems, record_fields=None):
     unknown = sorted(n for n in names if n not in allowed and n not in ("today", "now", "True", "False", "None"))
     if unknown:
         problems.append(f"{where}: “{', '.join(unknown)}” isn't a field here (fields: {', '.join(sorted(a for a in allowed if a != 'record')) or 'none'})")
+    calls = expr.unknown_calls(source)
+    if calls:  # it would fail every time it's worked out, and a rule that can't be worked out holds nothing back
+        problems.append(f"{where}: there's no function {', '.join(f'{c}()' for c in calls)} (there are: "
+                        f"{', '.join(sorted((expr.KNOWN - set(expr.ALIASES)) | {'today', 'now'}))})")
     if record_fields is not None:
         import ast
         for node in ast.walk(expr.parse(source)):

@@ -4,7 +4,7 @@ in it, and what's wrong sent back to the AI to fix, with what was checked shown 
 import json
 
 from app import ai
-from app.blueprint import ops, schema
+from app.blueprint import expr, ops, schema
 from app.builder import chat, checks, trial
 from app.engine.records import Engine
 from app.extensions import db
@@ -444,3 +444,21 @@ def test_a_field_required_when_its_empty_is_simply_required():
     assert f.get("required") is True and "required_if" not in f
     g = schema.normalize_field({"key": "asset_tag", "type": "text", "required_if": [{"field": "is_capital", "op": "equals", "value": True}]})
     assert not g.get("required") and g["required_if"][0]["field"] == "is_capital"
+
+
+def test_a_rule_calling_a_function_there_isnt_is_sent_back_rather_than_never_holding(app, owner):
+    """“all(depends_on, status == 'Complete')” can never be worked out, so a rule written with it would quietly hold
+    nothing back on every save: the design is refused, naming the functions there are."""
+    from app.engine.records import RecordContext
+    _, ws = owner
+    stages = {"op": "create_table", "table": "stages", "label": "Stages", "fields": [
+        {"key": "name", "type": "text"}, {"key": "status", "type": "select", "options": ["Not started", "In progress", "Complete"]},
+        {"key": "depends_on", "type": "link", "table": "stages"}],
+        "rules": [{"check": "is_empty(depends_on) or all(depends_on, status == 'Complete')",
+                   "message": "A stage can't start before the one it depends on is complete",
+                   "when": [{"field": "status", "op": "equals", "value": "In progress"}]}]}
+    result = ops.apply(ws.blueprint, [stages], always_check=True)
+    assert any("there's no function all()" in p and "add_days" in p for p in result.problems), result.problems
+    stages["rules"][0]["check"] = "is_empty(depends_on) or depends_on.status == 'Complete'"
+    assert not ops.apply(ws.blueprint, [stages], always_check=True).problems
+    assert set(RecordContext(Engine(ws), None).functions) == set(expr.RECORD_FUNCTIONS)  # what a record gives is what's known

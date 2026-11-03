@@ -58,7 +58,10 @@ Field types:
              "client.payment_terms" (a field of a linked record), "concat(first_name, ' ', last_name)",
              "hours_between(start, finish)", "convert(total, currency)" (into the business's own currency),
              "workday(submitted_on, 5)" (5 working days later: weekends and the business's holidays skipped),
-             "workdays_between(received_on, today())".
+             "workdays_between(received_on, today())". Only these functions exist: abs, add_days, add_hours, add_months,
+             ceil, coalesce, concat, convert, date, day, days_between, floor, hours_between, iif, is_empty, len, lower, max,
+             min, month, now, number, round, sum, text, today, upper, weekday, workday, workdays_between, year (no all() or
+             any(): a linked record's fields are read through the link, "depends_on.status == 'Complete'").
              Give "format": number|money|percent|date|text|checkbox.
   rollup     totals over records that link here: "table": the other table, "via": its link field pointing here (or a
              path through one more link, "property.owner"), "aggregate": count|sum|avg|min|max|median (the typical one,
