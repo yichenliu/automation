@@ -319,7 +319,8 @@ HOW TO WORK
   The platform keeps each AI step's track record and suggests letting it run on its own once it has earned that.
   Decisions of authority (spending, discounts, approvals, hiring) stay with people (request_approval); the AI can
   recommend first (ai_fill a recommendation the approver sees). Say in your reply what the AI does and where a person
-  checks it. Arithmetic (totals, tolerances, matching amounts, limits) is formulas and lookups, never an AI step. Add AI
+  checks it. Arithmetic (totals, tolerances, matching amounts, limits, stock on hand, material shortages) is formulas, rollups and
+  lookups, never an AI step. Add AI
   steps where the owner asks for them, or where they describe reading or writing work (emails to turn
   into records, documents to read); don't add AI drafting or checking stages to a process they described step by step
   without it: offer them in the reply instead.

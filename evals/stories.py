@@ -555,7 +555,7 @@ STORIES = {
         ("Stock added for a scent adds up", lambda s: rolls_up(s, ("product", "candle", "scent", "item"), ("stock movement", "movement", "pour", "batch"), ("quantity", "qty", "change"), (12, 6))),
     ],
     "furniture": [
-        ("A customer order becomes a work order", lambda s: makes(s, ("customer order", "order"), ("work order", "production", "job"), "confirm", "approv", "accept", "progress")),
+        ("A customer order becomes a work order", lambda s: makes(s, ("customer order", "order"), ("work order", "production", "job"), "confirm", "approv", "accept", "progress", "plan", "production")),
         ("Materials used add up on the material", lambda s: rolls_up(s, ("material", "component", "part"), ("stock movement", "movement", "usage", "consum"), ("quantity", "qty", "change"), (20, -6))),
     ],
     "physio": [

@@ -41,8 +41,9 @@ def review(workspace, result):
         walked = trials.walk(trial, screens=False)  # a record in every list it can make, as people would have
         engine = trial.engine()
         people = [("the owner", trial.owner_id)] + _staff(trial, engine)
+        choices = {str(o) for t in engine.tables.values() for f in t["fields"] for o in f.get("options") or []}
         for who, user_id in people:
-            out += _screens(trial, engine, who, user_id, walked["made"], theirs)
+            out += _screens(trial, engine, who, user_id, walked["made"], theirs | choices)
     return _unique(out)
 
 
@@ -106,7 +107,7 @@ def _page(engine, who, path, html, theirs):
     for node in nodes:
         if CODE.search(node):
             out.append(_finding("blocker", "code on screen", who, where, f"shows code: “{node[:80]}”"))
-        elif node in EMPTYISH:
+        elif node in EMPTYISH and node not in theirs:  # "None" as the app's own choice (no shortage) is a word, not code
             out.append(_finding("confusing", "code on screen", who, where, f"shows “{node}” where a value or a blank belongs"))
         for token in SNAKE.findall(node):
             out.append(_finding("confusing", "code name on screen", who, where, f"shows the code name “{token}” instead of words"))

@@ -20,7 +20,29 @@ CASES = 400  # combinations of values tried for one stage's moves
 
 def run(engine):
     return (choices(engine) + impossible(engine) + unreachable(engine) + gaps(engine) + asked_on_no(engine) + left_to_others(engine)
-            + out_of_reach(engine) + needs_rates(engine) + left_unfilled(engine) + made_only_sometimes(engine))
+            + out_of_reach(engine) + needs_rates(engine) + left_unfilled(engine) + made_only_sometimes(engine) + ai_doing_sums(engine))
+
+
+SUMS = re.compile(r"\b(compare|multipl\w*|subtract\w*|add (it )?up|sum of|on[ _]hand|how many|how much|short(age|fall)?|"
+                  r"(less|more|greater|fewer) than|exceeds?)\b", re.I)
+
+
+def ai_doing_sums(engine):
+    """An AI step asked to work something out from the records (a shortage from what's needed and what's on hand): the AI
+    can get sums wrong, and the try-out can't check it (the AI isn't asked in a copy). A formula or rollup always can."""
+    out = []
+    for a in engine.bp.get("automations", []):
+        t = engine.tables.get(a["trigger"].get("table"))
+        for act in schema.steps_of(a["actions"]):
+            f = schema.field(t, act.get("field") or "") if t and act.get("type") == "ai_fill" else None
+            said = SUMS.search(str(act.get("instructions") or ""))
+            if f is None or not said or f["type"] not in ("number", "money", "percent", "select", "checkbox"):
+                continue
+            out.append(_issue("check", f"Rule {a['key']} has the AI work out {t['key']}.{f['key']} (“…{said.group(0)}…”): that's "
+                                       f"arithmetic on the records, which the AI can get wrong and the try-out can't check. Work it out "
+                                       f"with a formula or rollup (a rule can still alert on it)",
+                              f"“{a['name']}” has the AI work out {schema.lc(f['label'])}, a sum the app should do itself", t["key"]))
+    return out
 
 
 MAKES = ("create_record", "create_for_each", "copy_record")

@@ -273,3 +273,18 @@ def test_an_email_with_nobody_to_send_it_to_is_left_out_and_said_and_a_per_line_
     assert note is not None and "is empty" in note.text and "Your order" in note.text
     said = [i["plain"] for i in checks.left_unfilled(Engine(ws))]
     assert "“Orders take stock out” stops when an order's warehouse is left empty" in said
+
+
+def test_an_ai_step_asked_to_do_sums_is_found(app, owner):
+    _, ws = owner
+    _built(ws, [
+        {"op": "create_table", "table": "work_orders", "label": "Work orders", "fields": [
+            {"key": "title", "type": "text", "required": True},
+            {"key": "shortage", "label": "Material shortage", "type": "select", "options": ["None", "Short"]},
+            {"key": "summary", "type": "long_text"}]},
+        {"op": "add_automation", "automation": {
+            "key": "short", "name": "Check shortages", "trigger": {"type": "record_created", "table": "work_orders"},
+            "actions": [{"type": "ai_fill", "field": "shortage", "instructions": "Compare what's needed with what's on hand."},
+                        {"type": "ai_fill", "field": "summary", "instructions": "Write a friendly summary for the floor."}]}}])
+    said = [i["plain"] for i in checks.ai_doing_sums(Engine(ws))]
+    assert said == ["“Check shortages” has the AI work out material shortage, a sum the app should do itself"]  # words are the AI's
