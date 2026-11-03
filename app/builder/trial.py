@@ -23,7 +23,7 @@ from flask import current_app
 from .. import database
 from ..blueprint import expr, schema
 from ..engine import automations
-from ..engine.records import Engine, FieldErrors, NoRate, RecordContext, mask, masked, to_number
+from ..engine.records import Engine, FieldErrors, NoRate, RecordContext, mask, masked, parse_duration, to_number
 from ..extensions import db
 from ..models import Approval, Membership, Record, Run, User, Workspace
 
@@ -981,6 +981,8 @@ def _same(engine, f, actual, wanted, names):
     kind = engine.kind(f) if f else None
     if kind == "percent":
         wanted = schema.as_fraction(wanted)
+    if kind == "duration" and isinstance(wanted, str):  # "8:00", "1.5h", "90m", as it's typed in
+        wanted = parse_duration(wanted) if parse_duration(wanted) is not None else wanted
     if kind in ("number", "money", "percent", "duration", "rating") or (isinstance(wanted, (int, float)) and not isinstance(wanted, bool)):
         a, w = to_number(actual), to_number(str(wanted).replace("$", "").replace(",", "")) if not isinstance(wanted, (int, float)) else wanted
         return a is not None and w is not None and abs(a - w) <= max(0.011, abs(w) * 0.001)
@@ -1037,7 +1039,9 @@ def _expect(engine, c, names):
     ok = _same(engine, f, actual, wanted, names)
     label = automations._path_label(engine, t["key"], path)
     shown = engine.display(f, actual) if actual not in (None, "", []) else "empty"
-    expected = engine.display(f, schema.as_fraction(wanted) if engine.kind(f) == "percent" else wanted) \
+    as_kept = schema.as_fraction(wanted) if engine.kind(f) == "percent" else \
+        parse_duration(wanted) if engine.kind(f) == "duration" and isinstance(wanted, str) and parse_duration(wanted) is not None else wanted
+    expected = engine.display(f, as_kept) \
         if wanted not in (None, "") and f["type"] not in ("link", "user") and not _shows_a_link(engine, f) else str(wanted or "empty")
     plain = f"{t['singular']}’s {label}: {shown}" if ok else f"{t['singular']}’s {label} came out {shown}, expected {expected}"
     said = f"{c.get('record')} ({t['key']}).{key} is {actual!r}; expected {wanted!r}"

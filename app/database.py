@@ -11,10 +11,12 @@
 
 Run as `python -m app.database setup|start|stop|status|url`.
 """
+import logging
 import os
 import secrets
 import subprocess
 import sys
+import time
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
@@ -101,6 +103,8 @@ def setup(env_file=ROOT / ".env"):
         url = f"postgresql+psycopg://{NAME}:{password}@localhost:{PORT}/{NAME}"
         _write_env(env_file, "DATABASE_URL", url)
     name = urlsplit(url).path.lstrip("/") or NAME
+    if _psql("SELECT 1 FROM pg_roles WHERE rolname = 'pg_signal_autovacuum_worker'"):  # PostgreSQL 18: so a throwaway copy
+        _psql(f"GRANT pg_signal_autovacuum_worker TO {urlsplit(url).username or NAME}")  # being vacuumed can still be dropped
     if not _psql(f"SELECT 1 FROM pg_database WHERE datname = '{name}'"):
         _psql(f'CREATE DATABASE "{name}" OWNER {urlsplit(url).username or NAME}')
     _psql("CREATE EXTENSION IF NOT EXISTS vector", name)
@@ -139,9 +143,26 @@ def throwaway(url, prefix="tmp"):
             conn.execute(text(f'CREATE DATABASE "{name}"'))
         yield with_database(url, name)
     finally:
-        with admin.connect() as conn:
-            conn.execute(text(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)'))
+        _drop(admin, name)
         admin.dispose()
+
+
+def _drop(admin, name, tries=20):
+    """Drop a throwaway database. The server's own vacuum may be busy in it for a moment (a login that may not stop it
+    can't force it out), so a refused drop is tried again shortly, and one still refused is left, logged, for later:
+    what it was for has already worked."""
+    from sqlalchemy import text
+    from sqlalchemy.exc import DBAPIError
+    for n in range(tries):
+        try:
+            with admin.connect() as conn:
+                conn.execute(text(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)'))
+            return True
+        except DBAPIError as exc:
+            if n == tries - 1:
+                logging.getLogger(__name__).warning("Couldn't drop the throwaway database %s: %s", name, exc)
+                return False
+            time.sleep(0.25)
 
 
 def fresh(url, name):

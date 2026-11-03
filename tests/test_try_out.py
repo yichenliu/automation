@@ -530,3 +530,20 @@ def test_item_in_a_step_done_once_reads_the_rules_own_record(app, owner):
     line = engine.create("po_lines", {"product": engine.create("products", {"name": "Cheddar"}).id})
     engine.update(engine.get(line.id), {"received_qty": 10})
     assert [r.data["quantity"] for r in Engine(ws).rows("stock_movements")] == [10]
+
+
+def test_an_expected_duration_is_read_as_its_typed_in(app, owner):
+    """8:00 of hours logged, expected as "8:00" (as a timesheet takes it), is 8 hours, not nothing."""
+    _, ws = owner
+    _built(ws, [{"op": "create_table", "table": "projects", "label": "Projects", "fields": [
+        {"key": "name", "type": "text", "required": True},
+        {"key": "hours_logged", "type": "rollup", "aggregate": "sum", "table": "timesheets", "field": "hours", "via": "project"}]},
+        {"op": "create_table", "table": "timesheets", "label": "Timesheets", "fields": [
+            {"key": "project", "type": "link", "table": "projects", "required": True}, {"key": "hours", "type": "duration"}]}])
+    steps = [{"do": "add", "table": "projects", "as": "p1", "values": {"name": "Audit"}},
+             {"do": "add", "table": "timesheets", "as": "t1", "values": {"project": "p1", "hours": "8:00"}}]
+    right = {"title": "Hours add up", "steps": steps, "expect": [{"record": "p1", "field": "hours_logged", "equals": "8:00"}]}
+    wrong = {"title": "Hours expected wrong", "steps": steps, "expect": [{"record": "p1", "field": "hours_logged", "equals": "7:30"}]}
+    _, (ok, off) = trial.try_out(ws, [right, wrong], screens=False)
+    assert ok["ok"], ok
+    assert off["plain"] == "Project’s Hours logged came out 8h, expected 7h 30m", off["plain"]
