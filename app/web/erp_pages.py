@@ -1108,6 +1108,41 @@ def design(wid):
                            words={a["key"]: automations.describe(engine, a) for a in engine.bp.get("automations", [])})
 
 
+@bp.route("/test-copy", methods=["POST"])
+@login_required
+def test_copy_make(wid):
+    """A test copy of this app to try changes on (another replaces it), and straight into it."""
+    from .. import sandbox
+    ws, _ = ctx(wid, "admin")
+    if sandbox.live_of(ws) is not None:
+        abort(400)
+    made = sandbox.make(ws, current_user)
+    flash("This is a test copy: try changes here without touching the live app, then publish them.", "success")
+    return redirect(url_for("app.home", wid=made.id))
+
+
+@bp.route("/publish", methods=["GET", "POST"])
+@login_required
+def publish(wid):
+    """From a test copy: what publishing would change in the live app, and what that does to its records; then do it."""
+    from .. import sandbox
+    from ..security import workspace as member_of
+    ws, _ = ctx(wid, "admin")
+    live = sandbox.live_of(ws)
+    if live is None:
+        abort(404)
+    member_of(live.id, "admin")  # publishing changes the live app: only its admins
+    said = sandbox.changes(live.blueprint or {}, ws.blueprint or {})
+    if request.method == "POST":
+        number = sandbox.publish(live, ws, current_user)
+        flash(f"Published: the live app is now at version {number}. Undo it from How it's set up there." if number else
+              "Nothing to publish: the live app already works this way.", "success")
+        return redirect(url_for("app.design", wid=live.id) if number else url_for("app.publish", wid=wid))
+    moved_on = (ws.settings or {}).get("based_on") != live.version  # the live app changed since this copy was made
+    return render_template("app/publish.html", ws=ws, e=ctx(wid)[1], live=live, said=said, impact=sandbox.impact(live, ws.blueprint or {}),
+                           moved_on=moved_on)
+
+
 @bp.route("/design/restore/<int:number>", methods=["POST"])
 @login_required
 def restore_version(wid, number):

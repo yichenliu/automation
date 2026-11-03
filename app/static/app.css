@@ -954,3 +954,5 @@ table.lines-editor .combo-button:hover { border-color: var(--border); }
 .in-panel .erp { grid-template-columns: 1fr; } .in-panel .main { padding-top: 12px; }
 .nav-switch button { all: unset; box-sizing: border-box; display: flex; align-items: center; gap: 9px; width: 100%; padding: 6px 10px; border-radius: 7px; cursor: pointer; color: var(--muted); font-weight: 520; }
 .nav-switch button:hover, .nav-switch button:focus-visible { background: var(--sunken); color: var(--text); }
+.test-copy-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 8px 12px; margin-bottom: 12px; border-radius: var(--radius-sm); background: var(--p-amber); color: var(--p-amber-t); }
+.stack-tight { margin: 0; padding-left: 18px; } .stack-tight li + li { margin-top: 4px; }

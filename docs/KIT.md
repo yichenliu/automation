@@ -268,6 +268,15 @@ schedules, Microsoft 365, indexing, notification emails, daily backups) · work 
 is away · migrations · daily backups (database, files, key) · the design versioned with one-click undo · an installable
 web app (add to the home screen).
 
+## Trying changes safely
+
+✅ **A test copy**: the app copied with its records (links pointing at the copies), numbering and people (not outside
+people), to try changes on by asking the builder or by hand, with a banner on every screen saying it's a copy. **Publish
+to the live app** says what changes (lists, fields, choices, stages, rules, flows, pages, menus) and what that does to the
+live app's records (records missing a field that must now be filled in, records on a choice that's gone, values no
+longer shown but kept), warns when the live app has changed since the copy was made, and brings only the design across
+as a new version, undoable in one click. Records made in the test copy stay there.
+
 ## The analyst
 
 ✅ Designs from a description, a spreadsheet, or the business's Microsoft 365 ⚠️ · builds big requests in up to five

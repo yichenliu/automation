@@ -47,7 +47,10 @@
           <form method="post" action="{{ url_for('auth.logout') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button>{{ icon('log-out') }}Sign out</button></form></div></details>
     </div>
   </aside>
-  <main class="main"><div class="content">{{ flashes() }}{% block content %}{% endblock %}
+  <main class="main"><div class="content">{% if ws and (ws.settings or {}).get('test_copy_of') %}<div class="test-copy-bar" role="note">{{ icon('flask-conical') }}<span class="grow"><b>Test copy.</b> Changes here don't touch the live app.</span>
+      {% if member and member.can('admin') %}<a class="btn sm primary" href="{{ url_for('app.publish', wid=ws.id) }}">{{ icon('send') }}Publish to the live app</a>{% endif %}
+      <a class="btn sm ghost" href="{{ url_for('app.home', wid=ws.settings.test_copy_of) }}">Back to the live app</a></div>{% endif %}
+    {{ flashes() }}{% block content %}{% endblock %}
     {% set feedback_url = feedback_for(ws) if feedback_for is defined and ws else none %}
     {% if feedback_url %}<details class="not-right"><summary>{{ icon('message-circle-warning') }}Something not right here?</summary>
       <form method="post" action="{{ feedback_url }}" class="stack"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="page" value="{{ request.full_path.rstrip('?') }}">

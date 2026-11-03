@@ -1,0 +1,12 @@
+{% extends "app/layout.html" %}
+{% block title %}Publish to the live app{% endblock %}
+{% block content %}
+<div class="page-head"><div class="titles"><h1>{{ icon('send') }}Publish to the live app</h1><p class="sub">This brings how the test copy works to “{{ live.name }}”. Only the design moves across: records made here stay here. It's a new version there, so it can be undone in one click.</p></div></div>
+{% if moved_on %}<p class="notice warn">{{ icon('triangle-alert') }}<span><b>The live app has changed since this copy was made.</b> Publishing replaces how it works with this copy's design, so changes made there since would be undone. To keep them, make a new test copy from the live app and redo these changes there.</span></p>{% endif %}
+<div class="card mt-2"><div class="card-head">{{ icon('list') }}<h2>What changes</h2></div><div class="card-body">
+  {% if said %}<ul class="stack-tight">{% for s in said %}<li>{{ s }}</li>{% endfor %}</ul>{% else %}<p class="muted">Nothing: the live app already works this way.</p>{% endif %}</div></div>
+{% if impact %}<div class="card mt-2"><div class="card-head">{{ icon('table') }}<h2>What it does to the live app's records</h2></div><div class="card-body">
+  <ul class="stack-tight">{% for level, s in impact %}<li>{% if level == 'warn' %}<span class="pill amber">Check</span> {% endif %}{{ s }}</li>{% endfor %}</ul></div></div>{% endif %}
+{% if said %}<form method="post" class="row mt-2" data-confirm-text="Publish these changes to “{{ live.name }}”? Everyone using it gets them straight away."><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  <button class="btn primary">{{ icon('send') }}Publish to the live app</button><a class="btn ghost" href="{{ url_for('app.home', wid=ws.id) }}">Not yet</a></form>{% endif %}
+{% endblock %}
