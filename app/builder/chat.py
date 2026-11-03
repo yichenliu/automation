@@ -560,7 +560,7 @@ def _write_examples(workspace, asked, first):
     count = ("Write 3 or 4 examples that between them cover the main things this business does in the app." if first else
              "Write 1 to 3 examples about what this change does (what it adds or changes, not the rest of the app).")
     convo = [{"role": "system", "content": prompts.EXAMPLES.format(count=count)},
-             {"role": "user", "content": f"The owner asked: {asked[:3000]}\n\nToday: {engine.today.isoformat()}"
+             {"role": "user", "content": f"The owner asked: {asked[:3000]}\n\nToday: {schema.today_words(engine.today)}"
                                          + (f"\nPeople in the app: {people}" if people else "")
                                          + f"\n\nThe app:\n{prompts.outline(workspace.blueprint, engine.counts())}"}]
     try:
@@ -760,7 +760,7 @@ def _work(message_id):
         asked += "\n\nAttached files (to design from, and to import with import_file if the owner wants their rows):\n" + \
             describe_files(question.files, workspace.id)
     convo = [{"role": "system", "content": prompts.system(asked)},
-             {"role": "user", "content": f"About the business: {workspace.about or workspace.name}\nToday: {engine.today.isoformat()}\n\n"
+             {"role": "user", "content": f"About the business: {workspace.about or workspace.name}\nToday: {schema.today_words(engine.today)}\n\n"
                                          f"The ERP right now:\n{context}" + (f"\n\n{where}" if where else "")},
              {"role": "assistant", "content": "Understood. What would you like?"}]
     known = _business_knowledge(engine, question.text if question else "")
@@ -782,7 +782,7 @@ def _work(message_id):
     def carry_on(ask_next, plan):
         """The conversation for the next part: the ERP as it now is (with what's been saved), the request, and what next."""
         engine.reset()
-        return convo[:1] + [{"role": "user", "content": f"About the business: {workspace.about or workspace.name}\nToday: {engine.today.isoformat()}\n\n"
+        return convo[:1] + [{"role": "user", "content": f"About the business: {workspace.about or workspace.name}\nToday: {schema.today_words(engine.today)}\n\n"
                                                         f"The ERP right now:\n{prompts.outline(workspace.blueprint, engine.counts())}"},
                             {"role": "assistant", "content": "Understood. What would you like?"},
                             {"role": "user", "content": asked},

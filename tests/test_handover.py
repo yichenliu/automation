@@ -396,3 +396,10 @@ def test_an_approval_on_a_plain_status_and_a_rule_that_runs_while_true_are_found
         "A quote can be set on by hand without the approval “Approve big discounts” asks for"]
     assert [i["plain"] for i in checks.runs_while_true(e)] == [
         "“Approve big discounts” runs again every time a quote like that is saved"]  # updating a detail again is harmless
+
+
+def test_the_builder_is_told_todays_weekday_week_and_month():
+    from datetime import date
+    from app.blueprint.schema import today_words
+    assert today_words(date(2026, 11, 3)) == ("Tuesday 3 November 2026 (2026-11-03). This week: Monday 2 November to Sunday "
+                                              "8 November. This month: November 2026")

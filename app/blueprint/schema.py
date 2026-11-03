@@ -1974,6 +1974,16 @@ def named(bp, text):
     return CODE_NAME.sub(lambda m: lc(names[m.group(0)]) if m.group(0) in names else m.group(0).replace("_", " "), text or "")
 
 
+def today_words(day):
+    """Today as the builder is told it: the weekday, this week's Monday to Sunday and the month, so worked examples about
+    "this week" or "30 days later" start from the right days."""
+    from datetime import timedelta
+    monday = day - timedelta(days=day.weekday())
+    sunday = monday + timedelta(days=6)
+    return (f"{day:%A} {day.day} {day:%B %Y} ({day.isoformat()}). This week: Monday {monday.day} {monday:%B} to Sunday "
+            f"{sunday.day} {sunday:%B}. This month: {day:%B %Y}")
+
+
 def converts(bp):
     """Whether the app turns amounts from other currencies into its own (convert()): it needs exchange rates set."""
     return any("convert(" in str(f.get("expression") or "") for t in bp.get("tables", []) for f in t["fields"]) \

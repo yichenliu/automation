@@ -15,6 +15,7 @@ from pathlib import Path
 from flask import current_app
 
 from .. import ai, jobs
+from ..blueprint import schema
 from ..engine import automations
 from ..engine.records import Engine
 from ..extensions import db
@@ -96,7 +97,7 @@ def add(workspace, said, by=None):
     engine = Engine(workspace)
     convo = [{"role": "system", "content": prompts.EXAMPLES.format(count="Write exactly one example: the one the owner describes below, "
                                                                            "with their numbers.")},
-             {"role": "user", "content": f"The owner wants this checked, always: {said[:1500]}\n\nToday: {engine.today.isoformat()}"
+             {"role": "user", "content": f"The owner wants this checked, always: {said[:1500]}\n\nToday: {schema.today_words(engine.today)}"
                                          f"\n\nThe app:\n{prompts.outline(workspace.blueprint, engine.counts())}"}]
     steady = ai.building.set(True)
     try:
