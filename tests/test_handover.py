@@ -11,7 +11,7 @@ from app.builder import checks, trial
 from app.engine import automations
 from app.engine.records import Engine, parse_duration
 from app.extensions import db
-from app.models import Approval
+from app.models import Approval, Notification
 
 from .conftest import login
 from .test_wave2 import PURCHASES, _as, _built, _person
@@ -240,3 +240,36 @@ def test_links_both_ways_stay_in_step_a_making_rule_for_only_some_is_found_and_a
     wanted = [{"field": "on_hand", "op": "less_than", "value": "reorder_level"}]
     assert [r.id for r in me.rows("products") if me.matches(r, wanted)] == [low.id]
     assert automations.describe_condition(me, wanted[0], "products") == "On hand is less than its reorder level"
+
+
+def test_an_email_with_nobody_to_send_it_to_is_left_out_and_said_and_a_per_line_rule_from_something_optional_is_found(app, owner):
+    user, ws = owner
+    _built(ws, [
+        {"op": "create_table", "table": "customers", "label": "Customers", "fields": [
+            {"key": "name", "type": "text", "required": True}, {"key": "email", "type": "email"}]},
+        {"op": "create_table", "table": "warehouses", "label": "Warehouses", "fields": [{"key": "name", "type": "text", "required": True}]},
+        {"op": "create_table", "table": "orders", "label": "Orders", "fields": [
+            {"key": "customer", "type": "link", "table": "customers", "required": True},
+            {"key": "warehouse", "type": "link", "table": "warehouses"}, {"key": "sent", "type": "checkbox"}]},
+        {"op": "create_table", "table": "order_lines", "label": "Order lines", "embedded": True, "fields": [
+            {"key": "order", "type": "link", "table": "orders", "required": True}, {"key": "item", "type": "text"},
+            {"key": "quantity", "type": "number", "required": True}]},
+        {"op": "create_table", "table": "stock_movements", "label": "Stock movements", "fields": [
+            {"key": "item", "type": "text"}, {"key": "warehouse", "type": "link", "table": "warehouses", "required": True},
+            {"key": "quantity", "type": "number", "required": True}]},
+        {"op": "add_automation", "automation": {
+            "key": "confirm", "name": "Confirm the order", "trigger": {"type": "record_created", "table": "orders"},
+            "actions": [{"type": "send_email", "to": "{{record.customer.email}}", "subject": "Your order", "body": "Thanks."},
+                        {"type": "update_record", "values": {"sent": True}}]}},
+        {"op": "add_automation", "automation": {
+            "key": "stock_out", "name": "Orders take stock out", "trigger": {"type": "record_updated", "table": "orders"},
+            "actions": [{"type": "create_for_each", "table": "stock_movements", "source": {"table": "order_lines", "via": "order"},
+                         "values": {"item": "{{item.item}}", "quantity": "{{item.quantity}}", "warehouse": "{{record.warehouse}}"}}]}}])
+    me = _as(ws, user)
+    walk_in = me.create("customers", {"name": "Walk-in"})
+    order = me.create("orders", {"customer": walk_in.id})
+    assert me.get(order.id).data["sent"] is True  # the rule carried on past the email it couldn't send
+    note = Notification.query.filter(Notification.text.like("%an email wasn't sent%")).first()
+    assert note is not None and "is empty" in note.text and "Your order" in note.text
+    said = [i["plain"] for i in checks.left_unfilled(Engine(ws))]
+    assert "“Orders take stock out” stops when an order's warehouse is left empty" in said

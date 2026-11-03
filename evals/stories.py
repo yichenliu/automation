@@ -538,7 +538,7 @@ def own_records_only(shop, words, owner_words=("rep", "sales", "account manager"
 STORIES = {
     "plumbing": [
         ("A quote's lines add up, with GST", lambda s: totals_add_up(s, ("quote",))),
-        ("A finished job drafts its invoice", lambda s: makes(s, ("job",), ("invoice",), "done", "complete", "finish")),
+        ("A finished job drafts its invoice", lambda s: makes(s, ("job",), ("invoice",), "done", "complete", "finish", "signed off", "sign off")),
         ("Urgent jobs stand out in red", lambda s: colour_when(s, ("job",), ("priority", "urgent", "type", "urgency"), ("urgent", "emergency"), "red")),
     ],
     "wholesale": [

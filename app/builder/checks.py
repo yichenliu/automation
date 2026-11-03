@@ -61,32 +61,39 @@ def left_unfilled(engine):
     out = []
     for a in engine.bp.get("automations", []):
         source = engine.tables.get(a["trigger"].get("table"))
+        made = [engine.tables[x["table"]] for x in schema.steps_of(a["actions"])  # what it adds: a line links to its new invoice
+                if x.get("type") == "create_record" and x.get("table") in engine.tables]
         for act in schema.steps_of(a["actions"]):
-            t = engine.tables.get(act.get("table")) if act.get("type") == "create_record" else None
-            if t is None or act.get("each") or act.get("from"):  # one per line of another record: its values come from there
+            kind = act.get("type")
+            t = engine.tables.get(act.get("table")) if kind in ("create_record", "create_for_each") else None
+            # one per line (create_for_each): {{item.…}} is the line, and copying takes from the line first
+            item = engine.tables.get((act.get("source") or {}).get("table")) if kind == "create_for_each" else None
+            if t is None or (kind == "create_for_each" and (item is None or (act.get("source") or {}).get("field"))):
                 continue
             values = act.get("values") or {}
             stage = (t.get("workflow") or {}).get("field")
+            near = [x for x in (item, source) if x] + [x for x in made if x is not t]
             for f in t["fields"]:
                 if not f.get("required") or f["type"] not in schema.STORED or f["type"] in ("autonumber", "user") \
                         or f.get("default") not in (None, "") or f["key"] == stage:
                     continue
                 said = values.get(f["key"])
-                copies = act.get("copy_matching") and source and (schema.field(source, f["key"]) or f.get("table") == source["key"])
+                copies = act.get("copy_matching") and any(schema.field(x, f["key"]) or f.get("table") == x["key"] for x in near)
                 if said is None and not copies:  # what copy_matching fills: the same field, or a link back to the record itself
                     out.append(_issue("fix", f"Rule {a['key']} adds {t['key']} records without {f['key']}, which must be filled in, "
                                              f"so it stops every time: set \"{f['key']}\" in its values (from the record that "
                                              f"starts it, or a fixed value), or make {f['key']} optional",
-                                      f"“{a['name']}” can't add a {schema.lc(t['singular'])}: it doesn't fill in "
+                                      f"“{a['name']}” can't add {_a(schema.lc(t['singular']))}: it doesn't fill in "
                                       f"{schema.lc(f['label'])}, which must be filled in", t["key"]))
                     continue
-                copied = re.fullmatch(r"\{\{\s*record\.(\w+)\s*\}\}", str(said or ""))
-                origin = schema.field(source, copied.group(1)) if copied and source else None
+                copied = re.fullmatch(r"\{\{\s*(record|item)\.(\w+)\s*\}\}", str(said or ""))
+                whose = (item if copied.group(1) == "item" else source) if copied else None
+                origin = schema.field(whose, copied.group(2)) if whose else None
                 if origin is not None and not origin.get("required") and origin["type"] in schema.STORED:
                     out.append(_issue("check", f"Rule {a['key']} fills {t['key']}.{f['key']} (which must be filled in) from "
-                                               f"{source['key']}.{origin['key']}, which people may leave empty: then the rule stops. "
-                                               f"Make {source['key']}.{origin['key']} required, or a move that starts the rule require it",
-                                      f"“{a['name']}” stops when a {schema.lc(source['singular'])}'s {schema.lc(origin['label'])} "
+                                               f"{whose['key']}.{origin['key']}, which people may leave empty: then the rule stops. "
+                                               f"Make {whose['key']}.{origin['key']} required, or a move that starts the rule require it",
+                                      f"“{a['name']}” stops when {_a(schema.lc(whose['singular']))}'s {schema.lc(origin['label'])} "
                                       f"is left empty", t["key"]))
     return out
 

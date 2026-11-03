@@ -86,7 +86,7 @@ Table options (on create_table, or update_table changes), written after the tabl
       Payments: {{"teams": ["finance"]}}, only Finance and admins). Roles: viewer < editor < admin < owner.
   "row_access": {{"field": a user field or "created_by", "roles": ["editor"], "teams": [teams who still see every
       record]}} people with those roles see only their own records (sales reps their own deals; Finance, who does the
-      books, sees them all). Keeping people from changing something is "edit" access, never hiding it: whoever records
+      books, sees them all). Never list the team of the people it limits (the reps' own Sales team): then it limits nobody. Keeping people from changing something is "edit" access, never hiding it: whoever records
       payments must still see the leases they're for.
   "rules": [{{"check": an expression that must be true, "message": what to tell people, "when": conditions}}] checked
       on every save, with the record's line items: {{"check": "total_debit == total_credit", "message": "Debits must

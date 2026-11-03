@@ -366,8 +366,10 @@ def _steps(engine, automation, actions, prefix, state, run, log):
             steps = action["paths"][path]["steps"] if isinstance(path, int) else action.get("otherwise") if path == "otherwise" else []
             _steps(engine, automation, steps, f"{at}.{path if isinstance(path, int) else 'o'}.", state, run, log)
             entry["done"] = True
-        elif kind == "send_email" and record is not None and not _mail_ready(engine):
+        elif kind == "send_email" and record is not None and not _mail_ready(engine) \
+                and str(_render(action["to"], _context(engine, run, record)) or "").strip():
             # no mailbox connected: a person sends it themselves (the PDF is kept on the record), and the run carries on after
+            # (with nobody to send it to, it's the step's own: not sent, said, and the rule carries on)
             to = str(_render(action["to"], _context(engine, run, record)) or "").strip()
             subject = str(_render(action["subject"], _context(engine, run, record)))
             for key in action.get("attach", []):
@@ -1021,6 +1023,12 @@ def _do(engine, automation, action, record, run):
     if kind == "send_email":
         from ..connectors import microsoft
         to = str(_render(action["to"], ctx) or "").strip()
+        if not to and "{{" in str(action["to"]):  # the address it's sent to is empty (a customer with no email): not sent, said
+            whose = humanize(engine, action["to"], record.table if record is not None else None)
+            what = f"{engine.title(record)}: " if record is not None else ""
+            notify(engine, f"{what}an email wasn't sent (“{_render(action['subject'], ctx)}”): {whose} is empty. Fill it in and send it "
+                           f"from the record.", _link(record.table, record.id) if record is not None else None, "admin", record)
+            return {"result": f"Not emailed: {whose} is empty"}
         if not re.fullmatch(r"[^@\s,;]+@[^@\s,;]+\.[^@\s,;]+(\s*[,;]\s*[^@\s,;]+@[^@\s,;]+\.[^@\s,;]+)*", to):
             raise ValueError(f"“{to or 'nothing'}” isn't an email address to send to")
         cc = str(_render(action.get("cc") or "", ctx) or "").strip()
