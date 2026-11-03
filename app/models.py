@@ -231,6 +231,23 @@ class Run(db.Model):
     finished_at = db.Column(db.DateTime)
 
 
+class FlowRun(db.Model):
+    """Someone part way through a flow (receiving a delivery, a stock count): where they've got to and what they've
+    entered, scanned and counted so far. Nothing reaches the records until they finish."""
+    id = db.Column(db.Integer, primary_key=True)
+    workspace_id = db.Column(db.Integer, nullable=False, index=True)
+    flow = db.Column(db.String(64), nullable=False)
+    record_id = db.Column(db.Integer)  # the record it's about (none yet for one that makes a new record)
+    user_id = db.Column(db.Integer, nullable=False)
+    at = db.Column(db.Integer, default=0)  # the step they're on
+    data = db.Column(db.JSON, default=dict)  # each step's answers, by the step's key
+    status = db.Column(db.String(20), default="open")  # open | done | cancelled
+    result_id = db.Column(db.Integer)  # the record it saved to, once done
+    run_id = db.Column(db.Integer)  # the rule run of its "then" steps
+    created_at = db.Column(db.DateTime, default=utcnow)
+    finished_at = db.Column(db.DateTime)
+
+
 class Approval(db.Model):
     """A person's decision (or a task for them) an automation is waiting for."""
     id = db.Column(db.Integer, primary_key=True)

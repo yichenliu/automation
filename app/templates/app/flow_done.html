@@ -1,0 +1,25 @@
+{% extends "app/layout.html" %}
+{% block title %}{{ flow.label }}: done{% endblock %}
+{% block content %}
+<div class="flow-shell">
+<div class="card card-body stack flow-done">
+  <div class="flow-done-mark">{{ icon('circle-check') }}</div>
+  <h1 class="flow-title">Done{% if record %}: {{ e.title(record) }}{% endif %}</h1>
+  <p class="muted">Everything from “{{ flow.label }}” is saved{% if rule %}{% if rule.status == 'done' %}, and what comes after it has been done{% elif rule.status in ('failed',) %}, but what comes after it stopped: {{ rule.error }}{% else %}; what comes after it is under way{% endif %}{% endif %}.</p>
+  {% for p in prints %}
+    {% if p.url %}<a class="btn" href="{{ p.url }}" target="_blank" rel="noopener" data-flow-print>{{ icon('tag') }}{{ p.label }}</a>
+    {% elif p.lines %}<form method="post" action="{{ url_for('app.bulk', wid=ws.id, table=p.table) }}" target="_blank">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">{% for i in p.lines %}<input type="hidden" name="ids" value="{{ i }}">{% endfor %}
+      <button class="btn" name="action" value="{{ ('labels:' ~ p.doc) if p.doc else 'labels' }}">{{ icon('tag') }}{{ p.label }} ({{ p.lines|length }})</button></form>
+    {% elif p.record %}<form method="post" action="{{ url_for('app.document', wid=ws.id, table=p.record.table, rid=p.record.id, key=p.doc) }}" target="_blank">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn">{{ icon('file-down') }}{{ p.label }}</button></form>{% endif %}
+  {% endfor %}
+  <div class="flow-actions">
+    {% if record %}<a class="btn" href="{{ url_for('app.record', wid=ws.id, table=record.table, rid=record.id) }}">Open the {{ e.tables[record.table].singular|lc }}</a>{% endif %}
+    {% if flow.again and flow.start == 'new' %}<form method="post" action="{{ url_for('app.flow_start', wid=ws.id, key=flow.key) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <button class="btn primary" autofocus>{{ icon('refresh-cw') }}Do another</button></form>
+    {% else %}<a class="btn primary" href="{{ url_for('app.flow_list', wid=ws.id) }}">Done</a>{% endif %}
+  </div>
+</div>
+</div>
+{% endblock %}

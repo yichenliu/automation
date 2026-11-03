@@ -492,4 +492,86 @@
     ev.preventDefault();
     $$(".tree details").forEach((d) => (d.open = all.hasAttribute("data-tree-all")));
   });
+
+  // --- flows: scanning items in, and counting lines off (engine/flows.py keeps what's sent at each step) ------------------
+  const flowForm = $("#flow-form");
+  const beep = (ok) => {
+    try {
+      const a = new (window.AudioContext || window.webkitAudioContext)(), o = a.createOscillator();
+      o.frequency.value = ok ? 880 : 220; o.connect(a.destination); o.start(); o.stop(a.currentTime + (ok ? 0.06 : 0.25));
+    } catch (e) { /* no sound: the screen still says it */ }
+  };
+  if (flowForm && $("[data-flow-scan]", flowForm)) {
+    const answer = $("[data-flow-answer]", flowForm), scanIn = $("[data-flow-scan]", flowForm);
+    const state = JSON.parse(answer.value || "{}"); state.scanned = state.scanned || [];
+    const list = $("[data-flow-scanned]", flowForm), total = $("[data-flow-total]", flowForm);
+    const draw = () => {
+      list.innerHTML = "";
+      state.scanned.forEach((x, i) => {
+        const li = document.createElement("li");
+        li.innerHTML = `<span class="flow-pick-name">${esc(x.title)}</span><span class="flow-pick-count"><button type="button" class="btn sm icon" aria-label="One fewer">−</button><b>${x.qty}</b><button type="button" class="btn sm icon" aria-label="One more">+</button></span>`;
+        const [less, more] = $$("button", li);
+        less.addEventListener("click", () => { x.qty -= 1; if (x.qty <= 0) state.scanned.splice(i, 1); draw(); });
+        more.addEventListener("click", () => { x.qty += 1; draw(); });
+        list.appendChild(li);
+      });
+      const n = state.scanned.reduce((sum, x) => sum + x.qty, 0);
+      total.textContent = n ? `${n} scanned` : "Nothing scanned yet.";
+      answer.value = JSON.stringify(state);
+    };
+    const add = async (code) => {
+      code = code.trim();
+      if (!code) return;
+      const res = await fetch(`${scanIn.dataset.flowScan}?code=${encodeURIComponent(code)}`, {headers: {Accept: "application/json"}});
+      const got = await res.json().catch(() => ({}));
+      if (!res.ok) { beep(false); toast(got.error || `Nothing has the code “${code}”.`, "error"); return; }
+      const same = state.scanned.find((x) => x.id === got.id);
+      if (same && scanIn.dataset.duplicates === "reject") { beep(false); toast(`${got.title} was scanned already.`, "error"); return; }
+      if (same && scanIn.dataset.duplicates === "count") same.qty += 1; else state.scanned.push({id: got.id, title: got.title, qty: 1});
+      beep(true); draw();
+    };
+    scanIn.addEventListener("keydown", (ev) => { if (ev.key === "Enter") { ev.preventDefault(); add(scanIn.value); scanIn.value = ""; } });
+    scanIn.addEventListener("change", () => { if (scanIn.value) { add(scanIn.value); scanIn.value = ""; } });  // the camera fills it in
+    draw();
+  }
+  if (flowForm && $("[data-flow-pick]", flowForm)) {
+    const answer = $("[data-flow-answer]", flowForm), pickIn = $("[data-flow-pick]", flowForm), reason = $("[data-flow-reason]", flowForm);
+    const lines = JSON.parse($("[data-flow-lines]", flowForm).dataset.flowLines || "[]");
+    const state = JSON.parse(answer.value || "{}"); state.counts = state.counts || {};
+    lines.forEach((l) => { if (state.counts[l.id] === undefined) state.counts[l.id] = l.count || 0; });
+    const draw = () => {
+      let short = 0;
+      lines.forEach((l) => {
+        const li = $(`[data-line="${l.id}"]`, flowForm), n = Number(state.counts[l.id] || 0);
+        $("[data-count]", li).textContent = n;
+        li.classList.toggle("met", l.target !== null && n >= l.target);
+        li.classList.toggle("over", l.target !== null && n > l.target);
+        if (l.target !== null && n < l.target) short += 1;
+      });
+      answer.value = JSON.stringify({counts: state.counts, reason: reason ? $("input", reason).value : ""});
+      return short;
+    };
+    const bump = (id, by) => { state.counts[id] = Math.max(0, Number(state.counts[id] || 0) + by); draw(); };
+    $$("[data-line]", flowForm).forEach((li) => {
+      $("[data-more]", li).addEventListener("click", () => bump(li.dataset.line, 1));
+      $("[data-less]", li).addEventListener("click", () => bump(li.dataset.line, -1));
+    });
+    const take = (code) => {
+      const c = code.trim().toLowerCase(), line = lines.find((l) => l.codes.includes(c));
+      if (!line) { beep(false); toast(`“${code.trim()}” isn't on this list.`, "error"); return; }
+      bump(line.id, 1); beep(true);
+      $(`[data-line="${line.id}"]`, flowForm).scrollIntoView({block: "nearest"});
+    };
+    pickIn.addEventListener("keydown", (ev) => { if (ev.key === "Enter") { ev.preventDefault(); take(pickIn.value); pickIn.value = ""; } });
+    pickIn.addEventListener("change", () => { if (pickIn.value) { take(pickIn.value); pickIn.value = ""; } });
+    if (reason) $("input", reason).addEventListener("input", draw);
+    flowForm.addEventListener("submit", (ev) => {
+      const short = draw();
+      if (short && reason && reason.hidden && flowForm.dataset.short === "ask" && ev.submitter?.value === "next") {
+        ev.preventDefault(); reason.hidden = false; $("input", reason).focus();
+        toast(`${short} ${short === 1 ? "line is" : "lines are"} short: say why, then carry on.`, "error");
+      }
+    });
+    draw();
+  }
 })();

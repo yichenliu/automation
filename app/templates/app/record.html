@@ -16,6 +16,7 @@
   </div>
   {% if e.can(t, 'edit') %}
   <div class="row wrap">
+    {% for fl in flows_here or [] %}<form method="post" action="{{ url_for('app.flow_start', wid=ws.id, key=fl.key) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="record" value="{{ r.id }}"><button class="btn primary" title="Step by step, a screen at a time">{{ icon(fl.icon) }}{{ fl.label }}</button></form>{% endfor %}
     {% for a in buttons %}<form method="post" action="{{ url_for('app.press', wid=ws.id, table=t.key, rid=r.id, key=a.key) }}" data-busy><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn primary">{{ icon('zap') }}{{ a.trigger.label }}</button></form>{% endfor %}
     {% for d in documents if d.format != 'label' %}<form method="post" action="{{ url_for('app.document', wid=ws.id, table=t.key, rid=r.id, key=d.key) }}" data-busy="download"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn">{{ icon('file-down') }}{{ (d.label ~ ' PDF') if d.format != 'text' else ('Download the ' ~ d.label|lc) }}</button></form>{% endfor %}
     {% for d in documents if d.format == 'label' %}<a class="btn" href="{{ url_for('app.label', wid=ws.id, table=t.key, rid=r.id, doc=d.key) }}" target="_blank" rel="noopener">{{ icon('tag') }}Print {{ d.label|lc }}</a>{% endfor %}

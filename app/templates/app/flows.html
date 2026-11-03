@@ -1,0 +1,17 @@
+{% extends "app/layout.html" %}{% from "macros.html" import empty_state %}
+{% block title %}Step by step{% endblock %}
+{% block content %}
+<div class="page-head"><div class="titles"><h1>{{ icon('list-todo') }}Step by step</h1><p class="sub">Work done a screen at a time: scan, count, check and sign as you go. Nothing is saved until the last step.</p></div></div>
+{% if started %}<h2 class="h3 mt-1">Carry on where you left off</h2>
+<div class="flow-grid">{% for run, flow in started %}
+  <a class="card card-body flow-card" href="{{ url_for('app.flow_run', wid=ws.id, run_id=run.id) }}">{{ icon(flow.icon) }}<b>{{ flow.label }}</b>
+    <span class="faint small">Step {{ (run.at or 0) + 1 }} of {{ flow.steps|length }} · started {{ run.created_at.strftime('%d %b %H:%M') }}</span></a>
+{% endfor %}</div>{% endif %}
+{% if offered %}<h2 class="h3 mt-1">Start</h2>
+<div class="flow-grid">{% for flow in offered %}
+  <form method="post" action="{{ url_for('app.flow_start', wid=ws.id, key=flow.key) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <button class="card card-body flow-card">{{ icon(flow.icon) }}<b>{{ flow.label }}</b>{% if flow.description %}<span class="faint small">{{ flow.description }}</span>{% endif %}
+      <span class="faint small">{{ flow.steps|rejectattr('kind', 'equalto', 'print')|list|length }} steps</span></button></form>
+{% endfor %}</div>
+{% elif not started %}{{ empty_state('Nothing to do step by step yet', 'Ask the builder for one: “a screen to receive deliveries by scanning each item”, or “a stock count I can do on my phone”.', ico='list-todo') }}{% endif %}
+{% endblock %}

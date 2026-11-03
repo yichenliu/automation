@@ -198,7 +198,7 @@ def _context(engine, run, record, item=None):
     if created:
         last = engine.get(created[-1]["id"])
         names["created"] = RecordProxy(engine, last) if last else None
-    for kind in ("email", "file", "payload"):
+    for kind in ("email", "file", "payload", "flow"):  # what started it: {{email.subject}}; a flow's answers: {{flow.count.reason}}
         names[kind] = _Item((run.context or {}).get(kind)) if (run.context or {}).get(kind) is not None else None
     names["approver"] = (run.context or {}).get("approver")  # who said yes to the run's last approval (its "Approved by")
     names["reason"] = (run.context or {}).get("reason")  # what they wrote when they answered it (why they said no)
@@ -268,10 +268,19 @@ def _render_values(values, ctx):
     return {k: _render(v, ctx) for k, v in values.items()}
 
 
+def find(engine, key):
+    """An automation by its key; "flow:<key>" is a flow's "then" steps, run when someone finishes it."""
+    if str(key).startswith("flow:"):
+        from .flows import as_automation, of
+        flow = of(engine, key[5:])
+        return as_automation(flow) if flow and flow.get("then") else None
+    return next((a for a in engine.bp.get("automations", []) if a["key"] == key), None)
+
+
 def execute(engine, run):
     """Do a run's steps in order, carrying on after the last one it finished. A step's place in the run is its "at": "2",
     or "3.1.0" for the first step of a branch's second path, so a run waiting inside a branch picks up where it was."""
-    automation = next((a for a in engine.bp.get("automations", []) if a["key"] == run.automation), None)
+    automation = find(engine, run.automation)
     if automation is None:
         run.status, run.error, run.finished_at = "skipped", "This automation no longer exists.", utcnow()
         db.session.commit()
@@ -1551,7 +1560,7 @@ def kept_from(engine, approval, record):
 def _carry_on(engine, run):
     run.status, run.next_try = "queued", None
     db.session.commit()
-    automation = next((a for a in engine.bp.get("automations", []) if a["key"] == run.automation), None)
+    automation = find(engine, run.automation)
     if automation and (stand_in.get() is not None or not any(act["type"] in SLOW for act in schema.steps_of(automation["actions"]))):
         execute(engine.system(), run)  # the rule carries on as itself: the person who answered moves records only by its buttons
     return run

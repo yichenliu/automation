@@ -1,0 +1,63 @@
+{% extends "app/layout.html" %}{% from "macros.html" import input %}
+{% block title %}{{ flow.label }}{% endblock %}
+{% block content %}
+<div class="flow-shell">
+<div class="flow-top">
+  <div><span class="faint small">{{ flow.label }}{% if record %} · {{ e.title(record) }}{% endif %}</span>
+    <h1 class="flow-title">{{ step.label }}</h1></div>
+  <span class="pill blue" aria-label="Step {{ number }} of {{ of }}">{{ number }} / {{ of }}</span>
+</div>
+<ol class="flow-dots" aria-hidden="true">{% for n in range(of) %}<li class="{{ 'done' if n + 1 < number }}{{ ' current' if n + 1 == number }}"></li>{% endfor %}</ol>
+{% if errors.get('_') %}<div class="flash error" role="alert">{{ errors.get('_') }}</div>{% endif %}
+<form method="post" enctype="multipart/form-data" class="card card-body stack flow-step" data-flow-step="{{ step.kind }}" data-short="{{ step.short or '' }}" id="flow-form">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  {% if text %}<div class="flow-text">{{ text|markdown }}</div>{% endif %}
+
+  {% if step.kind == 'form' %}
+    <div class="form-grid">{% for k in step.fields %}{% set f = t.fields|selectattr('key', 'equalto', k)|first %}{% if f %}
+      {{ input(e, f, (got.get(k) if got.get(k) is not none else (e.value(record, k) if record else none)), options, errors.get(k), e.members()) }}{% endif %}{% endfor %}</div>
+
+  {% elif step.kind == 'scan' %}
+    <input type="hidden" name="answer" data-flow-answer value='{{ {"scanned": got.get("scanned") or []}|tojson }}'>
+    <div class="row flow-scan-box"><input type="text" class="grow mono flow-scan-input" placeholder="Scan, or type a code" autocomplete="off" autofocus
+      data-flow-scan="{{ url_for('app.flow_code', wid=ws.id, run_id=run.id) }}" data-duplicates="{{ step.duplicates }}" aria-label="Scan a code">
+      <button type="button" class="btn" data-scan>{{ icon('camera') }}Camera</button></div>
+    <ul class="flow-scanned" data-flow-scanned aria-live="polite"></ul>
+    <p class="faint small" data-flow-total></p>
+
+  {% elif step.kind == 'pick' %}
+    <input type="hidden" name="answer" data-flow-answer value='{{ {"counts": got.get("counts") or {}, "reason": got.get("reason") or ""}|tojson }}'>
+    <div class="row flow-scan-box"><input type="text" class="grow mono flow-scan-input" placeholder="Scan, or type a code" autocomplete="off" autofocus data-flow-pick aria-label="Scan an item">
+      <button type="button" class="btn" data-scan>{{ icon('camera') }}Camera</button></div>
+    <ul class="flow-picks" data-flow-lines='{{ lines|tojson }}'>{% for line in lines %}
+      <li data-line="{{ line.id }}"><span class="flow-pick-name">{{ line.title }}</span>
+        <span class="flow-pick-count"><button type="button" class="btn sm icon" data-less aria-label="One fewer">−</button>
+          <b data-count>{{ '%g'|format(line.count) }}</b>{% if line.target is not none %}<span class="faint"> / {{ '%g'|format(line.target) }}</span>{% endif %}
+          <button type="button" class="btn sm icon" data-more aria-label="One more">+</button></span></li>{% else %}<li class="faint">Nothing to count off on this {{ t.singular|lc }}.</li>{% endfor %}</ul>
+    <label class="stack flow-reason" data-flow-reason {{ 'hidden' if not errors.get('reason') }}><span>Why are some short?</span>
+      <input type="text" name="reason" value="{{ got.get('reason') or '' }}" placeholder="Out of stock, damaged, the rest comes Friday…">{% if errors.get('reason') %}<span class="field-error">{{ errors.get('reason') }}</span>{% endif %}</label>
+
+  {% elif step.kind == 'photo' %}
+    <label class="flow-photo"><input type="file" name="photo" accept="image/*" capture="environment" {{ 'multiple' }}>
+      <span class="btn primary">{{ icon('camera') }}Take a photo</span></label>
+    {% if got.get('files') %}<p class="faint small">{{ got.get('files')|length }} photo{{ 's' if got.get('files')|length != 1 }} taken. Take another to replace {{ 'them' if got.get('files')|length != 1 else 'it' }}.</p>{% endif %}
+    {% if step.optional %}<p class="faint small">You can skip this one.</p>{% endif %}
+
+  {% elif step.kind == 'signature' %}
+    <div class="signature" data-signature><canvas width="600" height="200" aria-label="Sign here"></canvas><input type="hidden" name="signature">
+      <button type="button" class="btn sm ghost" data-sig-clear>Clear</button></div>
+
+  {% elif step.kind == 'decide' %}
+    <div class="flow-choices">{% for o in step.options %}
+      <button class="btn {{ 'primary' if loop.first else '' }} flow-choice" name="choice" value="{{ loop.index0 }}">{{ o.label }}</button>{% endfor %}</div>
+
+  {% else %}{% if not text %}<p>Read this, then carry on.</p>{% endif %}{% endif %}
+
+  <div class="flow-actions">
+    {% if not first %}<button class="btn ghost" name="go" value="back" formnovalidate>{{ icon('chevron-left') }}Back</button>{% endif %}
+    <button class="btn ghost" name="go" value="cancel" formnovalidate data-confirm-text="Stop “{{ flow.label }}”? Nothing you've done in it will be saved.">Stop</button>
+    {% if step.kind != 'decide' %}<button class="btn primary flow-next" name="go" value="next">{{ 'Finish' if number == of else 'Next' }}{{ icon('chevron-right') }}</button>{% endif %}
+  </div>
+</form>
+</div>
+{% endblock %}

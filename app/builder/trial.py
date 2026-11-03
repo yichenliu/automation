@@ -303,11 +303,68 @@ def walk(trial, screens=True):
             db.session.rollback()
         engine.reset()
     issues += _documents(engine, made, crashes)
+    issues += _flows(trial, engine, made, crashes)
     issues += failed_runs(engine)
     issues += _bare(trial, engine, made, crashes)
     if screens:
         crashes += _screens(trial, engine, made)
     return {"issues": _unique(issues), "crashes": crashes, "made": made}
+
+
+def _flows(trial, engine, made, crashes):
+    """Each flow done once, as someone on the floor would: the form filled in, the first thing scanned, every line
+    counted to its target, a photo and a signature, the first button. One that can't be finished is found here."""
+    from ..engine import flows
+    from ..storage import save
+    out = []
+    for flow in schema.flows(engine.bp):
+        t = engine.tables.get(flow["table"])
+        record = engine.get(made[flow["table"]]) if flow["start"] == "record" and made.get(flow["table"]) else None
+        if t is None or (flow["start"] == "record" and record is None):
+            continue
+        try:
+            run = flows.begin(engine.system() if flow.get("who") else engine, flow, trial.owner_id, record)
+            sample = sample_values(engine, t, trial.owner_id, made, 50)
+            for step in flow["steps"]:
+                kind, values, files = step["kind"], {}, []
+                if kind == "form":
+                    values = {k: sample.get(k) for k in step["fields"]}
+                elif kind == "scan":
+                    item = schema.field(engine.tables[step["into"]["table"]], step["into"]["item"])
+                    if item and made.get(item["table"]):
+                        values = {"scanned": [{"id": made[item["table"]], "qty": 2}]}
+                elif kind == "pick":
+                    values = {"counts": {str(x["id"]): x["target"] or 1 for x in flows.pick_lines(engine, flow, step, flows.record_of(engine, run))}}
+                elif kind in ("photo", "signature"):
+                    files = [save(engine.ws.id, _PIXEL, f"{step['label']}.png", by="Tried out", mime="image/png").id]
+                elif kind == "decide":
+                    values = {"choice": 0}
+                elif kind in ("info", "print"):
+                    continue
+                errors = flows.answer(engine, run, step, values, files)
+                if errors:
+                    out.append(_issue("fix", f"The flow {flow['key']} can't get past its step {step['key']} with ordinary answers: "
+                                             f"{'; '.join(errors.values())}",
+                                      f"“{flow['label']}” can't get past “{step['label']}”: {'; '.join(errors.values())}", flow["table"]))
+                    break
+                if kind == "decide" and step["options"][0].get("finish"):
+                    break
+            else:
+                flows.finish(engine, run, "Tried out")
+        except FieldErrors as exc:
+            db.session.rollback()
+            said = "; ".join(exc.errors.values())
+            out.append(_issue("fix", f"Finishing the flow {flow['key']} was refused: {said}",
+                              f"“{flow['label']}” can't be finished: {said}", flow["table"]))
+        except Exception as exc:  # noqa: BLE001 - a fault of ours, noted
+            db.session.rollback()
+            crashes.append(f"doing the flow {flow['key']}: {type(exc).__name__}: {exc}")
+        engine.reset()
+    return out
+
+
+_PIXEL = bytes.fromhex("89504e470d0a1a0a0000000d4948445200000001000000010806000000"
+                       "1f15c4890000000d49444154789c6360f8cfc0f01f0005000201e2f0bb9e0000000049454e44ae426082")
 
 
 def _bare(trial, engine, made, crashes):

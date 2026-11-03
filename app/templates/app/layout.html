@@ -14,7 +14,7 @@
       {% for section in nav_for(ws) %}
         {% if section.label %}<div class="section">{{ section.label }}</div>{% endif %}
         {% for item in section['items'] %}
-          {% set href = url_for('app.page', wid=ws.id, key=item.key) if item.kind == 'page' else url_for('app.table', wid=ws.id, table=item.key) %}
+          {% set href = url_for('app.page', wid=ws.id, key=item.key) if item.kind == 'page' else url_for('app.flow_list', wid=ws.id) if item.kind == 'flows' else url_for('app.table', wid=ws.id, table=item.key) %}
           <a href="{{ href }}" class="{{ 'active' if here == href or here.startswith(href ~ '/') }}">{{ icon(item.icon) }}<span class="ellipsis">{{ item.label }}</span></a>
         {% endfor %}
       {% else %}<p class="faint small pad">Nothing here yet.</p>{% endfor %}

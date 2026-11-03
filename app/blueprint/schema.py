@@ -1420,6 +1420,142 @@ def normalize_widget(raw):
     return widget
 
 
+FLOW_STEPS = ["info", "form", "scan", "pick", "photo", "signature", "decide", "print"]
+FLOW_STEP_ALIASES = {"show": "info", "text": "info", "message": "info", "instructions": "info", "fields": "form", "fill": "form",
+                     "inputs": "form", "ask": "form", "scan_items": "scan", "scanning": "scan", "barcode": "scan", "count": "pick",
+                     "pick_list": "pick", "picklist": "pick", "check_off": "pick", "checklist": "pick", "picture": "photo",
+                     "image": "photo", "camera": "photo", "sign": "signature", "signoff": "signature", "choice": "decide",
+                     "choose": "decide", "branch": "decide", "buttons": "decide", "approve": "decide", "label": "print",
+                     "print_label": "print", "print_labels": "print", "document": "print"}
+
+
+def normalize_flow(raw):
+    """A flow: work done step by step on a phone or at a bench (receiving a delivery, picking an order, a stock count,
+    a return), each step one screen: read, fill in, scan, count off, take a photo, sign, decide, print. It's about one
+    record of "table": the one it's started from ("start": "record", a button on it), or one it makes when it's done
+    ("start": "new", from the menu). Nothing is saved until the last step; then the record gets what was filled in,
+    scanned items become its lines, counts go on its lines, and "then" runs (rule steps, with {{flow.step.x}})."""
+    if not isinstance(raw, dict):
+        raise SchemaError("a flow must be an object")
+    label = str(_first(raw, "label", "name", "title", default="")).strip()
+    key = slug(_first(raw, "key", "id", default=label or "flow"))
+    table = slug(_first(raw, "table", "about", "record", "on", default=""))
+    if not table:
+        raise SchemaError(f"the flow “{label or key}” needs the \"table\" whose record it works on")
+    start = slug(str(_first(raw, "start", "starts", "from", "mode", default="record")))
+    start = "new" if start in ("new", "create", "menu", "nav", "add", "creates", "makes") else "record"
+    flow = {"key": key, "label": label or label_of(key), "table": table, "start": start,
+            "icon": icons.resolve(raw.get("icon")) or "list-todo",
+            "steps": [normalize_flow_step(s, n) for n, s in enumerate(_list(_first(raw, "steps", "screens", "pages", default=[])), start=1)]}
+    if not flow["steps"]:
+        raise SchemaError(f"the flow “{flow['label']}” needs \"steps\": what's done on each screen")
+    keys_ = [s["key"] for s in flow["steps"]]
+    for k in {k for k in keys_ if keys_.count(k) > 1}:
+        raise SchemaError(f"the flow “{flow['label']}” has two steps called “{k}”")
+    about = str(_first(raw, "description", "about", "help", default="")).strip()
+    if about:
+        flow["description"] = about[:300]
+    when = _first(raw, "when", "only_if", "show_if", "conditions")
+    if when and start == "record":  # the button shows only while these hold (Receive goods once the order is sent)
+        flow["when"] = [normalize_condition(c) for c in _list(when)]
+    who = _first(raw, "who", "for", "teams", "roles", "access")
+    if who:
+        flow["who"] = [_person(x) for x in (_list(who) if not isinstance(who, str) else [who])][:8]
+    then = [normalize_action(a) for a in _list(_first(raw, "then", "on_finish", "finish", "after", "actions", default=[]))]
+    if then:
+        flow["then"] = then
+    if _first(raw, "again", "repeat", "do_another", "restart") in (True, "true", "yes", 1):
+        flow["again"] = True  # "Do another" when it's done: one delivery after another
+    return flow
+
+
+def normalize_flow_step(raw, n=1):
+    if not isinstance(raw, dict):
+        raise SchemaError("a flow's step must be an object")
+    kind_raw = slug(str(_first(raw, "kind", "type", "step", "do", default="")))
+    kind = FLOW_STEP_ALIASES.get(kind_raw, kind_raw)
+    if kind not in FLOW_STEPS:
+        raise SchemaError(f"“{kind_raw}” isn't a kind of flow step; use one of: {', '.join(FLOW_STEPS)}")
+    label = str(_first(raw, "label", "title", "name", "heading", default="")).strip()
+    step = {"key": slug(_first(raw, "key", "id", default=label or f"{kind}_{n}")), "kind": kind,
+            "label": label or {"info": "Read this", "form": "Fill in", "scan": "Scan", "pick": "Count off", "photo": "Take a photo",
+                               "signature": "Sign", "decide": "Decide", "print": "Print"}[kind]}
+    text = _first(raw, "text", "help", "instructions", "body", "message")
+    if text:
+        step["text"] = str(text)[:2000]
+    if kind == "form":
+        step["fields"] = [slug(f if not isinstance(f, dict) else _first(f, "key", "field", "name"))
+                          for f in (_names(_first(raw, "fields", "inputs", default=[])) if isinstance(_first(raw, "fields", "inputs"), str)
+                                    else _list(_first(raw, "fields", "inputs", default=[])))][:12]
+        if not step["fields"]:
+            raise SchemaError(f"the flow step “{step['label']}” needs \"fields\" to fill in")
+    elif kind == "scan":  # each code scanned finds a record ("find"), and they become lines of the flow's record
+        into = _first(raw, "into", "lines", "makes", "creates", default={})
+        if not isinstance(into, dict) or not _first(into, "table"):
+            raise SchemaError(f"the flow step “{step['label']}” needs \"into\": {{table, via, item, quantity}}: the lines scanned items become")
+        step["into"] = {"table": slug(_first(into, "table")), "via": slug(_first(into, "via", "link", "parent", default="")),
+                        "item": slug(_first(into, "item", "field", "product", "link_to", default=""))}
+        quantity = _first(into, "quantity", "qty", "count", "amount")
+        if quantity:
+            step["into"]["quantity"] = slug(quantity)
+        same = slug(str(_first(raw, "duplicates", "same_twice", "repeat", default="count")))
+        step["duplicates"] = {"reject": "reject", "no": "reject", "unique": "reject", "serials": "reject", "allow": "allow",
+                              "separate": "allow"}.get(same, "count")  # scanning the same twice counts two of it
+        least = to_number_safe(_first(raw, "min", "at_least", "minimum"))
+        if least:
+            step["min"] = int(least)
+    elif kind == "pick":  # the record's lines, each to be counted off to a target, by scanning or by tapping
+        lines = _first(raw, "lines", "items", "of", default={})
+        if not isinstance(lines, dict) or not _first(lines, "table"):
+            raise SchemaError(f"the flow step “{step['label']}” needs \"lines\": {{table, via}}: the lines to count off")
+        step["lines"] = {"table": slug(_first(lines, "table")), "via": slug(_first(lines, "via", "link", "parent", default=""))}
+        for name, keys in (("target", ("target", "quantity", "qty", "ordered", "expected")), ("count_into", ("count_into", "save_to", "into", "received", "counted")),
+                           ("code", ("code", "barcode", "scan", "code_field", "match"))):
+            value = _first(raw, *keys)
+            if value:
+                step[name] = ".".join(slug(p) for p in str(value).split("."))
+        if not step.get("count_into"):
+            raise SchemaError(f"the flow step “{step['label']}” needs \"count_into\": the number field of each line the count is saved in")
+        short = slug(str(_first(raw, "short", "less", "under", default="ask")))
+        step["short"] = {"block": "block", "no": "block", "never": "block", "allow": "allow", "yes": "allow"}.get(short, "ask")
+    elif kind in ("photo", "signature"):
+        f = _first(raw, "field", "save_to", "into", default="")
+        if not f:
+            raise SchemaError(f"the flow step “{step['label']}” needs \"field\": where the {kind} is kept")
+        step["field"] = slug(f)
+        if raw.get("optional") in (True, "true", "yes", 1) or raw.get("required") in (False, "false", "no", 0):
+            step["optional"] = True
+    elif kind == "decide":  # buttons: each sets a field ("decision": Accept / Reject) and may end the flow there
+        step["field"] = slug(_first(raw, "field", "save_to", "sets", default=""))
+        options = []
+        for o in _list(_first(raw, "options", "buttons", "choices", default=[])):
+            o = {"label": o} if isinstance(o, str) else o
+            if isinstance(o, dict) and _first(o, "label", "value"):
+                choice = {"label": str(_first(o, "label", "value"))[:60], "value": str(_first(o, "value", "label"))[:120]}
+                if _first(o, "finish", "end", "done", "stop") in (True, "true", "yes", 1):
+                    choice["finish"] = True
+                options.append(choice)
+        if len(options) < 2:
+            raise SchemaError(f"the flow step “{step['label']}” needs two or more \"options\" (buttons)")
+        step["options"] = options[:4]
+    elif kind == "print":  # on the last screen, once everything's saved: the record's label or document, or each line's
+        step["document"] = slug(_first(raw, "document", "label", "template", "doc", default=""))
+        of = _first(raw, "of", "for", "lines", default="record")
+        step["of"] = "record" if str(of).lower() in ("record", "it", "this", "") else slug(of)
+    return step
+
+
+def to_number_safe(value):
+    try:
+        return float(value) if value not in (None, "") else None
+    except (TypeError, ValueError):
+        return None
+
+
+def flows(bp):
+    return list(bp.get("flows") or [])
+
+
 def normalize_page(raw):
     if not isinstance(raw, dict):
         raise SchemaError("a page must be an object")
@@ -2088,9 +2224,12 @@ def _check_conditions(conditions, t, where, problems, tables):
 CONTEXT = {"record", "created", "item", "email", "file", "payload", "today", "now", "approver", "reason"}  # names automation values can use besides fields ("approver": who said yes; "reason": what they wrote answering)
 
 
+_MORE_CONTEXT = contextvars.ContextVar("more_context", default=frozenset())  # {{flow.…}}, while a flow's "then" is checked
+
+
 def _check_template(text, where, problems, context_fields):
     for m in expr.TEMPLATE.finditer(text or ""):
-        _check_expression(m.group(1), set(context_fields) | CONTEXT, where, problems, record_fields=set(context_fields))
+        _check_expression(m.group(1), set(context_fields) | CONTEXT | _MORE_CONTEXT.get(), where, problems, record_fields=set(context_fields))
 
 
 def _check_values(values, target, where, problems, context_fields):
@@ -2894,4 +3033,84 @@ def _check_all(bp):
             _check_conditions(w.get("filters"), t, where, problems, tables)
     for a in bp.get("automations", []):
         _check_automation(a, tables, problems, documents, bp.get("pages", []), automations)
+    keys_ = [f["key"] for f in flows(bp)]
+    for key in {k for k in keys_ if keys_.count(k) > 1}:
+        problems.append(f"there are two flows called “{key}”")
+    for flow in flows(bp):
+        _check_flow(flow, tables, documents, problems, bp.get("pages", []), automations)
     return problems
+
+
+def _line_link(lines_table, parent):
+    """The link of a line table to its parent, when there's only one."""
+    links = [f["key"] for f in lines_table["fields"] if f["type"] == "link" and f.get("table") == parent]
+    return links[0] if len(links) == 1 else None
+
+
+def _check_flow(flow, tables, documents, problems, bp_pages=(), automations=None):
+    where = f"the flow “{flow['label']}”"
+    t = tables.get(flow["table"])
+    if t is None:
+        problems.append(f"{where} works on “{flow['table']}”, which isn't a table")
+        return
+    keys = {f["key"]: f for f in t["fields"]}
+    for step in flow["steps"]:
+        at = f"{where}, step “{step['label']}”"
+        kind = step["kind"]
+        if kind == "form":
+            for k in step["fields"]:
+                if k not in keys or keys[k]["type"] not in (STORED - {"autonumber"}) | FILES | {"signature"}:
+                    problems.append(f"{at}: “{k}” isn't a field of {t['label']} people fill in")
+        elif kind in ("scan", "pick"):
+            spec = step["into"] if kind == "scan" else step["lines"]
+            lines = tables.get(spec["table"])
+            if lines is None:
+                problems.append(f"{at}: “{spec['table']}” isn't a table")
+                continue
+            spec["via"] = spec["via"] or _line_link(lines, t["key"]) or ""
+            via = field(lines, spec["via"])
+            if via is None or via["type"] != "link" or via.get("table") != t["key"]:
+                problems.append(f"{at}: {lines['label']} needs a link to {t['label']} (\"via\")")
+            if kind == "scan":
+                spec["item"] = spec["item"] or next((f["key"] for f in lines["fields"] if f["type"] == "link" and f["key"] != spec["via"]), "")
+                item = field(lines, spec["item"])
+                if item is None or item["type"] != "link" or item.get("table") not in tables:
+                    problems.append(f"{at}: {lines['label']} needs a link to what's scanned (\"item\")")
+                if spec.get("quantity") and (field(lines, spec["quantity"]) or {}).get("type") not in ("number",):
+                    problems.append(f"{at}: the quantity “{spec['quantity']}” must be a number field of {lines['label']}")
+            else:
+                if step.get("target") and (field(lines, step["target"]) or {}).get("type") not in ("number", "formula", "rollup", "lookup"):
+                    problems.append(f"{at}: the target “{step['target']}” must be a number field of {lines['label']}")
+                if step.get("count_into") and (field(lines, step["count_into"]) or {}).get("type") != "number":
+                    problems.append(f"{at}: the count is saved in “{step['count_into']}”, which must be a number field of {lines['label']}")
+                if step.get("code"):
+                    first, _, rest = step["code"].partition(".")
+                    f = field(lines, first)
+                    if f is None or (rest and (f["type"] != "link" or not field(tables.get(f.get("table")) or {"fields": []}, rest))):
+                        problems.append(f"{at}: the code “{step['code']}” isn't a field of {lines['label']} (or of what it links to)")
+        elif kind == "photo" and (keys.get(step["field"]) or {}).get("type") not in FILES:
+            problems.append(f"{at}: the photo is kept in “{step['field']}”, which must be an image or file field of {t['label']}")
+        elif kind == "signature" and (keys.get(step["field"]) or {}).get("type") != "signature":
+            problems.append(f"{at}: the signature is kept in “{step['field']}”, which must be a signature field of {t['label']}")
+        elif kind == "decide" and step.get("field"):
+            f = keys.get(step["field"])
+            if f is None or f["type"] not in ("select", "text", "checkbox"):
+                problems.append(f"{at}: the choice is kept in “{step['field']}”, which must be a choice or text field of {t['label']}")
+            elif f["type"] == "select":
+                for o in step["options"]:
+                    if o["value"] not in (f.get("options") or []):
+                        problems.append(f"{at}: “{o['value']}” isn't a choice of {f['label']} ({', '.join(f.get('options') or [])})")
+        elif kind == "print":
+            owner = t["key"] if step["of"] == "record" else next(
+                (s2.get("into", s2.get("lines", {})).get("table") for s2 in flow["steps"] if s2["key"] == step["of"]), step["of"])
+            if step["document"] and step["document"] not in documents.get(owner, {}):
+                problems.append(f"{at}: “{step['document']}” isn't a label or document of {(tables.get(owner) or {}).get('label', owner)}")
+    if flow.get("when"):
+        _check_conditions(flow["when"], t, where, problems, tables)
+    if flow.get("then"):
+        token = _MORE_CONTEXT.set(frozenset({"flow"}))
+        try:
+            _check_automation({"key": f"flow_{flow['key']}", "name": flow["label"], "trigger": {"type": "button", "table": t["key"]},
+                               "conditions": [], "actions": flow["then"]}, tables, problems, documents, bp_pages, automations)
+        finally:
+            _MORE_CONTEXT.reset(token)

@@ -110,6 +110,25 @@ to change) · file drop zones · a signature pad · camera
 scanning · "where I am" · step-by-step forms · out-of-date save protection · AI document intake (PDF, photo, Word,
 email) with "check this" highlights · public forms with a robot trap and rate limits.
 
+## On the floor: flows, labels and scanning
+
+✅ **Flows**: work done a screen at a time on a phone or at a bench (receiving a delivery, picking an order, a stock
+count, a return), started from a record's button while it's at the right point or from "Step by step" in the menu,
+kept to the teams it's for. Steps: read (with the record's details), fill in, scan items in (each code found by its
+barcode, number or name; the same twice counts two, or is refused for serial numbers), count lines off to their target
+(scan or tap + and −; a line turns green when it's all there; a short count asks why), take a photo, sign, decide
+(buttons that set a field and can end the flow there), print. Nothing is saved until the last step; then the record
+gets what was filled in, scanned items become its lines, counts go on its lines, photos and signatures are kept with it,
+labels print, and the flow's own rule steps run with what was entered. Left part way, it waits to be carried on.
+The builder makes them; every try-out does each flow once.
+
+✅ **Labels**: any record's label (its name, a few details the reader may see, and its barcode, or a QR code that opens
+it), for label printers (62 × 29, 50 × 25, 62 × 100 mm, 4 × 6 in shipping) or sheets (A4 21, Letter 30); a list's own
+label designs (which details, which barcode, one per box received); many at once from a list or a flow.
+
+✅ **Scanning**: a camera button beside search opens whatever a code is (one of the app's labels, a barcode, a record's
+number); a USB or Bluetooth scanner typing into search does the same; barcode fields scan with the camera.
+
 ## Screens: pages and dashboards
 
 ✅ A four-column layout where each widget takes 1–4 columns · heading · number (with comparison to the same point last
@@ -247,7 +266,7 @@ These are deliberate gaps, listed so nothing is assumed:
   The API and webhooks connect to them today, but there's no ready-made connector.
 - **Languages:** the screens are in English; dates show as 3 Nov 2026.
 - **Offline use:** the app installs on a phone but needs a connection.
-- **Smaller pieces:** swimlanes on boards, merging duplicate records, printing barcode labels, steps that run in
+- **Smaller pieces:** swimlanes on boards, merging duplicate records, steps that run in
   parallel inside one automation (several approvers at once is built; other parallel work goes in separate automations),
   a drawn diagram of an automation (it's shown as an indented tree), email verification when outside people sign up by
   themselves (the business verifies them before trading instead).

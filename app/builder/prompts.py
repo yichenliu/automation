@@ -166,6 +166,20 @@ Labels to stick on things (a product's or bin's barcode, an asset tag, a job car
   "label", "fields" (up to 5 details), "code_field" (the barcode field it encodes; without one a QR code that opens the
   record), "copies_field" (a number: one label per box received), "size" ("62x29", "50x25", "62x100", "100x150" for
   shipping, "a4_21", "letter_30"). Only when the owner wants their own: every list already prints a plain label.
+Flows (work done a screen at a time on a phone or at a bench: receiving a delivery, picking an order, a stock count, a
+  return, an inspection, a hand-over): add_flow {{"flow": {{"key", "label", "table" (the record it works on), "start":
+  "record" (a button on the record, shown while "when" holds: Receive goods on a Sent order) or "new" (from the menu, it
+  makes a record of "table" when done: a Stock count), "who": [teams or roles], "again": true (offer "Do another"), "steps":
+  [...], "then": [automation steps run when it's done, with {{{{flow.<step key>.choice}}}}, .reason, .count, .items]}}}}.
+  Steps, each one screen: "info" {{text, with {{{{record.x}}}}}}; "form" {{fields: [fields of the table]}}; "scan" {{into:
+  {{table: the lines scanned items become, via, item: the line's link to what's scanned, quantity}}, duplicates: "count"
+  (the same twice is two) | "reject" (serial numbers) | "allow"}}; "pick" {{lines: {{table, via}}, target: the quantity
+  field, count_into: the number field the count is saved in, code: the barcode to scan ("product.sku"), short: "ask"
+  (say why) | "block" | "allow"}}; "photo" {{field: an image or file field}}; "signature" {{field: a signature field}};
+  "decide" {{field, options: [{{label, value, finish: true to end there}}]}}; "print" {{document: a label or PDF, of:
+  "record" or a scan/pick step's key for its lines}} (printed once it's saved). Nothing is saved until the last step;
+  then the form's fields and choices go on the record, scanned items become lines, counts go on the lines, and "then"
+  runs. Make a flow when work happens on the floor in steps with scanning or counting; a form is enough otherwise.
 Public forms (a link anyone can fill in: enquiries, bookings, job requests): set_public_form {{table, form: {{title, intro,
   fields: [...], success}}}}. Each answer becomes a record.
 Filters and conditions: {{"field": "status", "op": "equals", "value": "Active"}}; every one in a list must hold, and
@@ -524,7 +538,8 @@ _PAGE = {"type": "object", "required": ["key", "label", "widgets"], "properties"
 _LISTING = {"type": "object", "properties": {"label": _STRING, "table": _STRING, "via": _STRING, "columns": _STRINGS,
                                             "filters": _CONDITIONS, "total": _STRING, "subtract": {"type": "boolean"}}}
 _DOCUMENT = {"type": "object", "required": ["key", "label", "title"], "properties": {
-    "key": _STRING, "label": _STRING, "title": _STRING, "format": {"type": "string", "enum": ["pdf", "text"]}, "extension": _STRING,
+    "key": _STRING, "label": _STRING, "title": _STRING, "format": {"type": "string", "enum": ["pdf", "text", "label"]}, "extension": _STRING,
+    "size": _STRING, "code_field": _STRING, "copies_field": _STRING, "title_field": _STRING, "code": {"type": "string", "enum": ["barcode", "qr"]},
     "header": _STRING, "line": _STRING, "footer": _STRING, "number_field": _STRING, "fields": _STRINGS,
     "to": {"type": "object", "properties": {"field": _STRING, "label": _STRING, "details": _STRINGS}}, "details": _STRINGS,
     "lines": _LISTING, "sections": {"type": "array", "items": _LISTING}, "totals": _STRINGS, "net": _STRING,
@@ -556,13 +571,24 @@ DEFS = {"condition": {"type": "object", "properties": {  # a plain condition, or
         "step": _ACTION}
 _AUTOMATION = {"type": "object", "required": ["key", "name", "trigger", "actions"], "properties": {
     "key": _STRING, "name": _STRING, "trigger": _TRIGGER, "conditions": _CONDITIONS, "actions": _STEPS}}
+_FLOW_STEP = {"type": "object", "required": ["kind"], "properties": {
+    "key": _STRING, "kind": {"type": "string", "enum": schema.FLOW_STEPS}, "label": _STRING, "text": _STRING, "fields": _STRINGS,
+    "into": {"type": "object", "properties": {"table": _STRING, "via": _STRING, "item": _STRING, "quantity": _STRING}},
+    "duplicates": {"type": "string", "enum": ["count", "reject", "allow"]},
+    "lines": {"type": "object", "properties": {"table": _STRING, "via": _STRING}}, "target": _STRING, "count_into": _STRING,
+    "code": _STRING, "short": {"type": "string", "enum": ["ask", "block", "allow"]}, "field": _STRING, "optional": {"type": "boolean"},
+    "options": {"type": "array", "items": {"type": "object", "properties": {"label": _STRING, "value": _STRING, "finish": {"type": "boolean"}}}},
+    "document": _STRING, "of": _STRING}}
+_FLOW = {"type": "object", "required": ["label", "table", "steps"], "properties": {
+    "key": _STRING, "label": _STRING, "table": _STRING, "start": {"type": "string", "enum": ["record", "new"]}, "description": _STRING,
+    "when": _CONDITIONS, "who": _STRINGS, "again": {"type": "boolean"}, "steps": {"type": "array", "items": _FLOW_STEP}, "then": _STEPS}}
 _OP = {"type": "object", "required": ["op"], "properties": {  # a table's fields before the sections and views that arrange them
     "op": {"type": "string", "enum": ops.OPS}, "table": _STRING, "key": _STRING, "label": _STRING, "singular": _STRING,
     "module": _STRING, "icon": _STRING, "embedded": {"type": "boolean"}, "title_field": _STRING, "description": _STRING,
     "fields": {"type": "array", "items": _FIELD}, "field": _FIELD, "changes": {"type": "object"},
     "sections": {"type": "array", "items": {"type": "object", "properties": {"label": _STRING, "fields": _STRINGS, "show_if": _CONDITIONS}}},
     "view": _VIEW, "views": {"type": "array", "items": _VIEW}, "page": _PAGE, "document": _DOCUMENT,
-    "documents": {"type": "array", "items": _DOCUMENT}, "form": _FORM, "automation": _AUTOMATION, "name": _STRING,
+    "documents": {"type": "array", "items": _DOCUMENT}, "form": _FORM, "automation": _AUTOMATION, "flow": _FLOW, "name": _STRING,
     "team": {"type": "object", "required": ["key", "name"], "properties": {"key": _STRING, "name": _STRING, "about": _STRING}},
     "theme": {"type": "object", "properties": {"accent": _STRING, "density": {"type": "string", "enum": schema.DENSITIES}}},
     "records": {"type": "array", "items": {"type": "object"}}, "file_id": {"type": "integer"}, "sheet": _STRING,
@@ -745,6 +771,10 @@ def outline(bp, counts, extra=""):
         lines.append(f"\nPortal: {json.dumps(portal, ensure_ascii=False)}")
     if schema.teams(bp):
         lines.append("\nTeams: " + ", ".join(f"{tm['key']} \"{tm['name']}\"" for tm in schema.teams(bp)))
+    if bp.get("flows"):
+        lines.append("\nFlows (full JSON, needed to update one):")
+        for f in bp["flows"]:
+            lines.append("  " + json.dumps(f, ensure_ascii=False))
     if bp.get("automations"):
         lines.append("\nAutomations (full JSON, needed to update one):")
         for a in bp["automations"]:

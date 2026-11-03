@@ -611,6 +611,7 @@ def record(wid, table, rid):
                            teams={tm["key"]: tm["name"] for tm in schema.teams(engine.bp)},
                            lines=lines, history=history, runs=runs, buttons=buttons, approvals=approvals, comments=comments,
                            files=files, member=member, documents=[d for d in t.get("documents", []) if not d.get("only_if") or engine.matches(r, d["only_if"])],
+                           flows_here=_flows_here(engine, r),
                            inline=INLINE, locked=locked, path=main_path(t, stage) if stages else [],
                            tint=engine.colours(t, r) if t.get("colors") else None,
                            tint_why=next((automations.describe_condition(engine, c, t["key"]) for rule in t.get("colors", []) if not rule.get("field")
@@ -1275,6 +1276,11 @@ def label(wid, table, rid):
     t = _table(engine, table)
     r = _record(engine, t, rid)
     return _labels_pdf(engine, t, [r], request.args.get("doc") or None, request.args.get("size"))
+
+
+def _flows_here(engine, r):
+    from ..engine import flows
+    return flows.for_record(engine, r) if engine.bp.get("flows") else []
 
 
 def _labels_pdf(engine, t, rows, key, size):

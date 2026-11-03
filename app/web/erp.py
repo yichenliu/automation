@@ -53,7 +53,15 @@ def nav(ws):
     loose += [{"kind": "table", "key": t["key"], "label": t["label"], "icon": t.get("icon") or "table"} for t in tables if ("table", t["key"]) not in used]
     if loose:
         sections.insert(0, {"label": None, "items": loose})
+    if (engine is not None and engine.ws.id == ws.id and bp_.get("flows")) and _flows_offered(engine):
+        sections.insert(0, {"label": None, "items": [{"kind": "flows", "key": "flows", "label": "Step by step", "icon": "list-todo"}]})
     return sections
+
+
+def _flows_offered(engine):
+    """Whether "Step by step" is in this person's menu: a flow they can start from it, or one they left part way."""
+    from ..engine import flows
+    return bool(flows.in_menu(engine)) or bool(flows.unfinished(engine, current_user.id))
 
 
 def unread(ws):
@@ -109,4 +117,4 @@ def source_url(ws, link):
     return target_url(ws, link)
 
 
-from . import erp_ai, erp_learn, erp_pages, erp_records  # noqa: E402,F401 (they add their routes to bp)
+from . import erp_ai, erp_flows, erp_learn, erp_pages, erp_records  # noqa: E402,F401 (they add their routes to bp)

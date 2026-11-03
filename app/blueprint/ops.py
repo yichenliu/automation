@@ -15,7 +15,7 @@ from .schema import SchemaError, _first, _list, slug
 OPS = ["set_portal", "set_team", "create_table", "update_table", "delete_table", "add_field", "update_field", "remove_field", "add_view",
        "update_view", "remove_view", "add_page", "update_page", "remove_page", "add_automation", "update_automation",
        "remove_automation", "set_module", "rename_app", "set_theme", "add_document", "update_document", "remove_document",
-       "set_public_form", "add_records", "import_file", "find"]
+       "set_public_form", "add_records", "import_file", "find", "add_flow", "update_flow", "remove_flow"]
 OP_ALIASES = {"add_table": "create_table", "new_table": "create_table", "create_tables": "create_table",
               "edit_table": "update_table", "rename_table": "update_table", "drop_table": "delete_table", "remove_table": "delete_table",
               "create_field": "add_field", "new_field": "add_field", "add_column": "add_field", "add_fields": "add_field",
@@ -34,7 +34,9 @@ OP_ALIASES = {"add_table": "create_table", "new_table": "create_table", "create_
               "add_team": "set_team", "create_team": "set_team", "update_team": "set_team", "team": "set_team",
               "add_role": "set_team", "create_role": "set_team", "add_group": "set_team",
               "insert_records": "add_records", "add_data": "add_records", "query": "find", "search": "find", "list_records": "find",
-              "import": "import_file", "import_spreadsheet": "import_file", "import_records": "import_file", "load_file": "import_file"}
+              "import": "import_file", "import_spreadsheet": "import_file", "import_records": "import_file", "load_file": "import_file",
+              "create_flow": "add_flow", "add_guided_flow": "add_flow", "add_process": "add_flow", "edit_flow": "update_flow",
+              "delete_flow": "remove_flow", "add_workflow_screens": "add_flow", "add_station": "add_flow"}
 
 
 @dataclass
@@ -165,6 +167,8 @@ def _named(raw):
              "add_document": f"the document for {table}", "update_document": f"the change to the document for {table}",
              "set_public_form": f"the public form for {table}", "set_portal": "the customer portal",
              "add_records": f"the sample {table.lower()}",
+             "add_flow": f"the steps for {_first(raw.get('flow') if isinstance(raw.get('flow'), dict) else raw, 'label', 'name', 'key', default='the new work')}",
+             "update_flow": f"the change to the steps for {_first(raw.get('flow') if isinstance(raw.get('flow'), dict) else raw, 'label', 'name', 'key', default='it')}",
              "import_file": f"bringing the rows into {table}" if _first(raw, "table") else "bringing in the spreadsheet's rows"}
     return thing.get(op) or (op.replace("_", " ") if op else "a change")
 
@@ -1629,6 +1633,25 @@ def _apply_one(bp, op, raw, result, where):
             bp["pages"].append(page)
             changes.append(f"Added the page {page['label']} ({len(page['widgets'])} widgets)")
         result.navigate = result.navigate or f"page:{page['key']}"
+    elif op in ("add_flow", "update_flow"):
+        flow = schema.normalize_flow(_first(raw, "flow", default={k: v for k, v in raw.items() if k != "op"}))
+        current = bp.setdefault("flows", [])
+        existing = next((f for f in current if f["key"] == flow["key"]), None)
+        if existing:
+            current[current.index(existing)] = flow
+            changes.append(f"Changed the steps for {flow['label']} ({len(flow['steps'])} steps)")
+        elif op == "update_flow":
+            raise SchemaError(f"there's no flow “{flow['key']}”")
+        else:
+            current.append(flow)
+            changes.append(f"Added the steps for {flow['label']} ({len(flow['steps'])} steps, one screen each)")
+    elif op == "remove_flow":
+        key = slug(_first(raw, "key", "flow", default=""))
+        f = next((f for f in bp.get("flows") or [] if f["key"] == key), None)
+        if not f:
+            raise SchemaError(f"there's no flow “{key}”")
+        bp["flows"].remove(f)
+        changes.append(f"Removed the steps for {f['label']}")
     elif op == "remove_page":
         key = slug(_first(raw, "key", "page", default=""))
         p = next((p for p in bp["pages"] if p["key"] == key), None)
