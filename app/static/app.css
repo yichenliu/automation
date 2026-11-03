@@ -890,3 +890,7 @@ details.more-fields > summary { display: flex; align-items: center; gap: 6px; pa
 details.more-fields > summary::-webkit-details-marker { display: none; }
 details.more-fields > summary svg { width: 15px; height: 15px; transition: transform .15s; }
 details.more-fields[open] > summary svg { transform: rotate(180deg); }
+.tabs-row { display: flex; align-items: center; gap: 6px; border-bottom: 1px solid var(--border); margin-bottom: 14px; }
+.tabs-row > .tabs { flex: 1; min-width: 0; border-bottom: 0; margin-bottom: 0; }
+.tabs-row > .save-view, .tabs-row > .inline-form { flex: none; }
+.tabs-row .save-view[open] form { left: auto; right: 0; }

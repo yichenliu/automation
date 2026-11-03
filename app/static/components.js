@@ -294,9 +294,10 @@
 
   // --- long dropdowns: type to find ------------------------------------------------------------------------------------------
   $$("select[data-searchable]").forEach((select) => {
-    if (select.options.length < 15) return;
+    const real = Array.from(select.options).filter((o) => o.value).length;  // the choices, not "—" or "+ New …"
+    if (real < 14) return;
     const find = document.createElement("input");
-    find.type = "search"; find.className = "select-find"; find.placeholder = `Find (${select.options.length - 1})…`;
+    find.type = "search"; find.className = "select-find"; find.placeholder = `Find (${real})…`;
     find.setAttribute("aria-label", "Find in the list");
     select.parentNode.insertBefore(find, select);
     find.addEventListener("input", () => {
@@ -312,16 +313,14 @@
     find.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); const o = Array.from(select.options).find((x) => x.value && !x.hidden); if (o) { select.value = o.value; select.dispatchEvent(new Event("change", {bubbles: true})); } } });
   });
 
-  // --- adding a linked record without leaving the form (a new customer while writing a quote) -------------------------------
-  document.addEventListener("click", async (e) => {
-    const btn = e.target.closest("[data-quick-link]");
-    if (!btn) return;
-    e.preventDefault();
-    const holder = btn.parentElement;
-    if (holder.querySelector(".quick-add-box")) { holder.querySelector(".quick-add-box input").focus(); return; }
+  // --- adding a linked record without leaving the form (a new customer while writing a quote): "+ New …" in its list ----------
+  const quickAdd = (select) => {
+    const conf = select.dataset, holder = select.closest(".link-pick") || select.parentElement;
+    const next = holder.nextElementSibling;
+    if (next && next.classList.contains("quick-add-box")) { next.querySelector("input").focus(); return; }
     const box = document.createElement("span");
     box.className = "quick-add-box";
-    box.innerHTML = `<input type="text" placeholder="Name of the new ${esc(btn.dataset.singular.toLowerCase())}" aria-label="Name of the new ${esc(btn.dataset.singular.toLowerCase())}">`
+    box.innerHTML = `<input type="text" placeholder="Name of the new ${esc(conf.singular.toLowerCase())}" aria-label="Name of the new ${esc(conf.singular.toLowerCase())}">`
       + '<button type="button" class="btn sm primary" data-qa-add>Add</button><button type="button" class="btn sm ghost" data-qa-cancel>Cancel</button>';
     holder.after(box);
     const input = box.querySelector("input");
@@ -329,18 +328,33 @@
     const add = async () => {
       const name = input.value.trim();
       if (!name) { input.focus(); return; }
-      const res = await postJSON(btn.dataset.quickLink, {[btn.dataset.titleField]: name});
+      const res = await postJSON(conf.quickLink, {[conf.titleField]: name});
       const body = await res.json().catch(() => ({}));
-      if (!res.ok) { toast(`${body.error || "Couldn't add it"}. Use the full form for this one.`, "error"); window.open(btn.dataset.full, "_blank"); return; }
-      const select = holder.querySelector("select");
+      if (!res.ok) { toast(`${body.error || "Couldn't add it"}. Use the full form for this one.`, "error"); window.open(conf.full, "_blank"); return; }
       const option = new Option(name, body.id, true, true);
-      select.add(option); select.value = String(body.id); select.dispatchEvent(new Event("change", {bubbles: true}));
+      select.add(option); select.value = String(body.id); select.dataset.was = select.value;
+      select.dispatchEvent(new Event("change", {bubbles: true}));
       box.remove();
-      toast(`Added ${btn.dataset.singular.toLowerCase()} “${name}”.`);
+      toast(`Added ${conf.singular.toLowerCase()} “${name}”.`);
     };
     box.querySelector("[data-qa-add]").addEventListener("click", add);
     box.querySelector("[data-qa-cancel]").addEventListener("click", () => box.remove());
     input.addEventListener("keydown", (ev) => { if (ev.key === "Enter") { ev.preventDefault(); add(); } if (ev.key === "Escape") box.remove(); });
+  };
+  // on the page, not each list: lines added to a form later work too
+  document.addEventListener("focusin", (e) => {
+    const select = e.target.closest?.("select[data-quick-link]");
+    if (select && !select.selectedOptions[0]?.hasAttribute("data-quick-new")) select.dataset.was = select.value;
+  });
+  document.addEventListener("change", (e) => {
+    const select = e.target.closest?.("select[data-quick-link]");
+    if (!select) return;
+    if (select.selectedOptions[0]?.hasAttribute("data-quick-new")) {  // back to what it showed, and the name box opens
+      select.value = select.dataset.was || "";
+      quickAdd(select);
+    } else {
+      select.dataset.was = select.value;
+    }
   });
 
   // --- ⌘K / Ctrl+K: jump to any page, table, action or record ---------------------------------------------------------------

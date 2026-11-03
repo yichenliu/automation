@@ -442,9 +442,10 @@ def rolls_up(shop, parent_words, child_words, value_words, amounts=(5, 3)):
     if link is None:
         raise Missing(f"{child['label'].lower()} don't link to {parent['label'].lower()}")
     amount = shop.field(child, *value_words, kinds=("number", "duration", "money"), calculated=False)
-    signed = {f["key"]: f for f in child["fields"] if f["type"] == "formula" and re.search(rf"\b{amount['key']}\b", f.get("expression") or "")}
-    total = next((f for f in parent["fields"] if f["type"] == "rollup" and f.get("table") == child["key"]
-                  and f.get("aggregate") == "sum" and (f.get("field") == amount["key"] or f.get("field") in signed)), None)
+    signed = {f["key"]: f for f in child["fields"] if f["type"] == "formula"  # the quantity with its sign: In adds, Out takes off
+              and re.search(rf"-\s*{amount['key']}\b", f.get("expression") or "") and "iif(" in (f.get("expression") or "")}
+    sums = [f for f in parent["fields"] if f["type"] == "rollup" and f.get("table") == child["key"] and f.get("aggregate") == "sum"]
+    total = next((f for f in sums if f.get("field") == amount["key"]), None) or next((f for f in sums if f.get("field") in signed), None)
     if total is None:
         raise Missing(f"no total of {amount['label'].lower()} on {parent['label'].lower()}")
     way = None  # summed as worked out from the quantity and its In or Out (2 sold is 2, Out): entered as people would
