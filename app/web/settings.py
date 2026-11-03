@@ -274,6 +274,15 @@ def printers(wid):
                            roles=printing.ROLES, sizes={k: v[0] for k, v in labels.SIZES.items() if v[3] is None}, section="printers")
 
 
+@bp.route("/health")
+@login_required
+def health_page(wid):
+    """How the app is running, each part with what to do about it."""
+    from .. import health
+    ws = workspace(wid, "admin")
+    return render_template("settings/health.html", ws=ws, parts=health.report(ws), section="health")
+
+
 @bp.route("/audit")
 @login_required
 def audit_log(wid):

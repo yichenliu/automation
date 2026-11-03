@@ -101,3 +101,15 @@ def test_single_sign_on_signs_in_only_an_account_its_linked_to(app, client, owne
     assert "for this platform" in go("/login/sso")
     said["aud"] = "keel"
     assert "has expired or wasn" in client.get("/login/sso/callback?code=abc&state=forged", follow_redirects=True).get_data(as_text=True)
+
+
+def test_the_health_page_says_whats_wrong_and_what_to_do(app, client, owner):
+    from app import ai, health
+    user, ws = owner
+    login(client)
+    client.get(f"/w/{ws.id}/app/")
+    page = client.get(f"/w/{ws.id}/settings/health").get_data(as_text=True)
+    for part in ("The AI", "Background work", "Rules", "Screens", "Storage", "Backups"):
+        assert part in page, part
+    assert "make one now under Data &amp; AI" in page  # no backup yet
+    assert health.screens()["count"] >= 1

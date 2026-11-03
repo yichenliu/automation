@@ -1,0 +1,11 @@
+{% extends "settings/_layout.html" %}
+{% block title %}Health{% endblock %}
+{% block content %}
+<h1>Health</h1><p class="muted mt-1">How the app is running, and what to do when something isn't right.</p>
+<div class="card mt-3">{% for p in parts %}
+  <div class="list-row health-row"><span class="pill {{ 'green' if p.ok else 'red' if p.ok is false else 'slate' }}">{{ 'Fine' if p.ok else 'Look at this' }}</span>
+    <div class="grow"><b>{{ p.name }}</b> <span class="muted">· {{ p.said }}</span>
+      {% if p.do %}<p class="small mt-1">{{ icon('info') }} {{ p.do }}</p>{% endif %}
+      {% if p.slowest %}<p class="faint tiny mt-1">Slowest: {% for rule, ms, n in p.slowest %}{{ rule }} ({{ '%.0f'|format(ms) }} ms, {{ n }}×){{ ' · ' if not loop.last }}{% endfor %}</p>{% endif %}</div></div>
+{% endfor %}</div>
+{% endblock %}

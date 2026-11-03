@@ -229,7 +229,8 @@ the provider's own identity, never the email it claims; PKCE; the ID token's iss
 signing people out after the minutes chosen without use (shared computers on the floor) · an audit log of what matters
 (sign-ins and refused ones, people, roles and teams, exports and backups, private values revealed, API keys, every
 change to how the app works, printers), each entry chained to the one before so a change or a gap afterwards shows,
-downloadable as CSV · password reset links (from an admin, or `python -m app.tools reset-link`) · confirming sign-in (the authenticator code,
+downloadable as CSV · a health page (the local AI, background work, rules that stopped, the screens' speed and errors,
+storage and backups, each with what to do about it) · password reset links (from an admin, or `python -m app.tools reset-link`) · confirming sign-in (the authenticator code,
 or the password, within the last ten minutes) for the moves and approvals that need it · separation of duties ·
 sign-in throttling · CSRF on
 every form · a strict content security policy · encrypted tokens · hashed API keys · out-of-date save protection ·

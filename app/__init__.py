@@ -59,6 +59,9 @@ def create_app(overrides=None):
     app.register_blueprint(api.hooks)
     app.register_blueprint(portal.join)
     filters.register(app)
+    from . import health
+    app.before_request(health.started)
+    app.after_request(health.finished)
     app.after_request(security.headers)
     if not app.config.get("TESTING") and not app.debug:  # every page's layout read now, with the code it goes with: a layout
         for name in app.jinja_env.list_templates():     # changed on disk while it runs waits for the next start, never mixes
