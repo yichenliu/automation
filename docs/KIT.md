@@ -79,7 +79,8 @@ say what to do ("We can't find this page" · Go back) · the analyst names butto
 ✅ List (search, quick filters, sort, group with subtotals, totals, edit in place, select many, bulk change, bulk delete,
 PDFs for the selected, paging) · board (drag between stages) · calendar (month, and week with times) · gallery · timeline
 (Gantt, dependencies with late starts flagged, lanes per person, truck or room) · map · tree (hierarchies) · spreadsheet
-(keyboard editing, paste from Excel, add rows by typing) · personal saved views · CSV and Excel export · CSV and Excel
+(keyboard editing, paste from Excel, add rows by typing) · inbox (the list beside the open record, worked through with
+↑ ↓ or j k; what's done in it shows in the list straight away) · personal saved views · CSV and Excel export · CSV and Excel
 import (the AI matches columns; matching rows are updated; one flat sheet fills linked tables: customers named on a row
 are found or added with their details, each row can add a line, and the business's own numbers are kept; a sheet
 attached in the builder chat is brought in this way, never typed out row by row) · recycle bin · calendar feeds for

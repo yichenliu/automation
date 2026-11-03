@@ -1,0 +1,19 @@
+{% extends "app/layout.html" %}{% from "macros.html" import value, empty_state %}
+{% block title %}{{ t.label }}{% endblock %}
+{% block content %}
+{% include "app/_views.html" %}
+{% if rows %}<div class="inbox" data-inbox>
+  <ul class="inbox-list card" role="listbox" aria-label="{{ t.label }}" data-inbox-list>{% for r in rows %}
+    {% set url = url_for('app.record', wid=ws.id, table=t.key, rid=r.id) %}
+    <li role="option" aria-selected="{{ 'true' if opened and r.id == opened.id else 'false' }}"><a class="inbox-item{{ ' open' if opened and r.id == opened.id }}" href="{{ url }}" data-inbox-item data-id="{{ r.id }}">
+      <span class="inbox-top"><b class="ellipsis">{{ e.title(r) }}</b><span class="faint tiny nowrap">{{ r.updated_at|ago if r.updated_at else '' }}</span></span>
+      {% if stage %}{% set s = e.value(r, stage.key) %}{% if s %}<span class="pill {{ pill(stage, s) }} inbox-stage">{{ s }}</span>{% endif %}{% endif %}
+      {% for f in line %}{% set v = e.value(r, f.key) %}{% if v not in (none, '', []) %}<span class="inbox-line small muted ellipsis">{{ f.label }}: {{ value(e, f, v) }}</span>{% endif %}{% endfor %}
+    </a></li>{% endfor %}
+    {% if more %}<li class="faint small pad">The first 300 are shown: search or filter to find the rest.</li>{% endif %}
+  </ul>
+  <div class="inbox-pane card">{% if opened %}<iframe src="{{ url_for('app.record', wid=ws.id, table=t.key, rid=opened.id) }}" title="{{ e.title(opened) }}" data-inbox-pane></iframe>{% endif %}</div>
+</div>
+<p class="faint tiny mt-1 inbox-keys">↑ ↓ or j k to go through them.</p>
+{% else %}<div class="card">{{ empty_state('No ' ~ t.label|lc ~ ' here', 'When there are, they line up here to work through one after another.', ico=t.icon or 'inbox') }}</div>{% endif %}
+{% endblock %}

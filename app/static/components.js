@@ -580,4 +580,50 @@
     const card = sel.closest(".card-body"), show = () => $$("[data-zpl]", card).forEach((el) => (el.hidden = sel.value !== "zpl"));
     sel.addEventListener("change", show);
   });
+
+  // --- the inbox: a list beside the open record (a page shown in its pane drops the app's menu around it) ----------------
+  if (window.self !== window.top) {
+    document.documentElement.classList.add("in-panel");
+    const recordPage = (href) => /\/app\/t\/[^/]+\/\d+(\/edit)?(\?|$)/.test(new URL(href, location.href).pathname + "?");
+    document.addEventListener("click", (ev) => {
+      const a = ev.target.closest("a[href]");
+      if (!a || a.target || a.hasAttribute("download") || new URL(a.href, location.href).origin !== location.origin) return;
+      if (!recordPage(a.href)) { ev.preventDefault(); window.top.location.href = a.href; }  // anywhere else: the whole window
+    });
+    try { window.parent.postMessage({kind: "keel:panel", path: location.pathname, changed: !!document.querySelector(".flash")}, location.origin); } catch (e) { /* not ours */ }
+  }
+  const inbox = $("[data-inbox]");
+  if (inbox) {
+    const pane = $("[data-inbox-pane]", inbox), wide = () => window.matchMedia("(min-width: 900px)").matches;
+    const items = () => $$("[data-inbox-item]", inbox);
+    const show = (item) => {
+      items().forEach((x) => { x.classList.toggle("open", x === item); x.parentElement.setAttribute("aria-selected", x === item ? "true" : "false"); });
+      if (pane && new URL(pane.src, location.href).pathname !== new URL(item.href).pathname) pane.src = item.href;
+      const url = new URL(location.href); url.searchParams.set("open", item.dataset.id); history.replaceState(null, "", url);
+      item.scrollIntoView({block: "nearest"});
+    };
+    inbox.addEventListener("click", (ev) => {
+      const item = ev.target.closest("[data-inbox-item]");
+      if (!item || !wide() || !pane || ev.metaKey || ev.ctrlKey) return;
+      ev.preventDefault(); show(item);
+    });
+    document.addEventListener("keydown", (ev) => {
+      if (!wide() || ev.target.closest("input, textarea, select, [contenteditable]")) return;
+      const now = items(), at = now.findIndex((x) => x.classList.contains("open"));
+      if (["ArrowDown", "j"].includes(ev.key) && at < now.length - 1) { ev.preventDefault(); show(now[at + 1]); }
+      if (["ArrowUp", "k"].includes(ev.key) && at > 0) { ev.preventDefault(); show(now[at - 1]); }
+    });
+    window.addEventListener("message", async (ev) => {
+      if (ev.origin !== location.origin || ev.data?.kind !== "keel:panel") return;
+      const match = items().find((x) => new URL(x.href).pathname === ev.data.path);
+      if (match) items().forEach((x) => x.classList.toggle("open", x === match));
+      if (ev.data.changed) {  // something was done in the pane: the list shows it (a new stage, gone from this view)
+        const fresh = new DOMParser().parseFromString(await (await fetch(location.href)).text(), "text/html");
+        const list = $("[data-inbox-list]", fresh);
+        if (list) $("[data-inbox-list]", inbox).replaceWith(list);
+        const again = items().find((x) => new URL(x.href).pathname === ev.data.path);
+        if (again) items().forEach((x) => x.classList.toggle("open", x === again));
+      }
+    });
+  }
 })();

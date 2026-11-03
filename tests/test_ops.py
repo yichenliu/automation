@@ -112,3 +112,18 @@ def test_zpl_keeps_its_own_marks_out_of_the_words():
     from app import printing
     out = printing.zpl([{"title": "Bolt ^XZ ~JA", "lines": ["Bin A"], "code": "https://x/1", "kind": "qr"}], "62x29")
     assert out.count("^XA") == 1 and out.count("^XZ") == 1 and "^BQN" in out and "Bolt  XZ -JA" in out
+
+
+def test_an_inbox_lists_them_beside_the_open_one(app, client, owner):
+    user, ws = owner
+    _built(ws, STOCK + [{"op": "add_view", "table": "work_orders", "view": {"key": "queue", "label": "To work through", "type": "queue"}}])
+    e = Engine(ws)
+    first = e.create("work_orders", {"title": "Oak table"})
+    second = e.create("work_orders", {"title": "Pine chair"})
+    assert schema.table(ws.blueprint, "work_orders")["views"][-1]["type"] == "inbox"
+    login(client)
+    page = client.get(f"/w/{ws.id}/app/t/work_orders?view=queue").get_data(as_text=True)
+    assert "data-inbox-item" in page and "Pine chair" in page and "Oak table" in page
+    assert f'<iframe src="/w/{ws.id}/app/t/work_orders/' in page  # the first one open beside the list
+    opened = client.get(f"/w/{ws.id}/app/t/work_orders?view=queue&open={second.id}").get_data(as_text=True)
+    assert f'src="/w/{ws.id}/app/t/work_orders/{second.id}"' in opened

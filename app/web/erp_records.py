@@ -196,6 +196,13 @@ def table(wid, table):
         return render_template("app/map.html", **common, **_map(engine, t, view, rows))
     if kind == "tree":
         return render_template("app/tree.html", **common, **_tree(engine, t, view, rows))
+    if kind == "inbox":  # the list beside the open record, worked through one after another
+        shown = rows[:300]
+        wanted = request.args.get("open", "")
+        opened = next((r for r in shown if str(r.id) == wanted), shown[0] if shown else None)
+        line = [f for f in columns(t, view) if f["key"] != t.get("title_field") and f["type"] not in schema.FILES][:2]
+        stage = schema.field(t, (t.get("workflow") or {}).get("field") or "")
+        return render_template("app/inbox.html", rows=shown, opened=opened, line=line, stage=stage, more=max(len(rows) - 300, 0), **common)
     if kind == "sheet":
         cols = [f for f in columns(t, view) if f["type"] not in schema.FILES]
         return render_template("app/sheet.html", rows=rows[:500], columns=cols, editable=SHEET, more=max(len(rows) - 500, 0),

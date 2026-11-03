@@ -211,8 +211,9 @@ ACTION_ALIASES = {
     "duplicate": "copy_record", "duplicate_record": "copy_record", "copy": "copy_record", "revise": "copy_record",
     "new_revision": "copy_record", "new_version": "copy_record", "clone": "copy_record", "renew": "copy_record",
 }
-VIEW_TYPES = ["list", "board", "calendar", "gallery", "timeline", "map", "tree", "sheet"]
+VIEW_TYPES = ["list", "board", "calendar", "gallery", "timeline", "map", "tree", "sheet", "inbox"]
 VIEW_ALIASES = {"table": "list", "grid": "list", "kanban": "board", "pipeline": "board", "columns": "board",
+                "queue": "inbox", "split": "inbox", "triage": "inbox", "work_through": "inbox", "master_detail": "inbox",
                 "cal": "calendar", "schedule": "calendar", "agenda": "calendar", "cards": "gallery", "tiles": "gallery",
                 "gantt": "timeline", "roadmap": "timeline", "plan": "timeline", "geo": "map", "locations": "map",
                 "hierarchy": "tree", "outline": "tree", "nested": "tree", "org_chart": "tree", "spreadsheet": "sheet",

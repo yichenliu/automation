@@ -127,7 +127,8 @@ Views per table: list (columns, filters, sort), board (group_by a select), calen
   timeline (start_field and end_field, two date fields; "depends_field": a multiple link from the table to itself, the
   tasks each one waits for, draws dependencies: a Gantt),
   gallery (image_field), map (location_field), tree (parent_field: a link to the same table, e.g. accounts under account
-  groups, staff under managers, parts in assemblies), sheet (a spreadsheet to edit many rows fast, paste from Excel).
+  groups, staff under managers, parts in assemblies), sheet (a spreadsheet to edit many rows fast, paste from Excel), inbox (the list beside the open record, to
+  work through tickets, returns or orders waiting one after another).
   A list or timeline takes "group_by" (a list grouped with subtotals; a timeline with one lane per technician, truck or
   room: a resource schedule); a calendar takes "mode": "week" for appointments and shifts with times.
   Every table gets an "All" list automatically, and a board when it has a status select.

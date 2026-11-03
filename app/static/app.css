@@ -942,3 +942,13 @@ table.lines-editor .combo-button:hover { border-color: var(--border); }
 .flow-card:hover { border-color: var(--accent); }
 .flow-done { text-align: center; align-items: center; } .flow-done-mark svg { width: 48px; height: 48px; color: var(--good); }
 .flow-done .flow-actions { justify-content: center; }
+/* the inbox: a list beside the open record */
+.inbox { display: grid; grid-template-columns: minmax(260px, 340px) 1fr; gap: 12px; height: calc(100vh - 190px); min-height: 420px; }
+.inbox-list { list-style: none; margin: 0; padding: 4px; overflow-y: auto; }
+.inbox-item { display: flex; flex-direction: column; gap: 3px; padding: 10px 12px; border-radius: var(--radius-sm); color: inherit; text-decoration: none; }
+.inbox-item:hover { background: var(--sunken); } .inbox-item.open { background: var(--accent-weak); box-shadow: inset 3px 0 0 var(--accent); }
+.inbox-top { display: flex; justify-content: space-between; gap: 8px; } .inbox-stage { align-self: flex-start; }
+.inbox-pane { overflow: hidden; padding: 0; } .inbox-pane iframe { width: 100%; height: 100%; border: 0; display: block; background: var(--bg); }
+@media (max-width: 899px) { .inbox { display: block; height: auto; } .inbox-pane, .inbox-keys { display: none; } }
+.in-panel .sidebar, .in-panel .assistant-fab, .in-panel .not-right { display: none !important; }
+.in-panel .erp { grid-template-columns: 1fr; } .in-panel .main { padding-top: 12px; }
