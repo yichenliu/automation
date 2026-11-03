@@ -1279,14 +1279,14 @@ class Engine:
                 return n / 100 if abs(n) > 1 else n
             return n
         if kind == "date":
-            if isinstance(raw, str) and raw.strip().lower() in ("today", "now"):
+            if isinstance(raw, str) and raw.strip().lower() in ("today", "now", "today()", "now()"):  # as a rule may say it
                 return self.today.isoformat()
             d = to_date(raw)
             if d is None:
                 raise ValueError(f"“{raw}” isn't a date (try 2026-11-30 or 30/11/2026)")
             return d.isoformat()
         if kind == "datetime":
-            if isinstance(raw, str) and raw.strip().lower() == "now":
+            if isinstance(raw, str) and raw.strip().lower() in ("now", "now()", "today()"):
                 return self.now.isoformat(timespec="minutes")
             d = to_datetime(raw)
             if d is None:

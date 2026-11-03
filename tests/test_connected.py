@@ -281,3 +281,15 @@ def test_a_record_made_for_each_line_takes_what_the_line_lacks_from_its_record(a
     e.reset()
     moved = e.rows("stock_movements")
     assert [(m.data["warehouse"], m.data["quantity"]) for m in moved] == [(main.id, 10)]  # the PO's warehouse, the line's quantity
+
+
+def test_a_rule_saying_today_without_braces_still_means_today(app, owner):
+    user, ws = owner
+    _built(ws, [{"op": "create_table", "table": "jobs", "label": "Jobs", "fields": [
+        {"key": "name", "type": "text", "required": True}, {"key": "done_on", "type": "date"}, {"key": "stamped", "type": "datetime"}]},
+        {"op": "add_automation", "automation": {"key": "stamp", "name": "Stamp it", "trigger": {"type": "record_created", "table": "jobs"},
+                                                "actions": [{"type": "update_record", "values": {"done_on": "today()", "stamped": "now()"}}]}}])
+    e = Engine(ws)
+    job = e.create("jobs", {"name": "Leak"})
+    e.reset()
+    assert e.get(job.id).data["done_on"] == e.today.isoformat() and e.get(job.id).data["stamped"]
