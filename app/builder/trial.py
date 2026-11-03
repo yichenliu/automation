@@ -21,7 +21,7 @@ from flask import current_app
 
 from ..blueprint import expr, schema
 from ..engine import automations
-from ..engine.records import Engine, FieldErrors, RecordContext, to_number
+from ..engine.records import Engine, FieldErrors, RecordContext, mask, masked, to_number
 from ..extensions import db
 from ..models import Approval, Membership, Record, Run, User, Workspace
 
@@ -756,6 +756,8 @@ def pass_time(engine, days):
         row.created_at = (row.created_at or datetime.utcnow()) - gone
     for a in Approval.query.filter_by(workspace_id=engine.ws.id).all():
         a.created_at = (a.created_at or datetime.utcnow()) - gone
+        if (a.proposal or {}).get("ready_at"):  # a change's cooling-off ends that much sooner too
+            a.proposal = {**a.proposal, "ready_at": (datetime.fromisoformat(a.proposal["ready_at"]) - gone).isoformat()}
     for run in Run.query.filter_by(workspace_id=engine.ws.id).all():
         run.created_at = (run.created_at or datetime.utcnow()) - gone
         if run.next_try:
@@ -795,6 +797,8 @@ FILLED = re.compile(r"^\s*(non[- ]?empty|not empty|filled( in)?|any(thing)?|<any
 def _same(engine, f, actual, wanted, names):
     if isinstance(wanted, str) and FILLED.match(wanted):
         return actual not in (None, "", [])
+    if f is not None and f.get("sensitive") and wanted not in (None, ""):  # kept private: its last four, as anyone sees it
+        return masked(actual) == mask(wanted)
     if wanted in (None, "") or (isinstance(wanted, list) and not wanted):
         return actual in (None, "", [])
     kind = engine.kind(f) if f else None

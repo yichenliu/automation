@@ -358,3 +358,19 @@ def test_a_rule_set_off_by_another_rules_change_runs_once(app, owner):
     me.move(me.get(quote.id), 0)
     assert me.get(quote.id).data["status"] == "Approved"
     assert len(me.rows("purchase_orders")) == 1  # not two: the check's approval set it off once, the move didn't again
+
+
+def test_a_change_waits_out_its_cooling_off_when_days_pass_and_a_private_number_is_compared_as_shown(app, owner):
+    _, ws = owner
+    _built(ws, [{"op": "create_table", "table": "suppliers", "label": "Suppliers", "fields": [
+        {"key": "name", "type": "text", "required": True},
+        {"key": "bank_account", "label": "Bank account", "type": "text", "sensitive": True}],
+        "approve_changes": {"fields": ["bank_account"], "approver": "admin", "wait_days": 7}}])
+    later = {"title": "New bank details are approved after the cooling-off", "steps": [
+        {"do": "add", "as": "s", "table": "suppliers", "values": {"name": "Acme", "bank_account": "11112222"}},
+        {"do": "change", "as": "", "record": "s", "values": {"bank_account": "33334444"}},
+        {"do": "wait", "as": "", "days": 8},
+        {"do": "approve", "as": "", "record": "s"}],
+        "expect": [{"record": "s", "field": "bank_account", "equals": "33334444"}]}
+    _, (done,) = trial.try_out(ws, [later], screens=False)
+    assert done["ok"], done  # the 7 days had passed, and ••••4444 is the 33334444 it expected
