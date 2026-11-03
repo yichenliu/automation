@@ -777,9 +777,7 @@ def _act(trial, engine, step, names):
         if wanted not in [s.lower() for s in schema.stages(t)]:
             raise ExampleWrong(f"{t['key']} has no stage “{step.get('to')}” (stages: {', '.join(schema.stages(t))})")
         if not _press_move(engine, record, t, lambda m: m["to"].lower() == wanted):
-            at = (record.data or {}).get(t["workflow"]["field"])
-            open_ = [m["to"] for _, m, _ in engine.moves(record)]
-            raise FieldErrors({"_": f"from {at} there's no way to move it to {step.get('to')} (it can go to: {', '.join(open_) or 'nowhere'})"})
+            _take_along(engine, record, t, step.get("to"))
     elif do == "press":
         wanted = str(step.get("button") or "").strip().lower()
         a = next((a for a in engine.bp.get("automations", []) if a["trigger"]["type"] == "button"
@@ -827,6 +825,46 @@ def _act(trial, engine, step, names):
 
 APPROVING = automations.APPROVES
 REJECTING = re.compile(r"\b(reject|declin|refus|turn(s|ed)? down)", re.I)
+
+
+def _way(t, start, target):
+    """The stages a record goes through, move by move, from one stage to another (the shortest way), or None."""
+    moves = t["workflow"]["transitions"]
+    ways, seen = [[str(start or "")]], {str(start or "").lower()}
+    while ways:
+        way = ways.pop(0)
+        if way[-1].lower() == target.lower():
+            return way[1:]
+        for m in moves:
+            if (not m.get("from") or way[-1].lower() in [x.lower() for x in m["from"]]) and m["to"].lower() not in seen:
+                seen.add(m["to"].lower())
+                ways.append(way + [m["to"]])
+    return None
+
+
+def _take_along(engine, record, t, target):
+    """“Move it to Invoiced” from New: taken along the stages between by their buttons, as the person would (a rule may
+    carry it on by itself). Raises FieldErrors where it can't go on."""
+    field, began = t["workflow"]["field"], None
+    for _ in range(len(schema.stages(t)) + 1):
+        engine.reset()
+        record = engine.get(record.id)
+        at = (record.data or {}).get(field)
+        began = began or at
+        if str(at or "").lower() == str(target).lower():
+            return
+        way = _way(t, at, str(target))
+        if not way:
+            open_ = [m["to"] for _, m, _ in engine.moves(record)]
+            raise FieldErrors({"_": f"from {at} there's no way to move it to {target} (it can go to: {', '.join(open_) or 'nowhere'})"})
+        try:
+            pressed = _press_move(engine, record, t, lambda m: m["to"].lower() == way[0].lower())
+        except FieldErrors as exc:
+            raise FieldErrors({"_": f"on its way from {began} to {target} (through {', '.join(way[:-1])}), it couldn't move from "
+                                    f"{at} to {way[0]}: {'; '.join(exc.errors.values())}"}) from exc
+        if not pressed:
+            raise FieldErrors({"_": f"on its way from {began} to {target}, there was no button to move it from {at} to {way[0]}"})
+    raise FieldErrors({"_": f"it went round its stages without reaching {target}"})
 
 
 def _press_move(engine, record, t, pick):

@@ -385,3 +385,31 @@ def test_an_example_expecting_what_the_ai_drafts_hears_when_its_waiting_to_be_ch
     assert not held["ok"] and "waiting for someone to check it" in held["problem"] and "“approve” step for c1" in held["problem"]
     assert held["plain"].endswith("(the AI's work is waiting for someone to check it)")
     assert kept["ok"], kept
+
+
+def test_an_example_moving_a_record_several_stages_on_takes_it_through_the_stages_between(app, owner):
+    """“Move the order to Invoiced” from New goes by Picking and Delivered, as the person would, and the rules on the way
+    run; where the way is blocked, it says at which stage and why."""
+    _, ws = owner
+    _built(ws, [{"op": "create_table", "table": "orders", "label": "Orders", "fields": [
+        {"key": "title", "type": "text", "required": True}, {"key": "tracking", "type": "text"}, {"key": "delivered_on", "type": "date"},
+        {"key": "status", "type": "select", "options": ["New", "Picking", "Delivered", "Invoiced"]}],
+        "workflow": {"field": "status", "transitions": [
+            {"from": ["New"], "to": "Picking", "label": "Pick"},
+            {"from": ["Picking"], "to": "Delivered", "label": "Deliver", "only_if": [{"field": "tracking", "op": "is_not_empty"}]},
+            {"from": ["Delivered"], "to": "Invoiced", "label": "Invoice"}]}},
+        {"op": "add_automation", "automation": {
+            "key": "delivered", "name": "Note the delivery", "trigger": {"type": "record_updated", "table": "orders"},
+            "conditions": [{"field": "status", "op": "changed_to", "value": "Delivered"}],
+            "actions": [{"type": "update_record", "values": {"delivered_on": "today"}}]}}])
+    along = {"title": "Invoiced at last", "steps": [
+        {"do": "add", "table": "orders", "as": "o1", "values": {"title": "Flour", "tracking": "TRK1"}},
+        {"do": "move", "record": "o1", "to": "Invoiced"}],
+        "expect": [{"record": "o1", "field": "status", "equals": "Invoiced"}, {"record": "o1", "field": "delivered_on", "equals": "non-empty"}]}
+    blocked = {"title": "No tracking", "steps": [
+        {"do": "add", "table": "orders", "as": "o2", "values": {"title": "Sugar"}},
+        {"do": "move", "record": "o2", "to": "Invoiced"}],
+        "expect": [{"record": "o2", "field": "status", "equals": "Invoiced"}]}
+    _, (went, stuck) = trial.try_out(ws, [along, blocked], screens=False)
+    assert went["ok"], went
+    assert not stuck["ok"] and "on its way from New to Invoiced" in stuck["problem"] and "from Picking to Delivered" in stuck["problem"]
