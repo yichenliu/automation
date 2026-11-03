@@ -193,13 +193,16 @@ def finish(engine, run, by):
     flow = of(engine, run.flow)
     t = engine.tables[flow["table"]]
     data = run.data or {}
-    values, files = {}, []
+    values, files, stage = {}, [], {}
+    stage_field = (t.get("workflow") or {}).get("field")
     for step in flow["steps"]:
         got = data.get(step["key"]) or {}
         if step["kind"] == "form":
             values.update(got)
         elif step["kind"] == "decide" and step.get("field") and got.get("choice") is not None:
-            values[step["field"]] = got["choice"]
+            # a button that sets the stage moves it on as a rule would (Received once it's counted in), not by a move a
+            # person could press without doing the flow
+            (stage if step["field"] == stage_field else values)[step["field"]] = got["choice"]
         elif step["kind"] in ("photo", "signature"):
             files += [(fid, step["field"]) for fid in got.get("files") or []]
         if step["kind"] == "decide" and got.get("finish"):
@@ -230,6 +233,9 @@ def finish(engine, run, by):
                             engine.update(line, {step["count_into"]: count})
     except FieldErrors as exc:
         raise FieldErrors({k: v for k, v in exc.errors.items()}) from exc
+    if stage and stage[stage_field] != (engine.get(record.id).data or {}).get(stage_field):
+        engine.system().update(engine.get(record.id), stage, by=by)
+        engine.reset()
     for fid, field in files:
         file = db.session.get(File, fid)
         if file is not None and file.workspace_id == engine.ws.id:

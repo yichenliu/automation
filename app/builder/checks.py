@@ -157,7 +157,9 @@ def left_unfilled(engine):
                 copied = re.fullmatch(r"\{\{\s*(record|item)\.(\w+)\s*\}\}", str(said or ""))
                 whose = (item if copied.group(1) == "item" else source) if copied else None
                 origin = schema.field(whose, copied.group(2)) if whose else None
-                if origin is not None and not origin.get("required") and origin["type"] in schema.STORED:
+                skipped = whose is item and any(c.get("field") == origin["key"] and c.get("op") not in ("is_empty", "not_equals")
+                                                for c in act.get("where") or [] if origin is not None)  # only lines that have it
+                if origin is not None and not origin.get("required") and origin["type"] in schema.STORED and not skipped:
                     out.append(_issue("check", f"Rule {a['key']} fills {t['key']}.{f['key']} (which must be filled in) from "
                                                f"{whose['key']}.{origin['key']}, which people may leave empty: then the rule stops. "
                                                f"Make {whose['key']}.{origin['key']} required, or a move that starts the rule require it",
@@ -396,8 +398,9 @@ def impossible(engine):
 
 
 def _set_by_rules(engine, t, key):
-    """The stages automations put a table's records at."""
-    out = set()
+    """The stages automations, and flows' buttons, put a table's records at."""
+    out = {str(o["value"]).strip().lower() for f in schema.flows(engine.bp) if f["table"] == t["key"]
+           for s in f["steps"] if s["kind"] == "decide" and s.get("field") == key for o in s["options"]}
     for a in engine.bp.get("automations", []):
         for act in schema.steps_of(a["actions"]):
             mine = (act["type"] == "update_record" and a["trigger"].get("table") == t["key"] and not act.get("target")) or \

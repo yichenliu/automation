@@ -13,7 +13,11 @@
       <label class="choice"><input type="radio" name="start" value="chat" checked><span>{{ icon('message-square') }}<b>Describe it</b><small>Tell the AI how your business works and watch your app appear.</small></span></label>
       <label class="choice"><input type="radio" name="start" value="microsoft"><span>{{ icon('cloud') }}<b>Learn from Microsoft 365</b><small>The AI reads your OneDrive spreadsheets and mail, then proposes an app.</small></span></label>
       <label class="choice"><input type="radio" name="start" value="file"><span>{{ icon('file-spreadsheet') }}<b>From a spreadsheet</b><small>Drop in the spreadsheet you run things from; it becomes your app.</small></span></label>
+      <label class="choice"><input type="radio" name="start" value="parts"><span>{{ icon('boxes') }}<b>From ready-made parts</b><small>Proven ways of running stock, orders, buying and making, tried out and ready; then ask for changes.</small></span></label>
     </div>
+    <fieldset class="parts-pick" data-show-when="parts"><legend class="small muted">Choose the parts (they work together)</legend>
+      {% for key, p in (parts or {}).items() %}<label class="part"><input type="checkbox" name="parts" value="{{ key }}" {{ 'checked' if form.getlist is defined and key in form.getlist('parts') }}>
+        <span>{{ icon(p.icon) }}<b>{{ p.label }}</b><small>{{ p.about }}</small></span></label>{% endfor %}</fieldset>
     <button class="btn primary block">Continue</button>
   </form>
   {% if current_user.is_authenticated %}<p class="small muted mt-3"><a href="{{ url_for('workspaces.index') }}">← Your apps</a></p>{% endif %}

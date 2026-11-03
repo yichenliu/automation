@@ -1104,8 +1104,31 @@ def design(wid):
     from flask import g
     # the history names every table and field ever made, so it's for the people who may see all of them
     versions = Version.query.filter_by(workspace_id=ws.id).order_by(Version.number.desc()).limit(100).all() if g.member.can("admin") else []
+    from ..blueprint import modules
+    present = modules._present(ws.blueprint)
     return render_template("app/design.html", ws=ws, e=engine, versions=versions, counts=engine.counts(), shown=engine.visible_blueprint(),
-                           words={a["key"]: automations.describe(engine, a) for a in engine.bp.get("automations", [])})
+                           words={a["key"]: automations.describe(engine, a) for a in engine.bp.get("automations", [])},
+                           parts={k: p for k, p in modules.MODULES.items() if k not in present})
+
+
+@bp.route("/parts", methods=["POST"])
+@login_required
+def add_parts(wid):
+    """Ready-made parts added to an app (what it has already is kept; what joins them to it comes too)."""
+    from ..blueprint import modules
+    from .workspaces import _add_parts
+    ws, _ = ctx(wid, "admin")
+    chosen = [k for k in request.form.getlist("parts") if k in modules.MODULES]
+    if not chosen:
+        flash("Choose a part to add.", "error")
+        return redirect(url_for("app.design", wid=wid))
+    try:
+        _add_parts(ws, chosen)
+    except ValueError as exc:
+        flash(f"They couldn't be added as they are: {exc}. Ask the builder to add them instead.", "error")
+        return redirect(url_for("app.design", wid=wid))
+    flash(f"Added {', '.join(modules.MODULES[k]['label'] for k in chosen)}. Undo it here if it isn't what you wanted.", "success")
+    return redirect(url_for("app.design", wid=wid))
 
 
 @bp.route("/test-copy", methods=["POST"])

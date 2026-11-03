@@ -39,7 +39,8 @@ def new():
         name = (request.form.get("name") or "").strip()[:200]
         if not name:
             flash("Give your app a name, such as your business's name.", "error")
-            return render_template("new_workspace.html", form=request.form), 400
+            from ..blueprint import modules
+            return render_template("new_workspace.html", form=request.form, parts=modules.MODULES), 400
         blueprint = schema.empty(name)
         ws = Workspace(owner_id=current_user.id, name=name, about=(request.form.get("about") or "").strip()[:2000],
                        blueprint=blueprint, version=0, state={}, settings={"business": {"name": name}})
@@ -50,7 +51,24 @@ def new():
                                by=current_user.display))
         db.session.commit()
         start = request.form.get("start", "chat")
+        if start == "parts":  # ready-made parts, then the builder carries on from them
+            from ..blueprint import modules
+            chosen = [k for k in request.form.getlist("parts") if k in modules.MODULES]
+            if chosen:
+                _add_parts(ws, chosen)
+                return redirect(url_for("app.home", wid=ws.id))
         if start == "microsoft":
             return redirect(url_for("builder.discover", wid=ws.id))
         return redirect(url_for("builder.build", wid=ws.id, start=start))
-    return render_template("new_workspace.html", form={})
+    from ..blueprint import modules
+    return render_template("new_workspace.html", form={}, parts=modules.MODULES)
+
+
+def _add_parts(ws, chosen):
+    from ..blueprint import modules, ops
+    from ..builder import chat
+    result = ops.apply(ws.blueprint, modules.ops_for(chosen, ws.blueprint))
+    if result.problems:
+        raise ValueError("; ".join(result.problems))
+    names = ", ".join(modules.MODULES[k]["label"] for k in chosen)
+    chat.save_version(ws, result.blueprint, [f"Started from the ready-made {names}"] + result.changes, "parts", by=current_user.id)

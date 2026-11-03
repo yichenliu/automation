@@ -323,7 +323,8 @@ def _flows(trial, engine, made, crashes):
         if t is None or (flow["start"] == "record" and record is None):
             continue
         try:
-            run = flows.begin(engine.system() if flow.get("who") else engine, flow, trial.owner_id, record)
+            # the flow's steps are what's tried, whatever stage the sample record is at (its button shows at one)
+            run = flows.begin(engine.system() if flow.get("who") else engine, {**flow, "when": None}, trial.owner_id, record)
             sample = sample_values(engine, t, trial.owner_id, made, 50)
             for step in flow["steps"]:
                 kind, values, files = step["kind"], {}, []
@@ -463,6 +464,13 @@ def _money_sense(engine, t, record):
     return out
 
 
+def _flow_moves_on(engine, t, record, field, later):
+    """Whether a flow done on the record here (Receive the delivery, while it's Sent) can set one of the stages after it."""
+    return any(f["table"] == t["key"] and f["start"] == "record" and (not f.get("when") or engine.matches(record, f["when"]))
+               and any(s["kind"] == "decide" and s.get("field") == field and any(o["value"] in later for o in s["options"]) for s in f["steps"])
+               for f in schema.flows(engine.bp))
+
+
 def _stages(trial, engine, made, crashes):
     """Each record taken along its stages, onwards before any "no" or stop, by the first move to a stage it hasn't been
     at; what a move asks to have filled in first is filled in, as its button asks for it. A stage it can only leave by
@@ -480,7 +488,8 @@ def _stages(trial, engine, made, crashes):
                             and (not problem or not engine.move_problem(t, record, m, filled=True))), key=lambda x: schema.says_no(x[1]["to"]))
             later = [s for s in names[names.index(at) + 1:] if not schema.says_no(s)] if at in names else []
             if later and not schema.says_no(at) and not schema.ENDED.search(str(at)) and not engine.waiting_for(record) \
-                    and not any(not schema.says_no(m["to"]) for _, m, _ in engine.moves(record)):
+                    and not any(not schema.says_no(m["to"]) for _, m, _ in engine.moves(record)) \
+                    and not _flow_moves_on(engine, t, record, flow["field"], later):
                 stops = [m.get("label") or m["to"] for _, m in moves]
                 pressed = next((a for a in engine.bp.get("automations", []) if a["trigger"]["type"] == "button"
                                 and a["trigger"].get("table") == t["key"] and any(str((x.get("values") or {}).get(flow["field"], "")) in later
@@ -528,6 +537,9 @@ def _documents(engine, made, crashes):
             try:
                 if d.get("format") == "text":  # a file in another system's layout: made when it's downloaded (never kept if private)
                     text_file(engine, record, d["key"])
+                elif d.get("format") == "label":  # printed, never kept
+                    from ..documents import labels
+                    labels.render(labels.for_records(engine, [record], d), d.get("size"))
                 else:
                     produce(engine, record, d["key"], by=engine.by)
             except (ValueError, expr.ExprError, KeyError) as exc:

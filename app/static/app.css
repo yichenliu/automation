@@ -956,3 +956,9 @@ table.lines-editor .combo-button:hover { border-color: var(--border); }
 .nav-switch button:hover, .nav-switch button:focus-visible { background: var(--sunken); color: var(--text); }
 .test-copy-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 8px 12px; margin-bottom: 12px; border-radius: var(--radius-sm); background: var(--p-amber); color: var(--p-amber-t); }
 .stack-tight { margin: 0; padding-left: 18px; } .stack-tight li + li { margin-top: 4px; }
+.parts-pick { border: 0; padding: 0; margin: 4px 0 0; display: grid; gap: 8px; }
+.parts-pick[hidden] { display: none; }
+.part { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); cursor: pointer; }
+.part:has(input:checked) { border-color: var(--accent); background: var(--accent-weak); }
+.part > span { display: flex; flex-direction: column; gap: 2px; } .part small { color: var(--muted); }
+.add-parts { position: relative; } .add-parts-box { position: absolute; right: 0; z-index: 20; width: min(440px, 92vw); margin-top: 6px; box-shadow: var(--shadow-lg); }

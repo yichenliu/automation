@@ -626,4 +626,10 @@
       }
     });
   }
+
+  // --- starting an app: the ready-made parts to choose from show when that's how it starts -------------------------------
+  $$("[data-show-when]").forEach((box) => {
+    const form = box.closest("form"), show = () => { box.hidden = form.querySelector('input[name="start"]:checked')?.value !== box.dataset.showWhen; };
+    $$('input[name="start"]', form).forEach((r) => r.addEventListener("change", show)); show();
+  });
 })();

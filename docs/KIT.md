@@ -276,6 +276,22 @@ schedules, Microsoft 365, indexing, notification emails, daily backups) · work 
 is away · migrations · daily backups (database, files, key) · the design versioned with one-click undo · an installable
 web app (add to the home screen).
 
+## Ready-made parts
+
+✅ Four parts to start an app from, or add to one (How it's set up › Add ready-made parts), each tried out like anything
+the builder makes, and fitting together (one list of products for all; what joins two parts comes when both are there):
+
+- **Inventory & warehouse**: products with what's on hand (every movement kept: received, sold, moved, counted, damaged,
+  returned, made, used), places (warehouses, bins, vans, quarantine) with labels, batches and use-by dates, what's running
+  low, stock counts on a phone (scan the shelf; a finished count corrects the stock), and moves between places.
+- **Orders & fulfilment**: customers, orders with lines and totals, picked by scanning each item against the order
+  ("Pick and pack"), packed, shipped with the carrier and tracking number, packing slips and address labels, returns (an
+  item returned undamaged goes back on the stock), and a "to pick" inbox.
+- **Procurement**: suppliers, purchase orders with lines, approval for big ones (never by whoever raised it), the order
+  as a PDF, and the delivery received by counting it in (a short delivery asked why; what was counted goes on the stock).
+- **Production**: what each product is made of, work orders with their materials on a board, and finishing one puts what
+  was made on the stock and takes its materials off.
+
 ## Trying changes safely
 
 ✅ **A test copy**: the app copied with its records (links pointing at the copies), numbering and people (not outside
