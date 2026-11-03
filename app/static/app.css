@@ -894,3 +894,26 @@ details.more-fields[open] > summary svg { transform: rotate(180deg); }
 .tabs-row > .tabs { flex: 1; min-width: 0; border-bottom: 0; margin-bottom: 0; }
 .tabs-row > .save-view, .tabs-row > .inline-form { flex: none; }
 .tabs-row .save-view[open] form { left: auto; right: 0; }
+/* a linked record's list: a button that opens a panel to search it, with "+ New …" at its foot */
+.combo-button { display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; height: 36px; padding: 0 11px;
+  border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--panel); color: var(--text); font: inherit;
+  text-align: left; cursor: pointer; }
+.combo-button .combo-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.combo-button.empty .combo-text { color: var(--faint); }
+.combo-button::after { content: ""; flex: none; width: 7px; height: 7px; margin-top: -3px; border-right: 1.5px solid var(--muted);
+  border-bottom: 1.5px solid var(--muted); transform: rotate(45deg); }
+.combo-button:focus-visible, .combo-button[aria-expanded=true] { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-weak); outline: none; }
+.link-pick .combo-button { flex: 1; min-width: 0; }
+table.lines-editor .combo-button { height: 32px; min-width: 120px; border-color: transparent; background: transparent; }
+table.lines-editor .combo-button:hover { border-color: var(--border); }
+.combo-panel { position: fixed; z-index: 60; display: flex; flex-direction: column; gap: 4px; max-height: 360px; padding: 6px;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 10px; box-shadow: var(--shadow-md); }
+.combo-panel .combo-find { flex: none; height: 34px; }
+.combo-list { flex: 1; min-height: 0; overflow-y: auto; }
+.combo-item { display: block; width: 100%; padding: 7px 10px; border: 0; border-radius: 7px; background: none; color: var(--text); font: inherit;
+  text-align: left; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.combo-item:hover, .combo-item.active { background: var(--sunken); }
+.combo-item.on { font-weight: 650; } .combo-none { color: var(--faint); }
+.combo-new { flex: none; border-top: 1px solid var(--border); border-radius: 0 0 7px 7px; color: var(--accent-text); font-weight: 600; }
+.combo-note { padding: 7px 10px; color: var(--faint); font-size: 13px; }
+@media (max-width: 640px) { .combo-panel { max-height: 60vh; } }

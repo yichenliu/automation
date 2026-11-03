@@ -292,27 +292,6 @@
     if (link) window.location = link.href;
   });
 
-  // --- long dropdowns: type to find ------------------------------------------------------------------------------------------
-  $$("select[data-searchable]").forEach((select) => {
-    const real = Array.from(select.options).filter((o) => o.value).length;  // the choices, not "—" or "+ New …"
-    if (real < 14) return;
-    const find = document.createElement("input");
-    find.type = "search"; find.className = "select-find"; find.placeholder = `Find (${real})…`;
-    find.setAttribute("aria-label", "Find in the list");
-    select.parentNode.insertBefore(find, select);
-    find.addEventListener("input", () => {
-      const q = find.value.trim().toLowerCase();
-      let first = null, count = 0;
-      Array.from(select.options).forEach((o) => {
-        const show = !o.value || !q || o.text.toLowerCase().includes(q);
-        o.hidden = !show || o.dataset.matchHidden === "1";
-        if (show && o.value && !o.hidden) { count++; first = first || o; }
-      });
-      if (q && count === 1) select.value = first.value;
-    });
-    find.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); const o = Array.from(select.options).find((x) => x.value && !x.hidden); if (o) { select.value = o.value; select.dispatchEvent(new Event("change", {bubbles: true})); } } });
-  });
-
   // --- adding a linked record without leaving the form (a new customer while writing a quote): "+ New …" in its list ----------
   const quickAdd = (select) => {
     const conf = select.dataset, holder = select.closest(".link-pick") || select.parentElement;
@@ -356,6 +335,124 @@
       select.dataset.was = select.value;
     }
   });
+
+  // --- a linked record's list: it searches, and "+ New …" is there with what it finds ---------------------------------------
+  // The real <select> stays (hidden) and is what's saved; what's shown is a button and, when open, a panel floating over the
+  // page (so a table that scrolls sideways can't cut it off), with a search box, the matches, and "+ New …" at its foot.
+  let openCombo = null;
+  const pickValue = (select, value) => {
+    select.value = value; select.dataset.was = value;
+    select.dispatchEvent(new Event("input", {bubbles: true}));
+    select.dispatchEvent(new Event("change", {bubbles: true}));
+  };
+  const createLinked = async (select, name) => {
+    const conf = select.dataset;
+    const res = await postJSON(conf.quickLink, {[conf.titleField]: name});
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) { toast(`${body.error || "Couldn't add it"}. Use the full form for this one.`, "error"); window.open(conf.full, "_blank"); return false; }
+    select.add(new Option(name, body.id));
+    pickValue(select, String(body.id));
+    toast(`Added ${conf.singular.toLowerCase()} “${name}”.`);
+    return true;
+  };
+  const closeCombo = () => {
+    if (!openCombo) return;
+    openCombo.panel.remove(); openCombo.button.setAttribute("aria-expanded", "false"); openCombo = null;
+  };
+  const comboLabel = (select, button) => {
+    const o = select.selectedOptions[0], chosen = o && o.value;
+    button.querySelector(".combo-text").textContent = chosen ? o.text : (select.closest(".lines-editor") ? "" : "—");
+    button.classList.toggle("empty", !chosen);
+  };
+  const openPanel = (select, button, typed = "") => {
+    closeCombo();
+    const conf = select.dataset, thing = (conf.singular || "").toLowerCase();
+    const panel = document.createElement("div");
+    panel.className = "combo-panel"; panel.setAttribute("role", "listbox");
+    panel.innerHTML = '<input type="search" class="combo-find" autocomplete="off" aria-label="Find"><div class="combo-list"></div>'
+      + (conf.quickLink ? '<button type="button" class="combo-item combo-new"></button>' : "");
+    document.body.append(panel);
+    const find = panel.querySelector(".combo-find"), list = panel.querySelector(".combo-list"), add = panel.querySelector(".combo-new");
+    const count = Array.from(select.options).filter((o) => o.value).length;
+    find.placeholder = count > 7 ? `Find among ${count}…` : "Find…";
+    let items = [], active = 0;
+    const mark = () => { items.forEach((b, i) => b.classList.toggle("active", i === active)); items[active]?.scrollIntoView({block: "nearest"}); };
+    const render = () => {
+      const q = find.value.trim(), lower = q.toLowerCase();
+      const shown = Array.from(select.options).filter((o) => o.value && o.dataset.matchHidden !== "1" && (!lower || o.text.toLowerCase().includes(lower)));
+      list.innerHTML = ""; items = [];
+      const item = (text, value, cls = "") => {
+        const b = document.createElement("button");
+        b.type = "button"; b.className = `combo-item ${cls}`; b.textContent = text; b.setAttribute("role", "option");
+        b.addEventListener("mousedown", (e) => e.preventDefault());  // the search box keeps the focus
+        b.addEventListener("click", () => { pickValue(select, value); closeCombo(); button.focus(); });
+        list.append(b); items.push(b);
+      };
+      if (!lower) item("—", "", "combo-none");
+      shown.slice(0, 300).forEach((o) => item(o.text, o.value, o.value === select.value ? "on" : ""));
+      const note = (text) => { const d = document.createElement("div"); d.className = "combo-note"; d.textContent = text; list.append(d); };
+      if (shown.length > 300) note(`${shown.length - 300} more: type to narrow it down`);
+      if (lower && !shown.length) note(`Nothing called “${q}”`);
+      if (add) { add.textContent = q ? `+ New ${thing} “${q}”` : `+ New ${thing}…`; items.push(add); }
+      active = lower ? (shown.length ? 0 : items.length - 1) : Math.max(0, items.findIndex((b) => b.classList.contains("on")));
+      mark();
+    };
+    add?.addEventListener("mousedown", (e) => e.preventDefault());
+    add?.addEventListener("click", async () => {
+      const q = find.value.trim();
+      if (!q) { find.placeholder = `Name of the new ${thing}`; find.focus(); add.textContent = "Type its name, then press Enter"; return; }
+      add.disabled = true;
+      if (await createLinked(select, q)) { closeCombo(); button.focus(); } else add.disabled = false;
+    });
+    find.addEventListener("input", render);
+    find.addEventListener("keydown", (e) => {
+      if (e.key === "ArrowDown") { e.preventDefault(); active = Math.min(items.length - 1, active + 1); mark(); }
+      else if (e.key === "ArrowUp") { e.preventDefault(); active = Math.max(0, active - 1); mark(); }
+      else if (e.key === "Enter") { e.preventDefault(); (find.value.trim() && add && !items.some((b) => b !== add) ? add : items[active])?.click(); }
+      else if (e.key === "Escape") { e.preventDefault(); closeCombo(); button.focus(); }
+      else if (e.key === "Tab") closeCombo();
+    });
+    const place = () => {  // under its button, or above it when there's no room below
+      const r = button.getBoundingClientRect(), width = Math.max(r.width, 280), below = window.innerHeight - r.bottom;
+      panel.style.width = `${width}px`;
+      panel.style.left = `${Math.max(8, Math.min(r.left, window.innerWidth - width - 8))}px`;
+      if (below < 320 && r.top > below) { panel.style.top = ""; panel.style.bottom = `${window.innerHeight - r.top + 4}px`; }
+      else { panel.style.bottom = ""; panel.style.top = `${r.bottom + 4}px`; }
+    };
+    place();
+    openCombo = {select, button, panel, place};
+    button.setAttribute("aria-expanded", "true");
+    find.value = typed; render(); find.focus();
+  };
+  const enhanced = new WeakSet();
+  const enhance = (select) => {
+    enhanced.add(select);
+    const copied = select.nextElementSibling;  // a line row copied from the one before brings that row's button: not this one's
+    if (copied?.classList.contains("combo-button")) copied.remove();
+    select.hidden = true;
+    const button = document.createElement("button");
+    button.type = "button"; button.className = "combo-button";
+    button.setAttribute("aria-haspopup", "listbox"); button.setAttribute("aria-expanded", "false");
+    button.innerHTML = '<span class="combo-text"></span>';
+    select.after(button);
+    comboLabel(select, button);
+    select.addEventListener("change", () => comboLabel(select, button));
+    button.addEventListener("click", (e) => { e.preventDefault(); openCombo?.select === select ? closeCombo() : openPanel(select, button); });
+    button.addEventListener("keydown", (e) => {
+      if (["ArrowDown", "Enter", " "].includes(e.key)) { e.preventDefault(); openPanel(select, button); }
+      else if (e.key.length === 1 && !e.metaKey && !e.ctrlKey && !e.altKey) { e.preventDefault(); openPanel(select, button, e.key); }
+    });
+  };
+  const enhanceAll = (root) => (root.matches?.("select[data-searchable]") ? [root] : []).concat($$("select[data-searchable]", root))
+    .forEach((s) => { if (!enhanced.has(s)) enhance(s); });
+  enhanceAll(document);
+  new MutationObserver((changes) => changes.forEach((c) => c.addedNodes.forEach((n) => { if (n.nodeType === 1) enhanceAll(n); })))
+    .observe(document.body, {childList: true, subtree: true});
+  document.addEventListener("mousedown", (e) => {
+    if (openCombo && !openCombo.panel.contains(e.target) && !openCombo.button.contains(e.target)) closeCombo();
+  });
+  window.addEventListener("scroll", (e) => { if (openCombo && !openCombo.panel.contains(e.target)) openCombo.place(); }, true);
+  window.addEventListener("resize", () => openCombo?.place());
 
   // --- ⌘K / Ctrl+K: jump to any page, table, action or record ---------------------------------------------------------------
   const jumpUrl = $("[data-jump]")?.dataset.jump;
