@@ -4,7 +4,7 @@
   <div class="way"><div class="way-label">{{ way.label }}</div>{% if way.steps %}{{ flow(way.steps) }}{% else %}<div class="faint small">Nothing more</div>{% endif %}</div>{% endfor %}</div>{% endif %}</li>{% endfor %}</ol>{% endmacro %}
 {% block content %}
 <div class="page-head"><div class="titles"><h1>{{ icon('zap') }}Rules</h1><p class="sub">What your app does by itself: when something happens, it does the next thing for you. Each rule shows when it starts, what it does, and the last few times it ran.</p></div>
-  <div class="actions"><a class="btn" href="{{ url_for('app.studio_workflows', wid=ws.id) }}">{{ icon('workflow') }}See them as diagrams{{ ', and change them' if member and member.can('admin') }}</a></div></div>
+  <div class="actions"><a class="btn" href="{{ url_for('app.studio_map', wid=ws.id) }}">{{ icon('map') }}See them on the App map{{ ', and change them' if member and member.can('admin') }}</a></div></div>
 {% if not items %}<div class="card">{{ empty_state('No rules yet', 'Tell the builder what should happen by itself, like “when a quote is accepted, create the job and tell me”.', ico='zap') }}</div>{% endif %}
 <div class="stack">
 {% for item in items %}{% set a = item.a %}

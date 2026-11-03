@@ -1,14 +1,15 @@
-"""The data model studio and the workflow studio (app/studio.py): the design drawn as diagrams, changed by hand.
+"""The App map (app/appmap.py): the whole app drawn from its design, its processes and the data model behind them, with
+each list's stages, each rule and each step-by-step flow drawn in full (app/studio.py) and changed by hand.
 
 Everyone who can see the design can look; admins change it. Every change is checked like the builder's and saved as a
 version, and the studio can take it back again (each change answers with the version it was made from).
 """
 import copy
 
-from flask import abort, g, jsonify, render_template, request
+from flask import abort, current_app, g, jsonify, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
 
-from .. import studio
+from .. import appmap, studio
 from ..blueprint import ops, schema
 from ..blueprint.schema import SchemaError
 from ..builder import chat
@@ -106,8 +107,10 @@ def _model(ws, engine):
 @bp.route("/studio/data")
 @login_required
 def studio_data(wid):
-    ws, engine = ctx(wid)
-    return render_template("app/studio_data.html", ws=ws, e=engine, model=_model(ws, engine), can_edit=g.member.can("admin"))
+    """The data model: the App map's Data view (a list named in ?open= selected)."""
+    ctx(wid)
+    opened = request.args.get("open")
+    return redirect(url_for("app.studio_map", wid=wid, view="data", open=f"data:{opened}" if opened else "data"))
 
 
 @bp.route("/studio/data.json")
@@ -208,14 +211,98 @@ def _workflow_page_data(ws, engine):
 @bp.route("/studio/workflows")
 @login_required
 def studio_workflows(wid):
+    """The processes: the App map, with what's named in ?open= (or a list's own, ?table=) opened."""
+    ctx(wid)
+    return redirect(url_for("app.studio_map", wid=wid, **{k: v for k, v in (("open", request.args.get("open")), ("table", request.args.get("table"))) if v}))
+
+
+# --- the App map ---------------------------------------------------------------------------------------------------------
+
+def _map(ws, engine):
+    """The whole app as one picture (app/appmap.py), with what the design checks find wrong where, and the examples
+    kept to play through it."""
+    from ..builder import checks
+    try:
+        problems = checks.run(engine)
+    except Exception:  # noqa: BLE001 - the map is still drawn; the checks page says what went wrong
+        current_app.logger.exception("Checking the design of workspace %s for the App map failed", ws.id)
+        problems = []
+    found = appmap.build(engine, problems, ((ws.settings or {}).get("map") or {}).get("names"))
+    tables = {t["key"] for t in engine.visible_blueprint().get("tables", [])}
+    kept = []
+    for n, x in enumerate((ws.state or {}).get("examples") or []):
+        named = {s.get("table") for s in x.get("steps") or [] if isinstance(s, dict) and s.get("table")}
+        if named and named <= tables | {None}:  # what someone can't see isn't played to them
+            kept.append({"n": n, "title": str(x.get("title") or "An example"), "tables": sorted(k for k in named if k)})
+    last = (ws.state or {}).get("checks") or {}
+    found.update(examples=kept, version=ws.version,
+                 last={"at": last.get("at"), "failing": [x["title"] for x in last.get("examples", []) if not x["ok"]][:6],
+                       "issues": list(last.get("issues") or [])[:6]} if last else None)
+    return found
+
+
+@bp.route("/studio")
+@login_required
+def studio_map(wid):
+    """The App map: every process the app runs, from the first list to the last, drawn from its design, with the data
+    model behind it; click into any part to see it in full and (admins) change it."""
     ws, engine = ctx(wid)
     data = _workflow_page_data(ws, engine)
-    first = next((i["id"] for grp in data["items"] for i in grp["items"]), None)
-    table = request.args.get("table")  # a list's own: its stages, else its first rule or flow (from the list or the Data model)
+    table = request.args.get("table")  # a list's own: its stages, else its first rule or flow
     own = next((i["id"] for grp in data["items"] if grp["table"] == table for i in grp["items"]), None) if table else None
-    opened = request.args.get("open") or own or first
-    return render_template("app/studio_workflows.html", ws=ws, e=engine, data=data, opened=_item(ws, engine, opened) if opened else None,
+    opened = request.args.get("open") or own or "map"
+    item = _item(ws, engine, opened) if opened.partition(":")[0] in ("stages", "rule", "flow") else None
+    return render_template("app/studio.html", ws=ws, e=engine, data=data, opened=item, open_id=opened, map=_map(ws, engine),
+                           model=_model(ws, engine), view="data" if request.args.get("view") == "data" or opened.startswith("data") else "map",
                            can_edit=g.member.can("admin"))
+
+
+@bp.route("/studio/map.json")
+@login_required
+def studio_map_json(wid):
+    """The map worked out again, with the stages, rules and flows its panels open (after a change made anywhere)."""
+    ws, engine = ctx(wid)
+    return jsonify(map=_map(ws, engine), data=_workflow_page_data(ws, engine))
+
+
+@bp.route("/studio/map/name", methods=["POST"])
+@login_required
+def studio_map_name(wid):
+    """A process named as the business calls it (“Quote to cash”): kept with the workspace, apart from the design."""
+    ws, engine = ctx(wid, "admin")
+    body = _body()
+    key, name = str(body.get("process") or ""), " ".join(str(body.get("name") or "").split())[:60]
+    if key not in {p["key"] for p in appmap.processes(engine.bp)[0]}:
+        return jsonify(error="That process isn't there any more"), 400
+    names = dict(((ws.settings or {}).get("map") or {}).get("names") or {})
+    if name:
+        names[key] = name
+    else:
+        names.pop(key, None)  # named after its lists again
+    ws.settings = {**(ws.settings or {}), "map": {**((ws.settings or {}).get("map") or {}), "names": names}}
+    db.session.commit()
+    return jsonify(ok=True, map=_map(ws, engine))
+
+
+@bp.route("/studio/map/play", methods=["POST"])
+@login_required
+def studio_map_play(wid):
+    """One of the app's kept examples acted out in a throwaway copy: what it went through (each record's stages, in
+    order, and the rules that ran) and whether it came out as expected. Nothing in the real app changes."""
+    ws, engine = ctx(wid, "editor")
+    kept = (ws.state or {}).get("examples") or []
+    n = _body().get("example")
+    if not isinstance(n, int) or not 0 <= n < len(kept):
+        return jsonify(error="That example isn't there any more"), 400
+    from ..builder import trial
+    try:
+        played = trial.walkthrough(ws, kept[n])
+    except Exception:  # noqa: BLE001 - a fault of ours: said, never the app's
+        current_app.logger.exception("Playing an example for workspace %s failed", ws.id)
+        db.session.rollback()
+        return jsonify(error="Something went wrong on our side playing that: it's been logged"), 500
+    return jsonify(title=played["title"], ok=played["ok"], lines=[[ok, line] for ok, line in played["lines"]],
+                   problem=played.get("plain") or "", went=played["went"], ran=played["ran"])
 
 
 @bp.route("/studio/workflows/item")

@@ -38,8 +38,9 @@ def test_the_data_model_is_drawn_with_its_links_and_changed_by_hand(app, client,
     user, ws = owner
     _built(ws, SHOP)
     login(client)
-    page = client.get(f"/w/{ws.id}/app/studio/data").get_data(as_text=True)
-    assert "Data model" in page and 'id="studio-model"' in page and "studio.js" in page
+    assert client.get(f"/w/{ws.id}/app/studio/data").headers["Location"].endswith("/studio?view=data&open=data")  # the old address
+    page = client.get(f"/w/{ws.id}/app/studio?view=data").get_data(as_text=True)
+    assert "App map" in page and "What it keeps" in page and "data-model" in page and "studio.js" in page
     model = client.get(f"/w/{ws.id}/app/studio/data.json").get_json()
     assert {t["key"] for t in model["tables"]} == {"customers", "orders"}
     assert model["links"] == [{"from": "orders", "field": "customer", "to": "customers", "many": False, "label": "Customer"}]
@@ -108,10 +109,10 @@ def test_only_admins_change_it_and_others_see_only_what_they_may(app, client, ow
     client.post("/login", data={"email": "wes@example.com", "password": "password1234"})
     model = client.get(f"/w/{ws.id}/app/studio/data.json").get_json()
     assert [t["key"] for t in model["tables"]] == ["orders"] and model["links"] == []
-    page = client.get(f"/w/{ws.id}/app/studio/data").get_data(as_text=True)
-    assert "New list" not in page and 'data-can-edit=""' in page
+    page = client.get(f"/w/{ws.id}/app/studio?view=data").get_data(as_text=True)
+    assert "New list" not in page and "New rule" not in page and 'data-can-edit=""' in page
     assert _change(client, ws, {"do": "add_table", "label": "Sneaky"}).status_code == 403
-    assert client.get(f"/w/{ws.id}/app/studio/workflows").status_code == 200
+    assert client.get(f"/w/{ws.id}/app/studio").status_code == 200
     assert _wf(client, ws, "rule:tell_shipped", {"do": "set_enabled", "on": False}).status_code == 403
 
 
@@ -184,8 +185,8 @@ def test_a_rule_is_built_step_by_step_in_the_diagram(app, client, owner):
     _wf(client, ws, rule, {"do": "set_enabled", "on": False})
     assert ws.blueprint["automations"][-1]["enabled"] is False
     assert not schema.check(ws.blueprint)
-    page = client.get(f"/w/{ws.id}/app/studio/workflows?open={rule}").get_data(as_text=True)
-    assert "Processes" in page and "Big orders" in page
+    page = client.get(f"/w/{ws.id}/app/studio?open={rule}").get_data(as_text=True)
+    assert "App map" in page and "Big orders" in page
     assert _wf(client, ws, rule, {"do": "remove_rule"}).get_json()["id"] == ""
     assert not any(a["key"] == "big_orders" for a in ws.blueprint["automations"])
 

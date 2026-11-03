@@ -186,18 +186,21 @@ def test_the_menus_put_each_thing_in_one_place_and_join_them_up(app, client, own
     _built(ws, APP)
     login(client)
     home = client.get(f"/w/{ws.id}/app/").get_data(as_text=True)
-    for label in ("Your app", "Data model", "Processes", "Versions", "AI helpers", "What the AI knows", "Keep it right", "Checks", "Suggestions"):
+    for label in ("Your app", "App map", "Versions", "AI helpers", "What the AI knows", "Keep it right", "Checks", "Suggestions"):
         assert f">{label}<" in home, label
-    assert "How it's set up" not in home and ">Rules<" not in home and ">Workflows<" not in home  # rules live in Processes now
+    assert "How it's set up" not in home and ">Rules<" not in home and ">Workflows<" not in home  # rules live on the App map now
+    assert ">Data model<" not in home and ">Processes<" not in home  # one place for both: the App map
     page = client.get(f"/w/{ws.id}/app/design").get_data(as_text=True)
     assert "<h1>" in page and "Versions" in page and "Your app now" in page
     listing = client.get(f"/w/{ws.id}/app/t/orders").get_data(as_text=True)
-    assert f"/w/{ws.id}/app/studio/data?open=orders" in listing and f"/w/{ws.id}/app/studio/workflows?table=orders" in listing
-    opened = client.get(f"/w/{ws.id}/app/studio/workflows?table=orders").get_data(as_text=True)
+    assert f"/w/{ws.id}/app/studio/data?open=orders" in listing and f"/w/{ws.id}/app/studio?open=list:orders" in listing
+    old = client.get(f"/w/{ws.id}/app/studio/workflows?table=orders")  # the old address goes to the App map, the list's stages open
+    assert old.status_code == 302 and old.headers["Location"].endswith("/studio?table=orders")
+    opened = client.get(f"/w/{ws.id}/app/studio?table=orders").get_data(as_text=True)
     assert '"kind": "stages"' in opened and '"table": "orders"' in opened
     drawn = client.get(f"/w/{ws.id}/app/studio/workflows/item?id=rule:on_ship").get_json()
     assert drawn["recent"] == [] and drawn["hook"] is None and drawn["can_run"] is False
-    for place in ("Data model", "Processes", "Versions", "AI helpers", "Settings"):  # ⌘K finds each by name
+    for place in ("App map", "What each list keeps", "Versions", "AI helpers", "Settings"):  # ⌘K finds each by name
         assert place in [i["label"] for i in client.get(f"/w/{ws.id}/app/jump?q={place.lower()}").get_json()["items"]], place
     settings = client.get(f"/w/{ws.id}/settings/").get_data(as_text=True)
     for label in ("Your business", "Business details", "People and teams", "Connected", "API and AI assistants", "Looking after it",
@@ -208,7 +211,8 @@ def test_the_menus_put_each_thing_in_one_place_and_join_them_up(app, client, own
     assert "PostgreSQL" in client.get(f"/w/{ws.id}/settings/data").get_data(as_text=True)
     assert "AI helpers" in client.get(f"/w/{ws.id}/settings/ai").get_data(as_text=True)
     assert "Design" in client.get(f"/w/{ws.id}/settings/health").get_data(as_text=True)
-    assert prompts.looking_at(f"/w/{ws.id}/app/studio/workflows?open=rule:on_ship").endswith("the automation on_ship (\"this\" means it).")
+    assert prompts.looking_at(f"/w/{ws.id}/app/studio?open=rule:on_ship").endswith("the automation on_ship (\"this\" and \"here\" mean it).")
+    assert "the table orders" in prompts.looking_at(f"/w/{ws.id}/app/studio?view=data&open=data:orders")
 
 
 def test_a_choice_renamed_by_the_builder_takes_its_records_and_rules_with_it_and_undo_brings_them_back(app, client, owner):
@@ -247,7 +251,7 @@ def test_staff_see_only_what_they_may_open_and_lists_they_cant_add_to_offer_no_a
     _person(ws, "wes@example.com", "Wes", "editor")
     client.post("/login", data={"email": "wes@example.com", "password": "password1234"})
     home = client.get(f"/w/{ws.id}/app/").get_data(as_text=True)
-    assert ">Data model<" in home and ">AI helpers<" in home
+    assert ">App map<" in home and ">AI helpers<" in home
     assert ">Checks<" not in home and ">Keep it right<" not in home and ">Settings<" not in home  # an admin's
     item = client.get(f"/w/{ws.id}/app/t/items/{flour.id}").get_data(as_text=True)
     assert "/t/outlook/new" not in item  # put together by itself: nothing to add to it from here

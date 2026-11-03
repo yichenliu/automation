@@ -598,8 +598,8 @@ def _screens(trial, engine, made):
         paths.append(f"/w/{wid}/app/t/{t['key']}/new")
         if made.get(t["key"]):
             paths += [f"/w/{wid}/app/t/{t['key']}/{made[t['key']]}", f"/w/{wid}/app/t/{t['key']}/{made[t['key']]}/edit"]
-    # the studios draw the whole design: each diagram in them too
-    paths += [f"/w/{wid}/app/studio/data", f"/w/{wid}/app/studio/workflows"]
+    # the App map draws the whole design: the map, what each list keeps, and each diagram in it too
+    paths += [f"/w/{wid}/app/studio", f"/w/{wid}/app/studio?view=data", f"/w/{wid}/app/studio/map.json"]
     paths += [f"/w/{wid}/app/studio/workflows/item?id=rule:{a['key']}" for a in engine.bp.get("automations", [])]
     paths += [f"/w/{wid}/app/studio/workflows/item?id=stages:{t['key']}" for t in engine.tables.values() if t.get("workflow")]
     paths += [f"/w/{wid}/app/studio/workflows/item?id=flow:{f['key']}" for f in engine.bp.get("flows") or []]
@@ -1082,6 +1082,30 @@ def _checking(engine, record, key):
     """Whether the AI's work for this field of this record is waiting for a person to check it."""
     return any(key in (a.fields or []) for a in Approval.query.filter_by(workspace_id=engine.ws.id, record_id=record.id,
                                                                          status="pending", kind="review"))
+
+
+def walkthrough(workspace, example):
+    """Act out one example in a throwaway copy, as play does, and what it went through: each stage a record got to, in
+    order, and the rules that ran (the App map lights them up). Nothing in the real app changes."""
+    from .. import appmap
+    from ..models import RecordChange
+    with copy_of(workspace) as trial:
+        result = play(trial, example)
+        engine = trial.engine()
+        engine.reset()
+        tables = {t["key"]: t for t in engine.bp.get("tables", [])}
+        went = []
+        rows = db.session.query(RecordChange, Record.table).join(Record, Record.id == RecordChange.record_id) \
+            .filter(RecordChange.workspace_id == trial.ws_id).order_by(RecordChange.id).all()
+        for change, table in rows:
+            f = appmap._status(tables[table]) if table in tables else None
+            moved = (change.changes or {}).get(f["key"]) if f else None
+            if isinstance(moved, list) and len(moved) == 2 and moved[1] not in (None, ""):
+                record = engine.get(change.record_id)
+                went.append({"table": table, "stage": moved[1], "record": engine.title(record) if record else "",
+                             "by": "a rule" if str(change.by or "").startswith(("automation", "the rule")) else "a person"})
+        ran = list(dict.fromkeys(r.name or r.automation for r in Run.query.filter_by(workspace_id=trial.ws_id).order_by(Run.id)))
+    return {**result, "went": went, "ran": ran}
 
 
 def play(trial, example):

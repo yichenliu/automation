@@ -301,9 +301,23 @@ the builder makes, and fitting together (one list of products for all; what join
 - **Production**: what each product is made of, work orders with their materials on a board, and finishing one puts what
   was made on the stock and takes its materials off.
 
-## The studios: the design drawn, and changed by hand
+## The App map: the whole app drawn, and changed by hand
 
-✅ **Data model** (Set up › Data model): every list drawn as a box with its fields and what each keeps, and a line from
+✅ **App map** (Set up › App map): the whole app in one picture, worked out from its design (never drawn by hand, so it
+can't disagree with what the app does; app/appmap.py). **How work flows** shows each **process** as a row: the lists work
+goes through in order (a quote, then its job, its invoice, its payment), joined by arrows that are the hand-offs (a rule
+making the next record at a stage, or a payment marking its invoice paid), each list with its stages and how many records
+are at each. Lists many others look things up in (customers, products) and ledgers several processes add to (stock
+movements) sit apart below. Layers, each on or off (remembered on the device): **Right now** (counts, what's waiting),
+**People** (who moves work on, where someone approves), **AI** (where it fills things in or acts, and whether a person
+checks it), **Problems** (what the design checks found, on the list it's about). Click in: a **process** (named as the
+business calls it, "Quote to cash"; **play one of the app's examples through it** in a throwaway copy, and the stages it
+went through light up, numbered, with the rules that ran and whether it came out right), a **list** (where its work comes
+from and goes on to, who and what acts on it, its stages, rules and screens), and from there the stages, a rule or a flow
+in full, with a trail back up. **What it keeps** is the data model, on the same page: a list clicked on the map opens
+there, and from there "where it is in your processes" goes back. The old Data model and Processes addresses lead here.
+
+✅ **What it keeps** (the App map's data view): every list drawn as a box with its fields and what each keeps, and a line from
 each link to the list it points at (dashed for several). Drag a list to move it (kept for everyone), pan and zoom, show
 everything, tidy up, download it as a picture. Admins change it there: a new list; rename a list or what one record is
 called, or its menu section; add a field (any kind people fill in, a link to another list, a sum worked out); rename
@@ -311,7 +325,7 @@ one, change its help, whether it must be filled in or be unique, kept private, i
 value; put the fields in order by dragging; add, remove, rename and order a choice's options; link two lists by
 dragging one's **+** onto the other; name records by a field; remove a field or a list.
 
-✅ **Processes** (Set up › Processes, the workflow studio): everything with a flow to it, grouped by list. **Stages** drawn top to bottom,
+✅ **Stages, rules and flows** (opened from the App map): everything with a flow to it, grouped by process and list. **Stages** drawn top to bottom,
 each with how many records are in it and the rules that run when one gets there, with an arrow for each button that
 moves a record on (straight down to the next, round the right to one further on, round the left back, one arrow in for
 a move from many stages); add, rename, order and remove stages, set where new ones start, and add or change a move
@@ -328,25 +342,24 @@ one of the list's records, step by step, without doing any of it (the way a bran
 why, what waits for an answer). **Step-by-step flows** drawn screen by screen; rename, add (instructions, fields to
 fill in, a photo, a signature), edit, order and remove screens.
 
-✅ In both, a box to ask the AI for anything else in words, and every change: checked like the builder's (an app
+✅ On the App map, a box to ask the AI for anything else in words, and every change: checked like the builder's (an app
 with a problem from before can still be changed, but not made worse), saved as a version, said in plain words with
 **Take it back**. Nothing people entered is thrown away by a click: a field keeps its kind while it has values (text and
 notes, number and money, date and date-and-time can swap), a choice or stage in use can't be removed (rename it instead),
 and renaming a choice or stage renames it on every record and in every rule, condition, move and flow that names it
 (taking it back renames them back). People who aren't admins see the diagrams, of what they may see. Every build's
-try-out opens both studios and each diagram in them.
+try-out opens the App map and each diagram in it.
 
 ✅ All joined up: a change in a studio is the design itself, so the rules, screens, forms, documents, API, MCP server,
 the builder and the assistant work from it at once (tested end to end in tests/test_connected.py). A renamed stage keeps
 its rules firing; a field renamed or kept from some people is read again by the AI's search (a private one leaves it at
-once); the builder is told of every change made by hand and keeps it; stages added in Processes are a field in the Data
-model; nothing writes to a combined list but the lists it's made from.
+once); the builder is told of every change made by hand and keeps it; stages added on the map are a field in what it keeps; nothing writes to a combined list but the lists it's made from.
 
 ## Where things are
 
-✅ The app's menu has **Set up** (for the team, not portal people) in three parts. **Your app**: Data model (the lists),
-Processes (stages, rules and step-by-step flows, with each rule's last runs, its address for other systems and Run it
-now), Versions (every change, going back, the test copy, ready-made parts). **AI**: AI helpers (every job the AI does,
+✅ The app's menu has **Set up** (for the team, not portal people) in three parts. **Your app**: App map (the processes and
+the lists behind them; stages, rules and step-by-step flows, with each rule's last runs, its address for other systems
+and Run it now), Versions (every change, going back, the test copy, ready-made parts). **AI**: AI helpers (every job the AI does,
 in processes and fields: add one, switch it off so a person does it, let it take over a job done by hand, choose who
 checks it, try it on real records) and What the AI knows. **Keep it right**: Checks and Suggestions. Then Settings, in
 three parts: **Your business** (business details, appearance, people and teams), **Connected** (connections to
@@ -354,10 +367,10 @@ apps and accounts, the API and AI assistants, public forms, printers) and **Look
 data and backups, security, the audit log, health). Each list's page links to it in both studios; each studio links to
 the other; ⌘K jumps to any of them.
 
-✅ AI in a process, configured by people: in Processes an AI step is added like any other (fill in a field, check a
+✅ AI in a process, configured by people: on the App map an AI step is added like any other (fill in a field, check a
 record, read a document, make a record from an email), switched off so a person does it as a task (and back on), given
 a job people did by hand (a task with one field), and set to be checked by a person every time, when it isn't sure, or
-not at all; in the Data model a field can be filled in by the AI, or stop being. The AI helpers page lists them all,
+not at all; in what a list keeps a field can be filled in by the AI, or stop being. The AI helpers page lists them all,
 with how often each was right when checked.
 
 ## Trying changes safely
@@ -393,7 +406,7 @@ These are deliberate gaps, listed so nothing is assumed:
 - **Offline use:** the app installs on a phone but needs a connection.
 - **Smaller pieces:** swimlanes on boards, merging duplicate records, steps that run in
   parallel inside one automation (several approvers at once is built; other parallel work goes in separate automations),
-  changing in the Processes studio the steps it has no form for (copying a record, going through each line, reading a
+  changing on the App map the steps it has no form for (copying a record, going through each line, reading a
   file with the AI: asked of the AI in words instead), email verification when outside people sign up by
   themselves (the business verifies them before trading instead).
 - **Procurement connectors:** e-signature (DocuSign), e-invoicing (Peppol), punchout catalogues (cXML, OCI), and ready

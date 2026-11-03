@@ -869,12 +869,13 @@ def looking_at(page):
     split = urlsplit(page)
     opened = (parse_qs(split.query).get("open") or [""])[0]
     page = split.path
-    if page.rstrip("/").endswith("/studio/data"):
-        return "The owner is in the Data model studio" + (f", looking at the table {opened} (\"here\" means it)." if opened else ".")
-    if page.rstrip("/").endswith("/studio/workflows"):
+    if page.rstrip("/").endswith(("/studio", "/studio/data", "/studio/workflows")):  # the App map (and its old addresses)
         kind, _, key = opened.partition(":")
-        what = {"rule": f"the automation {key}", "stages": f"the workflow (stages) of the table {key}", "flow": f"the flow {key}"}.get(kind)
-        return "The owner is in the Workflows studio" + (f", looking at {what} (\"this\" means it)." if what else ".")
+        if page.rstrip("/").endswith("/studio/data") and opened and not kind == "data":
+            kind, key = "data", opened
+        what = {"rule": f"the automation {key}", "stages": f"the workflow (stages) of the table {key}", "flow": f"the flow {key}",
+                "list": f"the table {key}", "data": f"the table {key}" if key else "", "process": f"the process that starts at the table {key}"}.get(kind)
+        return "The owner is in the App map (their app drawn as processes and the data model)" + (f", looking at {what} (\"this\" and \"here\" mean it)." if what else ".")
     if page.rstrip("/").endswith("/design"):
         return "The owner is looking at the versions of the design."
     parts = page.strip("/").split("/")

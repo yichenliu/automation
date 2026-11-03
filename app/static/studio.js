@@ -102,7 +102,8 @@
     const canEdit = !!root.dataset.canEdit;
     const canvas = $(".studio-canvas", root), svg = $(".studio-svg", root), panel = $(".studio-panel", root);
     const status = $(".studio-status", root);
-    let model = JSON.parse($("#studio-model").textContent);
+    const integrated = !!root.dataset.integrated;  // the App map's “What it keeps” view
+    let model = JSON.parse(($("script[data-model]", root) || $("#studio-model")).textContent);
     const undoStack = [];
     const W = 248, HEAD = 40, ROW = 24, PAD = 8;
     let view = {x: 40, y: 30, k: 1};
@@ -410,7 +411,8 @@
 
     function select(table, field = null) {
       selected = table ? {table, field} : null;
-      history.replaceState(null, "", table ? `?open=${encodeURIComponent(table)}` : location.pathname);
+      if (integrated) history.replaceState(null, "", `${root.dataset.here}?view=data&open=${encodeURIComponent(table ? `data:${table}` : "data")}`);
+      else history.replaceState(null, "", table ? `?open=${encodeURIComponent(table)}` : location.pathname);
       draw(); showPanel();
       if (table) reveal(table);
       if (window.matchMedia("(max-width: 900px)").matches) panel.scrollIntoView({behavior: "smooth", block: "start"});
@@ -441,7 +443,8 @@
       const box = html(`<div class="stack">
         <div class="row"><button type="button" class="btn sm ghost" data-back>${icon("chevron-left")}All lists</button>
           ${t.embedded ? "" : `<a class="btn sm ghost" href="${esc(root.dataset.openTable.replace("__table__", t.key))}">Open the list${icon("external-link")}</a>`}
-          <a class="btn sm ghost" href="${esc(root.dataset.workflows)}?table=${encodeURIComponent(t.key)}">${icon("workflow")}Its stages and rules</a></div>
+          ${integrated ? `<a class="btn sm ghost" href="${esc(root.dataset.here)}?open=${encodeURIComponent(`list:${t.key}`)}" data-go-map="list:${esc(t.key)}">${icon("route")}Where it is in your processes</a>`
+            : `<a class="btn sm ghost" href="${esc(root.dataset.workflows)}?table=${encodeURIComponent(t.key)}">${icon("workflow")}Its stages and rules</a>`}</div>
         <div><h2 class="panel-title">${icon(t.icon)}${esc(t.label)}</h2><p class="small muted">${plural(t.count, "record", "records")}${t.embedded ? " · filled in inside another record" : ""}</p>
           ${t.combines.length ? `<p class="small">${icon("layers")} Put together from ${esc(t.combines.map((k) => (tableOf(k) || {label: k}).label).join(", "))}, and kept up to date as they change: nobody adds to it by hand. Ask the AI to change what goes into it.</p>` : ""}</div>
         ${canEdit ? `<form class="stack" data-form="table">
@@ -595,13 +598,16 @@
       sortable(list, (keys) => change({do: "update_field", table: t.key, key: f.key, options: keys}));
     }
 
-    // first draw (a list named in the address opened, as from its own page or from Workflows)
+    // first draw (a list named in the address opened, as from its own page or from the map)
     layout(false);
-    const asked = new URLSearchParams(location.search).get("open");
+    let asked = new URLSearchParams(location.search).get("open") || "";
+    if (integrated) asked = asked.startsWith("data:") ? asked.slice(5) : "";
     selected = asked && tableOf(asked) ? {table: asked, field: null} : null;
     draw();
     showPanel();
-    requestAnimationFrame(() => fit(0.6));
+    let fitted = false;
+    const fitOnce = () => { if (!fitted && canvas.getBoundingClientRect().width) { fitted = true; fit(0.6); if (selected) reveal(selected.table); } };
+    requestAnimationFrame(fitOnce);  // (hidden behind the map at first: fitted when it's shown)
     window.matchMedia("(prefers-color-scheme: dark)").addEventListener?.("change", draw);
     $("[data-studio-new-table]")?.addEventListener("click", async () => {
       const label = prompt("What's the new list called? (Suppliers, Jobs, Assets…)");
@@ -609,7 +615,8 @@
       const made = await change({do: "add_table", label});
       if (made) { const t = tables().find((x) => x.label.toLowerCase() === label.trim().toLowerCase()); if (t) select(t.key); }
     });
-    askBox(reload);
+    if (!integrated) askBox(reload);
+    return {reload, select: (table) => { select(table); }, shown: () => { fitOnce(); if (selected) reveal(selected.table); }, changed: () => undoStack.length};
   }
 
   // Dragging rows of a list into a new order (fields, choices, stages).
@@ -644,33 +651,76 @@
     update_each: "pencil", delete_record: "trash-2", run_automation: "zap", copy_record: "copy", payment_link: "credit-card"};
   const FLOW_ICONS = {info: "info", form: "pencil", scan: "search", pick: "list-todo", photo: "camera", signature: "pencil", decide: "split", print: "printer"};
 
-  function workflowStudio(root) {
+  function workflowStudio(root, hooks = {}) {
     const canEdit = !!root.dataset.canEdit;
     const rail = $(".wf-rail", root), main = $(".wf-main", root), panel = $(".studio-panel", root), status = $(".studio-status", root);
     let data = JSON.parse($("#studio-model").textContent);
     let item = JSON.parse($("#studio-opened").textContent);
+    let map = JSON.parse($("#studio-map").textContent);  // the whole app, worked out from its design (app/appmap.py)
     let tried = null;  // what "try it" said, shown on the rule's steps
+    let played = null;  // an example played through a process in a copy: {process, title, ok, lines, problem, went, ran}
     const undoStack = [];
 
     const tableOf = (key) => data.tables.find((t) => t.key === key);
     const fieldsOf = (key) => (tableOf(key) || {fields: []}).fields;
 
+    // --- the map: what's worked out from the design, and finding things in it ----------------------------------
+    const procOf = (key) => map.processes.find((p) => p.key === key);
+    const procWith = (table) => map.processes.find((p) => p.lists.includes(table));
+    const cardOf = (table) => { for (const p of map.processes) { const c = p.cards.find((x) => x.key === table); if (c) return c; } return null; };
+    const refOf = (table) => map.reference.find((r) => r.key === table);
+    const groupOf = (table) => data.items.find((g) => g.table === table);
+    const ITEM_ICONS = {stages: "arrow-right", rule: "zap", flow: "list-todo"};
+    function mapItem(id) {  // the map's own views: drawn here from what's loaded, not fetched
+      const [kind, key] = [String(id || "").split(":")[0], String(id || "").split(":").slice(1).join(":")];
+      if (kind === "map") return {kind: "map"};
+      if (kind === "process" && procOf(key)) return {kind: "process", key};
+      if (kind === "list" && (cardOf(key) || refOf(key))) return {kind: "list", key};
+      return null;
+    }
+    if (!item) item = mapItem(JSON.parse($("#studio-open").textContent || "null")) || {kind: "map"};
+
     function drawRail() {
-      rail.innerHTML = data.items.length ? data.items.map((g) => `<div class="wf-group"><div class="wf-group-head">${icon(g.icon)}${esc(g.label)}</div>
-        ${g.items.map((i) => `<button type="button" class="wf-item ${item && i.id === itemId() ? "active" : ""}" data-open="${esc(i.id)}">
-          ${icon(i.kind === "stages" ? "arrow-right" : i.kind === "rule" ? "zap" : "list-todo")}<span class="grow ellipsis">${esc(i.label)}</span>
-          ${i.kind === "rule" && !i.on ? '<span class="tag">off</span>' : ""}</button>`).join("")}</div>`).join("")
-        : `<p class="small muted pad">Nothing yet. ${canEdit ? "Add a rule, or stages to a list." : ""}</p>`;
+      const cur = itemId();
+      const btn = (id, ic, label, extra = "", sub = false) => `<button type="button" class="wf-item ${sub ? "sub" : ""} ${id === cur ? "active" : ""}" data-open="${esc(id)}">
+        ${icon(ic)}<span class="grow ellipsis">${esc(label)}</span>${extra}</button>`;
+      const items = (table) => ((groupOf(table) || {}).items || []).map((i) => btn(i.id, ITEM_ICONS[i.kind] || "zap", i.kind === "stages" ? "Its stages" : i.label,
+        i.kind === "rule" && !i.on ? '<span class="tag">off</span>' : "", true)).join("");
+      const flag = (problems) => problems && problems.length ? `<span class="m-problems ${problems.some((x) => x.bad) ? "bad-text" : "warn-text"}" title="${esc(problems.map((x) => x.text).join("\n"))}">${icon("triangle-alert")}</span>` : "";
+      let out = `<div class="wf-group">${btn("map", "map", "Your whole app")}${btn("data", "network", "What each list keeps")}</div>`;
+      out += map.processes.map((p) => `<div class="wf-group"><div class="wf-group-head">${icon("route")}<span class="ellipsis">${esc(p.name)}</span></div>
+        ${btn(`process:${p.key}`, "route", "The whole process")}
+        ${p.cards.map((c) => btn(`list:${c.key}`, c.icon, c.label, flag(c.problems)) + items(c.key)).join("")}</div>`).join("");
+      if (map.reference.length) {
+        out += `<div class="wf-group"><div class="wf-group-head">${icon("table")}Lists they look things up in</div>
+          ${map.reference.map((r) => btn(`list:${r.key}`, r.icon, r.label, flag(r.problems)) + items(r.key)).join("")}</div>`;
+      }
+      const across = groupOf("");
+      if (across && across.items.length) out += `<div class="wf-group"><div class="wf-group-head">${icon("globe")}Across the app</div>${items("")}</div>`;
+      if (!map.processes.length && !map.reference.length) out += `<p class="small muted pad">Nothing yet. ${canEdit ? "Ask for what your business needs above, or add a list." : ""}</p>`;
+      rail.innerHTML = out;
       $$("[data-open]", rail).forEach((b) => b.addEventListener("click", () => open(b.dataset.open)));
     }
-    const itemId = () => item ? `${item.kind}:${item.kind === "stages" ? item.table : item.key}` : "";
+    const itemId = () => !item ? "" : item.kind === "map" ? "map" : ["process", "list"].includes(item.kind) ? `${item.kind}:${item.key}`
+      : `${item.kind}:${item.kind === "stages" ? item.table : item.key}`;
+    const remember = (id = itemId()) => history.replaceState(null, "", `${root.dataset.here}${id && id !== "map" ? `?open=${encodeURIComponent(id)}` : ""}`);
 
     async function open(id) {
-      if (!id) { item = null; draw(); return; }
+      if (!id) id = "map";
+      if (id === "data" || id.startsWith("data:")) { hooks.toData?.(id.slice(5)); return; }
+      const local = mapItem(id);
+      if (local) { item = local; tried = null; remember(id); draw(); return; }
       const got = await get(`${root.dataset.item}?id=${encodeURIComponent(id)}`);
       if (!got) { statusLine(status, ["That isn't there any more"], "bad"); return; }
       item = got; tried = null;
-      history.replaceState(null, "", `${root.dataset.here}?open=${encodeURIComponent(id)}`);
+      remember(id);
+      draw();
+    }
+    async function refresh() {  // after a change anywhere (the data model, the AI): the map worked out again
+      const got = await get(root.dataset.mapJson);
+      if (!got) return;
+      map = got.map; data = got.data;
+      if (["process", "list"].includes(item?.kind) && !mapItem(itemId())) item = {kind: "map"};
       draw();
     }
 
@@ -680,8 +730,10 @@
       if (done.error) { statusLine(status, [done.error], "bad"); return false; }
       undoStack.push(done.before);
       data.items = done.items; data.tables = done.tables;
-      item = done.item; tried = null;
-      if (done.id) history.replaceState(null, "", `${root.dataset.here}?open=${encodeURIComponent(done.id)}`);
+      item = done.item || {kind: "map"}; tried = null;
+      remember(done.id || itemId());
+      const fresh = await get(root.dataset.mapJson);  // the map follows: a new stage, a rule handing work on
+      if (fresh) { map = fresh.map; data = fresh.data; }
       draw();
       statusLine(status, done.said, "good", takeBack);
       return true;
@@ -695,16 +747,244 @@
     }
 
     function draw() {
+      if (!item) item = {kind: "map"};
       drawRail();
       main.innerHTML = ""; panel.innerHTML = "";
-      if (!item) {
-        main.appendChild(html(`<div class="card empty"><h3>${icon("workflow", "big")}<br>Choose something on the left</h3>
-          <p class="muted">Each list's stages, each rule and each step-by-step flow is drawn here.${canEdit ? " Or start a new rule." : ""}</p></div>`));
-        return;
-      }
-      if (item.kind === "rule") drawRule();
+      root.classList.toggle("wide", ["map", "process"].includes(item.kind));  // lanes need the room; no panel beside them
+      if (item.kind !== "map") main.appendChild(crumbs());
+      if (item.kind === "map") drawMap();
+      else if (item.kind === "process") drawProcess(procOf(item.key));
+      else if (item.kind === "list") drawList(item.key);
+      else if (item.kind === "rule") drawRule();
       else if (item.kind === "stages") drawStages();
       else drawFlow();
+      wire(main);  // the trail at the top, whatever's drawn below it
+    }
+
+    // --- the map ------------------------------------------------------------------------------------------------------
+    // Where you are: the whole app › a process › a list › its stages or a rule.
+    function crumbs() {
+      const trail = [["map", "Your whole app"]];
+      const table = item.kind === "list" ? item.key : item.kind === "stages" ? item.table : item.table || null;
+      const p = item.kind === "process" ? procOf(item.key) : table ? procWith(table) : null;
+      if (p && item.kind !== "process") trail.push([`process:${p.key}`, p.name]);
+      if (table && item.kind !== "list") trail.push([`list:${table}`, (cardOf(table) || refOf(table) || {label: table}).label]);
+      const here = item.kind === "process" ? p.name : item.kind === "list" ? (cardOf(item.key) || refOf(item.key)).label : item.kind === "stages" ? "Its stages" : item.label || item.name || "";
+      return html(`<nav class="map-crumbs small" aria-label="Where you are">${trail.map(([id, label]) => `<button type="button" class="link" data-open="${esc(id)}">${esc(label)}</button>`).join(`<span class="faint">›</span>`)}
+        <span class="faint">›</span><span aria-current="page">${esc(here)}</span></nav>`);
+    }
+    const litAt = (table, stage) => {
+      if (!played) return "";
+      const n = played.went.findIndex((w) => w.table === table && w.stage === stage);
+      return n >= 0 ? `lit" data-step="${n + 1}` : "";
+    };
+    const problemsBadge = (problems) => problems.length ? `<span class="m-problems ${problems.some((x) => x.bad) ? "bad-text" : "warn-text"}" title="${esc(problems.map((x) => x.text).join("\n"))}">${icon("triangle-alert")}${problems.length}</span>` : "";
+    const aiCount = (c) => c.ai.steps.length + c.ai.fields.length;
+
+    function cardHtml(c, big = false) {
+      const stages = c.stages.length
+        ? `<div class="map-stages ${big ? "tall" : ""}">${c.stages.map((st) => `<span class="map-stage ${litAt(c.key, st.name)}" title="${esc(st.name)}: ${plural(st.count, c.singular.toLowerCase(), c.label.toLowerCase())}${st.approves ? " · someone approves here" : ""}${st.ai ? " · the AI acts here" : ""}">
+            <span class="ellipsis">${esc(st.name)}</span><b class="m-live">${st.count || ""}</b>${st.approves ? icon("user-check", "m-people") : ""}${st.ai ? icon("sparkles", "m-ai") : ""}
+            ${big && st.rules.length ? `<span class="map-stage-rules">${st.rules.map((k) => { const r = c.rules.find((x) => x.key === k); return r ? `<button type="button" class="map-rule ${r.on ? "" : "off"}" data-open="rule:${esc(k)}">${icon("zap")}${esc(r.name)}</button>` : ""; }).join("")}</span>` : ""}</span>`).join("")}</div>`
+        : `<div class="faint tiny">${c.workflow ? "" : "Kept, not moved along stages"}</div>`;
+      return `<div class="map-card ${big ? "big" : ""} ${c.problems.some((x) => x.bad) ? "has-bad" : ""}" data-open="list:${esc(c.key)}" role="button" tabindex="0" aria-label="${esc(c.label)}">
+        <div class="map-card-head">${icon(c.icon)}<b class="grow ellipsis">${esc(c.label)}</b><span class="m-live faint small" title="Records in it now">${c.count}</span></div>
+        ${c.entries.length ? `<div class="map-entries">${c.entries.map((e) => `<span class="tagchip" title="Work comes in from here">${icon(e.icon)}${esc(e.label)}</span>`).join("")}</div>` : ""}
+        ${stages}
+        <div class="map-badges">
+          ${c.people.length ? `<span class="m-people" title="Who moves it on or approves: ${esc(c.people.join(", "))}">${icon("users")}<span class="ellipsis">${esc(c.people.slice(0, 2).join(", "))}${c.people.length > 2 ? "…" : ""}</span></span>` : ""}
+          ${aiCount(c) ? `<span class="m-ai ai-tag" title="${esc([...c.ai.fields.map((f) => `Fills in ${f}`), ...c.ai.steps.map((s) => `${s.name}${s.checked ? " (a person checks it)" : ""}`)].join("\n"))}">${icon("sparkles")}AI ${aiCount(c)}</span>` : ""}
+          ${c.waiting ? `<span class="m-live warn-text" title="Approvals and tasks waiting on its records">${icon("list-todo")}${c.waiting} waiting</span>` : ""}
+          ${problemsBadge(c.problems)}</div></div>`;
+    }
+    // the hand-offs from one list to the next: the rules (or links) between them, said on the arrow
+    function arrowHtml(p, from, to, shown) {
+      const hs = p.handoffs.filter((h) => (h.how === "makes" ? h.from === from && h.to === to : h.to === from && h.from === to));
+      hs.forEach((h) => shown.add(h.rule + h.to));
+      const linked = p.links.some((l) => l.from === from && l.to === to);
+      return `<div class="map-arrow">${hs.map((h) => `<button type="button" class="map-hand ${h.on ? "" : "off"}" data-open="rule:${esc(h.rule)}" title="${esc(h.label)}${h.on ? "" : " (switched off)"}">
+          ${h.how === "updates" ? `<span class="faint tiny">${esc(a(singularOf(h.from).toLowerCase()))}${h.at ? ` at ${esc(h.at)}` : ""} updates it</span>`
+            : h.at ? `<span class="faint tiny">at ${esc(h.at)}</span>` : h.button ? `<span class="faint tiny">by its button</span>` : ""}<span class="ellipsis">${esc(h.label)}</span>
+          <span class="map-hand-marks">${h.asks ? icon("user-check", "m-people") : ""}${h.ai ? icon("sparkles", "m-ai") : ""}</span></button>`).join("")
+        || (linked ? `<span class="faint tiny">raised from it</span>` : "")}<span class="map-arrow-line" aria-hidden="true"></span></div>`;
+    }
+    function laneHtml(p, big = false) {
+      const shown = new Set();
+      let lane = "";
+      p.cards.forEach((c, i) => {
+        if (i) lane += arrowHtml(p, p.cards[i - 1].key, c.key, shown);
+        lane += cardHtml(c, big);
+      });
+      const rest = p.handoffs.filter((h) => !shown.has(h.rule + h.to));
+      return `<div class="map-lane ${big ? "big" : ""}">${lane}</div>
+        ${rest.length ? `<div class="map-more small">${rest.map((h) => `<button type="button" class="map-hand inline ${h.on ? "" : "off"}" data-open="rule:${esc(h.rule)}">
+          ${icon("zap")}<span>${esc(h.from_label)}${h.at ? ` at ${esc(h.at)}` : ""} ${h.how === "makes" ? "→ adds to" : "→ updates"} ${esc(h.to_label)}</span><span class="faint">· ${esc(h.label)}</span>
+          ${h.ai ? icon("sparkles", "m-ai") : ""}${h.asks ? icon("user-check", "m-people") : ""}</button>`).join("")}</div>` : ""}`;
+    }
+    function lastCheck() {
+      const last = map.last, bad = map.problems || [];
+      if (!(bad.length || (last && (last.failing.length || last.issues.length)))) return "";
+      return `<div class="notice warn small m-problems">${icon("triangle-alert")}<div class="grow">
+        ${last && last.failing.length ? `<div>Your app's checks found ${plural(last.failing.length, "example that doesn't", "examples that don't")} come out right: ${esc(last.failing.slice(0, 3).join("; "))}.</div>` : ""}
+        ${last && last.issues.length ? `<div>${esc(last.issues.slice(0, 2).join(" "))}</div>` : ""}
+        ${bad.map((x) => `<div>${esc(x.text)}</div>`).join("")}</div><a class="btn sm" href="${esc(root.dataset.checks)}">See the checks</a></div>`;
+    }
+
+    function drawMap() {
+      const lists = map.processes.reduce((n, p) => n + p.cards.length, 0) + map.reference.length;
+      const ai = map.processes.reduce((n, p) => n + p.ai, 0);
+      main.appendChild(html(`<div class="wf-head"><div class="grow"><h2>${icon("map")}Your whole app</h2>
+        <p class="small muted">${plural(map.processes.length, "process", "processes")} running through ${plural(lists, "list", "lists")}${ai ? `, the AI helping in ${plural(ai, "place", "places")}` : ""}.
+          Work moves along each row, from the first list to the last; click a process, a list or an arrow to see it in full.</p></div></div>`));
+      main.appendChild(howTo());
+      const warn = lastCheck();
+      if (warn) main.appendChild(html(warn));
+      if (!map.processes.length && !map.reference.length) {
+        main.appendChild(html(`<div class="card empty"><h3>${icon("map", "big")}<br>Nothing to map yet</h3><p class="muted">${canEdit ? "Say what your business needs in the box above, and the map draws itself as the app is built." : "Once the app has lists, they're drawn here."}</p></div>`));
+      }
+      map.processes.forEach((p) => {
+        main.appendChild(html(`<article class="map-proc"><header class="map-proc-head">
+          <button type="button" class="map-proc-name" data-open="process:${esc(p.key)}">${icon("route")}${esc(p.name)}${icon("chevron-right")}</button>
+          <span class="faint small m-live">${plural(p.count, "record", "records")}</span>${p.problems ? `<span class="m-problems warn-text small">${icon("triangle-alert")}${p.problems}</span>` : ""}</header>
+          ${laneHtml(p)}</article>`));
+      });
+      if (map.reference.length) {
+        main.appendChild(html(`<section class="map-ref"><h3 class="label">${icon("table")}Lists your processes look things up in</h3><div class="chips">
+          ${map.reference.map((r) => `<button type="button" class="tagchip" data-open="list:${esc(r.key)}" title="${r.used_by.length ? `Used by ${esc(r.used_by.join(", "))}` : ""}">${icon(r.icon)}${esc(r.label)}<span class="m-live faint">${r.count}</span>${problemsBadge(r.problems)}</button>`).join("")}</div></section>`));
+      }
+      if (map.elsewhere.length) {
+        main.appendChild(html(`<section class="map-ref"><h3 class="label">${icon("globe")}Rules about the whole app</h3><div class="chips">
+          ${map.elsewhere.map((a) => `<button type="button" class="tagchip ${a.on ? "" : "off"}" data-open="rule:${esc(a.key)}">${icon("zap")}${esc(a.name)}</button>`).join("")}</div></section>`));
+      }
+      wire(main);
+    }
+    function howTo() {
+      return html(`<details class="map-howto small"><summary>${icon("info")}How to read the map</summary>
+        <ul class="map-key small">
+          <li>${icon("route")}<span>Each row is a <b>process</b>: the lists work goes through, in order.</span></li>
+          <li><span class="map-stage mini">Stage <b>3</b></span><span>A list's <b>stages</b>, and how many records are at each now.</span></li>
+          <li>${icon("arrow-right")}<span>An <b>arrow</b> is a hand-off: a rule (or a person) taking the work to the next list.</span></li>
+          <li>${icon("user-check")}<span>Someone <b>approves</b> it there.</span></li>
+          <li>${icon("sparkles")}<span>The <b>AI</b> fills something in or acts there.</span></li>
+          <li>${icon("triangle-alert")}<span>The app's checks found something to look at.</span></li></ul>
+        <p class="muted">Use <b>Show</b> above the map to hide what you don't need. <b>What it keeps</b> shows every list's fields and links.
+          ${map.examples.length ? "Open a process to <b>play an example</b> through it and watch where it goes." : ""}</p></details>`);
+    }
+
+    function drawProcess(p) {
+      main.appendChild(html(`<div class="wf-head"><div class="grow"><h2>${icon("route")}${esc(p.name)}</h2>
+        <p class="small muted">${p.cards.map((c) => esc(c.label)).join(" → ")}. Each list's stages are below it, with the rules that act at each.</p></div></div>`));
+      main.appendChild(processTools(p));
+      if (played && played.process === p.key) main.appendChild(playedBox());
+      main.appendChild(html(`<div>${laneHtml(p, true)}</div>`));
+      const said = p.handoffs.map((h) => `<li><button type="button" class="link" data-open="rule:${esc(h.rule)}">${esc(h.label)}</button>:
+        ${h.how === "makes" ? `when ${esc(a(singularOf(h.from).toLowerCase()))} ${h.at ? `gets to ${esc(h.at)}` : h.button ? "has its button pressed" : "changes"}, it makes ${esc(a(singularOf(h.to).toLowerCase()))}`
+          : `${esc(a(singularOf(h.from).toLowerCase()))} updates its ${esc(singularOf(h.to).toLowerCase())}`}${h.asks ? ", once someone approves" : ""}${h.ai ? ", with the AI's help" : ""}${h.on ? "" : " <span class=\"tag\">off</span>"}.</li>`).join("");
+      if (said) main.appendChild(html(`<section class="card card-body"><h3 class="label">${icon("arrow-right")}How work is handed on</h3><ul class="map-said small">${said}</ul></section>`));
+      const problems = p.cards.flatMap((c) => c.problems.map((x) => ({...x, list: c.label})));
+      if (problems.length) main.appendChild(html(`<section class="card card-body m-problems"><h3 class="label">${icon("triangle-alert")}To look at</h3>
+        <ul class="map-said small">${problems.map((x) => `<li class="${x.bad ? "bad-text" : ""}"><b>${esc(x.list)}:</b> ${esc(x.text)}</li>`).join("")}</ul></section>`));
+      wire(main);
+    }
+    const a = (word) => `${/^[aeiou]/i.test(word) ? "an" : "a"} ${word}`;
+    const singularOf = (table) => (cardOf(table) || refOf(table) || {singular: table}).singular || (cardOf(table) || refOf(table) || {label: table}).label;
+
+    function processTools(p) {
+      const examples = map.examples.filter((x) => x.tables.some((t) => p.lists.includes(t)));
+      const box = html(`<div class="map-tools">
+        <form class="map-tool" data-form="play"><span class="label">${icon("play")}Play an example through it</span>
+          ${examples.length ? `<div class="row"><select name="example" aria-label="Which example">${examples.map((x) => `<option value="${x.n}">${esc(x.title)}</option>`).join("")}</select>
+            <button class="btn sm primary">${icon("play")}Play it</button></div><span class="help">Acted out in a copy of your app: nothing real changes. The stages it goes through light up.</span>`
+            : `<span class="small muted">No examples yet: the builder makes some each time it changes your app, and you can add your own under Checks.</span>`}</form>
+        ${canEdit ? `<form class="map-tool" data-form="name"><span class="label">${icon("pencil")}What your business calls it</span>
+          <div class="row"><input type="text" name="name" value="${p.named ? esc(p.name) : ""}" placeholder="${esc(p.name)}" maxlength="60" aria-label="What your business calls it">
+          <button class="btn sm">Name it</button></div><span class="help">“Quote to cash”, “Hiring”: leave it empty to name it after its lists.</span></form>` : ""}</div>`);
+      if (!examples.length) $("[data-form=play]", box).removeAttribute("data-form");
+      $("[data-form=name]", box)?.addEventListener("submit", async (ev) => {
+        ev.preventDefault();
+        const done = await post(root.dataset.name, {process: p.key, name: ev.target.elements.name.value});
+        if (done.error) { statusLine(status, [done.error], "bad"); return; }
+        map = done.map; draw();
+        statusLine(status, [ev.target.elements.name.value.trim() ? `Called “${ev.target.elements.name.value.trim()}” now` : "Named after its lists again"], "good");
+      });
+      $("[data-form=play]", box)?.addEventListener("submit", async (ev) => {
+        ev.preventDefault();
+        const b = $("button", ev.target);
+        b.disabled = true; b.innerHTML = `<span class="spin"></span> Playing it in a copy…`;
+        const got = await post(root.dataset.play, {example: Number(ev.target.elements.example.value)});
+        b.disabled = false; b.innerHTML = `${icon("play")}Play it`;
+        if (got.error) { statusLine(status, [got.error], "bad"); return; }
+        played = {process: p.key, ...got};
+        draw();
+      });
+      return box;
+    }
+    function playedBox() {
+      const r = played;
+      const box = html(`<div class="wf-tried ${r.ok ? "good" : "bad"}">${icon(r.ok ? "circle-check" : "circle-x")}<div class="grow">
+        <b>${esc(r.title)}</b>: ${r.ok ? "it came out as expected." : `it didn't come out right${r.problem ? `: ${esc(r.problem)}` : "."}`}
+        ${r.went.length ? `<ol class="map-went small">${r.went.map((w) => `<li><b>${esc((cardOf(w.table) || refOf(w.table) || {singular: w.table}).singular)}${w.record ? ` “${esc(w.record)}”` : ""}</b> → ${esc(w.stage)} <span class="faint">(${esc(w.by)})</span></li>`).join("")}</ol>` : ""}
+        ${r.ran.length ? `<div class="small muted">Rules that ran: ${esc(r.ran.join(", "))}.</div>` : ""}
+        ${r.lines.length ? `<ul class="map-said small">${r.lines.map(([ok, line]) => `<li class="${ok ? "" : "bad-text"}">${icon(ok ? "check" : "x")}${esc(line)}</li>`).join("")}</ul>` : ""}
+        <div class="small muted">Played in a copy: nothing in your app changed.</div></div>
+        <button type="button" class="btn sm ghost" data-unplay>Clear</button></div>`);
+      $("[data-unplay]", box).addEventListener("click", () => { played = null; draw(); });
+      return box;
+    }
+
+    // one list: where it sits, what moves it on, what acts on it, and the way into each part
+    function drawList(key) {
+      const c = cardOf(key), r = refOf(key), p = procWith(key);
+      const t = c || r;
+      main.appendChild(html(`<div class="wf-head"><div class="grow"><h2>${icon(t.icon)}${esc(t.label)}</h2>
+        <p class="small muted">${plural(t.count, "record", "records")}${p ? ` · part of ${esc(p.name)}` : r && r.used_by.length ? ` · looked up by ${esc(r.used_by.join(", "))}` : ""}</p></div></div>`));
+      const hands = map.processes.flatMap((x) => x.handoffs);
+      const from = hands.filter((h) => (h.how === "makes" ? h.to : h.from) === key && (h.how === "makes" ? h.from : h.to) !== key);
+      const to = hands.filter((h) => (h.how === "makes" ? h.from : h.to) === key);
+      const step = (h, other) => `<li><button type="button" class="map-hand inline ${h.on ? "" : "off"}" data-open="rule:${esc(h.rule)}">${icon("zap")}<span><b>${esc(other)}</b>
+        <span class="faint">· ${esc(h.label)}${h.at ? ` (at ${esc(h.at)})` : ""}</span></span>${h.ai ? icon("sparkles", "m-ai") : ""}${h.asks ? icon("user-check", "m-people") : ""}</button></li>`;
+      main.appendChild(html(`<div class="map-list-view">${c ? `<div class="map-lane big solo">${cardHtml(c, true)}</div>` : ""}
+        <div class="stack">
+          <section><h3 class="label">${icon("arrow-right")}Work comes from</h3>${from.length ? `<ul class="map-flow">${from.map((h) => step(h, h.how === "makes" ? h.from_label : h.to_label)).join("")}</ul>`
+            : `<p class="small muted">${c && c.entries.length ? esc(c.entries.map((e) => e.label).join(", ")) : "People add them by hand."}</p>`}</section>
+          <section><h3 class="label">${icon("arrow-right")}And goes on to</h3>${to.length ? `<ul class="map-flow">${to.map((h) => step(h, h.how === "makes" ? h.to_label : h.from_label)).join("")}</ul>`
+            : `<p class="small muted">Nothing hands it on by itself${r && r.used_by.length ? `; ${esc(r.used_by.join(", "))} look it up` : ""}.</p>`}</section></div></div>`));
+      wire(main);
+      listPanel(key);
+    }
+    function listPanel(key) {
+      const c = cardOf(key), r = refOf(key), t = c || r;
+      const items = (groupOf(key) || {items: []}).items;
+      const box = html(`<div class="stack"><h2 class="panel-title">${icon(t.icon)}${esc(t.label)}</h2>
+        <div class="row wrap"><a class="btn sm" href="${esc(root.dataset.openTable.replace("__table__", key))}">${icon("external-link")}Open the list</a>
+          <a class="btn sm" href="${esc(root.dataset.here)}?view=data&amp;open=${encodeURIComponent(`data:${key}`)}" data-to-data="${esc(key)}">${icon("network")}What it keeps</a></div>
+        ${c && c.entries.length ? `<p class="small">${icon("globe")} Work comes in from ${esc(c.entries.map((e) => e.label.toLowerCase()).join(", "))}.</p>` : ""}
+        ${c && c.people.length ? `<p class="small m-people">${icon("users")} Moved on or approved by ${esc(c.people.join(", "))}.</p>` : ""}
+        ${c && aiCount(c) ? `<div class="small m-ai"><b>${icon("sparkles")} Where the AI helps</b><ul class="map-said">${c.ai.fields.map((f) => `<li>Fills in ${esc(f)}</li>`).join("")}${c.ai.steps.map((s) => `<li>${esc(s.name)}${s.checked ? " · a person checks it" : ""}</li>`).join("")}</ul>
+          <a class="small" href="${esc(root.dataset.aiPage)}">Change what the AI does</a></div>` : ""}
+        ${t.problems.length ? `<div><div class="label">${icon("triangle-alert")}To look at</div><ul class="map-said small">${t.problems.map((x) => `<li class="${x.bad ? "bad-text" : ""}">${esc(x.text)}</li>`).join("")}</ul></div>` : ""}
+        <div><div class="label">Its stages, rules and step-by-step screens</div>
+          ${items.length ? `<ul class="studio-list">${items.map((i) => `<li><button type="button" data-open="${esc(i.id)}">${icon(ITEM_ICONS[i.kind] || "zap")}<span class="grow"><b>${esc(i.kind === "stages" ? "Its stages" : i.label)}</b>
+            ${i.about ? `<div class="faint tiny">${esc(i.about)}</div>` : ""}</span>${i.kind === "rule" && !i.on ? '<span class="tag">off</span>' : ""}${icon("chevron-right")}</button></li>`).join("")}</ul>`
+            : `<p class="small muted">None yet.</p>`}
+          ${canEdit && c && !c.workflow ? `<button type="button" class="btn sm" data-add-stages="${esc(key)}">${icon("arrow-right")}Give it stages</button>` : ""}</div></div>`);
+      panel.appendChild(box);
+      wire(box);
+      $("[data-add-stages]", box)?.addEventListener("click", () => $("[data-wf-new-stages]")?.click());
+    }
+
+    // what's clickable in a drawing or panel: opens it here; "What it keeps" opens the data view at that list
+    function wire(scope) {
+      $$("[data-open]", scope).forEach((el) => {
+        if (el.dataset.wired) return;
+        el.dataset.wired = "1";
+        activate(el, (ev) => { ev?.stopPropagation?.(); open(el.dataset.open); });
+      });
+      $$("[data-to-data]", scope).forEach((a) => {
+        if (a.dataset.wired) return;
+        a.dataset.wired = "1";
+        a.addEventListener("click", (ev) => { ev.preventDefault(); hooks.toData?.(a.dataset.toData); });
+      });
     }
 
     // --- a rule as a flowchart --------------------------------------------------------------------------------------
@@ -1201,7 +1481,7 @@
       const s = item;
       panel.innerHTML = "";
       const box = html(`<div class="stack"><h2 class="panel-title">${icon("arrow-right")}${esc(s.label)}</h2>
-        <a class="btn sm ghost" href="${esc(root.dataset.dataStudio)}?open=${encodeURIComponent(s.table)}">${icon("network")}What it keeps, in the Data model</a>
+        <a class="btn sm ghost" href="${esc(root.dataset.here)}?view=data&amp;open=${encodeURIComponent(`data:${s.table}`)}" data-to-data="${esc(s.table)}">${icon("network")}What it keeps</a>
         <div><div class="label">Stages${canEdit ? ` <span class="faint tiny">· drag to put them in order</span>` : ""}</div>
           <ul class="studio-fields" data-stages>${s.stages.map((st) => `<li ${canEdit ? 'draggable="true"' : ""} data-key="${esc(st.name)}">${canEdit ? icon("grip-vertical", "grip") : ""}
             <button type="button" data-stage="${esc(st.name)}"><span class="grow"><b>${esc(st.name)}</b>${st.start ? ' <span class="tag">start</span>' : ""}<div class="faint tiny">${plural(st.count, s.singular.toLowerCase(), s.plural.toLowerCase())}${st.rules.length ? ` · ${plural(st.rules.length, "rule", "rules")}` : ""}</div></span>${icon("chevron-right")}</button></li>`).join("")}</ul></div>
@@ -1380,13 +1660,75 @@
     });
 
     draw();
-    askBox(() => location.reload());
+    root.addEventListener("click", (ev) => {  // a "What it keeps" link anywhere in a panel drawn by the older code
+      const a = ev.target.closest("[data-to-data]");
+      if (a && !a.dataset.wired) { ev.preventDefault(); hooks.toData?.(a.dataset.toData); }
+    });
+    return {refresh, open, remember: () => remember()};
+  }
+
+  // =================================================================================================================
+  // The App map page: how work flows (the map, each process, list, rule) and what it keeps (the data model), one page
+  // =================================================================================================================
+  function appMap(page) {
+    const mapRoot = $("[data-studio=workflows]", page), dataRoot = $("[data-studio=data]", page);
+    let dataApi = null, mapApi = null;
+    function show(view) {
+      page.dataset.view = view;
+      $$("[data-view-pane]", page).forEach((el) => { el.hidden = el.dataset.viewPane !== view; });
+      $$("[data-view-only]").forEach((el) => { el.hidden = el.dataset.viewOnly !== view; });
+      $$("[data-show-view]").forEach((b) => b.setAttribute("aria-selected", String(b.dataset.showView === view)));
+      if (view === "data") dataApi.shown();
+    }
+    dataApi = dataStudio(dataRoot);
+    mapApi = workflowStudio(mapRoot, {
+      toData: async (table) => {
+        await dataApi.reload();  // what the map changed (a new stage field) is there too
+        show("data");
+        dataApi.select(table || null);
+      },
+    });
+    $$("[data-show-view]").forEach((b) => b.addEventListener("click", async () => {
+      if (b.dataset.showView === "data") {
+        await dataApi.reload();
+        show("data");
+        history.replaceState(null, "", `${page.dataset.here}?view=data`);
+        return;
+      }
+      await mapApi.refresh();  // what changed in the data model (a new list, a link) shows on the map
+      show("map");
+      mapApi.remember();
+    }));
+    dataRoot.addEventListener("click", async (ev) => {
+      const a = ev.target.closest("[data-go-map]");
+      if (!a) return;
+      ev.preventDefault();
+      await mapApi.refresh();
+      show("map");
+      mapApi.open(a.dataset.goMap);
+    });
+    // what the map shows: each layer on or off, remembered on this device
+    const LAYERS = "keel-map-layers";
+    let off = [];
+    try { off = JSON.parse(localStorage.getItem(LAYERS) || "[]"); } catch (e) { off = []; }
+    const applyLayers = () => $$("[data-layer]").forEach((b) => {
+      const hidden = off.includes(b.dataset.layer);
+      b.setAttribute("aria-pressed", String(!hidden));
+      mapRoot.classList.toggle(`hide-${b.dataset.layer}`, hidden);
+    });
+    $$("[data-layer]").forEach((b) => b.addEventListener("click", () => {
+      off = off.includes(b.dataset.layer) ? off.filter((x) => x !== b.dataset.layer) : [...off, b.dataset.layer];
+      try { localStorage.setItem(LAYERS, JSON.stringify(off)); } catch (e) { /* kept for this visit only */ }
+      applyLayers();
+    }));
+    applyLayers();
+    show(page.dataset.view || "map");
+    askBox(async () => { await mapApi.refresh(); await dataApi.reload(); });
   }
 
   document.addEventListener("DOMContentLoaded", () => {
-    const root = $("[data-studio]");
-    if (!root) return;
-    if (root.dataset.studio === "data") dataStudio(root);
-    else workflowStudio(root);
+    const page = $("[data-studio-page]");
+    if (page) appMap(page);
   });
 })();
+
