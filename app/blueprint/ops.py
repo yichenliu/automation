@@ -15,7 +15,7 @@ from .schema import SchemaError, _first, _list, slug
 OPS = ["set_portal", "set_team", "create_table", "update_table", "delete_table", "add_field", "update_field", "remove_field", "add_view",
        "update_view", "remove_view", "add_page", "update_page", "remove_page", "add_automation", "update_automation",
        "remove_automation", "set_module", "rename_app", "set_theme", "add_document", "update_document", "remove_document",
-       "set_public_form", "add_records", "import_file", "find", "add_flow", "update_flow", "remove_flow", "set_space", "remove_space"]
+       "set_public_form", "add_records", "import_file", "find", "add_flow", "update_flow", "remove_flow", "set_space", "remove_space", "set_sync", "remove_sync"]
 OP_ALIASES = {"add_table": "create_table", "new_table": "create_table", "create_tables": "create_table",
               "edit_table": "update_table", "rename_table": "update_table", "drop_table": "delete_table", "remove_table": "delete_table",
               "create_field": "add_field", "new_field": "add_field", "add_column": "add_field", "add_fields": "add_field",
@@ -38,7 +38,8 @@ OP_ALIASES = {"add_table": "create_table", "new_table": "create_table", "create_
               "create_flow": "add_flow", "add_guided_flow": "add_flow", "add_process": "add_flow", "edit_flow": "update_flow",
               "delete_flow": "remove_flow", "add_workflow_screens": "add_flow", "add_station": "add_flow",
               "add_space": "set_space", "create_space": "set_space", "update_space": "set_space", "team_menu": "set_space",
-              "delete_space": "remove_space"}
+              "delete_space": "remove_space", "add_sync": "set_sync", "create_sync": "set_sync", "update_sync": "set_sync",
+              "sync": "set_sync", "import_from_app": "set_sync", "delete_sync": "remove_sync"}
 
 
 @dataclass
@@ -1665,6 +1666,24 @@ def _apply_one(bp, op, raw, result, where):
             raise SchemaError(f"there's no space “{key}”")
         bp["spaces"].remove(x)
         changes.append(f"Removed the menu “{x['label']}”: they see the whole menu again")
+    elif op == "set_sync":
+        sync = schema.normalize_sync(_first(raw, "sync", default={k: v for k, v in raw.items() if k != "op"}))
+        current = bp.setdefault("syncs", [])
+        at = next((i for i, x in enumerate(current) if x["key"] == sync["key"]), None)
+        table = schema.table(bp, sync["into"]) or {"label": sync["into"]}
+        if at is None:
+            current.append(sync)
+            changes.append(f"Brings {sync['pull']} in from {sync['app'].title()} into {table['label']}, every {sync['every']} minutes")
+        else:
+            current[at] = sync
+            changes.append(f"Changed how {sync['pull']} come in from {sync['app'].title()}")
+    elif op == "remove_sync":
+        key = slug(_first(raw, "key", "sync", default=""))
+        x = next((x for x in bp.get("syncs") or [] if x["key"] == key), None)
+        if not x:
+            raise SchemaError(f"there's no sync “{key}”")
+        bp["syncs"].remove(x)
+        changes.append(f"Stopped bringing {x['pull']} in from {x['app'].title()}")
     elif op == "remove_flow":
         key = slug(_first(raw, "key", "flow", default=""))
         f = next((f for f in bp.get("flows") or [] if f["key"] == key), None)

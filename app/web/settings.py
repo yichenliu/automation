@@ -213,8 +213,14 @@ def members(wid):
 def connections(wid):
     ws = workspace(wid, "admin")
     from flask import current_app
+    from ..connectors import apps
+    connected = {a.key: apps.connection(ws, a.key) for a in apps.all_apps()}
+    syncs = {}
+    for sync in (ws.blueprint or {}).get("syncs") or []:
+        conn = connected.get(sync["app"])
+        syncs.setdefault(sync["app"], []).append({**sync, "done": ((conn.state or {}).get("syncs") or {}).get(sync["key"], {}) if conn else {}})
     return render_template("settings/connections.html", ws=ws, ms=microsoft.status(ws), redirect_uri=microsoft.redirect_uri(),
-                           base=current_app.config["BASE_URL"], section="connections")
+                           base=current_app.config["BASE_URL"], section="connections", apps=apps.all_apps(), connected=connected, syncs=syncs)
 
 
 @bp.route("/connections/microsoft/disconnect", methods=["POST"])

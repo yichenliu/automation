@@ -50,6 +50,11 @@ class Config:
     OIDC_CLIENT_ID = os.getenv("OIDC_CLIENT_ID") or ""
     OIDC_CLIENT_SECRET = os.getenv("OIDC_CLIENT_SECRET") or ""
     OIDC_NAME = os.getenv("OIDC_NAME") or ""  # what the button says ("Google", "Okta"); worked out from the issuer otherwise
+    XERO_CLIENT_ID = os.getenv("XERO_CLIENT_ID") or ""  # the platform's Xero app (developer.xero.com): connecting Xero
+    XERO_CLIENT_SECRET = os.getenv("XERO_CLIENT_SECRET") or ""
+    QBO_CLIENT_ID = os.getenv("QBO_CLIENT_ID") or ""  # the platform's QuickBooks app (developer.intuit.com)
+    QBO_CLIENT_SECRET = os.getenv("QBO_CLIENT_SECRET") or ""
+    QBO_SANDBOX = (os.getenv("QBO_SANDBOX") or "").lower() in ("1", "true", "yes")
     MICROSOFT_CLIENT_ID = os.getenv("MICROSOFT_CLIENT_ID") or ""
     MICROSOFT_CLIENT_SECRET = os.getenv("MICROSOFT_CLIENT_SECRET") or ""
     MICROSOFT_TENANT = os.getenv("MICROSOFT_TENANT") or "organizations"

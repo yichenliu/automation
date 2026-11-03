@@ -189,6 +189,28 @@ Team menus (spaces): set_space {{"space": {{"key", "label", "for": [team keys], 
   [{{"table", "view"}}, {{"page"}}, {{"flow"}}]}}], "links": [{{"label", "url"}}: their SOPs, a carrier's or supplier's site]}}}}:
   people in those teams see just their screens, grouped as they work, and can switch to everything. Give one to a team
   whose work is a few screens of a big app (the warehouse, the drivers); the owner and admins keep the whole menu.
+Connected apps (Settings › Connections): shopify, woocommerce (a web shop), xero, quickbooks (the books), stripe (card
+  payments), easypost (shipping labels for Australia Post, Royal Mail, UPS, FedEx, DHL…).
+  - Bringing items in: set_sync {{"sync": {{"app", "pull", "into": a table, "match": a text field kept with the app's id,
+    "fields": {{field: "detail.path"}}, "lines": {{"into": a line table, "fields": {{...}}}}, "every": 15 | 60 | 1440}}}}.
+    Details: shopify orders: id, number, created_at, email, customer.name, customer.email, total, currency,
+    payment_status, fulfilment_status, ship_to.name, ship_to.address, ship_to.phone, lines: sku, title, quantity, price;
+    shopify customers: name, email, phone, orders, spent, address; shopify products: name, sku, barcode, price, stock.
+    woocommerce orders: number, created_at, status, total, currency, customer.name, customer.email, customer.phone,
+    ship_to.name, ship_to.address, lines: sku, title, quantity, price; customers: name, email, phone, address; products:
+    name, sku, price, stock, status. xero invoices: number, type, contact, date, due_date, status, total, paid, due; xero
+    contacts: name, email, phone; quickbooks invoices: number, customer, date, due_date, total, balance; stripe payments:
+    amount, currency, status, email, description. Match a linked record by name, as people type it.
+  - Sending to one: a webhook step with "app" and its API's path: {{"type": "webhook", "app": "xero", "url": "/Invoices",
+    "payload": {{"Invoices": [{{"Type": "ACCREC", "Contact": {{"Name": "{{{{record.customer.name}}}}"}}, "Reference":
+    "{{{{record.number}}}}", "LineItems": {{"each": "invoice_lines", "item": {{"Description": "{{{{line.description}}}}",
+    "Quantity": "{{{{line.quantity}}}}", "UnitAmount": "{{{{line.unit_price}}}}"}}}}}}]}}, "save": {{"xero_id":
+    "Invoices.0.InvoiceID"}}}} ("each" makes one item per line, with {{{{line.x}}}}); quickbooks: "/invoice";
+    easypost: "/shipments" {{"shipment": {{"to_address": {{...}}, "from_address": {{...}}, "parcel": {{"weight": ounces}},
+    "service": "Express", "carrier_accounts": ["…"]}}}}, saving "tracking_code" and "postage_label.label_url".
+  - Card payments: a payment_link step {{"amount": "{{{{record.total}}}}", "save_to": a url field, "paid": {{"status":
+    "Paid"}}}} makes a Stripe payment page for the record; when the customer pays, "paid" is set on it by itself.
+  Only the apps the owner says they use, and say in the reply to connect it under Settings › Connections.
 Public forms (a link anyone can fill in: enquiries, bookings, job requests): set_public_form {{table, form: {{title, intro,
   fields: [...], success}}}}. Each answer becomes a record.
 Filters and conditions: {{"field": "status", "op": "equals", "value": "Active"}}; every one in a list must hold, and
@@ -569,7 +591,8 @@ _ACTION = {"type": "object", "required": ["type"], "properties": {  # "target" b
     "notes_field": _STRING, "reads": {"type": "array", "items": {"type": "object", "properties": {"table": _STRING, "where": _CONDITIONS}}},
     "read_files": {"type": "boolean"}, "use_knowledge": {"type": "boolean"}, "learn": {"type": "boolean"}, "manual": {"type": "boolean"},
     "review": {"type": "string", "enum": schema.REVIEW_MODES}, "reviewer": _STRING,
-    "url": _STRING, "method": {"type": "string", "enum": ["GET", "POST", "PUT", "PATCH"]},
+    "url": _STRING, "method": {"type": "string", "enum": ["GET", "POST", "PUT", "PATCH"]}, "app": _STRING,
+    "amount": _STRING, "currency": _STRING, "description": _STRING, "save_to": _STRING, "paid": {"type": "object"},
     "payload": {"type": "object"}, "save": {"type": "object"}, "days": {"type": "number"}, "hours": {"type": "number"},
     "minutes": {"type": "number"}, "until": _STRING, "until_met": _CONDITIONS, "approvers": _STRINGS,
     "mode": {"type": "string", "enum": schema.APPROVAL_MODES}, "remind_after_days": {"type": "number"},
@@ -600,6 +623,9 @@ _OP = {"type": "object", "required": ["op"], "properties": {  # a table's fields
     "sections": {"type": "array", "items": {"type": "object", "properties": {"label": _STRING, "fields": _STRINGS, "show_if": _CONDITIONS}}},
     "view": _VIEW, "views": {"type": "array", "items": _VIEW}, "page": _PAGE, "document": _DOCUMENT,
     "documents": {"type": "array", "items": _DOCUMENT}, "form": _FORM, "automation": _AUTOMATION, "flow": _FLOW, "name": _STRING,
+    "sync": {"type": "object", "required": ["app", "pull", "into", "fields"], "properties": {
+        "key": _STRING, "app": _STRING, "pull": _STRING, "into": _STRING, "match": _STRING, "fields": {"type": "object"},
+        "lines": {"type": "object", "properties": {"into": _STRING, "via": _STRING, "fields": {"type": "object"}}}, "every": _STRING}},
     "space": {"type": "object", "required": ["label", "for", "groups"], "properties": {
         "key": _STRING, "label": _STRING, "for": _STRINGS, "icon": _STRING,
         "groups": {"type": "array", "items": {"type": "object", "properties": {"label": _STRING, "items": {"type": "array", "items": {
@@ -789,6 +815,8 @@ def outline(bp, counts, extra=""):
         lines.append("\nTeams: " + ", ".join(f"{tm['key']} \"{tm['name']}\"" for tm in schema.teams(bp)))
     for sp in schema.spaces(bp):
         lines.append(f"\nSpace (a team's menu): {json.dumps(sp, ensure_ascii=False)}")
+    for sy in schema.syncs(bp):
+        lines.append(f"\nSync (from a connected app): {json.dumps(sy, ensure_ascii=False)}")
     if bp.get("flows"):
         lines.append("\nFlows (full JSON, needed to update one):")
         for f in bp["flows"]:

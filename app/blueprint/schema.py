@@ -173,7 +173,7 @@ TRIGGER_ALIASES = {
 EVERY = ["hour", "day", "week", "month"]
 ACTIONS = ["update_record", "create_record", "create_for_each", "update_each", "delete_record", "assign", "wait", "notify",
            "send_email", "generate_document", "request_approval", "webhook", "ai_fill", "ai_extract", "ai_create_record",
-           "branch", "task", "run_automation", "ai_check", "copy_record"]
+           "branch", "task", "run_automation", "ai_check", "copy_record", "payment_link"]
 APPROVAL_MODES = ["any", "all"]  # one of the approvers decides, or every one of them must approve
 AI_STEPS = ("ai_fill", "ai_extract", "ai_create_record", "ai_check")
 # Whether a person checks an AI step's work before it counts: every time, only when the AI isn't sure (and now and then
@@ -1025,6 +1025,37 @@ def normalize_space(raw):
     if not space["groups"]:
         raise SchemaError(f"the space “{space['label']}” needs \"groups\" of the screens it shows")
     return space
+
+
+SYNC_EVERY = {"5": 5, "15": 15, "hour": 60, "hourly": 60, "60": 60, "day": 1440, "daily": 1440, "1440": 1440}
+
+
+def normalize_sync(raw):
+    """A connected app's items brought into a list on a schedule: {"key", "app", "pull" (orders, customers, products…),
+    "into" (the table), "match" (the field kept with the app's id), "fields": {field: "detail.path"}, "lines": {"into",
+    "via", "fields"} (an order's lines), "every": minutes}."""
+    if not isinstance(raw, dict):
+        raise SchemaError("a sync must be an object")
+    app, pull = slug(str(_first(raw, "app", "connector", "from", default=""))), slug(str(_first(raw, "pull", "what", "brings", default="")))
+    into = slug(str(_first(raw, "into", "table", "to", default="")))
+    if not app or not pull or not into:
+        raise SchemaError("a sync needs \"app\" (shopify, woocommerce, xero…), \"pull\" (orders, customers…) and \"into\" (the table)")
+    fields = _first(raw, "fields", "map", "mapping", default={})
+    if not isinstance(fields, dict) or not fields:
+        raise SchemaError("a sync needs \"fields\": {field key: the app's detail, such as \"customer.email\"}")
+    sync = {"key": slug(_first(raw, "key", "id", default=f"{app}_{pull}")), "app": app, "pull": pull, "into": into,
+            "match": slug(str(_first(raw, "match", "id_field", "external_id", "match_on", default=f"{app}_id"))),
+            "fields": {slug(k): str(v) for k, v in fields.items() if k},
+            "every": SYNC_EVERY.get(slug(str(_first(raw, "every", "frequency", default="15"))).replace("_minutes", "").replace("minutes", ""), 15)}
+    lines = _first(raw, "lines", "line_items", "items")
+    if isinstance(lines, dict) and _first(lines, "into", "table"):
+        sync["lines"] = {"into": slug(_first(lines, "into", "table")), "via": slug(str(_first(lines, "via", "link", default=""))),
+                         "fields": {slug(k): str(v) for k, v in (_first(lines, "fields", "map", default={}) or {}).items()}}
+    return sync
+
+
+def syncs(bp):
+    return list(bp.get("syncs") or [])
 
 
 def spaces(bp):
@@ -1932,9 +1963,13 @@ def normalize_action(raw):
         if isinstance(target, str) and slug(target) not in ("record", "this", "self", "trigger", "current", "this_record"):
             action["target"] = slug(target)
     elif atype == "webhook":
-        url = str(_first(raw, "url", "endpoint", "address", default="")).strip()
-        if not re.match(r"^https?://", url, re.I):
-            raise SchemaError("a webhook needs a \"url\" starting with http:// or https://")
+        url = str(_first(raw, "url", "endpoint", "address", "path", default="")).strip()
+        app = slug(str(_first(raw, "app", "connector", "service", "to_app", default="")))
+        if app:  # a connected app (Xero, Shopify, EasyPost…): its address and sign-in are added, the url is its API's path
+            action["app"] = app
+            url = url if url.startswith("/") or re.match(r"^https?://", url, re.I) else "/" + url
+        elif not re.match(r"^https?://", url, re.I):
+            raise SchemaError("a webhook needs a \"url\" starting with http:// or https://, or an \"app\" and the path on it")
         action["url"] = url[:500]
         payload = _first(raw, "payload", "body", "data", "json")
         if isinstance(payload, dict):
@@ -1944,6 +1979,22 @@ def normalize_action(raw):
         save = _first(raw, "save", "save_to", "store", "response_to")
         if isinstance(save, dict) and save:  # {"field": "path.in.the.answer"}: keep what the other system answers
             action["save"] = {slug(k): str(v) for k, v in save.items()}
+    elif atype == "payment_link":  # a card payment page for the amount (Stripe); paying it sets "paid" on the record
+        amount = _first(raw, "amount", "total", "value")
+        if not amount:
+            raise SchemaError("payment_link needs \"amount\": what's to be paid ({{record.total}})")
+        action["amount"] = str(amount)[:200]
+        action["description"] = str(_first(raw, "description", "for", "name", "label", default=""))[:200]  # the record's name otherwise
+        currency = _first(raw, "currency", "currency_code")
+        if currency:
+            action["currency"] = str(currency)[:40]
+        save = _first(raw, "save_to", "save", "field", "link_field")
+        if not save:
+            raise SchemaError("payment_link needs \"save_to\": the web address field the payment page goes in")
+        action["save_to"] = slug(str(save))
+        paid = _first(raw, "paid", "when_paid", "on_paid", "then_set")
+        if isinstance(paid, dict) and paid:  # what's set when it's paid ({"status": "Paid"})
+            action["paid"] = {slug(k): v for k, v in paid.items()}
     elif atype == "ai_extract":
         source = slug(_first(raw, "from", "source", "file_field", "field", default=""))
         source = "file" if source in ("files", "attachments", "attached_files", "its_files", "record_files") else source
@@ -2940,9 +2991,44 @@ def _check_automation(a, tables, problems, documents, bp_pages=(), automations=N
                 _check_template(act["message"], where, problems, context_fields)
                 check_steps(act.get("if_rejected"), created_table, set(made))
             elif kind == "webhook":
-                for v in (act.get("payload") or {}).values():
-                    if isinstance(v, str):
-                        _check_template(v, where, problems, context_fields)
+                def strings(value, line_fields=None):
+                    if isinstance(value, dict) and "each" in value and "item" in value:
+                        lines = tables.get(str(value["each"]))
+                        if lines is None or not t or not any(f["type"] == "link" and f.get("table") == t["key"] for f in lines["fields"]):
+                            problems.append(f"{where}: “each” names “{value['each']}”, which isn't a line table of {t['label'] if t else 'the record'}")
+                            return
+                        token = _MORE_CONTEXT.set(_MORE_CONTEXT.get() | {"line"})
+                        try:
+                            strings(value["item"])
+                        finally:
+                            _MORE_CONTEXT.reset(token)
+                    elif isinstance(value, dict):
+                        for v in value.values():
+                            strings(v)
+                    elif isinstance(value, list):
+                        for v in value:
+                            strings(v)
+                    elif isinstance(value, str):
+                        _check_template(value, where, problems, context_fields)
+                strings(act.get("payload") or {})
+                if act.get("app"):
+                    from ..connectors import apps
+                    if apps.get(act["app"]) is None:
+                        problems.append(f"{where} sends to “{act['app']}”, which isn't an app ({', '.join(a.key for a in apps.all_apps())})")
+                for k in (act.get("save") or {}):
+                    if t and not field(t, k):
+                        problems.append(f"{where}: it keeps the answer in “{k}”, which isn't a field of {t['label']}")
+            elif kind == "payment_link":
+                if t is None:
+                    problems.append(f"{where}: a payment link is for a record (an invoice)")
+                else:
+                    if (field(t, act["save_to"]) or {}).get("type") != "url":
+                        problems.append(f"{where}: the payment page goes in “{act['save_to']}”, which must be a web address field of {t['label']}")
+                    for k in (act.get("paid") or {}):
+                        if not field(t, k):
+                            problems.append(f"{where}: when it's paid it sets “{k}”, which isn't a field of {t['label']}")
+                    for text in (act["amount"], act.get("description") or ""):
+                        _check_template(text, where, problems, context_fields)
             elif kind == "ai_check":
                 if act.get("reviewer"):
                     person(act["reviewer"], "asks to check the AI's work")
@@ -3118,6 +3204,8 @@ def _check_all(bp):
         problems.append(f"there are two flows called “{key}”")
     for flow in flows(bp):
         _check_flow(flow, tables, documents, problems, bp.get("pages", []), automations)
+    for sync in syncs(bp):
+        _check_sync(sync, tables, problems)
     flow_keys = {f["key"] for f in flows(bp)}
     for space in spaces(bp):
         where = f"the space “{space['label']}”"
@@ -3135,6 +3223,39 @@ def _check_all(bp):
                 elif item.get("flow") and item["flow"] not in flow_keys:
                     problems.append(f"{where} shows the flow “{item['flow']}”, which isn't one")
     return problems
+
+
+def _check_sync(sync, tables, problems):
+    from ..connectors import apps
+    where = f"the sync of {sync['app']} {sync['pull']}"
+    app = apps.get(sync["app"])
+    if app is None:
+        problems.append(f"{where}: there's no app “{sync['app']}” ({', '.join(a.key for a in apps.all_apps())})")
+        return
+    if sync["pull"] not in app.pulls:
+        problems.append(f"{where}: {app.name} can bring in {', '.join(app.pulls) or 'nothing'}, not “{sync['pull']}”")
+    t = tables.get(sync["into"])
+    if t is None:
+        problems.append(f"{where} goes into “{sync['into']}”, which isn't a table")
+        return
+    keys = {f["key"]: f for f in t["fields"]}
+    if (keys.get(sync["match"]) or {}).get("type") not in ("text", "number", "barcode"):
+        problems.append(f"{where}: {t['label']} needs a text field “{sync['match']}” to keep {app.name}'s id in (to match records next time)")
+    for k in sync["fields"]:
+        if k not in keys or keys[k]["type"] not in STORED:
+            problems.append(f"{where}: “{k}” isn't a field of {t['label']} it can fill")
+    lines = sync.get("lines")
+    if lines:
+        lt = tables.get(lines["into"])
+        if lt is None:
+            problems.append(f"{where}: its lines go into “{lines['into']}”, which isn't a table")
+            return
+        lines["via"] = lines["via"] or _line_link(lt, t["key"]) or ""
+        if (field(lt, lines["via"]) or {}).get("table") != t["key"]:
+            problems.append(f"{where}: {lt['label']} needs a link to {t['label']} (\"via\")")
+        for k in lines["fields"]:
+            if not field(lt, k) or field(lt, k)["type"] not in STORED:
+                problems.append(f"{where}: “{k}” isn't a field of {lt['label']} it can fill")
 
 
 def _line_link(lines_table, parent):

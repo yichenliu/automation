@@ -1080,6 +1080,46 @@ def _do(engine, automation, action, record, run):
         return {"result": f"Produced {file.name}", "file": file.id, "link": _link(target.table, target.id)}
     if kind == "run_automation":
         return _run_other(engine, automation, action, record, run, ctx)
+    if kind == "payment_link":  # a card payment page (Stripe) for the amount, kept on the record; paying it sets "paid"
+        from ..connectors import apps
+        if record is None:
+            raise ValueError("a payment link is for a record (an invoice)")
+        amount = expr.to_number(_render(action["amount"], ctx))
+        if not amount or amount <= 0:
+            return {"result": "No payment link: there's nothing to pay"}
+        currency = (str(_render(action["currency"], ctx)) if action.get("currency") else "") or ((engine.ws.settings or {}).get("money") or {}).get("base")
+        if not currency or not re.fullmatch(r"[A-Za-z]{3}", currency):
+            raise ValueError("a payment link needs the currency: set your currency's code under Settings › Business (AUD, GBP, USD…)")
+        if current_app.config.get("TRYING_OUT"):
+            return {"result": f"Would make a payment link for {currency.upper()} {amount:,.2f} (not while trying the app out)"}
+        stripe, conn = apps.get("stripe"), apps.connection(engine.ws, "stripe")
+        if conn is None or conn.status != "connected":
+            raise ValueError("Stripe isn't connected: connect it under Settings › Connections")
+        description = str(_render(action["description"], ctx)) if action.get("description") else engine.title(record)
+        try:
+            url, _ = stripe.checkout(apps.creds(conn), amount, currency, description,
+                                     f"{current_app.config['BASE_URL']}/paid",
+                                     {"workspace": engine.ws.id, "record": record.id, "paid": json.dumps(action.get("paid") or {})})
+        except apps.AppProblem as exc:
+            raise ValueError(str(exc)) from exc
+        engine.update(record, {action["save_to"]: url}, by=_by(automation), depth=depth)
+        return {"result": f"Made a payment link for {currency.upper()} {amount:,.2f}"}
+    if kind == "webhook" and action.get("app"):  # a connected app (Xero, Shopify, EasyPost…): its address and sign-in added
+        from ..connectors import apps
+        payload = _deep(engine, action.get("payload") or {}, ctx, record)
+        path = _render(action["url"], ctx) if "{{" in action["url"] else action["url"]
+        app = apps.get(action["app"])
+        if current_app.config.get("TRYING_OUT"):
+            return {"result": f"Would send to {app.name if app else action['app']} {path} (not sent while trying the app out)"}
+        try:
+            answer = apps.call(engine.ws, action["app"], action.get("method", "POST"), path, payload=payload)
+        except apps.AppProblem as exc:
+            raise ValueError(str(exc)) from exc
+        if action.get("save") and record is not None:
+            values = {key: _walk(answer, p) for key, p in action["save"].items()}
+            engine.update(record, values, by=_by(automation), depth=depth)
+            return {"result": f"Sent to {app.name} and saved {', '.join(engine.field(record.table, k)['label'] for k in values if engine.field(record.table, k))}"}
+        return {"result": f"Sent to {app.name}"}
     if kind == "webhook":
         payload = action.get("payload")
         if payload:
@@ -1101,17 +1141,41 @@ def _do(engine, automation, action, record, run):
                 answer = response.json()
             except ValueError:
                 raise ValueError(f"{url} didn't answer with JSON, so nothing could be saved from it")
-            values = {}
-            for key, path in action["save"].items():
-                value = answer
-                for part in [p for p in path.replace("[", ".").replace("]", "").split(".") if p]:
-                    value = value[int(part)] if isinstance(value, list) and part.isdigit() and int(part) < len(value) else \
-                        value.get(part) if isinstance(value, dict) else None
-                values[key] = value
+            values = {key: _walk(answer, path) for key, path in action["save"].items()}
             engine.update(record, values, by=_by(automation), depth=depth)
             return {"result": f"Called {url} and saved {', '.join(engine.field(record.table, k)['label'] for k in values if engine.field(record.table, k))}"}
         return {"result": f"Sent to {url} (it answered {response.status_code})"}
     raise ValueError(f"unknown action {kind}")
+
+
+def _walk(answer, path):
+    """A part of an answer by its path: "Invoices.0.InvoiceID", "postage_label.label_url"."""
+    value = answer
+    for part in [p for p in str(path).replace("[", ".").replace("]", "").split(".") if p]:
+        value = value[int(part)] if isinstance(value, list) and part.isdigit() and int(part) < len(value) else \
+            value.get(part) if isinstance(value, dict) else None
+    return value
+
+
+def _deep(engine, value, ctx, record):
+    """What's sent to an app, every template in it filled in, however deep. {"each": "invoice_lines", "item": {...}}
+    becomes one item for each of the record's lines, with {{line.x}} for the line's details."""
+    if isinstance(value, dict) and "each" in value and "item" in value:
+        table = engine.tables.get(str(value["each"]))
+        link = next((f["key"] for f in (table or {"fields": []})["fields"] if f["type"] == "link" and record is not None
+                     and f.get("table") == record.table), None)
+        if table is None or link is None:
+            return []
+        lines = engine.related(record, table["key"], link)
+        return [_deep(engine, value["item"], RecordContext(engine, record, {**ctx.names, "line": RecordProxy(engine, line)}), record)
+                for line in lines]
+    if isinstance(value, dict):
+        return {k: _deep(engine, v, ctx, record) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_deep(engine, v, ctx, record) for v in value]
+    if isinstance(value, str) and "{{" in value:
+        return _plain(_render(value, ctx))
+    return value
 
 
 def _copy(engine, automation, action, record, run, ctx, depth):

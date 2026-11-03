@@ -246,6 +246,14 @@ holds (until the tender closes), make the moves meant for them (Acknowledge, Acc
 "This wasn't me" cancels one), and, where allowed, join by themselves (their record starts at its first stage for the
 business to verify).
 
+✅ **Ready-made connectors** (Settings › Connections; details checked with the app, kept encrypted): **Shopify** and
+**WooCommerce** (orders with their lines, customers, products and stock brought in on a schedule, matched by the app's id
+so a changed one is updated, not added again), **Xero** and **QuickBooks Online** (signed in to; invoices, bills and contacts
+sent with their lines; invoices, contacts and payments brought back), **Stripe** (a payment page on each invoice; the
+invoice marked paid when Stripe says so, by its signed event), **EasyPost** (shipping labels and tracking numbers from
+Australia Post, Royal Mail, UPS, FedEx, DHL, USPS and more). Any rule can send to a connected app with its sign-in
+added, one item per line where it needs them.
+
 ✅ An MCP server (`/api/v1/mcp`): Claude, ChatGPT, Cursor, Copilot and other AI assistants list the tables, find, read,
 add and change records with an API key's role and the app's rules and locks; a viewer key only reads · the API described
 in OpenAPI 3.1 with the app's own tables and fields as types (`/api/v1/openapi.json`), for code generators and BI tools ·
@@ -295,8 +303,8 @@ failing automations, repeated questions, recurring email), and a weekly review o
 
 These are deliberate gaps, listed so nothing is assumed:
 
-- **Accounts with outside services:** card payments on invoices (Stripe), SMS, Xero and QuickBooks sync, Google Workspace.
-  The API and webhooks connect to them today, but there's no ready-made connector.
+- **Accounts with outside services:** SMS and Google Workspace (mail, Drive). The API and webhooks connect to them today,
+  but there's no ready-made connector.
 - **Languages:** the screens are in English; dates show as 3 Nov 2026.
 - **Offline use:** the app installs on a phone but needs a connection.
 - **Smaller pieces:** swimlanes on boards, merging duplicate records, steps that run in

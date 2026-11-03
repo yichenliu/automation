@@ -129,6 +129,16 @@ def automation_tick(app):
     if now - _last.get("mail", 0) > 60:
         _last["mail"] = now
         automations.email_notifications()
+    if now - _last.get("apps", 0) > 60:  # what's due from connected apps (orders from the shop, payments from the books)
+        _last["apps"] = now
+        from .connectors import apps
+        for workspace in Workspace.query.all():
+            for sync in apps.due(workspace):
+                try:
+                    apps.run_sync(workspace, sync)
+                except Exception as exc:  # one app's trouble doesn't stop the others; it's kept and shown in Connections
+                    log.warning("Bringing in %s %s for workspace %s failed: %s", sync["app"], sync["pull"], workspace.id, exc)
+                    db.session.rollback()
     if now - _last["watch"] > WATCH_EVERY:
         _last["watch"] = now
         for workspace in Workspace.query.all():

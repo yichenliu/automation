@@ -19,4 +19,31 @@
           <li>Add <code>MICROSOFT_CLIENT_ID</code>, <code>MICROSOFT_CLIENT_SECRET</code> (and <code>MICROSOFT_TENANT</code> if single-tenant) to the <code>.env</code> file and restart.</li></ol></div></div>
     {% endif %}
   </div></div>
+<h2 class="mt-3">Your other systems</h2><p class="muted mt-1">Bring orders, customers and products in from your shop, send invoices to your books, take card payments and print shipping labels. Ask the builder what each should do (“bring in my Shopify orders”, “send each invoice to Xero”).</p>
+{% for app in apps %}{% set conn = connected[app.key] %}
+<div class="card mt-2" id="app-{{ app.key }}"><div class="card-head">{{ icon(app.icon) }}<h2 class="grow">{{ app.name }}</h2>
+  {% if conn and conn.status == 'connected' %}<span class="pill green">Connected</span>{% else %}<span class="pill slate">Not connected</span>{% endif %}</div>
+  <div class="card-body stack">
+    <p class="muted">{{ app.about }}</p>
+    {% if conn and conn.status == 'connected' %}
+      <p>Connected to <b>{{ conn.account }}</b>{% if conn.checked_at %} · {{ conn.checked_at|ago }}{% endif %}.</p>
+      {% if app.key == 'stripe' %}<p class="small">Stripe's webhook address (Developers › Webhooks, event <code>checkout.session.completed</code>): <code>{{ base }}{{ url_for('apps.stripe_events', wid=ws.id) }}</code></p>{% endif %}
+      {% for sync in syncs.get(app.key, []) %}<form method="post" action="{{ url_for('apps.connect', wid=ws.id, key=app.key) }}" class="row wrap">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="action" value="sync"><input type="hidden" name="sync" value="{{ sync.key }}">
+        <span class="grow">{{ icon('refresh-cw') }} {{ app.pulls.get(sync.pull, sync.pull) }} into {{ (ws.blueprint.tables|selectattr('key', 'equalto', sync.into)|first or {}).label or sync.into }}, every {{ sync.every }} minutes
+          <span class="faint small">{% if sync.done.at %}· last {{ sync.done.at[:16].replace('T', ' ') }} UTC, {{ sync.done.added or 0 }} added and {{ sync.done.updated or 0 }} updated so far{% else %}· not yet{% endif %}</span>
+          {% if sync.done.problem %}<span class="warn-text small"> · {{ sync.done.problem }}</span>{% endif %}</span>
+        <button class="btn sm">Bring them in now</button></form>{% endfor %}
+      <form method="post" action="{{ url_for('apps.connect', wid=ws.id, key=app.key) }}" data-confirm-text="Disconnect {{ app.name }}? Syncs and rules that use it stop until it's connected again.">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn ghost danger" name="action" value="disconnect">Disconnect</button></form>
+    {% elif app.oauth %}
+      <form method="post" action="{{ url_for('apps.connect', wid=ws.id, key=app.key) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <button class="btn primary">{{ icon(app.icon) }}Sign in to {{ app.name }}</button></form>
+    {% else %}
+      <form method="post" action="{{ url_for('apps.connect', wid=ws.id, key=app.key) }}" class="form-grid"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        {% for f in app.fields %}<label class="field"><span>{{ f.label }}</span><input type="{{ 'password' if f.secret else 'text' }}" name="{{ f.key }}" placeholder="{{ f.placeholder }}" autocomplete="off" required>{% if f.help %}<small class="help">{{ f.help }}</small>{% endif %}</label>{% endfor %}
+        <div class="form-actions wide"><button class="btn primary">Connect {{ app.name }}</button></div></form>
+    {% endif %}
+  </div></div>
+{% endfor %}
 {% endblock %}
