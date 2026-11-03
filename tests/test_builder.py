@@ -107,7 +107,7 @@ def test_an_answer_that_still_has_a_problem_after_repairs_keeps_everything_that_
     assert keys == ["clients", "projects", "invoices", "payroll"]  # the payroll table kept, without its broken lock
     assert "lock_if" not in ws.blueprint["tables"][-1]
     assert ws.blueprint["tables"][-1]["access"]["view"] == "admin"  # only the broken lock goes: payroll stays private
-    assert "the new fields of Nowhere" in m.text and "change 5" not in m.text  # said in the owner's words
+    assert "the new details of Nowhere" in m.text and "change 5" not in m.text  # said in the owner's words
     assert any("when Payroll locks" in line for line in m.progress)  # the details are there for whoever wants them
 
 
@@ -247,7 +247,7 @@ def test_a_cut_part_the_second_try_skips_is_still_reported_missing(app, owner):
     first = {"ops": CONSULTANCY + [shop], "reply": "Clients, projects and shop orders coming in.", "more": False}
     retry = {"ops": [{"op": "add_field", "table": "clients", "field": {"key": "notes", "label": "Notes", "type": "long_text"}}],
              "reply": "Fixed it.", "more": False}  # quietly leaves the automation out
-    closing = {"reply": "Clients and projects are set up; the shop orders automation isn't built yet."}
+    closing = {"reply": "Clients and projects are set up; the shop orders rule isn't built yet."}
     scripted = ScriptedAI(first, first, first, retry, closing)
     ai.set_backend(scripted)
     m = _turn(ws, "Clients, projects, and orders from my web shop.")

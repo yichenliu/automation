@@ -303,3 +303,11 @@ def test_a_value_an_example_typed_that_isnt_one_is_the_examples_to_correct(app, 
     _, (abn, date) = trial.try_out(ws, [short, when], screens=False)
     assert abn["kind"] == "example" and "correct the example's values" in abn["problem"]
     assert date["kind"] == "example" and "isn't a date" in date["problem"]
+
+
+def test_a_reply_says_lists_and_rules_unless_the_owner_or_the_app_uses_the_word():
+    from app.builder.chat import plain
+    bp = {"tables": [{"key": "products", "label": "Products", "fields": [{"key": "kind", "label": "Kind", "options": ["Table", "Chair"]}]}]}
+    assert plain("I set up the fields and two automations in your ERP. Workflows run by themselves.", bp, "we sell online") \
+        == "I set up the details and two rules in your app. Processes run by themselves."
+    assert plain("Each table and chair has its fields.", bp, "We make tables") == "Each table and chair has its details."

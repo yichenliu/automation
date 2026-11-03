@@ -376,13 +376,32 @@ def _words(text):
     return {w.rstrip("s") for w in re.findall(r"[a-z0-9]+", text.lower()) if len(w) > 2 and w not in PLAIN}
 
 
-def plain(text, bp=None):
-    """A reply with no code in it: {{record.title}} → [title], ['Confirmed', 'Prepping'] → Confirmed or Prepping, and a
-    list's or detail's code name (bid_lines, approved_by) → its name (bid lines, approved by)."""
+# the app's words for what builders call tables, fields, automations and workflows (the menu says Rules, lists, details)
+OURS = {"table": "list", "tables": "lists", "field": "detail", "fields": "details", "automation": "rule", "automations": "rules",
+        "workflow": "process", "workflows": "processes", "erp": "app"}
+JARGON = re.compile(r"\b(" + "|".join(OURS) + r")\b", re.I)
+
+
+def plain(text, bp=None, said=""):
+    """A reply with no code in it: {{record.title}} → [title], ['Confirmed', 'Prepping'] → Confirmed or Prepping, a list's
+    or detail's code name (bid_lines, approved_by) → its name (bid lines, approved by), and builders' words in the app's
+    (tables → lists, automations → rules), unless the owner used the word (a furniture maker's tables) or the app does."""
     text = re.sub(r"\{\{\s*(?:record\.)?([\w.]+)\s*\}\}", lambda m: "[" + m.group(1).replace("_", " ").replace(".", "’s ") + "]", text or "")
     text = re.sub(r"\[((?:'[^'\]]*'(?:,\s*)?)+)\]", lambda m: " or ".join(re.findall(r"'([^']*)'", m.group(1))), text)
     if bp:
         text = schema.named(bp, text)
+        theirs = " ".join([said or ""] + [t["label"] for t in bp.get("tables", [])]
+                          + [str(x) for t in bp.get("tables", []) for f in t["fields"] for x in [f["label"], *(f.get("options") or [])]]).lower()
+        kept = {w for w in OURS if re.search(rf"\b{w}s?\b", theirs)}
+
+        def ours(m):
+            word = m.group(0)
+            if word.lower() in kept or word.lower().rstrip("s") in kept:
+                return word
+            new = OURS[word.lower()]
+            starts = m.start() == 0 or re.search(r"[.!?:]\s+$|\n\s*$", m.string[:m.start()])  # a sentence's first word
+            return new.capitalize() if starts else new
+        text = JARGON.sub(ours, text)
     return re.sub(r"\$\s*\$", "$", text)
 
 
@@ -934,7 +953,7 @@ def _work(message_id):
     message.text = replies[-1] if replies else ""
     if len(replies) > 1 or problems or missing:  # the parts' replies were written before the rest was checked: say what really happened
         message.text = _closing_reply(asked, replies, changes, missing, [p for p in problems if not p.startswith("I left out")], stuck)
-    message.text = plain(message.text, workspace.blueprint)
+    message.text = plain(message.text, workspace.blueprint, asked)
     if tried:
         message.checks = {key: tried[key] for key in ("examples", "issues", "fixes", "first")}
         wrong = [x for x in tried["examples"] if not x["ok"]]
