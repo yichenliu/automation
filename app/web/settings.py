@@ -382,7 +382,8 @@ def api_keys(wid):
     keys = ApiKey.query.filter_by(workspace_id=ws.id, revoked_at=None).order_by(ApiKey.id.desc()).all()
     hooks = [{"name": a["name"], "url": automations.hook_url(ws.id, a["key"])} for a in (ws.blueprint or {}).get("automations", [])
              if a["trigger"]["type"] == "webhook_received"]
-    return render_template("settings/api.html", ws=ws, keys=keys, made=made, hooks=hooks, section="api")
+    from flask import current_app
+    return render_template("settings/api.html", ws=ws, keys=keys, made=made, hooks=hooks, section="api", base=current_app.config["BASE_URL"])
 
 
 @bp.route("/data/backup", methods=["POST"])

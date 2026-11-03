@@ -245,7 +245,10 @@ holds (until the tender closes), make the moves meant for them (Acknowledge, Acc
 "This wasn't me" cancels one), and, where allowed, join by themselves (their record starts at its first stage for the
 business to verify).
 
-✅ REST API with keys (list, filter, sort, page, read with lines, create with lines, update with If-Match, delete) ·
+✅ An MCP server (`/api/v1/mcp`): Claude, ChatGPT, Cursor, Copilot and other AI assistants list the tables, find, read,
+add and change records with an API key's role and the app's rules and locks; a viewer key only reads · the API described
+in OpenAPI 3.1 with the app's own tables and fields as types (`/api/v1/openapi.json`), for code generators and BI tools ·
+REST API with keys (list, filter, sort, page, read with lines, create with lines, update with If-Match, delete) ·
 webhook addresses that start automations · outgoing webhooks (any method; answers saved) · calendar feeds · Excel and
 CSV · Microsoft 365 mail and OneDrive ⚠️.
 

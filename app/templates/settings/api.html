@@ -24,6 +24,14 @@ curl -X PATCH {{ config.BASE_URL }}/api/v1/tables/TABLE/records/ID -H "Authoriza
      -H "If-Match: VERSION" -H "Content-Type: application/json" -d '{"status": "Done"}'</pre>
   <p class="muted">Line items go with their record: <code>{"client": "Acme", "lines": {"invoice_lines": [{"description": "Labour", "quantity": 2}]}}</code>. Linked records can be given by name or id. Send <code>If-Match</code> with the version you read and a change made by someone else in the meantime is refused (409) instead of overwritten.</p>
 </div></div>
+<div class="card mt-2"><div class="card-head">{{ icon('bot') }}<h2>Use it from an AI assistant</h2></div><div class="card-body stack small">
+  <p>Claude, ChatGPT, Cursor, Copilot and other assistants can find, read, add and change records here, with a key's role and the app's rules, as a person would. Give the assistant this address and a key:</p>
+  <p><code>{{ base }}/api/v1/mcp</code></p>
+  <p class="muted">Claude Code: <code>claude mcp add --transport http {{ (ws.blueprint.get('name') or ws.name)|lower|replace(' ', '-') }} {{ base }}/api/v1/mcp --header "Authorization: Bearer keel_…"</code><br>
+    Cursor, VS Code and others: add an MCP server with that address (streamable HTTP) and the header <code>Authorization: Bearer keel_…</code>.<br>
+    A viewer key only lets it read.</p>
+  <p class="muted">For code and reporting tools, the API with this app's own lists and fields as types: <code>{{ base }}/api/v1/openapi.json</code> (send the key the same way).</p>
+</div></div>
 <div class="card mt-2"><div class="card-head">{{ icon('webhook') }}<h2>Webhook addresses</h2></div><div class="card-body stack">
   {% for h in hooks %}<div><b class="small">{{ h.name }}</b><div class="row mt-1"><input class="keybox grow small" type="text" readonly value="{{ h.url }}" aria-label="Webhook address for {{ h.name }}"><button class="btn sm" type="button" data-copy>{{ icon('copy') }}Copy</button></div></div>
   {% else %}<p class="faint small">None yet. Ask the builder for an automation that starts “when another system sends us an order” (or any data), and its address appears here. Whatever is sent is available to its steps as {{ '{{' }} payload.field {{ '}}' }}.</p>{% endfor %}

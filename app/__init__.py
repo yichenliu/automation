@@ -53,7 +53,7 @@ def create_app(overrides=None):
     def load_user(user_id):
         return db.session.get(User, int(user_id))
 
-    from .web import account, api, auth, builder, connect, erp, filters, forms, portal, settings, workspaces
+    from .web import account, api, auth, builder, connect, erp, filters, forms, mcp, portal, settings, workspaces  # noqa: F401 (mcp adds to api.bp)
     for module in (auth, workspaces, builder, erp, settings, forms, connect, api, portal, account):
         app.register_blueprint(module.bp)
     app.register_blueprint(api.hooks)
