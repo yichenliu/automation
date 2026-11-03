@@ -311,7 +311,7 @@ one, change its help, whether it must be filled in or be unique, kept private, i
 value; put the fields in order by dragging; add, remove, rename and order a choice's options; link two lists by
 dragging one's **+** onto the other; name records by a field; remove a field or a list.
 
-✅ **Workflows** (Set up › Workflows): everything with a flow to it, grouped by list. **Stages** drawn top to bottom,
+✅ **Processes** (Set up › Processes, the workflow studio): everything with a flow to it, grouped by list. **Stages** drawn top to bottom,
 each with how many records are in it and the rules that run when one gets there, with an arrow for each button that
 moves a record on (straight down to the next, round the right to one further on, round the left back, one arrow in for
 a move from many stages); add, rename, order and remove stages, set where new ones start, and add or change a move
@@ -339,13 +339,13 @@ try-out opens both studios and each diagram in them.
 ✅ All joined up: a change in a studio is the design itself, so the rules, screens, forms, documents, API, MCP server,
 the builder and the assistant work from it at once (tested end to end in tests/test_connected.py). A renamed stage keeps
 its rules firing; a field renamed or kept from some people is read again by the AI's search (a private one leaves it at
-once); the builder is told of every change made by hand and keeps it; stages added in Workflows are a field in the Data
+once); the builder is told of every change made by hand and keeps it; stages added in Processes are a field in the Data
 model; nothing writes to a combined list but the lists it's made from.
 
 ## Where things are
 
 ✅ The app's menu has **Set up** (for the team, not portal people) in three parts. **Your app**: Data model (the lists),
-Workflows (stages, rules and step-by-step flows, with each rule's last runs, its address for other systems and Run it
+Processes (stages, rules and step-by-step flows, with each rule's last runs, its address for other systems and Run it
 now), Versions (every change, going back, the test copy, ready-made parts). **AI**: AI helpers (every job the AI does,
 in processes and fields: add one, switch it off so a person does it, let it take over a job done by hand, choose who
 checks it, try it on real records) and What the AI knows. **Keep it right**: Checks and Suggestions. Then Settings, in
@@ -354,7 +354,7 @@ apps and accounts, the API and AI assistants, public forms, printers) and **Look
 data and backups, security, the audit log, health). Each list's page links to it in both studios; each studio links to
 the other; ⌘K jumps to any of them.
 
-✅ AI in a process, configured by people: in Workflows an AI step is added like any other (fill in a field, check a
+✅ AI in a process, configured by people: in Processes an AI step is added like any other (fill in a field, check a
 record, read a document, make a record from an email), switched off so a person does it as a task (and back on), given
 a job people did by hand (a task with one field), and set to be checked by a person every time, when it isn't sure, or
 not at all; in the Data model a field can be filled in by the AI, or stop being. The AI helpers page lists them all,
@@ -393,7 +393,7 @@ These are deliberate gaps, listed so nothing is assumed:
 - **Offline use:** the app installs on a phone but needs a connection.
 - **Smaller pieces:** swimlanes on boards, merging duplicate records, steps that run in
   parallel inside one automation (several approvers at once is built; other parallel work goes in separate automations),
-  changing in the Workflows studio the steps it has no form for (copying a record, going through each line, reading a
+  changing in the Processes studio the steps it has no form for (copying a record, going through each line, reading a
   file with the AI: asked of the AI in words instead), email verification when outside people sign up by
   themselves (the business verifies them before trading instead).
 - **Procurement connectors:** e-signature (DocuSign), e-invoicing (Peppol), punchout catalogues (cXML, OCI), and ready
