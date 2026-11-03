@@ -30,6 +30,8 @@ STEPS = [
     ["ALTER TABLE invite ADD COLUMN teams JSON"],  # 13: an invitation says which teams the person joins
     ["ALTER TABLE approval ADD COLUMN priority INTEGER DEFAULT 1", "ALTER TABLE approval ADD COLUMN deferred_until DATETIME",
      "ALTER TABLE approval ADD COLUMN taken_by_id INTEGER", "ALTER TABLE approval ADD COLUMN flow VARCHAR(64)"],  # 14: work queues
+    ["ALTER TABLE user ADD COLUMN sso_identity VARCHAR(200)",
+     "CREATE UNIQUE INDEX IF NOT EXISTS ix_user_sso_identity ON user (sso_identity)"],  # 15: single sign-on (Google, Okta…)
 ]
 # Kept up whatever the step: the full-text index of the AI's knowledge (rowid = chunk.id).
 ALWAYS = ["CREATE VIRTUAL TABLE IF NOT EXISTS chunk_fts USING fts5(title, body, ws UNINDEXED, tokenize='porter unicode61 remove_diacritics 2')"]

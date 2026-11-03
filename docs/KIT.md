@@ -224,7 +224,12 @@ when the AI isn't sure; harmless enrichment isn't checked; decisions of authorit
 ✅ Owner, admin, editor, viewer and portal roles · teams (from the design; people put in them under Settings › People) ·
 invitations · table, record and field permissions everywhere (by role or team)
 (screens, search, exports, the assistant, AI look-ups, the API) · two-step sign-in (authenticator apps) · sign in with
-Microsoft ⚠️ · password reset links (from an admin, or `python -m app.tools reset-link`) · confirming sign-in (the authenticator code,
+Microsoft ⚠️ · single sign-on with Google Workspace, Okta, Auth0, Keycloak or any OpenID Connect provider (linked by
+the provider's own identity, never the email it claims; PKCE; the ID token's issuer, audience, nonce and expiry checked) ·
+signing people out after the minutes chosen without use (shared computers on the floor) · an audit log of what matters
+(sign-ins and refused ones, people, roles and teams, exports and backups, private values revealed, API keys, every
+change to how the app works, printers), each entry chained to the one before so a change or a gap afterwards shows,
+downloadable as CSV · password reset links (from an admin, or `python -m app.tools reset-link`) · confirming sign-in (the authenticator code,
 or the password, within the last ten minutes) for the moves and approvals that need it · separation of duties ·
 sign-in throttling · CSRF on
 every form · a strict content security policy · encrypted tokens · hashed API keys · out-of-date save protection ·

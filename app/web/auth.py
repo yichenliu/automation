@@ -6,7 +6,7 @@ from flask import Blueprint, current_app, flash, redirect, render_template, requ
 from flask_login import current_user, login_required, login_user, logout_user
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 
-from .. import totp
+from .. import audit, totp
 from ..extensions import db
 from ..models import Invite, Membership, User, Workspace, utcnow
 from ..security import client_ip, decrypt, sign_ins
@@ -52,6 +52,7 @@ def login():
                 return redirect(url_for("auth.code"))
             return _signed_in(user)
         sign_ins.hit(key)
+        audit.log(None, "sign_in_failed", f"a wrong password for {email}", user=user, by=email or "someone")
         flash("That email and password don't match.", "error")
         return render_template("auth/login.html", email=email), 401
     return render_template("auth/login.html", email="")
@@ -59,6 +60,7 @@ def login():
 
 def _signed_in(user, next_url=""):
     login_user(user, remember=True)
+    audit.log(None, "signed_in", "", user=user)
     user.last_seen_at = utcnow()
     db.session.commit()
     invite = Invite.query.filter_by(token=session.pop("invite", None) or "", accepted_at=None).first()
@@ -129,6 +131,60 @@ def reset(token):
             flash("Your password is changed. Sign in with it now.", "success")
             return redirect(url_for("auth.login"))
     return render_template("auth/reset.html", user=user)
+
+
+@bp.route("/login/sso")
+def sso_login():
+    from ..connectors import oidc
+    try:
+        return redirect(oidc.login_url(session))
+    except oidc.SSOProblem as exc:
+        flash(str(exc), "error")
+        return redirect(url_for("auth.login"))
+
+
+@bp.route("/login/sso/callback")
+def sso_callback():
+    """Back from the company's identity provider (Google, Okta…): linking it to the signed-in account, accepting an
+    invitation with it, or signing in with an account it's linked to. Never matched by the email it claims."""
+    from ..connectors import oidc
+    try:
+        claims, linking = oidc.finish(session, request.args)
+    except oidc.SSOProblem as exc:
+        flash(str(exc), "error")
+        return redirect(url_for("auth.login"))
+    identity = oidc.identity(claims)
+    owner = User.query.filter_by(sso_identity=identity).first()
+    if linking and current_user.is_authenticated:
+        if owner is not None and owner.id != current_user.id:
+            flash(f"That {oidc.name()} account is already linked to another account here.", "error")
+        else:
+            current_user.sso_identity = identity
+            db.session.commit()
+            audit.log(None, "sign_in_method", f"linked {oidc.name()} sign-in ({claims.get('email') or 'their account'})")
+            flash(f"You can now sign in with {oidc.name()}.", "success")
+        return redirect(url_for("account.page"))
+    if owner is None:
+        invite = Invite.query.filter_by(token=session.get("invite") or "", accepted_at=None).first()
+        if invite is None:
+            flash(f"That {oidc.name()} account isn't linked to an account here yet. Sign in with your password once, then "
+                  "link it from Your account; or open your invitation link first.", "error")
+            return redirect(url_for("auth.login"))
+        owner = User.query.filter(db.func.lower(User.email) == invite.email.lower()).first()
+        if owner is None:  # the invitation (sent to this email) is the proof; the new account takes its address
+            import secrets
+            owner = User(email=invite.email.lower(), name=claims.get("name") or "")
+            owner.set_password(secrets.token_urlsafe(32))
+            db.session.add(owner)
+        elif owner.sso_identity:
+            flash("Sign in with your password to accept the invitation.", "error")
+            return redirect(url_for("auth.login"))
+        owner.sso_identity = identity
+        db.session.commit()
+    if owner.totp_secret:
+        session["pending_2fa"] = {"user": owner.id, "at": time.time(), "next": ""}
+        return redirect(url_for("auth.code"))
+    return _signed_in(owner)
 
 
 @bp.route("/login/microsoft")
@@ -238,5 +294,6 @@ def invite(token):
 @bp.route("/logout", methods=["POST"])
 @login_required
 def logout():
+    audit.log(None, "signed_out", "")
     logout_user()
     return redirect(url_for("auth.login"))

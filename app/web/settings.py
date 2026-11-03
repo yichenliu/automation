@@ -10,7 +10,7 @@ from zoneinfo import available_timezones
 from flask import Blueprint, abort, flash, g, redirect, render_template, request, send_file, url_for
 from flask_login import current_user, login_required
 
-from .. import ai, backup
+from .. import ai, audit, backup
 from ..blueprint import schema
 from ..builder import chat
 from ..connectors import microsoft
@@ -47,6 +47,8 @@ def general(wid):
         settings = _settings(ws)
         settings["business"] = {k: (request.form.get(f"business_{k}") or "").strip()[:1000] for k in BUSINESS}
         settings["page_size"] = "Letter" if request.form.get("page_size") == "Letter" else "A4"
+        from ..security import IDLE_CHOICES
+        settings["idle_minutes"] = request.form.get("idle_minutes", type=int) if request.form.get("idle_minutes", type=int) in IDLE_CHOICES else 0
         base = (request.form.get("base_currency") or "").strip().upper()[:3]
         rates, bad = {}, []
         for line in (request.form.get("rates") or "").splitlines():
@@ -71,6 +73,7 @@ def general(wid):
                   "2026-12-25 Christmas Day", "error")
         ws.settings = settings
         db.session.commit()
+        audit.log(ws.id, "settings", "business details")
         flash("Saved.", "success")
         return redirect(url_for(".general", wid=wid))
     return render_template("settings/general.html", ws=ws, timezones=TIMEZONES, business=_settings(ws).get("business", {}), section="general")
@@ -130,6 +133,7 @@ def members(wid):
                                     teams=[k for k in request.form.getlist("teams") if k in known] or None)
                     db.session.add(invite)
                     db.session.commit()
+                    audit.log(ws.id, "invited", f"{email} as {role}" + (f", in {', '.join(invite.teams)}" if invite.teams else ""))
                     flash(f"Invitation for {email} created: copy the link below and send it to them.", "success")
         elif action in ("role", "remove"):
             target = db.session.get(Membership, int(request.form.get("member", 0) or 0))
@@ -138,12 +142,15 @@ def members(wid):
             if target.role == "owner" or (target.role == "admin" and me.role != "owner"):
                 flash("Only the owner can change admins, and the owner can't be changed here.", "error")
             elif action == "remove":
+                who = target.user.email
                 db.session.delete(target)
                 db.session.commit()
+                audit.log(ws.id, "removed", who)
                 flash("Removed.", "success")
             elif request.form.get("role") in ("viewer", "editor", "admin"):
-                target.role = request.form["role"]
+                was, target.role = target.role, request.form["role"]
                 db.session.commit()
+                audit.log(ws.id, "role_changed", f"{target.user.email}: {was} → {target.role}")
                 flash("Role changed.", "success")
         elif action == "reset_link":
             target = db.session.get(Membership, int(request.form.get("member", 0) or 0))
@@ -155,6 +162,7 @@ def members(wid):
                       "They can sign in with Microsoft, or ask whoever runs the platform for a reset link.", "error")
                 return redirect(url_for(".members", wid=wid))
             from .auth import reset_link
+            audit.log(ws.id, "password_reset", f"a reset link made for {target.user.email}")
             flash(f"A link for {target.user.email} to choose a new password (it works for 24 hours, once): {reset_link(target.user)}", "success")
         elif action == "teams":  # who is in which of the design's teams
             target = db.session.get(Membership, int(request.form.get("member", 0) or 0))
@@ -163,6 +171,7 @@ def members(wid):
             known = {tm["key"] for tm in schema.teams(ws.blueprint or {})}
             target.teams = [k for k in request.form.getlist("teams") if k in known]
             db.session.commit()
+            audit.log(ws.id, "teams_changed", f"{target.user.email}: {', '.join(target.teams) or 'no team'}")
             flash(f"{target.user.display}'s teams saved.", "success")
         elif action == "cover":  # someone away: who covers their approvals and tasks
             from datetime import date as _date
@@ -213,6 +222,7 @@ def connections(wid):
 def disconnect(wid):
     ws = workspace(wid, "admin")
     microsoft.disconnect(ws)
+    audit.log(ws.id, "connected", "Microsoft 365 disconnected")
     flash("Microsoft 365 disconnected. Automations that read or send email will wait until it's connected again.", "success")
     return redirect(url_for(".connections", wid=wid))
 
@@ -245,6 +255,7 @@ def printers(wid):
         settings["printers"] = chosen
         ws.settings = settings
         db.session.commit()
+        audit.log(ws.id, "printers", "; ".join(f"{r}: {printing.describe(c)}" for r, c in chosen.items()) or "none")
         if request.form.get("test"):
             try:
                 if request.form["test"] == "labels":
@@ -261,6 +272,36 @@ def printers(wid):
         return redirect(url_for("settings.printers", wid=wid))
     return render_template("settings/printers.html", ws=ws, names=names, default=default, chosen={r: printing.chosen(ws, r) for r in printing.ROLES},
                            roles=printing.ROLES, sizes={k: v[0] for k, v in labels.SIZES.items() if v[3] is None}, section="printers")
+
+
+@bp.route("/audit")
+@login_required
+def audit_log(wid):
+    """Who did what that matters, newest first: this app's entries, and its people's sign-ins. Filtered by what and who;
+    as CSV for an auditor. Whether the chain of entries is whole is checked every time it's opened."""
+    from ..models import AuditEvent
+    ws = workspace(wid, "admin")
+    people = {m.user_id for m in Membership.query.filter_by(workspace_id=ws.id)}
+    query = AuditEvent.query.filter((AuditEvent.workspace_id == ws.id) | ((AuditEvent.workspace_id.is_(None)) & (AuditEvent.user_id.in_(people))))
+    what, who = request.args.get("what", ""), request.args.get("who", "", type=str)
+    if what in audit.WORDS:
+        query = query.filter(AuditEvent.action == what)
+    if who.isdigit():
+        query = query.filter(AuditEvent.user_id == int(who))
+    entries = query.order_by(AuditEvent.id.desc()).limit(5000 if request.args.get("csv") else 300).all()
+    if request.args.get("csv"):
+        out = io.StringIO()
+        writer = csv.writer(out)
+        writer.writerow(["When (UTC)", "Who", "What", "Detail", "From", "Fingerprint"])
+        for e in entries:
+            writer.writerow([e.at.isoformat(timespec="seconds"), e.by, audit.WORDS.get(e.action, e.action), e.detail, e.ip or "", e.fingerprint])
+        audit.log(ws.id, "exported", "the audit log as CSV")
+        return send_file(io.BytesIO(("\ufeff" + out.getvalue()).encode()), mimetype="text/csv", as_attachment=True,
+                         download_name=f"{schema.slug(ws.name) or 'app'}-audit-log.csv")
+    whole, at = audit.verify(ws.id)
+    names = {m.user_id: m.user.display for m in Membership.query.filter_by(workspace_id=ws.id)}
+    return render_template("settings/audit.html", ws=ws, entries=entries, words=audit.WORDS, what=what, who=who, names=names,
+                           whole=whole, broken=None if whole else at, count=at if whole else None, section="audit")
 
 
 @bp.route("/forms", methods=["GET", "POST"])
@@ -310,6 +351,7 @@ def export_all(wid):
         import json
         z.writestr("design.json", json.dumps(ws.blueprint, indent=2, ensure_ascii=False))
     out.seek(0)
+    audit.log(ws.id, "exported", "everything (every list and the design) as a zip")
     return send_file(out, mimetype="application/zip", as_attachment=True, download_name=f"{schema.slug(ws.name) or 'erp'}-export.zip")
 
 
@@ -329,12 +371,14 @@ def api_keys(wid):
                 abort(404)
             key.revoked_at = utcnow()
             db.session.commit()
+            audit.log(ws.id, "api_key", f"revoked “{key.name}”")
             flash(f"Revoked “{key.name}”. Anything using it stops working now.", "success")
             return redirect(url_for(".api_keys", wid=wid))
         role = request.form.get("role") if request.form.get("role") in ("viewer", "editor", "admin") else "editor"
         if not g.member.can(role):
             abort(403)
         key, made = make_key(ws, (request.form.get("name") or "").strip() or "API key", role, current_user.id)
+        audit.log(ws.id, "api_key", f"made “{key.name}” ({role})")
     keys = ApiKey.query.filter_by(workspace_id=ws.id, revoked_at=None).order_by(ApiKey.id.desc()).all()
     hooks = [{"name": a["name"], "url": automations.hook_url(ws.id, a["key"])} for a in (ws.blueprint or {}).get("automations", [])
              if a["trigger"]["type"] == "webhook_received"]
@@ -346,6 +390,7 @@ def api_keys(wid):
 def make_backup(wid):
     workspace(wid, "owner")
     path = backup.make()
+    audit.log(wid, "backup", f"made {path.name}")
     flash(f"Backup made: {path.name}. It holds every app on this platform, their files and the key for stored sign-ins.", "success")
     return redirect(url_for(".data", wid=wid))
 
@@ -357,4 +402,5 @@ def download_backup(wid):
     path = backup.latest()
     if path is None:
         abort(404)
+    audit.log(wid, "backup", f"downloaded {path.name}")
     return send_file(path, as_attachment=True, download_name=path.name)

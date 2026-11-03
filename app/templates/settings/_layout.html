@@ -6,8 +6,8 @@
     <h2>Settings</h2>
     {% for key, label, ico in [('general', 'Business', 'building-2'), ('appearance', 'Appearance', 'sparkles'), ('members', 'People', 'users'),
                                ('connections', 'Connections', 'cloud'), ('printers', 'Printers', 'printer'), ('forms', 'Public forms', 'globe'), ('api_keys', 'API & webhooks', 'code'),
-                               ('data', 'Data & AI', 'hard-drive')] %}
-      <a href="{{ url_for('settings.' ~ key, wid=ws.id) }}" class="{{ 'active' if section == key or (section == 'api' and key == 'api_keys') }}">{{ icon(ico) }}{{ label }}</a>{% endfor %}
+                               ('data', 'Data & AI', 'hard-drive'), ('audit_log', 'Audit log', 'shield')] %}
+      <a href="{{ url_for('settings.' ~ key, wid=ws.id) }}" class="{{ 'active' if section == key or (section == 'api' and key == 'api_keys') or (section == 'audit' and key == 'audit_log') }}">{{ icon(ico) }}{{ label }}</a>{% endfor %}
   </aside>
   <main class="settings-main">{{ flashes() }}{% block content %}{% endblock %}</main>
 </div>

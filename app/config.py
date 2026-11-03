@@ -46,6 +46,10 @@ class Config:
     CURRENCY_SYMBOL = os.getenv("CURRENCY_SYMBOL") or "$"
     MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB") or 25)
     MAX_CONTENT_LENGTH = (int(os.getenv("MAX_UPLOAD_MB") or 25) + 5) * 1024 * 1024
+    OIDC_ISSUER = os.getenv("OIDC_ISSUER") or ""  # single sign-on: https://accounts.google.com, an Okta or Auth0 domain…
+    OIDC_CLIENT_ID = os.getenv("OIDC_CLIENT_ID") or ""
+    OIDC_CLIENT_SECRET = os.getenv("OIDC_CLIENT_SECRET") or ""
+    OIDC_NAME = os.getenv("OIDC_NAME") or ""  # what the button says ("Google", "Okta"); worked out from the issuer otherwise
     MICROSOFT_CLIENT_ID = os.getenv("MICROSOFT_CLIENT_ID") or ""
     MICROSOFT_CLIENT_SECRET = os.getenv("MICROSOFT_CLIENT_SECRET") or ""
     MICROSOFT_TENANT = os.getenv("MICROSOFT_TENANT") or "organizations"

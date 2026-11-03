@@ -13,6 +13,7 @@
     <button class="btn primary block">Sign in</button>
   </form>
   {% if config.MICROSOFT_CLIENT_ID %}<a class="btn block mt-2" href="{{ url_for('auth.microsoft_login') }}">{{ icon('building-2') }}Sign in with Microsoft</a>{% endif %}
+  {% if config.OIDC_ISSUER and config.OIDC_CLIENT_ID %}<a class="btn block mt-2" href="{{ url_for('auth.sso_login') }}">{{ icon('key') }}Sign in with {{ config.OIDC_NAME or ('Google' if 'accounts.google.com' in config.OIDC_ISSUER else 'your company account') }}</a>{% endif %}
   <p class="small mt-2"><a href="{{ url_for('auth.forgot') }}">Forgot your password?</a></p>
 
 </div></div>

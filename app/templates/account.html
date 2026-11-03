@@ -18,6 +18,12 @@
       <form method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn ghost" name="action" value="ms_unlink">Unlink</button></form>
     {% else %}<p class="muted">Link your Microsoft work account to sign in with it.</p>
       <form method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn" name="action" value="ms_link">{{ icon('building-2') }}Link Microsoft sign-in</button></form>{% endif %}</div>{% endif %}
+  {% if config.OIDC_ISSUER and config.OIDC_CLIENT_ID %}{% set sso = config.OIDC_NAME or ('Google' if 'accounts.google.com' in config.OIDC_ISSUER else 'your company account') %}
+  <div class="card card-body stack mb-2"><h2>Sign in with {{ sso }}</h2>
+    {% if current_user.sso_identity %}<p>{{ icon('circle-check') }} Linked: you can sign in with {{ sso }}.</p>
+      <form method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn ghost" name="action" value="sso_unlink">Unlink</button></form>
+    {% else %}<p class="muted">Link it to sign in with it.</p>
+      <form method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn" name="action" value="sso_link">{{ icon('key') }}Link {{ sso }} sign-in</button></form>{% endif %}</div>{% endif %}
   <div class="card card-body stack"><h2>Two-step sign-in</h2>
     {% if current_user.totp_secret %}<p>{{ icon('shield') }} On. Signing in asks for a code from your authenticator app.</p>
       <form method="post" class="row"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="action" value="2fa_off">

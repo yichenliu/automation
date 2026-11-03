@@ -3,6 +3,7 @@ from flask import Blueprint, current_app, flash, redirect, render_template, requ
 from flask_login import current_user, login_required
 
 from .. import totp
+from .. import audit
 from ..extensions import db
 from ..models import Membership, Workspace
 from ..security import decrypt, encrypt
@@ -29,6 +30,7 @@ def page():
             else:
                 user.set_password(request.form["new"])
                 db.session.commit()
+                audit.log(None, "password_reset", "changed their password")
                 flash("Password changed.", "success")
         elif action == "2fa_start":
             session["totp_setup"] = totp.new_secret()
@@ -38,6 +40,7 @@ def page():
                 user.totp_secret = encrypt(secret)
                 db.session.commit()
                 session.pop("totp_setup", None)
+                audit.log(None, "two_step", "turned two-step sign-in on")
                 flash("Two-step sign-in is on: you'll be asked for a code from your app each time you sign in.", "success")
             else:
                 flash("That code isn't right. Check the app shows this account, and use the newest code.", "error")
@@ -50,15 +53,29 @@ def page():
                 return redirect(url_for("account.page"))
             session["ms_link"] = True
             return redirect(url)
+        elif action == "sso_link":
+            from ..connectors import oidc
+            try:
+                return redirect(oidc.login_url(session, linking=True))
+            except oidc.SSOProblem as exc:
+                flash(str(exc), "error")
+                return redirect(url_for("account.page"))
+        elif action == "sso_unlink":
+            user.sso_identity = None
+            db.session.commit()
+            audit.log(None, "sign_in_method", "unlinked single sign-on")
+            flash("Single sign-on is unlinked. Sign in with your password.", "success")
         elif action == "ms_unlink":
             user.ms_identity = None
             db.session.commit()
+            audit.log(None, "sign_in_method", "unlinked Microsoft sign-in")
             flash("Microsoft sign-in is unlinked. Sign in with your password.", "success")
         elif action == "2fa_off":
             secret = decrypt(user.totp_secret) if user.totp_secret else None
             if isinstance(secret, str) and totp.verify(secret, request.form.get("code")):
                 user.totp_secret = None
                 db.session.commit()
+                audit.log(None, "two_step", "turned two-step sign-in off")
                 flash("Two-step sign-in is off.", "success")
             else:
                 flash("Enter a current code from your app to turn it off.", "error")

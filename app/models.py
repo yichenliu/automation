@@ -28,6 +28,7 @@ class User(UserMixin, db.Model):
     last_seen_at = db.Column(db.DateTime)
     totp_secret = db.Column(db.Text)  # encrypted; set once two-step sign-in is turned on
     ms_identity = db.Column(db.String(120), unique=True)  # "tenant id:object id" of the Microsoft account linked for sign-in
+    sso_identity = db.Column(db.String(200), unique=True)  # the company identity provider's issuer|subject (single sign-on)
     notify_email = db.Column(db.Boolean, default=False)  # also email them their notifications (through Microsoft 365)
 
     def set_password(self, password):
@@ -279,6 +280,20 @@ class Approval(db.Model):
     deferred_until = db.Column(db.DateTime)
     taken_by_id = db.Column(db.Integer)
     flow = db.Column(db.String(64))
+
+
+class AuditEvent(db.Model):
+    """One entry of the audit log (audit.py): who, what, when, from where; chained to the one before by fingerprints."""
+    id = db.Column(db.Integer, primary_key=True)
+    workspace_id = db.Column(db.Integer, index=True)  # none: the platform's own (a sign-in before a workspace is open)
+    user_id = db.Column(db.Integer)
+    by = db.Column(db.String(200))
+    action = db.Column(db.String(32), nullable=False)
+    detail = db.Column(db.Text)
+    ip = db.Column(db.String(64))
+    at = db.Column(db.DateTime, nullable=False)
+    previous = db.Column(db.String(64))
+    fingerprint = db.Column(db.String(64))
 
 
 class Notification(db.Model):

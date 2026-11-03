@@ -68,6 +68,10 @@ def save_version(workspace, blueprint, changes, source, message_id=None, by=None
     db.session.add(Version(workspace_id=workspace.id, number=number, blueprint=blueprint, changes=list(changes or []) + ([] if isinstance(changes, list) else kept),
                            source=source, message_id=message_id, by=who))
     db.session.commit()
+    from .. import audit
+    said = list(changes or [])
+    audit.log(workspace.id, "design", f"version {number} ({source}): " + "; ".join(str(c) for c in said[:6]) + (f"; and {len(said) - 6} more" if len(said) > 6 else ""),
+              by=who or ("the builder" if source == "chat" else None))
     if source != "chat":  # the builder tries its own changes out; any other change (an undo, an edit by hand) is checked after
         checking.soon(workspace, f"the change “{(changes or ['a change'])[0]}”")
     engine = Engine(workspace, by="builder")

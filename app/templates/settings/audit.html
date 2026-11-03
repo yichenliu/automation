@@ -1,0 +1,19 @@
+{% extends "settings/_layout.html" %}
+{% block title %}Audit log{% endblock %}
+{% block content %}
+<h1>Audit log</h1><p class="muted mt-1">Who did what that matters: signing in, people and their roles, exports and backups, private values revealed, API keys, and every change to how the app works. Each record also keeps its own history of every change.</p>
+{% if whole %}<p class="notice mt-2">{{ icon('shield') }}<span>The log is whole: none of its {{ count }} entries has been changed or taken out since it was written.</span></p>
+{% else %}<p class="notice warn mt-2">{{ icon('triangle-alert') }}<span><b>The log has been tampered with</b> at the entry of {{ broken.at.strftime('%d %b %Y %H:%M') }} ({{ broken.by }}): it, or one before it, was changed or taken out after it was written.</span></p>{% endif %}
+<form method="get" class="row wrap mt-2">
+  <select name="what" aria-label="What"><option value="">Everything</option>{% for k, w in words.items() %}<option value="{{ k }}" {{ 'selected' if what == k }}>{{ w }}</option>{% endfor %}</select>
+  <select name="who" aria-label="Who"><option value="">Everyone</option>{% for uid, n in names.items() %}<option value="{{ uid }}" {{ 'selected' if who == uid|string }}>{{ n }}</option>{% endfor %}</select>
+  <button class="btn sm">Show</button>
+  <a class="btn sm ghost" href="{{ url_for('settings.audit_log', wid=ws.id, what=what or none, who=who or none, csv=1) }}">{{ icon('download') }}Download as CSV</a>
+</form>
+<div class="card mt-2">{% for e in entries %}
+  <div class="list-row"><span class="pill {{ 'red' if e.action in ('sign_in_failed', 'removed', 'deleted') else 'amber' if e.action in ('revealed', 'exported', 'backup', 'api_key', 'role_changed') else 'slate' }}">{{ words.get(e.action, e.action) }}</span>
+    <span class="grow">{{ e.detail }}{% if not e.detail %}<span class="faint">—</span>{% endif %}</span>
+    <span class="faint tiny nowrap" title="{{ e.at.isoformat(timespec='seconds') }} UTC{{ ' from ' ~ e.ip if e.ip }}">{{ e.by }} · {{ e.at|ago }}</span></div>
+{% else %}<p class="pad faint">Nothing yet.</p>{% endfor %}</div>
+{% if entries|length >= 300 %}<p class="faint small mt-1">The newest 300 are shown; the CSV has up to 5,000.</p>{% endif %}
+{% endblock %}

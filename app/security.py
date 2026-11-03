@@ -73,10 +73,32 @@ def workspace(wid, role="viewer"):
     member = membership(ws) if ws else None
     if member is None:
         abort(404)
+    _signed_out_if_idle(ws)
     if not member.can(role):
         abort(403)
     g.ws, g.member = ws, member
     return ws
+
+
+IDLE_CHOICES = (0, 15, 30, 60, 240)  # minutes; 0: never
+
+
+def _signed_out_if_idle(ws):
+    """Shared computers on a shop floor: after the minutes the business chose without anyone using the app, the next
+    click asks for the password again."""
+    import time
+    from flask import flash, redirect, request, session, url_for
+    from flask_login import logout_user
+    minutes = int((ws.settings or {}).get("idle_minutes") or 0)
+    now, last = time.time(), session.get("active_at")
+    if minutes and last and now - last > minutes * 60:
+        from . import audit
+        audit.log(ws.id, "signed_out", f"after {minutes} minutes without use")
+        logout_user()
+        session.pop("active_at", None)
+        flash(f"You were signed out after {minutes} minutes without use. Sign in again to carry on.", "info")
+        abort(redirect(url_for("auth.login", next=request.full_path if request.method == "GET" else None)))
+    session["active_at"] = now
 
 
 def role_required(role):

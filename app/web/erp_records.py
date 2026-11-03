@@ -380,8 +380,10 @@ def export_xlsx(wid, table):
     """The table as an Excel workbook: numbers, money and dates as real values, so formulas and pivots work on them."""
     from openpyxl import Workbook
     from openpyxl.styles import Font
+    from .. import audit
     ws, engine = ctx(wid)
     t = _table(engine, table)
+    audit.log(ws.id, "exported", f"{t['label']} as Excel")
     book = Workbook()
     sheet = book.active
     sheet.title = t["label"][:31]
@@ -484,8 +486,10 @@ def feed_url(engine, t, view):
 @bp.route("/t/<table>/export.csv")
 @login_required
 def export(wid, table):
+    from .. import audit
     ws, engine = ctx(wid)
     t = _table(engine, table)
+    audit.log(ws.id, "exported", f"{t['label']} as CSV")
     out = io.StringIO()
     writer = csv.writer(out)
     fields = [f for f in t["fields"] if f["type"] not in schema.FILES]
@@ -792,6 +796,8 @@ def reveal(wid, table, rid, key):
     db.session.add(RecordChange(workspace_id=ws.id, record_id=r.id, kind="viewed", by=current_user.display, by_id=current_user.id,
                                 changes={"_shown": [None, f["label"]]}))
     db.session.commit()
+    from .. import audit
+    audit.log(ws.id, "revealed", f"{f['label']} of {t['singular'].lower()} “{engine.title(r)}”")
     return jsonify(value=real((r.data or {}).get(key)) or "")
 
 
@@ -1111,6 +1117,8 @@ def bulk(wid, table):
                 done += 1
             except FieldErrors:
                 kept.append(engine.title(r))
+        from .. import audit
+        audit.log(ws.id, "deleted", f"{done} {schema.lc(t['label']) if done != 1 else schema.lc(t['singular'])} at once")
         flash(f"Deleted {done} {schema.lc(t['label']) if done != 1 else schema.lc(t['singular'])}."
               + (f" Locked, so not deleted: {', '.join(kept[:5])}{'…' if len(kept) > 5 else ''}" if kept else ""), "success" if not kept else "error")
     elif action and (action == "labels" or action.startswith("labels:")):  # a label for each one selected, ready to print
