@@ -777,6 +777,10 @@ def _attach(engine, record, t, keys):
 # the example left out what the app rightly asks for, named a record that isn't there ("no Patient called 'emma'"), or
 # added a record at a later stage than new ones start at: its own mistake, not the app's
 OMITTED = re.compile(r"^(Fill in .+ first|.+ is required( here)?|.*there's no .+ called|A new .+ starts at )")
+# a value the example typed that isn't one (an ABN of 9 digits, a date that isn't a date, a choice that isn't offered): the
+# app rightly refused it, and it's the example that's corrected, so it can go on to try what it was written for
+BAD_VALUE = re.compile(r"isn't an? (number|date|time|duration|colour|location|email address|date and time|time of day)\b|"
+                       r"isn't one of: |isn't a member of this workspace|^a rating is a number|isn't valid JSON")
 
 
 def _same(engine, f, actual, wanted, names):
@@ -869,7 +873,8 @@ def play(trial, example):
                 engine.reset()
                 continue
             reason = "; ".join(exc.errors.values())
-            left_out = all(OMITTED.match(str(e)) for e in exc.errors.values())
+            shapes = {f.get("pattern_message") for x in engine.tables.values() for f in x["fields"] if f.get("pattern_message")}
+            left_out = all(OMITTED.match(str(e)) or BAD_VALUE.search(str(e)) or str(e) in shapes for e in exc.errors.values())
             out.update(problem=f"step {n} ({said}) was refused: {reason}" + (" (correct the example's values)" if left_out else ""),
                        kind="example" if left_out else "app", plain=f"{_plain_step(engine, step, names)} wasn't allowed: {reason}")
             return out

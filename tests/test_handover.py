@@ -288,3 +288,18 @@ def test_an_ai_step_asked_to_do_sums_is_found(app, owner):
                         {"type": "ai_fill", "field": "summary", "instructions": "Write a friendly summary for the floor."}]}}])
     said = [i["plain"] for i in checks.ai_doing_sums(Engine(ws))]
     assert said == ["“Check shortages” has the AI work out material shortage, a sum the app should do itself"]  # words are the AI's
+
+
+def test_a_value_an_example_typed_that_isnt_one_is_the_examples_to_correct(app, owner):
+    _, ws = owner
+    _built(ws, [{"op": "create_table", "table": "suppliers", "label": "Suppliers", "fields": [
+        {"key": "name", "type": "text", "required": True},
+        {"key": "abn", "label": "ABN", "type": "text", "pattern": "^[0-9]{11}$", "pattern_message": "An ABN is 11 digits"},
+        {"key": "since", "type": "date"}]}])
+    short = {"title": "A supplier", "steps": [{"do": "add", "as": "s", "table": "suppliers", "values": {"name": "Acme", "abn": "1234"}}],
+             "expect": [{"record": "s", "field": "name", "equals": "Acme"}]}
+    when = {"title": "Another", "steps": [{"do": "add", "as": "s", "table": "suppliers", "values": {"name": "Bo", "since": "last Tuesday"}}],
+            "expect": [{"record": "s", "field": "name", "equals": "Bo"}]}
+    _, (abn, date) = trial.try_out(ws, [short, when], screens=False)
+    assert abn["kind"] == "example" and "correct the example's values" in abn["problem"]
+    assert date["kind"] == "example" and "isn't a date" in date["problem"]
