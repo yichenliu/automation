@@ -148,6 +148,7 @@ class Shop:
             teams = [tm["key"] for tm in schema.teams(self.engine.bp)] or None
         db.session.add(Membership(workspace_id=self.trial.ws_id, user_id=user_id, role=role, teams=teams))
         db.session.commit()
+        self.engine._members = None  # one of the business now: theirs to be named on records
         return self.trial.engine(user_id)
 
     def someone_else(self, f=None):
@@ -183,6 +184,7 @@ class Shop:
             if v is not None and not (self.engine.kind(f) in ("money", "number", "percent") and not f.get("required")):
                 out[f["key"]] = v  # numbers left empty unless they must be filled: a sample price shouldn't change a story's sums
         out.update(given)
+        engine._members = None  # whoever was just made for a person field is a member to this engine too
         try:
             record = engine.create(t["key"], out, ai=False)
         except FieldErrors as exc:

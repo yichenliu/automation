@@ -413,3 +413,27 @@ def test_an_example_moving_a_record_several_stages_on_takes_it_through_the_stage
     _, (went, stuck) = trial.try_out(ws, [along, blocked], screens=False)
     assert went["ok"], went
     assert not stuck["ok"] and "on its way from New to Invoiced" in stuck["problem"] and "from Picking to Delivered" in stuck["problem"]
+
+
+def test_a_change_kept_from_staff_is_tried_on_a_record_they_cant_see_and_a_sum_says_how_it_was_worked_out(app, owner):
+    """A sent invoice locked from staff is refused to them even where only its rep sees it; and an expected due date the
+    example got wrong (1 Oct + 30 days) is told with the formula and what it read, after the days waited."""
+    _, ws = owner
+    _built(ws, [{"op": "create_table", "table": "invoices", "label": "Invoices", "row_access": {"field": "rep", "roles": ["editor"]},
+                 "lock_if": [{"field": "status", "op": "equals", "value": "Sent"}], "lock_except": ["status"], "fields": [
+        {"key": "title", "type": "text", "required": True}, {"key": "rep", "type": "user"}, {"key": "total", "type": "money"},
+        {"key": "issue_date", "type": "date"}, {"key": "terms", "type": "number"},
+        {"key": "due_date", "type": "formula", "format": "date", "expression": "add_days(issue_date, terms)"},
+        {"key": "status", "type": "select", "options": ["Draft", "Sent", "Paid"]}]}])
+    add = {"do": "add", "table": "invoices", "as": "i1", "values": {"title": "Flour", "rep": "Sam", "total": 100, "status": "Sent",
+                                                                    "issue_date": "2026-10-01", "terms": 30}}
+    locked = {"title": "A sent invoice is locked", "steps": [add, {"do": "change", "record": "i1", "values": {"total": 90}, "refused": True}],
+              "expect": [{"record": "i1", "field": "total", "equals": 100}]}
+    let_in = {"title": "Its status isn't", "steps": [add, {"do": "change", "record": "i1", "values": {"status": "Paid"}, "refused": True}],
+              "expect": [{"record": "i1", "field": "status", "equals": "Sent"}]}
+    due = {"title": "Due a month on", "steps": [add, {"do": "wait", "days": 3}],
+           "expect": [{"record": "i1", "field": "due_date", "equals": "2026-11-01"}]}
+    _, (refused, allowed, sum_) = trial.try_out(ws, [locked, let_in, due], screens=False)
+    assert refused["ok"], refused
+    assert not allowed["ok"] and "should have been refused" in allowed["problem"]
+    assert not sum_["ok"] and "(worked out as `add_days(issue_date, terms)` from issue_date = '2026-10-01', terms = 30)" in sum_["problem"]

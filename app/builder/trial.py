@@ -761,8 +761,9 @@ def _act(trial, engine, step, names):
         values = _values(engine, t, step.get("values"), names)
         if step.get("refused") and engine.locked(record) is None:  # the owner may change what's locked: it's kept from staff
             staff = trial.engine(_person(engine, "Staff member", make=True))
-            if staff.locked(staff.get(record.id)):
-                staff.update(staff.get(record.id), values)
+            theirs = staff.get(record.id) or record  # kept from their view (another rep's customer), it's as locked to them
+            if staff.locked(theirs):
+                staff.update(theirs, values)
                 return
         engine.update(record, values)
     elif do == "move":
@@ -1028,11 +1029,32 @@ def _expect(engine, c, names):
         if wanted not in (None, "") and f["type"] not in ("link", "user") and not _shows_a_link(engine, f) else str(wanted or "empty")
     plain = f"{t['singular']}’s {label}: {shown}" if ok else f"{t['singular']}’s {label} came out {shown}, expected {expected}"
     said = f"{c.get('record')} ({t['key']}).{key} is {actual!r}; expected {wanted!r}"
+    if not ok and f.get("expression") and len(path) == 1:  # how it was worked out, to tell a wrong sum from a wrong expectation
+        read = _formula_reads(engine, record, f["expression"], names)
+        said += f" (worked out as `{f['expression']}`" + (f" from {read}" if read else "") + ")"
     if not ok and actual in (None, "", []) and len(path) == 1 and _checking(engine, record, key):
         plain += " (the AI's work is waiting for someone to check it)"
         said += (f" (the AI's work for it is waiting for someone to check it, as its step's review says: to try it as kept, "
                  f"add an “approve” step for {c.get('record')} before this, as whoever checks it would)")
     return ok, plain, said
+
+
+def _formula_reads(engine, record, expression, names):
+    """The values a formula read on this record, as the example's calendar shows them: “issue_date = '2026-10-01',
+    customer.payment_terms = 30”."""
+    plain = re.sub(r"'[^']*'|\"[^\"]*\"", "", expression)
+    out = []
+    for name in dict.fromkeys(re.findall(r"\b[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*\b(?!\s*\()", plain)):
+        if engine.field(record.table, name.split(".")[0]) is None:
+            continue
+        try:
+            g, value = engine._at_path(record, name)
+        except Exception:  # noqa: BLE001 - a path it can't follow: left out of the account
+            continue
+        if g is not None and engine.kind(g) in ("date", "datetime") and names.get("_waited"):
+            value = _shifted(engine, g, value, names["_waited"])
+        out.append(f"{name} = {value!r}")
+    return ", ".join(out[:8])
 
 
 def _checking(engine, record, key):
