@@ -253,7 +253,7 @@ def data_ops(bp, change, filled):
         t = _table(bp, change.get("table"))
         f = _field(t, change.get("key"))
         if f["key"] == (t.get("workflow") or {}).get("field"):
-            raise SchemaError(f"{f['label']} holds the stages of {t['label']}: take the stages off in Workflows first")
+            raise SchemaError(f"{f['label']} holds the stages of {t['label']}: take the stages off in Processes first")
         if len(t["fields"]) == 1:
             raise SchemaError(f"{t['label']} needs at least one field")
         return [{"op": "remove_field", "table": t["key"], "key": f["key"]}], []

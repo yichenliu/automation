@@ -160,7 +160,7 @@ def test_the_ai_in_a_process_is_added_switched_off_handed_a_job_and_checked_from
     _dm(client, ws, {"do": "update_field", "table": "orders", "key": "notes", "ai": "Note anything fragile"})
     assert schema.field(schema.table(ws.blueprint, "orders"), "notes")["ai"]["instructions"] == "Note anything fragile"
     page = client.get(f"/w/{ws.id}/app/ai").get_data(as_text=True)
-    assert "Fields the AI fills in" in page and "Note anything fragile" in page and "See the whole process, in Workflows" in page
+    assert "Details the AI fills in" in page and "Note anything fragile" in page and "See the whole process" in page
     _dm(client, ws, {"do": "update_field", "table": "orders", "key": "notes", "ai": ""})
     assert "ai" not in schema.field(schema.table(ws.blueprint, "orders"), "notes")
     said = client.post(f"/w/{ws.id}/app/studio/data/change", json={"do": "update_field", "table": "orders", "key": "photo", "ai": "Guess"}).get_json()
@@ -186,9 +186,9 @@ def test_the_menus_put_each_thing_in_one_place_and_join_them_up(app, client, own
     _built(ws, APP)
     login(client)
     home = client.get(f"/w/{ws.id}/app/").get_data(as_text=True)
-    for label in ("Your app", "Data model", "Workflows", "Versions", "AI helpers", "What the AI knows", "Keep it right", "Checks", "Suggestions"):
+    for label in ("Your app", "Data model", "Processes", "Versions", "AI helpers", "What the AI knows", "Keep it right", "Checks", "Suggestions"):
         assert f">{label}<" in home, label
-    assert "How it's set up" not in home and ">Rules<" not in home  # rules live in Workflows now
+    assert "How it's set up" not in home and ">Rules<" not in home and ">Workflows<" not in home  # rules live in Processes now
     page = client.get(f"/w/{ws.id}/app/design").get_data(as_text=True)
     assert "<h1>" in page and "Versions" in page and "Your app now" in page
     listing = client.get(f"/w/{ws.id}/app/t/orders").get_data(as_text=True)
@@ -197,7 +197,7 @@ def test_the_menus_put_each_thing_in_one_place_and_join_them_up(app, client, own
     assert '"kind": "stages"' in opened and '"table": "orders"' in opened
     drawn = client.get(f"/w/{ws.id}/app/studio/workflows/item?id=rule:on_ship").get_json()
     assert drawn["recent"] == [] and drawn["hook"] is None and drawn["can_run"] is False
-    for place in ("Data model", "Workflows", "Versions", "AI helpers", "Settings"):  # ⌘K finds each by name
+    for place in ("Data model", "Processes", "Versions", "AI helpers", "Settings"):  # ⌘K finds each by name
         assert place in [i["label"] for i in client.get(f"/w/{ws.id}/app/jump?q={place.lower()}").get_json()["items"]], place
     settings = client.get(f"/w/{ws.id}/settings/").get_data(as_text=True)
     for label in ("Your business", "Business details", "People and teams", "Connected", "API and AI assistants", "Looking after it",

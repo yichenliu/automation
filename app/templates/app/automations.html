@@ -12,7 +12,7 @@
   <div class="card-head">
     {% if member and member.can('admin') %}<form method="post" action="{{ url_for('app.toggle', wid=ws.id, key=a.key) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <button class="switch {{ 'on' if a.enabled }}" title="{{ 'Turn off' if a.enabled else 'Turn on' }}" aria-label="{{ 'Turn off' if a.enabled else 'Turn on' }}"></button></form>{% endif %}
-    <h2 class="grow">{{ a.name }}</h2><a class="btn sm ghost" href="{{ url_for('app.studio_workflows', wid=ws.id, open='rule:' ~ a.key) }}" title="See it as a diagram, try it on a record{{ ', change it' if member and member.can('admin') }}">{{ icon('workflow') }}Open in Workflows</a>
+    <h2 class="grow">{{ a.name }}</h2><a class="btn sm ghost" href="{{ url_for('app.studio_workflows', wid=ws.id, open='rule:' ~ a.key) }}" title="See it as a diagram, try it on a record{{ ', change it' if member and member.can('admin') }}">{{ icon('workflow') }}Open the process</a>
     {% if a.trigger.type == 'schedule' and member and member.can('admin' if reaches_out(a) else 'editor') %}<form method="post" action="{{ url_for('app.run_now', wid=ws.id, key=a.key) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn sm">{{ icon('play') }}Run now</button></form>{% endif %}
   </div>
   <div class="card-body">

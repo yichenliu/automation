@@ -13,5 +13,5 @@
   <p>{% if helpers %}The AI does <b>{{ helpers }}</b> job{{ 's' if helpers != 1 }} in your processes and fields.{% else %}The AI doesn't do any jobs in your processes yet.{% endif %}
     Add one, switch one off (a person does it instead), or choose who checks its work.</p>
   <p class="row wrap"><a class="btn sm" href="{{ url_for('app.ai_page', wid=ws.id) }}" target="_top">{{ icon('bot') }}AI helpers</a>
-    <a class="btn sm ghost" href="{{ url_for('app.studio_workflows', wid=ws.id) }}" target="_top">{{ icon('workflow') }}In your Workflows</a></p></div></div>
+    <a class="btn sm ghost" href="{{ url_for('app.studio_workflows', wid=ws.id) }}" target="_top">{{ icon('workflow') }}In your processes</a></p></div></div>
 {% endblock %}

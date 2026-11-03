@@ -1,7 +1,7 @@
 {% extends "app/layout.html" %}
-{% block title %}Workflows{% endblock %}
+{% block title %}Processes{% endblock %}
 {% block content %}
-<div class="page-head"><div class="titles"><h1>{{ icon('workflow') }}Workflows</h1>
+<div class="page-head"><div class="titles"><h1>{{ icon('workflow') }}Processes</h1>
   <p class="sub">How work moves through your app: the stages each list goes through, the rules that act by themselves, and the step-by-step screens people follow.
     {% if can_edit %}Click any part to change it, or try a rule on a real record to see what it would do.{% else %}Click any part to see it in full.{% endif %}</p></div>
   <div class="actions">{% if can_edit %}<button class="btn primary" type="button" data-wf-new-rule>{{ icon('plus') }}New rule</button>
@@ -14,7 +14,7 @@
      data-undo="{{ url_for('app.studio_undo', wid=ws.id) }}" data-here="{{ url_for('app.studio_workflows', wid=ws.id) }}"
      data-ai-page="{{ url_for('app.ai_page', wid=ws.id) }}" data-data-studio="{{ url_for('app.studio_data', wid=ws.id) }}"
      data-run-now="{{ url_for('app.run_now', wid=ws.id, key='__key__') }}" data-all-runs="{{ url_for('app.automations', wid=ws.id) }}">
-  <nav class="wf-rail" aria-label="Workflows"></nav>
+  <nav class="wf-rail" aria-label="Processes"></nav>
   <section class="wf-main" aria-live="polite"></section>
   <aside class="studio-panel"></aside>
   <div class="studio-status" role="status" aria-live="polite"></div>

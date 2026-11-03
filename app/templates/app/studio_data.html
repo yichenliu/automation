@@ -5,7 +5,7 @@
   <p class="sub">Every list in your app, what each one keeps, and how they link to each other.
     {% if can_edit %}Drag a list to move it, click one to change it, or drag its {{ icon('plus') }} onto another list to link the two.{% else %}Click a list to see what it keeps.{% endif %}</p></div>
   <div class="actions">{% if can_edit %}<button class="btn primary" type="button" data-studio-new-table>{{ icon('plus') }}New list</button>{% endif %}
-    <a class="btn" href="{{ url_for('app.studio_workflows', wid=ws.id) }}">{{ icon('workflow') }}Workflows</a></div></div>
+    <a class="btn" href="{{ url_for('app.studio_workflows', wid=ws.id) }}">{{ icon('workflow') }}Processes</a></div></div>
 {% if can_edit %}{% include "app/_studio_ask.html" %}{% endif %}
 <div class="studio" data-studio="data" data-can-edit="{{ 'yes' if can_edit else '' }}"
      data-json="{{ url_for('app.studio_data_json', wid=ws.id) }}" data-change="{{ url_for('app.studio_data_change', wid=ws.id) }}"

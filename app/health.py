@@ -28,7 +28,7 @@ def finished(response):
     return response
 
 
-WORDS = {"t": "a list", "app": "", "studio": "", "data": "Data model", "workflows": "Workflows", "design": "Versions", "approvals": "To do",
+WORDS = {"t": "a list", "app": "", "studio": "", "data": "Data model", "workflows": "Processes", "design": "Versions", "approvals": "To do",
          "automations": "Rules", "ai": "AI helpers", "knowledge": "What the AI knows", "settings": "Settings", "new": "a new one", "edit": "changing one",
          "search": "Search", "jump": "Jump to", "login": "Signing in", "logout": "Signing out", "flows": "Step by step", "p": "a page", "build": "Change my app", "api": "API"}
 

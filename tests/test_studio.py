@@ -185,7 +185,7 @@ def test_a_rule_is_built_step_by_step_in_the_diagram(app, client, owner):
     assert ws.blueprint["automations"][-1]["enabled"] is False
     assert not schema.check(ws.blueprint)
     page = client.get(f"/w/{ws.id}/app/studio/workflows?open={rule}").get_data(as_text=True)
-    assert "Workflows" in page and "Big orders" in page
+    assert "Processes" in page and "Big orders" in page
     assert _wf(client, ws, rule, {"do": "remove_rule"}).get_json()["id"] == ""
     assert not any(a["key"] == "big_orders" for a in ws.blueprint["automations"])
 

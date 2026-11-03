@@ -1201,7 +1201,7 @@
       const s = item;
       panel.innerHTML = "";
       const box = html(`<div class="stack"><h2 class="panel-title">${icon("arrow-right")}${esc(s.label)}</h2>
-        <a class="btn sm ghost" href="${esc(root.dataset.dataStudio)}?open=${encodeURIComponent(s.table)}">${icon("network")}Its fields, in the Data model</a>
+        <a class="btn sm ghost" href="${esc(root.dataset.dataStudio)}?open=${encodeURIComponent(s.table)}">${icon("network")}What it keeps, in the Data model</a>
         <div><div class="label">Stages${canEdit ? ` <span class="faint tiny">· drag to put them in order</span>` : ""}</div>
           <ul class="studio-fields" data-stages>${s.stages.map((st) => `<li ${canEdit ? 'draggable="true"' : ""} data-key="${esc(st.name)}">${canEdit ? icon("grip-vertical", "grip") : ""}
             <button type="button" data-stage="${esc(st.name)}"><span class="grow"><b>${esc(st.name)}</b>${st.start ? ' <span class="tag">start</span>' : ""}<div class="faint tiny">${plural(st.count, s.singular.toLowerCase(), s.plural.toLowerCase())}${st.rules.length ? ` · ${plural(st.rules.length, "rule", "rules")}` : ""}</div></span>${icon("chevron-right")}</button></li>`).join("")}</ul></div>

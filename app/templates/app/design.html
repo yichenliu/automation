@@ -6,7 +6,7 @@
     <form method="post" action="{{ url_for('app.add_parts', wid=ws.id) }}" class="card card-body stack add-parts-box"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       {% for key, p in parts.items() %}<label class="part"><input type="checkbox" name="parts" value="{{ key }}"><span>{{ icon(p.icon) }}<b>{{ p.label }}</b><small>{{ p.about }}</small></span></label>{% endfor %}
       <button class="btn primary">Add them</button></form></details>{% endif %}<form method="post" action="{{ url_for('app.test_copy_make', wid=ws.id) }}" data-confirm-text="Make a test copy of this app, with its records, to try changes on? {{ 'It replaces the test copy you have.' if (ws.settings or {}).get('test_copy') else '' }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn" title="Try changes on a copy, then publish them here">{{ icon('flask-conical') }}Try changes in a test copy</button></form></div>{% endif %}
-  <a class="btn" href="{{ url_for('app.studio_data', wid=ws.id) }}">{{ icon('network') }}Data model</a><a class="btn" href="{{ url_for('app.studio_workflows', wid=ws.id) }}">{{ icon('workflow') }}Workflows</a>
+  <a class="btn" href="{{ url_for('app.studio_data', wid=ws.id) }}">{{ icon('network') }}Data model</a><a class="btn" href="{{ url_for('app.studio_workflows', wid=ws.id) }}">{{ icon('workflow') }}Processes</a>
   {% if member and member.can('admin') %}<a class="btn primary" href="{{ url_for('builder.build', wid=ws.id) }}" target="_top">{{ icon('sparkles') }}Change something</a>{% endif %}</div>
 <div class="record-grid">
   <div class="stack">
@@ -17,7 +17,7 @@
           <div class="chips mt-1">{% for t in lists %}<a class="tagchip" href="{{ url_for('app.studio_data', wid=ws.id, open=t.key) }}" title="{{ t.fields|length }} fields · {{ counts.get(t.key, 0) }} records">{{ t.label }}{% if t.combines %} ⧉{% endif %}</a>{% else %}<span class="faint small">Nothing set up yet: describe your business in the builder.</span>{% endfor %}</div></div>
         {% set rules = shown.get('automations') or [] %}{% set flows = shown.get('flows') or [] %}{% set staged = lists|selectattr('workflow')|list %}
         <div class="row"><b class="grow">{{ icon('workflow') }} {{ staged|length }} with stages · {{ rules|length }} rule{{ 's' if rules|length != 1 }} · {{ flows|length }} step-by-step flow{{ 's' if flows|length != 1 }}</b>
-          <a class="btn sm ghost" href="{{ url_for('app.studio_workflows', wid=ws.id) }}">Workflows{{ icon('chevron-right') }}</a></div>
+          <a class="btn sm ghost" href="{{ url_for('app.studio_workflows', wid=ws.id) }}">Processes{{ icon('chevron-right') }}</a></div>
         {% set ai_n = ai_count_for(ws) %}<div class="row"><b class="grow">{{ icon('bot') }} {{ ai_n }} job{{ 's' if ai_n != 1 }} the AI does</b><a class="btn sm ghost" href="{{ url_for('app.ai_page', wid=ws.id) }}">AI helpers{{ icon('chevron-right') }}</a></div>
       </div></div>
   </div>

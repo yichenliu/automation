@@ -8,7 +8,7 @@
 {% block content %}
 {% set admin = member and member.can('admin') %}
 <div class="page-head"><div class="titles"><h1>{{ icon('bot') }}AI helpers</h1>
-  <p class="sub">Your AI helpers. Each does one job in one of your processes, or fills in one field. You decide whether it's on, what it reads, and who checks its work. Switch one off and a person does that job instead. They're in your Workflows too, where you can add or remove them as steps.</p></div>
+  <p class="sub">Your AI helpers. Each does one job in one of your processes, or fills in one field. You decide whether it's on, what it reads, and who checks its work. Switch one off and a person does that job instead. They're in your processes too, where you can add or remove them as steps.</p></div>
   {% if admin %}<div class="row wrap"><a class="btn primary" href="{{ url_for('app.ai_new', wid=ws.id) }}">{{ icon('plus') }}Add an AI helper</a></div>{% endif %}
 </div>
 {% if count %}
@@ -21,7 +21,7 @@
 {% for process in processes %}
 <section class="ai-process">
   <div class="ai-process-head"><h2>{{ process.a.name }}</h2><span class="small muted">{{ process.when }}</span>
-    <a class="small" href="{{ url_for('app.studio_workflows', wid=ws.id, open='rule:' ~ process.a.key) }}">{{ icon('workflow') }}See the whole process, in Workflows</a></div>
+    <a class="small" href="{{ url_for('app.studio_workflows', wid=ws.id, open='rule:' ~ process.a.key) }}">{{ icon('workflow') }}See the whole process</a></div>
   {% for x in process['items'] %}{% set s = x.step %}{% set r = x.record %}{% set off = s.manual %}{% set mode = s.review or 'never' %}
   <article class="card ai-card {{ 'is-off' if off }}" id="ai-{{ x.a.key }}-{{ x.at }}">
     <div class="ai-card-head">
@@ -84,7 +84,7 @@
 </section>
 {% endfor %}
 {% if ai_fields %}<section class="ai-process">
-  <div class="ai-process-head"><h2>Fields the AI fills in</h2><span class="small muted">when a record is added, or what it's made from changes; people can still change what it wrote</span></div>
+  <div class="ai-process-head"><h2>Details the AI fills in</h2><span class="small muted">when a record is added, or what it's made from changes; people can still change what it wrote</span></div>
   {% for t, f in ai_fields %}<article class="card ai-card"><div class="ai-card-head"><span class="ai-kind">{{ icon('sparkles') }}</span>
     <div class="grow"><h3>{{ t.label }} › {{ f.label }}</h3><p class="ai-said">“{{ f.ai.instructions|truncate(220) }}”</p></div>
     {% if admin %}<a class="btn sm" href="{{ url_for('app.studio_data', wid=ws.id, open=t.key) }}">{{ icon('network') }}Change or stop it</a>{% endif %}</div></article>{% endfor %}

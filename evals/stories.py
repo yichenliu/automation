@@ -113,9 +113,11 @@ class Shop:
         way = self.route(t, self.stage(record), target)
         if way is None:
             raise Wrong(f"a {t['singular'].lower()} can't get from {self.stage(record)} to {target}: no buttons lead there")
-        for stage in way:
+        for n, stage in enumerate(way):
+            arrived = False
             for _ in range(4):
                 if self.stage(record) == stage:
+                    arrived = True
                     break
                 waiting = self.waiting(record)
                 if waiting:
@@ -123,8 +125,15 @@ class Shop:
                     continue
                 self.fill_for(record, stage)
                 self.move(record, re.escape(stage.lower()))
-            if self.stage(record) != stage:
+                # moved there: a rule may take it straight on (a signed-off job invoiced at once), and it still got there
+                arrived = True
+                break
+            if not arrived:
                 raise Wrong(f"a {t['singular'].lower()} got stuck at {self.stage(record)} on its way to {target}")
+            if self.stage(record) != stage and n < len(way) - 1:  # moved on by a rule before the rest of the way
+                rest = self.route(t, self.stage(record), target)
+                if rest is None and self.stage(record) not in way[n + 1:]:
+                    return  # past it: the rule carried it beyond, which is where the way led
 
     # doing things
     def person(self, role, name=None, teams=None):

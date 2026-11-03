@@ -1198,7 +1198,7 @@ def jump(wid):
             items.append({"label": f"New {schema.lc(t['singular'])}", "kind": "Action", "url": url_for("app.new", wid=wid, table=t["key"])})
     places = [("To do", "app.approvals"), ("Notifications", "app.notifications")]
     if engine._at_least("editor"):  # the Set up menu's places, for those who have it
-        places += [("Data model", "app.studio_data"), ("Workflows", "app.studio_workflows"), ("Rules: what they did lately", "app.automations"),
+        places += [("Data model", "app.studio_data"), ("Processes", "app.studio_workflows"), ("Rules: what they did lately", "app.automations"),
                    ("Versions", "app.design"), ("AI helpers", "app.ai_page"), ("What the AI knows", "app.knowledge_page"), ("Checks", "app.checks")]
     if engine._at_least("admin"):
         places += [("Suggestions", "app.improvements"), ("Settings", "settings.general")]
