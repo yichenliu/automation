@@ -54,7 +54,8 @@ def take_stock(workspace, job=None):
             continue
         found["spreadsheets"].append({"file_id": stored.id, "name": item["name"], "path": item["path"], "modified": item.get("modified"),
                                       "sheets": [{"name": s.name, "columns": s.headers, "rows": s.row_count,
-                                                  "examples": [[str(v)[:40] if v is not None else "" for v in r] for r in s.rows[:5]]}
+                                                  "examples": [[str(v)[:40] if v is not None else "" for v in r] for r in s.rows[:5]],
+                                                  **({"worked_out_by_formulas": s.formulas} if s.formulas else {})}
                                                  for s in content.sheets[:4]]})
     docs = [f for f in files if f["name"].lower().endswith(DOCUMENTS)]
     found["documents"] = [{"name": d["name"], "path": d["path"]} for d in docs[:60]]
@@ -88,7 +89,8 @@ def take_stock(workspace, job=None):
 DISCOVERY = """The owner connected their Microsoft 365 so you can design their ERP from how the business already works.
 Below is what the platform found in their OneDrive and mailbox. Design the first version of their ERP from it:
 - a table for each thing their spreadsheets track (use the spreadsheets' columns as fields, with proper types,
-  links between tables where one spreadsheet refers to another's items, and statuses as selects);
+  links between tables where one spreadsheet refers to another's items, and statuses as selects); a column the
+  spreadsheet works out ("worked_out_by_formulas") becomes a formula, lookup or rollup doing the same, never a typed number;
 - for each spreadsheet worth bringing in, an import_file op with its file_id, sheet and a mapping of its column
   headings to your field keys, after the create_table that defines that table;
 - automations for mail that clearly keeps coming and creates work (bills or invoices from suppliers → ai_create_record

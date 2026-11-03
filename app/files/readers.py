@@ -72,6 +72,7 @@ class Sheet:
     headers: list[str]          # unique labels; a blank one becomes "Column 3", a repeat "Amount (2)"
     rows: list[list]            # the first data rows: str, int, float, bool, None; dates as "YYYY-MM-DD" strings
     row_count: int              # every data row in the sheet
+    formulas: dict = field(default_factory=dict)  # a column the sheet works out: heading → its formula in headings ("[Qty] * [Price]")
 
 
 @dataclass
@@ -145,13 +146,18 @@ class _Layout:
 
 
 def _read_spreadsheet(path, content, max_rows, **_):
-    hidden = []
+    hidden, layouts = [], []
     with _open_book(path, content.name) as book:
         for sheet_name, is_hidden, rows in book:
             layout = _scan(rows(), max_rows)
+            layouts.append(layout)
             content.sheets.append(Sheet(sheet_name, layout.headers, layout.rows, layout.count))
             if is_hidden:
                 hidden.append(sheet_name)
+    try:
+        _formulas(path, content.sheets, layouts)
+    except Exception:  # noqa: BLE001 - the values are what's read; the formulas only say how some were worked out
+        log.info("Couldn't read the formulas of %s", content.name, exc_info=True)
     content.text = "\n\n".join(_render(s) for s in content.sheets)
     if hidden:
         content.meta["hidden_sheets"] = hidden
@@ -192,6 +198,93 @@ def _open_xlsx(path, name):
                    for ws in sheets]
         finally:
             wb.close()
+
+
+FORMULA_ROWS = 3  # data rows looked at for each column's formula (the first may be a heading's total, or blank)
+_REF = re.compile(r"(?<![\w.$])(?:(?P<sheet>'(?:[^']|'')+'|[A-Za-z_][\w.]*)!)?(?P<c1>\$?[A-Z]{1,3})(?P<r1>\$?\d+)?"
+                  r"(?::(?P<c2>\$?[A-Z]{1,3})(?P<r2>\$?\d+)?)?(?![\w(!])")
+
+
+def _formulas(path, sheets, layouts):
+    """Each column an Excel sheet works out with a formula (a line's total, a price looked up on another sheet, a sum of
+    another sheet's amounts), written with the columns' headings instead of cell addresses: the spreadsheet's own
+    logic, for the app to keep as calculations rather than typed-in numbers."""
+    with open(path, "rb") as f:
+        if f.read(4) != _ZIP:
+            return  # CSV has no formulas; old .xls keeps only their results
+    import openpyxl
+
+    with open(path, "rb") as f:
+        wb = openpyxl.load_workbook(f, read_only=True, data_only=False)
+        try:
+            known = {sheet.name: (sheet, layout) for sheet, layout in zip(sheets, layouts)}
+            for ws in wb.worksheets:
+                sheet, layout = known.get(ws.title, (None, None))
+                if sheet is None or layout.header_at < 0:
+                    continue
+                ws.reset_dimensions()
+                looked = 0
+                for i, raw in enumerate(ws.iter_rows(values_only=True)):
+                    if i <= layout.header_at or not any(v is not None for v in raw):
+                        continue
+                    for at, heading in zip(layout.columns, sheet.headers):
+                        value = getattr(raw[at], "text", raw[at]) if at < len(raw) else None  # an array formula's text
+                        if isinstance(value, str) and value.startswith("=") and heading not in sheet.formulas:
+                            sheet.formulas[heading] = _in_headings(wb, value[1:], ws.title, i + 1, known)
+                    looked += 1
+                    if looked >= FORMULA_ROWS:
+                        break
+        finally:
+            wb.close()
+
+
+def _in_headings(wb, formula, here, row, known):
+    """=C2*D2 as [Quantity] * [Unit price]; Products!C:C as “Products” [Price]; $F$1 as GST rate (0.1, cell F1)."""
+    from openpyxl.utils import column_index_from_string
+
+    def heading(sheet_name, col):
+        sheet, layout = known.get(sheet_name, (None, None))
+        at = column_index_from_string(col.strip("$")) - 1
+        return sheet.headers[layout.columns.index(at)] if sheet is not None and at in layout.columns else None
+
+    def ref(m):
+        if not m.group("r1") and not m.group("c2"):
+            return m.group(0)  # a name, not a cell
+        name = m.group("sheet").strip("'").replace("''", "'") if m.group("sheet") else here
+        where = "" if name == here else f"“{name}” "
+        first = heading(name, m.group("c1"))
+        if m.group("c2"):  # a range: a whole column of another sheet (what a VLOOKUP or SUMIF looks in)
+            last = heading(name, m.group("c2"))
+            if first and m.group("c1").strip("$") == m.group("c2").strip("$"):
+                return f"{where}[{first}]" if where else f"all of [{first}]"
+            return f"{where}[{first or m.group('c1')}]…[{last or m.group('c2')}]"
+        number = int(m.group("r1").strip("$"))
+        if first and number == row and name == here:
+            return f"[{first}]"
+        if first and name != here and number == row:
+            return f"{where}[{first}]"
+        return _fixed_cell(wb, name, m.group("c1").strip("$"), number) + (f" on “{name}”" if where else "")
+
+    parts = re.split(r'("(?:[^"]|"")*")', formula)  # leave text in quotes as it is
+    out = "".join(part if part.startswith('"') else _REF.sub(ref, part) for part in parts)
+    out = re.sub(r"\s*([*/+-])\s*", r" \1 ", out).replace("( ", "(")
+    return re.sub(r",(?=\S)", ", ", out).strip()[:300]
+
+
+def _fixed_cell(wb, sheet_name, col, number):
+    """A cell the formula always uses (a tax rate at the top of the sheet): its label beside it, its value, its address."""
+    from openpyxl.utils import column_index_from_string
+
+    at = column_index_from_string(col)
+    try:
+        ws = wb[sheet_name]
+        cells = next(ws.iter_rows(min_row=number, max_row=number, min_col=max(1, at - 1), max_col=at, values_only=True), ())
+    except (KeyError, StopIteration, ValueError):
+        cells = ()
+    label = cells[0] if len(cells) == 2 and isinstance(cells[0], str) and not cells[0].startswith("=") else None
+    value = cells[-1] if cells else None
+    shown = "" if value is None or (isinstance(value, str) and value.startswith("=")) else f"{value}, "
+    return f"{label.strip()} ({shown}cell {col}{number})" if label else f"cell {col}{number}" + (f" ({value})" if shown else "")
 
 
 def _xlsx_rows(ws):
@@ -412,6 +505,8 @@ def _render(sheet):
         lines += [_markdown_row(sheet.headers)] + [_markdown_row(row) for row in shown]
         if sheet.row_count > len(shown):
             lines.append(f"… {_count(sheet.row_count - len(shown), 'more row')}")
+    if sheet.formulas:
+        lines.append("Worked out by formulas: " + "; ".join(f"{k} = {v}" for k, v in sheet.formulas.items()))
     return "\n".join(lines)
 
 

@@ -340,3 +340,33 @@ def test_unknown_missing_and_empty_files(tmp_path):
 def test_kind_of():
     assert [kind_of(n) for n in ("A.XLSX", "b.csv", "c.pdf", "d.jpeg", "e.docx", "f.md", "g.eml", "h", "i.zip")] == [
         "spreadsheet", "spreadsheet", "pdf", "image", "document", "text", "email", "unknown", "unknown"]
+
+
+def test_a_spreadsheets_formulas_are_read_in_its_own_headings(tmp_path):
+    """The sheet's logic comes across, not just its numbers: a line's total, a price looked up on another sheet, a fixed
+    rate cell, a sum of another sheet's amounts."""
+    import openpyxl
+
+    wb = openpyxl.Workbook()
+    orders = wb.active
+    orders.title = "Orders"
+    orders.append(["GST rate", 0.1])
+    orders.append([])
+    orders.append(["Customer", "Product", "Qty", "Unit price", "Line total", "GST"])
+    orders.append(["Cafe Uno", "Flour", 2, "=VLOOKUP(B4,Products!A:C,3,FALSE)", "=C4*D4", "=E4*$B$1"])
+    products = wb.create_sheet("Products")
+    products.append(["Code", "Name", "Price"])
+    products.append(["Flour", "Flour 25kg", 30])
+    customers = wb.create_sheet("Customer totals")
+    customers.append(["Name", "Total ordered", "Note"])
+    customers.append(["Cafe Uno", "=SUMIF(Orders!A:A,A2,Orders!E:E)", '="Total for "&A2'])
+    path = tmp_path / "book.xlsx"
+    wb.save(path)
+    content = readers.read(path)
+    sheets = {s.name: s for s in content.sheets}
+    assert sheets["Orders"].formulas == {"Unit price": "VLOOKUP([Product], “Products” [Code]…[Price], 3, FALSE)",
+                                         "Line total": "[Qty] * [Unit price]", "GST": "[Line total] * GST rate (0.1, cell B1)"}
+    assert sheets["Customer totals"].formulas["Total ordered"] == "SUMIF(“Orders” [Customer], [Name], “Orders” [Line total])"
+    assert sheets["Customer totals"].formulas["Note"] == '"Total for "&[Name]'  # text in quotes is left as it is
+    assert sheets["Products"].formulas == {}
+    assert "Worked out by formulas: Unit price = VLOOKUP" in content.text

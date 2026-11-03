@@ -533,7 +533,10 @@ def describe_files(file_ids, workspace_id):
         elif content.sheets:
             for sheet in content.sheets[:5]:
                 rows = "\n".join(" | ".join("" if v is None else str(v) for v in row) for row in sheet.rows[:15])
-                parts.append(f"{head}, sheet “{sheet.name}” ({sheet.row_count} rows). Columns: {' | '.join(sheet.headers)}\n{rows}")
+                worked = "".join(f"\n  {k} = {v}" for k, v in sheet.formulas.items())
+                parts.append(f"{head}, sheet “{sheet.name}” ({sheet.row_count} rows). Columns: {' | '.join(sheet.headers)}\n{rows}"
+                             + (f"\nWorked out by the sheet's own formulas (calculated in the app, never imported or typed):{worked}"
+                                if worked else ""))
         else:
             parts.append(f"{head} ({content.kind}):\n{content.text[:6000]}")
     return "\n\n".join(parts)
