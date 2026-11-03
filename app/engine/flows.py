@@ -4,7 +4,7 @@ the record gets what was filled in and decided, scanned items become its lines, 
 signatures are kept with it, and the flow's "then" steps run as a rule (with {{flow.<step>.<…>}}), so waits, approvals
 and the run's history work as they do for any rule.
 """
-from ..blueprint import schema
+from ..blueprint import expr, schema
 from ..extensions import db
 from ..models import Approval, File, FlowRun, utcnow
 from . import automations
@@ -222,6 +222,11 @@ def finish(engine, run, by):
                 if step["kind"] == "scan":
                     into = step["into"]
                     for item in got.get("scanned") or []:
+                        already = next((r for r in engine.children(into["table"], into["via"], record.id)
+                                        if str((r.data or {}).get(into["item"])) == str(item["id"])), None) if into.get("quantity") else None
+                        if already is not None:  # on it already (a PO's line, a sale's): the count adds to that line
+                            engine.update(already, {into["quantity"]: (expr.to_number((already.data or {}).get(into["quantity"])) or 0) + item["qty"]})
+                            continue
                         line = {into["via"]: record.id, into["item"]: item["id"]}
                         if into.get("quantity"):
                             line[into["quantity"]] = item["qty"]

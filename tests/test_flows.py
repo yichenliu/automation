@@ -168,3 +168,22 @@ def test_the_try_out_does_every_flow_once(app, owner):
     _built(ws, [{"op": "add_field", "table": "stock_counts", "field": {"key": "approved_by", "type": "text", "required": True}}])
     walked, _ = trial.try_out(ws, [], screens=False)  # the count can't be saved without a field no step asks for
     assert any("“Stock count” can't be finished" in i["plain"] for i in walked["issues"]), walked["issues"]
+
+
+def test_scanning_what_a_record_already_has_a_line_for_adds_to_that_line(app, owner):
+    """A delivery scanned in against its purchase order counts into the order's own line for that product; a product the
+    order hasn't got gets a line of its own."""
+    user, ws = owner
+    _built(ws, WAREHOUSE + [{"op": "add_flow", "flow": {"label": "Scan in", "table": "purchase_orders", "steps": [
+        {"kind": "scan", "label": "Scan the delivery", "into": {"table": "po_lines", "via": "order", "item": "product", "quantity": "received"}}]}}])
+    e = Engine(ws)
+    flour, sugar = e.create("products", {"name": "Flour 25kg", "sku": "FL25"}), e.create("products", {"name": "Sugar 10kg", "sku": "SU10"})
+    po = e.create("purchase_orders", {"supplier": "Mill Co"})
+    line = e.create("po_lines", {"order": po.id, "product": flour.id, "quantity": 3, "received": 1})
+    flow = next(f for f in schema.flows(ws.blueprint) if f["label"] == "Scan in")
+    run = flows.begin(e, flow, user.id, po)
+    assert not flows.answer(e, run, flow["steps"][0], {"scanned": [{"id": flour.id, "qty": 2}, {"id": sugar.id, "qty": 1}]}, [])
+    flows.finish(e, run, "Sam")
+    e.reset()
+    lines = sorted(((r.data["product"], r.data.get("quantity"), r.data["received"]) for r in e.children("po_lines", "order", po.id)))
+    assert lines == sorted([(flour.id, 3, 3), (sugar.id, None, 1)]) and e.get(line.id).data["received"] == 3
