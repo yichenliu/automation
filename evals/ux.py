@@ -63,9 +63,21 @@ def _staff(trial, engine):
     return out
 
 
+class _Failed:
+    """A screen that raised instead of answering: to the person, the same as a 500 ("Something went wrong")."""
+    status_code = 500
+
+
+def _get(client, path, **kw):
+    try:
+        return client.get(path, **kw)
+    except Exception:  # noqa: BLE001 - a fault of the app's, found and reported, and the rest still looked at
+        return _Failed()
+
+
 def _screens(trial, engine, who, user_id, made, theirs):
     client, wid, out = trial.client(user_id), trial.ws_id, []
-    home = client.get(f"/w/{wid}/app/", follow_redirects=True)
+    home = _get(client, f"/w/{wid}/app/", follow_redirects=True)
     if home.status_code >= 400:
         return [_finding("blocker", "can't get in", who, "home", f"the app doesn't open for {who} ({home.status_code})")]
     page = home.get_data(as_text=True)
@@ -75,7 +87,7 @@ def _screens(trial, engine, who, user_id, made, theirs):
         out.append(_finding("idea", "long menu", who, "menu", f"the menu has {len(links)} things in it: a lot to take in"))
     visits = {f"/w/{wid}/app/": page}
     for link in list(links)[:40]:
-        response = client.get(htmllib.unescape(link), follow_redirects=True)
+        response = _get(client, htmllib.unescape(link), follow_redirects=True)
         name = _link_name(menu.group(1), link) if menu else link
         if response.status_code >= 400:
             out.append(_finding("blocker", "menu link doesn't open", who, name,
@@ -90,7 +102,7 @@ def _screens(trial, engine, who, user_id, made, theirs):
         if listed is None and who != "the owner":
             continue
         for path in [base + "/new"] + ([f"{base}/{made[t['key']]}", f"{base}/{made[t['key']]}/edit"] if made.get(t["key"]) else []):
-            response = client.get(path)
+            response = _get(client, path)
             if response.status_code < 400:
                 visits[path] = response.get_data(as_text=True)
             elif response.status_code >= 500:

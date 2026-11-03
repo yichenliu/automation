@@ -403,3 +403,23 @@ def test_the_builder_is_told_todays_weekday_week_and_month():
     from app.blueprint.schema import today_words
     assert today_words(date(2026, 11, 3)) == ("Tuesday 3 November 2026 (2026-11-03). This week: Monday 2 November to Sunday "
                                               "8 November. This month: November 2026")
+
+
+def test_a_teams_own_page_opens_for_the_team_and_the_try_out_opens_it_as_them(app, client, owner):
+    from .test_wave2 import _person as person
+    user, ws = owner
+    _built(ws, [
+        {"op": "set_team", "team": {"key": "finance", "name": "Finance"}},
+        {"op": "create_table", "table": "invoices", "label": "Invoices", "fields": [{"key": "number", "type": "text", "required": True}]},
+        {"op": "add_page", "page": {"key": "money", "label": "Money", "access": "finance", "widgets": [{"type": "text", "text": "Hello"}]}}])
+    person(ws, "fay@example.com", "Fay", "editor", teams=["finance"])
+    person(ws, "sam@example.com", "Sam", "editor")
+    for email, status in (("fay@example.com", 200), ("sam@example.com", 404)):  # was a crash for Fay: a team taken for a role
+        client.post("/login", data={"email": email, "password": "password1234"})
+        assert client.get(f"/w/{ws.id}/app/p/money").status_code == status
+        client.post("/logout")
+    with trial.copy_of(ws) as copy:
+        engine = copy.engine()
+        assert trial._screens(copy, engine, {}) == []
+        from app.models import User
+        assert User.query.filter_by(email="in.finance@example.com").one().name == "Someone in Finance"  # opened them too

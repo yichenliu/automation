@@ -415,7 +415,7 @@ def _insight(engine, p):
 
 def _page(engine, key):
     p = next((p for p in engine.bp.get("pages", []) if p["key"] == key), None)
-    if p is None or (p.get("access") and not engine._at_least(p["access"])):
+    if p is None or (p.get("access") and not engine._allowed_to(p["access"])):  # a role, or a team (Finance's own page)
         abort(404)
     return p
 

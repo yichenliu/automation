@@ -498,7 +498,9 @@ def failed_runs(engine, since_id=0):
 
 
 def _screens(trial, engine, made):
-    client, wid, out = trial.client(), trial.ws_id, []
+    """Every screen opened by the owner, and again by someone in each team: a team's own page or list is checked the
+    way the team gets it, not only the way the owner does."""
+    wid, out = trial.ws_id, []
     paths = [f"/w/{wid}/app/"] + [f"/w/{wid}/app/p/{p['key']}" for p in engine.bp.get("pages", [])]
     for t in engine.tables.values():
         if t.get("embedded"):
@@ -507,14 +509,29 @@ def _screens(trial, engine, made):
         paths.append(f"/w/{wid}/app/t/{t['key']}/new")
         if made.get(t["key"]):
             paths += [f"/w/{wid}/app/t/{t['key']}/{made[t['key']]}", f"/w/{wid}/app/t/{t['key']}/{made[t['key']]}/edit"]
-    for path in paths:
-        try:
-            status = client.get(path).status_code
-        except Exception as exc:  # noqa: BLE001
-            status = f"{type(exc).__name__}: {exc}"
-        if not isinstance(status, int) or status >= 500:
-            out.append(f"GET {path}: {status}")
+    people = [(None, None)] + [(tm["key"], _in_team(engine, tm)) for tm in schema.teams(engine.bp)]
+    for team, user_id in people:
+        client = trial.client(user_id)
+        for path in paths:
+            try:
+                status = client.get(path).status_code
+            except Exception as exc:  # noqa: BLE001
+                status = f"{type(exc).__name__}: {exc}"
+            if not isinstance(status, int) or status >= 500:
+                out.append(f"GET {path}{f' (as someone in {team})' if team else ''}: {status}")
     return out
+
+
+def _in_team(engine, team):
+    """A stand-in staff member in a team, for opening screens as that team does."""
+    user = User(email=f"in.{re.sub(r'[^a-z0-9]+', '.', team['key'].lower())}@example.com", name=f"Someone in {team.get('name') or team['key']}")
+    user.password_hash = "!"  # nobody signs in as them
+    db.session.add(user)
+    db.session.flush()
+    db.session.add(Membership(workspace_id=engine.ws.id, user_id=user.id, role="editor", teams=[team["key"]]))
+    db.session.commit()
+    engine._members = None
+    return user.id
 
 
 # --- worked examples --------------------------------------------------------------------------------------------------
