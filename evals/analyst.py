@@ -619,6 +619,7 @@ def main(argv=None):
     parser.add_argument("--fresh", type=int, default=0, help="also build this many businesses never seen before (owners' words written new)")
     parser.add_argument("--seed", type=int, help="with --fresh: which businesses (the same seed picks the same trades)")
     parser.add_argument("--resolve", action="store_true", help="with --regrade: apply today's corrections to the saved designs first")
+    parser.add_argument("--resume", action="store_true", help="skip what --out already has a result for (a run that stopped part way)")
     parser.add_argument("only", nargs="*")
     args = parser.parse_args(argv)
     if args.regrade:
@@ -630,11 +631,15 @@ def main(argv=None):
     out.mkdir(parents=True, exist_ok=True)
     chosen = [s for s in SCENARIOS if not args.only or s["key"] in args.only] if not (args.fresh and not args.only) else []
     chosen += fresh.scenarios(args.fresh, args.seed)
-    results = []
+    results = [json.loads(line) for line in (out / "results.jsonl").open()] if args.resume and (out / "results.jsonl").exists() else []
+    done = {r["key"] for r in results}
     with (out / "results.jsonl").open("a") as log:
         for n in range(1, args.repeat + 1):
             for scenario in chosen:
-                result = run(dict(scenario, key=f"{scenario['key']}-{n}") if args.repeat > 1 else scenario, out)
+                scenario = dict(scenario, key=f"{scenario['key']}-{n}") if args.repeat > 1 else scenario
+                if scenario["key"] in done:
+                    continue
+                result = run(scenario, out)
                 result["at"] = datetime.now().isoformat(timespec="seconds")
                 log.write(json.dumps(result, ensure_ascii=False, default=str) + "\n")
                 log.flush()
