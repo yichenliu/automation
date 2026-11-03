@@ -138,10 +138,12 @@ And for consistency: the same request should come out the same, run after run (`
 outside) and:
 
 - reads the design for mistakes (`app/builder/checks.py`): a choice that isn't one, a stage nothing reaches, a stage a
-  record gets stuck at, conditions that can never hold, an approval only asked when someone says no;
+  record gets stuck at, conditions that can never hold, an approval only asked when someone says no, a rule putting one
+  kind of record where another belongs (a staff member into a payment's customer);
 - adds a record to every list, takes each one along its stages (onward before any stop, filling in what a move asks
   for, and saying where a stage can only be left by cancelling), presses every button, runs every scheduled rule, makes
-  every document and opens every screen, and notes every rule that stops; then does it again with only the required
+  every document and opens every screen (as the owner, and again as someone in each team), and notes every rule that
+  stops; then does it again with only the required
   fields filled in, as people do (a rule copying what's usually left empty into what can't be empty only fails then);
 - checks sums that can't be right for any business (a discount bigger than the subtotal, tax counted twice, a total that
   leaves out the discount);

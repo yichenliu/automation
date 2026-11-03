@@ -49,6 +49,7 @@ def _doing(move):
     return label if DOING.fullmatch(first) else f"press “{label}”"
 
 
+PLACE_WORDS = re.compile(r"-?\d+(?:\.\d+)?|\b(lat(itude)?|lng|lon(gitude)?)\b|[\s,:;°/()]", re.I)  # what's left is a place's name
 RAISED_BY = re.compile(r"\b(raised|created|requested|submitted|entered|logged|recorded|prepared|reported|booked) by\b", re.I)
 NOT_AMOUNT = re.compile(r"paid|receiv|balance|\bdue\b|outstanding|owing|refund|deposit|credit", re.I)  # money that's meant to change later
 SYMBOLS = {"USD": "US$", "AUD": "A$", "NZD": "NZ$", "CAD": "C$", "SGD": "S$", "HKD": "HK$", "EUR": "€", "GBP": "£", "JPY": "¥",
@@ -814,7 +815,9 @@ class Engine:
         if kind == "user" and isinstance(value, list):
             return ", ".join(self.members().get(int(x), "Former member") for x in value if str(x).isdigit()) or "—"
         if kind == "location":
-            return f"{value['lat']:.5f}, {value['lng']:.5f}" if isinstance(value, dict) and "lat" in value else str(value)
+            if isinstance(value, dict) and "lat" in value:
+                return f"{value['lat']:.5f}, {value['lng']:.5f}"
+            return str(value.get("place") or "") if isinstance(value, dict) else str(value)
         if kind == "tags":
             return ", ".join(str(x) for x in value) if isinstance(value, list) else str(value)
         if kind == "json":
@@ -1151,14 +1154,18 @@ class Engine:
             return value
         if kind == "address":
             return "\n".join(line.strip() for line in str(raw).replace("\r", "").split("\n") if line.strip())[:1000]
-        if kind == "location":
+        if kind == "location":  # a position (the device's "Where I am"), or a place in words: “Sydney, NSW” is kept as written
+            if isinstance(raw, dict) and raw.get("place") and raw.get("lat") is None:
+                raw = raw["place"]
             if isinstance(raw, dict):
                 lat, lng = to_number(raw.get("lat", raw.get("latitude"))), to_number(raw.get("lng", raw.get("lon", raw.get("longitude"))))
+            elif PLACE_WORDS.sub("", str(raw)):
+                return {"place": " ".join(str(raw).split())[:300]}  # on a map only once it has a position
             else:
                 numbers = re.findall(r"-?\d+(?:\.\d+)?", str(raw))
                 lat, lng = (to_number(numbers[0]), to_number(numbers[1])) if len(numbers) >= 2 else (None, None)
             if lat is None or lng is None or not -90 <= lat <= 90 or not -180 <= lng <= 180:
-                raise ValueError(f"“{raw}” isn't a location (give latitude, longitude like -31.95, 115.86)")
+                raise ValueError(f"“{raw}” isn't a place on the map (write the address, or press Where I am)")
             return {"lat": round(float(lat), 6), "lng": round(float(lng), 6)}
         if kind == "long_text":
             return str(raw)[:20000]

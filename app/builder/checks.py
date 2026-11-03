@@ -21,7 +21,7 @@ CASES = 400  # combinations of values tried for one stage's moves
 def run(engine):
     return (choices(engine) + impossible(engine) + unreachable(engine) + gaps(engine) + asked_on_no(engine) + left_to_others(engine)
             + out_of_reach(engine) + needs_rates(engine) + left_unfilled(engine) + made_only_sometimes(engine) + ai_doing_sums(engine)
-            + approval_without_stages(engine) + runs_while_true(engine))
+            + approval_without_stages(engine) + runs_while_true(engine) + wrong_kind(engine))
 
 
 STAGE_WORDS = re.compile(r"^(status|stage|state)$", re.I)
@@ -163,6 +163,37 @@ def left_unfilled(engine):
                                                f"Make {whose['key']}.{origin['key']} required, or a move that starts the rule require it",
                                       f"“{a['name']}” stops when {_a(schema.lc(whose['singular']))}'s {schema.lc(origin['label'])} "
                                       f"is left empty", t["key"]))
+    return out
+
+
+def wrong_kind(engine):
+    """A rule that puts one kind of record where another belongs (a pay line's staff member into a payment's customer, a
+    list kept for something else): it never finds one, and stops every time."""
+    out = []
+    for a in engine.bp.get("automations", []):
+        source = engine.tables.get(a["trigger"].get("table"))
+        for act in schema.steps_of(a["actions"]):
+            t = engine.tables.get(act.get("table")) if act.get("type") in ("create_record", "create_for_each") else None
+            item = engine.tables.get((act.get("source") or {}).get("table")) if act.get("type") == "create_for_each" else None
+            for key, said in (act.get("values") or {}).items() if t else ():
+                f = schema.field(t, key)
+                said = next(iter(said.values()), None) if isinstance(said, dict) and len(said) == 1 else said  # {"name": …}
+                ref = re.fullmatch(r"\{\{\s*(record|item)\.(\w+)(?:\.(\w+))?\s*\}\}", str(said or ""))
+                whose = (item if ref.group(1) == "item" else source) if ref and f and f["type"] == "link" else None
+                origin = schema.field(whose, ref.group(2)) if whose else None
+                if origin is not None and origin["type"] == "link" and ref.group(3) and origin.get("table") in engine.tables:
+                    onward = schema.field(engine.tables[origin["table"]], ref.group(3))  # the bid's supplier is a supplier
+                    whose, origin = (engine.tables[origin["table"]], onward) if onward and onward["type"] == "link" else (whose, origin)
+                if origin is None or origin["type"] != "link" or origin.get("table") in (f["table"], None) \
+                        or origin["table"] not in engine.tables or f["table"] not in engine.tables:
+                    continue
+                theirs, wanted = engine.tables[origin["table"]], engine.tables[f["table"]]
+                out.append(_issue("fix", f"Rule {a['key']} puts {whose['key']}.{origin['key']} (a {origin['table']} record) into "
+                                         f"{t['key']}.{key}, which links to {f['table']}: it finds none, and stops every time. "
+                                         f"Link it to the right list ({t['key']} may be the wrong place for these: add a list of "
+                                         f"their own), or fill {key} from a field that links to {f['table']}",
+                                  f"“{a['name']}” puts {_a(schema.lc(theirs['singular']))} where {_a(schema.lc(t['singular']))} "
+                                  f"needs {_a(schema.lc(wanted['singular']))}", t["key"]))
     return out
 
 

@@ -339,7 +339,9 @@ HOW TO WORK
   stage named for what a rule does (Invoiced) is set by that rule once it's done, never by a button of its own.
   What's made when a stage is reached (the invoice when a job is done) is made every time: what's only sometimes there
   (the quote's lines) is added on a branch after the making, never a branch around it. Two kinds of record link one
-  way, the later to the earlier (a job's quote), not both ways.
+  way, the later to the earlier (a job's quote), not both ways. A list holds one kind of thing: a rule never puts a
+  record of one list into a link to another (a staff member into a payment's customer); paying staff, or anything else
+  new, gets a list of its own.
   A credit limit counts what's owed and the orders not yet invoiced (two orders under it can't add up past it), and
   only whoever approves over-limit orders may change the limit (access on the field).
   A stage that says money came in (Deposit received, Paid) is set by the rule on the payment being recorded, and one

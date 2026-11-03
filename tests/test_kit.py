@@ -105,8 +105,12 @@ def test_addresses_locations_barcodes_and_signatures(kit, client):
     engine, acme = kit["engine"], kit["acme"]
     assert acme.data["site"] == {"lat": -31.9523, "lng": 115.8613}
     assert engine.display(engine.field("customers", "address"), acme.data["address"]) == "1 Hay St, Perth WA 6000"
-    with pytest.raises(Exception, match="isn't a location"):
-        engine.create("customers", {"name": "Nowhere", "site": "north-ish"})
+    with pytest.raises(Exception, match="isn't a place on the map"):
+        engine.create("customers", {"name": "Nowhere", "site": "999, 999"})
+    sydney = engine.create("customers", {"name": "Harbour", "site": "Sydney,  NSW"})  # as people write it: kept, not refused
+    assert sydney.data["site"] == {"place": "Sydney, NSW"}
+    assert engine.display(engine.field("customers", "site"), sydney.data["site"]) == "Sydney, NSW"
+    assert engine.create("customers", {"name": "Pin", "site": "lat -33.86, lng 151.21"}).data["site"] == {"lat": -33.86, "lng": 151.21}
     engine.create("jobs", {"title": "A", "asset_tag": "ABC 123"})
     assert next(r for r in engine.rows("jobs")).data["asset_tag"] == "ABC123"
     with pytest.raises(Exception, match="already has this"):
@@ -124,6 +128,8 @@ def test_addresses_locations_barcodes_and_signatures(kit, client):
     assert "signature-img" in page and "linkchip" in page
     customer = client.get(f"/w/{wid}/app/t/customers/{acme.id}").get_data(as_text=True)
     assert "openstreetmap.org" in customer and "tint-dot violet" in customer
+    assert "Sydney, NSW" in client.get(f"/w/{wid}/app/t/customers/{sydney.id}").get_data(as_text=True)
+    assert 'value="Sydney, NSW"' in client.get(f"/w/{wid}/app/t/customers/{sydney.id}/edit").get_data(as_text=True)
 
 
 def test_colour_rules_views_and_the_spreadsheet(kit, client):

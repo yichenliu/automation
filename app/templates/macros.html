@@ -20,7 +20,7 @@
 {%- elif f.type == 'link' and f.multiple -%}{% for i in (v if v is not string else [v]) %}{% set linked = e.get(i, f.table) %}{% if linked %}<a class="linkchip" href="{{ url_for('app.record', wid=e.ws.id, table=f.table, rid=linked.id) }}">{{ e.title(linked) }}</a> {% endif %}{% endfor %}
 {%- elif f.type == 'link' -%}{% set linked = e.get(v, f.table) %}{% if linked %}<a href="{{ url_for('app.record', wid=e.ws.id, table=f.table, rid=linked.id) }}">{{ e.title(linked) }}</a>{% else %}<span class="faint">—</span>{% endif %}
 {%- elif f.type == 'user' and f.multiple -%}{% for uid in (v if v is not string else [v]) %}<span class="person"><span class="avatar sm">{{ e.display(f, [uid])[:1]|upper }}</span>{{ e.display(f, [uid]) }}</span> {% endfor %}
-{%- elif f.type == 'location' -%}{% if v.lat is defined %}<a href="https://www.openstreetmap.org/?mlat={{ v.lat }}&amp;mlon={{ v.lng }}#map=16/{{ v.lat }}/{{ v.lng }}" target="_blank" rel="noopener">{{ e.display(f, v) }}</a>{% endif %}
+{%- elif f.type == 'location' -%}{% if v.lat is defined %}<a href="https://www.openstreetmap.org/?mlat={{ v.lat }}&amp;mlon={{ v.lng }}#map=16/{{ v.lat }}/{{ v.lng }}" target="_blank" rel="noopener">{{ e.display(f, v) }}</a>{% else %}{{ e.display(f, v) }}{% endif %}
 {%- elif f.type == 'address' -%}{{ e.display(f, v) }}
 {%- elif f.type == 'barcode' -%}<code class="barcode">{{ v }}</code>
 {%- elif f.type == 'color' -%}<span class="swatch" style="background: {{ v }}"></span><code class="small">{{ v }}</code>
@@ -69,7 +69,7 @@
   {% elif f.type == 'tags' %}<input type="text" name="{{ n }}" value="{{ (val|join(', ')) if val is not string and val else (val or '') }}" placeholder="{{ f.placeholder or 'Separate tags with commas' }}">
   {% elif f.type == 'json' %}<textarea name="{{ n }}" rows="5" class="mono" placeholder='{"key": "value"}'>{{ (val|tojson(indent=2)) if val is not string and val is not none else (val or '') }}</textarea>
   {% elif f.type == 'address' %}<textarea name="{{ n }}" rows="3" placeholder="{{ f.placeholder or 'Street, suburb, state, postcode (one per line)' }}" autocomplete="street-address">{{ val if val is not none }}</textarea>
-  {% elif f.type == 'location' %}<div class="row"><input type="text" name="{{ n }}" class="grow" value="{{ (val.lat ~ ', ' ~ val.lng) if val is mapping else (val if val is not none else '') }}" placeholder="-31.95, 115.86">
+  {% elif f.type == 'location' %}<div class="row"><input type="text" name="{{ n }}" class="grow" value="{{ e.display(f, val) if val is mapping else (val if val is not none else '') }}" placeholder="{{ f.placeholder or 'The address, or press Where I am' }}">
     <button type="button" class="btn sm" data-locate>{{ icon('map-pin') }}Where I am</button></div>
   {% elif f.type == 'barcode' %}<div class="row"><input type="text" name="{{ n }}" class="grow mono" value="{{ val if val is not none }}" autocomplete="off" placeholder="{{ f.placeholder or 'Scan or type' }}">
     <button type="button" class="btn sm" data-scan>{{ icon('camera') }}Scan</button></div>

@@ -423,3 +423,32 @@ def test_a_teams_own_page_opens_for_the_team_and_the_try_out_opens_it_as_them(ap
         assert trial._screens(copy, engine, {}) == []
         from app.models import User
         assert User.query.filter_by(email="in.finance@example.com").one().name == "Someone in Finance"  # opened them too
+
+
+def test_a_rule_putting_one_kind_of_record_where_another_belongs_is_found(app, owner):
+    _, ws = owner
+    _built(ws, [
+        {"op": "create_table", "table": "customers", "label": "Customers", "fields": [{"key": "name", "type": "text", "required": True}]},
+        {"op": "create_table", "table": "staff", "label": "Staff", "singular": "Staff member",
+         "fields": [{"key": "name", "type": "text", "required": True}]},
+        {"op": "create_table", "table": "payments", "label": "Payments", "fields": [
+            {"key": "customer", "type": "link", "table": "customers"}, {"key": "amount", "type": "money"}]},
+        {"op": "create_table", "table": "pay_periods", "label": "Pay periods", "fields": [
+            {"key": "status", "type": "select", "options": ["Draft", "Paid"], "default": "Draft"}]},
+        {"op": "create_table", "table": "pay_lines", "label": "Pay lines", "fields": [
+            {"key": "period", "type": "link", "table": "pay_periods"}, {"key": "staff", "type": "link", "table": "staff"},
+            {"key": "net", "type": "money"}]},
+        {"op": "add_automation", "automation": {
+            "key": "pay_run", "name": "Pay run", "trigger": {"type": "record_updated", "table": "pay_periods"},
+            "conditions": [{"field": "status", "op": "changed_to", "value": "Paid"}],
+            "actions": [{"type": "create_for_each", "table": "payments", "source": {"table": "pay_lines", "via": "period"},
+                         "values": {"customer": {"name": "{{item.staff.name}}"}, "amount": "{{item.net}}"}}]}},
+        {"op": "create_table", "table": "jobs", "label": "Jobs", "fields": [{"key": "customer", "type": "link", "table": "customers"}]},
+        {"op": "create_table", "table": "visits", "label": "Visits", "fields": [
+            {"key": "job", "type": "link", "table": "jobs"}, {"key": "status", "type": "select", "options": ["Booked", "Paid"]}]},
+        {"op": "add_automation", "automation": {
+            "key": "visit_paid", "name": "Visit paid", "trigger": {"type": "record_updated", "table": "visits"},
+            "conditions": [{"field": "status", "op": "changed_to", "value": "Paid"}],
+            "actions": [{"type": "create_record", "table": "payments", "values": {"customer": "{{record.job.customer}}"}}]}}])
+    assert [i["plain"] for i in checks.wrong_kind(Engine(ws))] == [  # the visit's job's customer is a customer: fine
+        "“Pay run” puts a staff member where a payment needs a customer"]
