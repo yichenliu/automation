@@ -433,8 +433,11 @@ def test_a_change_kept_from_staff_is_tried_on_a_record_they_cant_see_and_a_sum_s
               "expect": [{"record": "i1", "field": "status", "equals": "Sent"}]}
     due = {"title": "Due a month on", "steps": [add, {"do": "wait", "days": 3}],
            "expect": [{"record": "i1", "field": "due_date", "equals": "2026-11-01"}]}
-    _, (refused, allowed, sum_) = trial.try_out(ws, [locked, let_in, due], screens=False)
+    same = {"title": "Changed to what it was", "steps": [add, {"do": "change", "record": "i1", "values": {"total": 100}, "refused": True}],
+            "expect": [{"record": "i1", "field": "total", "equals": 100}]}
+    _, (refused, allowed, sum_, nothing) = trial.try_out(ws, [locked, let_in, due, same], screens=False)
     assert refused["ok"], refused
+    assert nothing["kind"] == "example" and "nothing would change" in nothing["problem"]  # the example's to correct
     assert not allowed["ok"] and "should have been refused" in allowed["problem"]
     assert not sum_["ok"] and "(worked out as `add_days(issue_date, terms)` from issue_date = '2026-10-01', terms = 30)" in sum_["problem"]
 

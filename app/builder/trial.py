@@ -759,6 +759,9 @@ def _act(trial, engine, step, names):
     t = engine.tables[record.table]
     if do == "change":
         values = _values(engine, t, step.get("values"), names)
+        if step.get("refused") and values and all(_unchanged(engine, t, record, k, v) for k, v in values.items()):
+            raise ExampleWrong(f"the change it expects to be refused sets {', '.join(values)} to what {record.table} already has, so "
+                               f"nothing would change: give it a different value")
         if step.get("refused") and engine.locked(record) is None:  # the owner may change what's locked: it's kept from staff
             staff = trial.engine(_person(engine, "Staff member", make=True))
             theirs = staff.get(record.id) or record  # kept from their view (another rep's customer), it's as locked to them
@@ -841,6 +844,15 @@ def _way(t, start, target):
                 seen.add(m["to"].lower())
                 ways.append(way + [m["to"]])
     return None
+
+
+def _unchanged(engine, t, record, key, value):
+    f = schema.field(t, key)
+    try:
+        value = engine.coerce(f, value) if f else value
+    except ValueError:
+        return False
+    return str(value if value is not None else "") == str((record.data or {}).get(key) if (record.data or {}).get(key) is not None else "")
 
 
 def _take_along(engine, record, t, target):
