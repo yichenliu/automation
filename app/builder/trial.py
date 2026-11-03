@@ -1196,12 +1196,15 @@ def _not_by_hand(engine, example):
         counted |= {g["table"] for g in sums if g["type"] == "rollup" and g.get("table")}
     title = set(re.findall(r"[a-z]+", str(example.get("title") or "").lower()))
     said = lambda t: all(any(w.startswith(word[:5]) for w in title) for word in re.findall(r"[a-z]+", t["singular"].lower()))  # noqa: E731
-    out, dropped = steps[:first + 1], []
+    out, dropped, typed = steps[:first + 1], [], set()  # typed: what the example adds itself after it (a quote and its lines)
     for s in steps[first + 1:]:
         t = table(s.get("table")) if isinstance(s, dict) and s.get("do") == "add" else None
-        if t is not None and t["key"] in counted and not said(t):
+        ours = t is not None and any(v in typed for v in (s.get("values") or {}).values() if isinstance(v, str))
+        if t is not None and t["key"] in counted and not said(t) and not ours:
             dropped.append(t["label"])
             continue
+        if t is not None and s.get("as"):
+            typed.add(s["as"])
         out.append(s)
     return out, list(dict.fromkeys(dropped))
 

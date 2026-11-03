@@ -394,9 +394,16 @@ def test_a_check_that_takes_the_stock_out_by_hand_proves_nothing_and_a_payment_s
         {"do": "move", "as": "", "record": "i", "to": "Sent"},
         {"do": "add", "as": "p1", "table": "payments", "values": {"invoice": "i", "amount": 500}}],
         "expect": [{"record": "i", "field": "owing", "equals": 369}]}
-    _, (by_hand, payment) = trial.try_out(ws, [stock, paid], screens=False)
+    later = {"title": "An invoice raised after the first is sent owes what's left", "steps": [  # typed in whole: a quote and its lines
+        {"do": "add", "as": "i", "table": "invoices", "values": {"customer": "Bar Milano", "total": 869}},
+        {"do": "move", "as": "", "record": "i", "to": "Sent"},
+        {"do": "add", "as": "i2", "table": "invoices", "values": {"customer": "Bar Milano", "total": 300}},
+        {"do": "add", "as": "p2", "table": "payments", "values": {"invoice": "i2", "amount": 100}}],
+        "expect": [{"record": "i2", "field": "owing", "equals": 200}]}
+    _, (by_hand, payment, typed) = trial.try_out(ws, [stock, paid, later], screens=False)
     assert not by_hand["ok"] and by_hand["by_hand"] == ["Stock movements"] and "didn't add the stock movements itself" in by_hand["plain"]
     assert payment["ok"] and "by_hand" not in payment
+    assert typed["ok"] and "by_hand" not in typed, typed
 
 
 def test_the_builder_doesnt_add_a_recipes_parts_twice_and_undo_takes_back_what_it_added(app, owner):
