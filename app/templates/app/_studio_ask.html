@@ -1,0 +1,6 @@
+<form class="studio-ask" data-studio-ask data-send="{{ url_for('builder.send', wid=ws.id) }}" data-poll="/w/{{ ws.id }}/chat/" data-page="{{ request.path }}">
+  {{ icon('sparkles') }}<label class="sr-only" for="studio-ask-text">Tell the AI what to change</label>
+  <input type="text" id="studio-ask-text" name="text" autocomplete="off" maxlength="2000" placeholder="{{ ask_hint|default('Or say what to change, in your own words: “add a Suppliers list, linked to Products”') }}">
+  <button class="btn primary sm">Ask the AI</button>
+  <div class="studio-ask-said small" hidden></div>
+</form>

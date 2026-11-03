@@ -578,6 +578,11 @@ def _screens(trial, engine, made):
         paths.append(f"/w/{wid}/app/t/{t['key']}/new")
         if made.get(t["key"]):
             paths += [f"/w/{wid}/app/t/{t['key']}/{made[t['key']]}", f"/w/{wid}/app/t/{t['key']}/{made[t['key']]}/edit"]
+    # the studios draw the whole design: each diagram in them too
+    paths += [f"/w/{wid}/app/studio/data", f"/w/{wid}/app/studio/workflows"]
+    paths += [f"/w/{wid}/app/studio/workflows/item?id=rule:{a['key']}" for a in engine.bp.get("automations", [])]
+    paths += [f"/w/{wid}/app/studio/workflows/item?id=stages:{t['key']}" for t in engine.tables.values() if t.get("workflow")]
+    paths += [f"/w/{wid}/app/studio/workflows/item?id=flow:{f['key']}" for f in engine.bp.get("flows") or []]
     people = [(None, None)] + [(tm["key"], _in_team(engine, tm)) for tm in schema.teams(engine.bp)]
     for team, user_id in people:
         client = trial.client(user_id)

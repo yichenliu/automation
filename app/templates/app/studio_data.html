@@ -1,0 +1,30 @@
+{% extends "app/layout.html" %}
+{% block title %}Data model{% endblock %}
+{% block content %}
+<div class="page-head"><div class="titles"><h1>{{ icon('network') }}Data model</h1>
+  <p class="sub">Every list in your app, what each one keeps, and how they link to each other.
+    {% if can_edit %}Drag a list to move it, click one to change it, or drag its {{ icon('plus') }} onto another list to link the two.{% else %}Click a list to see what it keeps.{% endif %}</p></div>
+  <div class="actions">{% if can_edit %}<button class="btn primary" type="button" data-studio-new-table>{{ icon('plus') }}New list</button>{% endif %}
+    <a class="btn" href="{{ url_for('app.studio_workflows', wid=ws.id) }}">{{ icon('workflow') }}Workflows</a></div></div>
+{% if can_edit %}{% include "app/_studio_ask.html" %}{% endif %}
+<div class="studio" data-studio="data" data-can-edit="{{ 'yes' if can_edit else '' }}"
+     data-json="{{ url_for('app.studio_data_json', wid=ws.id) }}" data-change="{{ url_for('app.studio_data_change', wid=ws.id) }}"
+     data-place="{{ url_for('app.studio_data_place', wid=ws.id) }}" data-undo="{{ url_for('app.studio_undo', wid=ws.id) }}"
+     data-open-table="{{ url_for('app.table', wid=ws.id, table='__table__') }}">
+  <div class="studio-canvas" tabindex="0" role="application" aria-label="Diagram of your lists and how they link. Use the panel beside it to change them.">
+    <svg class="studio-svg" aria-hidden="true"></svg>
+    <div class="studio-tools" role="toolbar" aria-label="Diagram">
+      <button type="button" class="btn sm ghost icon" data-zoom="in" title="Closer" aria-label="Closer">{{ icon('zoom-in') }}</button>
+      <button type="button" class="btn sm ghost icon" data-zoom="out" title="Further away" aria-label="Further away">{{ icon('zoom-out') }}</button>
+      <button type="button" class="btn sm ghost icon" data-zoom="fit" title="Show everything" aria-label="Show everything">{{ icon('maximize') }}</button>
+      {% if can_edit %}<button type="button" class="btn sm ghost icon" data-tidy title="Tidy up: lay the lists out again" aria-label="Tidy up">{{ icon('layout-grid') }}</button>{% endif %}
+      <button type="button" class="btn sm ghost icon" data-download title="Download as a picture" aria-label="Download as a picture">{{ icon('download') }}</button>
+      {% if can_edit %}<button type="button" class="btn sm ghost icon" data-undo-last title="Take back the last change" aria-label="Take back the last change" disabled>{{ icon('undo-2') }}</button>{% endif %}
+    </div>
+    <div class="studio-status" role="status" aria-live="polite"></div>
+  </div>
+  <aside class="studio-panel"></aside>
+</div>
+<script type="application/json" id="studio-model">{{ model|tojson }}</script>
+{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='studio.js') }}"></script>{% endblock %}

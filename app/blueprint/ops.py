@@ -15,7 +15,7 @@ from .schema import SchemaError, _first, _list, slug
 OPS = ["set_portal", "set_team", "create_table", "update_table", "delete_table", "add_field", "update_field", "remove_field", "add_view",
        "update_view", "remove_view", "add_page", "update_page", "remove_page", "add_automation", "update_automation",
        "remove_automation", "set_module", "rename_app", "set_theme", "add_document", "update_document", "remove_document",
-       "set_public_form", "add_records", "import_file", "find", "add_flow", "update_flow", "remove_flow", "set_space", "remove_space", "set_sync", "remove_sync"]
+       "set_public_form", "add_records", "import_file", "find", "add_flow", "update_flow", "remove_flow", "set_space", "remove_space", "set_sync", "remove_sync", "order_fields"]
 OP_ALIASES = {"add_table": "create_table", "new_table": "create_table", "create_tables": "create_table",
               "edit_table": "update_table", "rename_table": "update_table", "drop_table": "delete_table", "remove_table": "delete_table",
               "create_field": "add_field", "new_field": "add_field", "add_column": "add_field", "add_fields": "add_field",
@@ -39,7 +39,8 @@ OP_ALIASES = {"add_table": "create_table", "new_table": "create_table", "create_
               "delete_flow": "remove_flow", "add_workflow_screens": "add_flow", "add_station": "add_flow",
               "add_space": "set_space", "create_space": "set_space", "update_space": "set_space", "team_menu": "set_space",
               "delete_space": "remove_space", "add_sync": "set_sync", "create_sync": "set_sync", "update_sync": "set_sync",
-              "sync": "set_sync", "import_from_app": "set_sync", "delete_sync": "remove_sync"}
+              "sync": "set_sync", "import_from_app": "set_sync", "delete_sync": "remove_sync",
+              "reorder_fields": "order_fields", "move_fields": "order_fields", "arrange_fields": "order_fields"}
 
 
 @dataclass
@@ -96,7 +97,9 @@ def _merge_field(old, changes):
     return schema.normalize_field(merged)
 
 
-def apply(blueprint, ops, always_check=False):
+def apply(blueprint, ops, always_check=False, already=()):
+    """`already`: problems the design had before these changes (an old app checked by newer rules). They don't stop a
+    change that leaves them as they were; only a problem the changes bring does."""
     bp = copy.deepcopy(blueprint) if blueprint else schema.empty()
     for k in ("modules", "tables", "pages", "automations"):
         bp.setdefault(k, [])
@@ -130,6 +133,8 @@ def apply(blueprint, ops, always_check=False):
         _ensure_module(bp, p.get("module"), changes)
     if not problems or always_check:
         problems.extend(schema.check(bp))
+    if already:
+        problems[:] = [p for p in problems if p not in set(already)]
     if problems:
         result.blueprint = blueprint
     return result
@@ -1599,6 +1604,17 @@ def _apply_one(bp, op, raw, result, where):
         t["views"] = [v for v in t["views"] if v.get("group_by") != key]
         changes.append(f"Removed {f['label']} from {t['label']} (the values are kept and come back if you undo)")
         result.navigate = result.navigate or f"table:{t['key']}"
+    elif op == "order_fields":  # the order a record's fields are shown and filled in
+        t = _table(bp, _first(raw, "table", "table_key"), problems, where)
+        if not t:
+            return
+        keys = [slug(k) for k in _list(_first(raw, "keys", "fields", "order", default=[]))]
+        by_key = {f["key"]: f for f in t["fields"]}
+        ordered = [by_key[k] for k in dict.fromkeys(keys) if k in by_key]
+        ordered += [f for f in t["fields"] if f not in ordered]  # any not named keep their place at the end
+        if ordered != t["fields"]:
+            t["fields"] = ordered
+            changes.append(f"Put the fields of {t['label']} in a new order")
     elif op in ("add_view", "update_view"):
         t = _table(bp, _first(raw, "table"), problems, where)
         if not t:

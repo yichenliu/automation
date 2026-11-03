@@ -1,0 +1,23 @@
+{% extends "app/layout.html" %}
+{% block title %}Workflows{% endblock %}
+{% block content %}
+<div class="page-head"><div class="titles"><h1>{{ icon('workflow') }}Workflows</h1>
+  <p class="sub">How work moves through your app: the stages each list goes through, the rules that act by themselves, and the step-by-step screens people follow.
+    {% if can_edit %}Click any part to change it, or try a rule on a real record to see what it would do.{% else %}Click any part to see it in full.{% endif %}</p></div>
+  <div class="actions">{% if can_edit %}<button class="btn primary" type="button" data-wf-new-rule>{{ icon('plus') }}New rule</button>
+    <button class="btn" type="button" data-wf-new-stages>{{ icon('arrow-right') }}Add stages to a list</button>{% endif %}
+    <a class="btn" href="{{ url_for('app.studio_data', wid=ws.id) }}">{{ icon('network') }}Data model</a></div></div>
+{% if can_edit %}{% set ask_hint = 'Or say what should happen: “when an order is shipped, email the customer the tracking link”' %}{% include "app/_studio_ask.html" %}{% endif %}
+<div class="studio wf-studio" data-studio="workflows" data-can-edit="{{ 'yes' if can_edit else '' }}"
+     data-item="{{ url_for('app.studio_workflow_item', wid=ws.id) }}" data-change="{{ url_for('app.studio_workflow_change', wid=ws.id) }}"
+     data-try="{{ url_for('app.studio_workflow_try', wid=ws.id) }}" data-records="{{ url_for('app.studio_workflow_records', wid=ws.id) }}"
+     data-undo="{{ url_for('app.studio_undo', wid=ws.id) }}" data-here="{{ url_for('app.studio_workflows', wid=ws.id) }}">
+  <nav class="wf-rail" aria-label="Workflows"></nav>
+  <section class="wf-main" aria-live="polite"></section>
+  <aside class="studio-panel"></aside>
+  <div class="studio-status" role="status" aria-live="polite"></div>
+</div>
+<script type="application/json" id="studio-model">{{ data|tojson }}</script>
+<script type="application/json" id="studio-opened">{{ opened|tojson }}</script>
+{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='studio.js') }}"></script>{% endblock %}

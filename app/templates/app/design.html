@@ -6,6 +6,7 @@
     <form method="post" action="{{ url_for('app.add_parts', wid=ws.id) }}" class="card card-body stack add-parts-box"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       {% for key, p in parts.items() %}<label class="part"><input type="checkbox" name="parts" value="{{ key }}"><span>{{ icon(p.icon) }}<b>{{ p.label }}</b><small>{{ p.about }}</small></span></label>{% endfor %}
       <button class="btn primary">Add them</button></form></details>{% endif %}<form method="post" action="{{ url_for('app.test_copy_make', wid=ws.id) }}" data-confirm-text="Make a test copy of this app, with its records, to try changes on? {{ 'It replaces the test copy you have.' if (ws.settings or {}).get('test_copy') else '' }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn" title="Try changes on a copy, then publish them here">{{ icon('flask-conical') }}Try changes in a test copy</button></form></div>{% endif %}
+  <a class="btn" href="{{ url_for('app.studio_data', wid=ws.id) }}">{{ icon('network') }}Data model</a><a class="btn" href="{{ url_for('app.studio_workflows', wid=ws.id) }}">{{ icon('workflow') }}Workflows</a>
   {% if member and member.can('admin') %}<a class="btn primary" href="{{ url_for('builder.build', wid=ws.id) }}" target="_top">{{ icon('sparkles') }}Change something</a>{% endif %}</div>
 <div class="record-grid">
   <div class="stack">
@@ -29,7 +30,7 @@
     {% for v in versions %}
     <div class="version"><span class="n" title="Version {{ v.number }}">v{{ v.number }}</span>
       <div><div class="small">{% for c in v.changes[:6] %}<div>{{ c }}</div>{% endfor %}{% if v.changes|length > 6 %}<div class="faint">and {{ v.changes|length - 6 }} more</div>{% endif %}</div>
-        <div class="faint tiny mt-1">{{ {'chat': 'asked in the builder', 'restore': 'went back', 'start': 'start', 'manual': 'changed by hand', 'discovery': 'from Microsoft 365', 'import': 'from a file'}.get(v.source, v.source) }}{% if v.by %} · {{ v.by }}{% endif %} · {{ v.created_at|ago }}</div></div>
+        <div class="faint tiny mt-1">{{ {'chat': 'asked in the builder', 'restore': 'went back', 'start': 'start', 'manual': 'changed by hand', 'discovery': 'from Microsoft 365', 'import': 'from a file', 'studio': 'changed in a studio'}.get(v.source, v.source) }}{% if v.by %} · {{ v.by }}{% endif %} · {{ v.created_at|ago }}</div></div>
       {% if v.number != ws.version and member and member.can('admin') %}<form method="post" action="{{ url_for('app.restore_version', wid=ws.id, number=v.number) }}" data-confirm-text="Go back to how it worked in version {{ v.number }}? Everything you've entered stays as it is.">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn sm">Go back</button></form>{% elif v.number == ws.version %}<span class="tag">now</span>{% endif %}
     </div>

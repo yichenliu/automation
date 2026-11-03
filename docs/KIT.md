@@ -292,6 +292,39 @@ the builder makes, and fitting together (one list of products for all; what join
 - **Production**: what each product is made of, work orders with their materials on a board, and finishing one puts what
   was made on the stock and takes its materials off.
 
+## The studios: the design drawn, and changed by hand
+
+✅ **Data model** (Set up › Data model): every list drawn as a box with its fields and what each keeps, and a line from
+each link to the list it points at (dashed for several). Drag a list to move it (kept for everyone), pan and zoom, show
+everything, tidy up, download it as a picture. Admins change it there: a new list; rename a list or what one record is
+called, or its menu section; add a field (any kind people fill in, a link to another list, a sum worked out); rename
+one, change its help, whether it must be filled in or be unique, kept private, its decimals, unit, currency or starting
+value; put the fields in order by dragging; add, remove, rename and order a choice's options; link two lists by
+dragging one's **+** onto the other; name records by a field; remove a field or a list.
+
+✅ **Workflows** (Set up › Workflows): everything with a flow to it, grouped by list. **Stages** drawn top to bottom,
+each with how many records are in it and the rules that run when one gets there, with an arrow for each button that
+moves a record on (straight down to the next, round the right to one further on, round the left back, one arrow in for
+a move from many stages); add, rename, order and remove stages, set where new ones start, and add or change a move
+(its button, from where to where, who may press it, what must be filled in first); give a list stages of its own, or
+take them off. **Rules** drawn as a flowchart: when it starts, what it checks, each step, a branch's ways side by side
+(each labelled with when records go that way), an approval's "if they say no", and on each step how often it ran,
+was skipped or stopped in its last runs. Admins change the trigger and conditions, add a step anywhere (a **+** between
+any two), change, move or remove one (telling someone, an email, a task, an approval, changing the record or adding
+another, waiting, giving it to someone, a branch, a document, an AI step, sending to another system), add and change a
+branch's ways, rename, turn on or off, or delete the rule. **Try it on a record** lights up what the rule would do for
+one of the list's records, step by step, without doing any of it (the way a branch would go, a step it would skip and
+why, what waits for an answer). **Step-by-step flows** drawn screen by screen; rename, add (instructions, fields to
+fill in, a photo, a signature), edit, order and remove screens.
+
+✅ In both, a box to ask the AI for anything else in words, and every change: checked like the builder's (an app
+with a problem from before can still be changed, but not made worse), saved as a version, said in plain words with
+**Take it back**. Nothing people entered is thrown away by a click: a field keeps its kind while it has values (text and
+notes, number and money, date and date-and-time can swap), a choice or stage in use can't be removed (rename it instead),
+and renaming a choice or stage renames it on every record and in every rule, condition, move and flow that names it
+(taking it back renames them back). People who aren't admins see the diagrams, of what they may see. Every build's
+try-out opens both studios and each diagram in them.
+
 ## Trying changes safely
 
 ✅ **A test copy**: the app copied with its records (links pointing at the copies), numbering and people (not outside
@@ -325,7 +358,8 @@ These are deliberate gaps, listed so nothing is assumed:
 - **Offline use:** the app installs on a phone but needs a connection.
 - **Smaller pieces:** swimlanes on boards, merging duplicate records, steps that run in
   parallel inside one automation (several approvers at once is built; other parallel work goes in separate automations),
-  a drawn diagram of an automation (it's shown as an indented tree), email verification when outside people sign up by
+  changing in the Workflows studio the steps it has no form for (copying a record, going through each line, reading a
+  file with the AI: asked of the AI in words instead), email verification when outside people sign up by
   themselves (the business verifies them before trading instead).
 - **Procurement connectors:** e-signature (DocuSign), e-invoicing (Peppol), punchout catalogues (cXML, OCI), and ready
   connectors for SAP and Oracle; the API, webhooks and file documents connect to them today.

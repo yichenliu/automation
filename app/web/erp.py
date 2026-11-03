@@ -176,4 +176,4 @@ def source_url(ws, link):
     return target_url(ws, link)
 
 
-from . import erp_ai, erp_flows, erp_learn, erp_pages, erp_records  # noqa: E402,F401 (they add their routes to bp)
+from . import erp_ai, erp_flows, erp_learn, erp_pages, erp_records, erp_studio  # noqa: E402,F401 (they add their routes to bp)
