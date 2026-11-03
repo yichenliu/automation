@@ -38,6 +38,9 @@ def pill(field, value):
     """A select option's badge colour: by meaning when it's a common word, else stable by its position in the list."""
     if value in (None, ""):
         return "slate"
+    chosen = ((field or {}).get("option_colors") or {}).get(str(value))
+    if chosen:
+        return chosen
     special = SPECIAL.get(str(value).strip().lower())
     if special:
         return special
@@ -176,13 +179,22 @@ def _printer_for(ws, role):
     return printing.describe(chosen) if chosen else None
 
 
+def _combined_from(t):
+    """“Stock movements, purchase order lines and sales order lines”: what a combined list is put together from."""
+    from flask import g
+    from ..engine.combined import sources
+    bp = g.engine.bp if g.get("engine") is not None else {}
+    names = [n.lower() for n in sources(bp, t)]
+    return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1] if names else "other lists"
+
+
 def register(app):
     app.jinja_env.tests["blank_in"] = blank_in
     app.jinja_env.filters.update(lc=lc, ago=ago, markdown=render_markdown, size=human_size, when=when, status_words=status_words, rule_words=rule_words,
                                  json=lambda v: escape(json.dumps(v, default=str)))  # for data-* attributes: quotes escaped, decoded by the browser
     from ..documents.labels import SIZES as LABEL_SIZES
     app.jinja_env.globals.update(pill=pill, icon=icon, now=datetime.now, about_field=about_field, ask_facts=ask_facts, MORE_AFTER=MORE_AFTER,
-                                 LABEL_SIZES={k: v[0] for k, v in LABEL_SIZES.items()}, printer_for=_printer_for)
+                                 LABEL_SIZES={k: v[0] for k, v in LABEL_SIZES.items()}, printer_for=_printer_for, combined_from=_combined_from)
 
     @app.context_processor
     def platform():

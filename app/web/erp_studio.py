@@ -15,7 +15,7 @@ from ..builder import chat
 from ..extensions import db
 from ..models import Record, Run
 from .erp import bp, ctx
-from .filters import KIND_WORDS, about_field
+from .filters import KIND_WORDS, about_field, pill
 
 
 class Refused(Exception):
@@ -116,6 +116,19 @@ def _model(ws, engine):
     model = studio.data_model(engine, lambda t, f: about_field(engine, t, f), engine.counts(),
                               ((ws.settings or {}).get("studio") or {}).get("positions"))
     model["types"] = [{"type": t, "label": KIND_WORDS.get(t, t)} for t in studio.NEW_TYPES]
+    model["colours"] = schema.CHOICE_COLOURS
+    filled = {}
+    for table, data in db.session.query(Record.table, Record.data).filter(Record.workspace_id == ws.id, Record.deleted_at.is_(None)):
+        counts = filled.setdefault(table, {})
+        for k, v in (data or {}).items():
+            if v not in (None, "", []):
+                counts[k] = counts.get(k, 0) + 1
+    for t in model["tables"]:
+        for f in t["fields"]:
+            f["filled"] = filled.get(t["key"], {}).get(f["key"], 0)  # what a kind can change to depends on it
+            if f["options"]:  # each choice's colour as the screens show it
+                raw = schema.field(engine.tables[t["key"]], f["key"])
+                f["colours"] = {o: pill(raw, o) for o in f["options"]}
     model["version"] = ws.version
     return model
 

@@ -3,6 +3,7 @@
 {% block content %}
 {% include "app/_views.html" %}
 {% set can_edit = e.can(t, 'edit') %}
+{% if t.combines %}<p class="small muted mb-2">{{ icon('layers') }} Put together from {{ combined_from(t) }}, and kept up to date as they change. To change one, change it there.</p>{% endif %}
 <div class="hint" data-hint="list-{{ ws.id }}-{{ t.key }}" hidden>{{ icon('info') }}<span>This is where your {{ t.label|lc }} are kept.
   {% if can_edit %}Press <b>New {{ t.singular|lc }}</b> to add one. {% endif %}Click any row to open it{% if can_edit %} and see what to do next{% endif %}. Type in the search box to find one.</span>
   <button class="btn sm" type="button" data-hint-close>Got it</button></div>
@@ -41,6 +42,7 @@
     {% if totals %}<tfoot><tr>{% if can_edit %}<td></td>{% endif %}{% for f in columns %}<td class="{{ is_num(e, f) }}">{% if f.key in totals %}{{ e.display(f, totals[f.key]) }}{% elif loop.first %}Total{% endif %}</td>{% endfor %}</tr></tfoot>{% endif %}
   </table>
   {% elif q or quick or view.filters %}{{ empty_state('Nothing matches', 'Try a different search, or clear the filters.', ico='search') }}
+  {% elif t.combines %}{{ empty_state('No ' ~ t.label|lc ~ ' yet', 'They appear here by themselves as ' ~ combined_from(t) ~ ' are added.', none, none, t.icon or 'table') }}
   {% else %}{{ empty_state('No ' ~ t.label|lc ~ ' yet', 'Add the first one, bring them in from a spreadsheet, or let the AI read one from a document.', url_for('app.new', wid=ws.id, table=t.key) if can_edit else none, 'New ' ~ t.singular|lc, t.icon or 'table') }}{% endif %}
 </div>
 </form>

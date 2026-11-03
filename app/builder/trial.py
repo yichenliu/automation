@@ -270,6 +270,8 @@ def walk(trial, screens=True):
     engine = trial.engine()
     issues, crashes, made = list(checks.run(engine)), [], {}
     for n, t in enumerate(in_order(engine), start=1):
+        if t.get("combines"):  # it fills itself from the lists it's put together from
+            continue
         try:
             record, errors = _add(engine, t, sample_values(engine, t, trial.owner_id, made, n))
         except Exception as exc:  # noqa: BLE001 - a fault of ours: noted, and the rest is still tried
@@ -284,6 +286,10 @@ def walk(trial, screens=True):
                                           f"values: {said}", f"A new {schema.lc(t['singular'])} with ordinary details couldn't be saved: "
                                           f"{'; '.join(errors.values())}", t["key"]))
     engine.reset()
+    for t in engine.tables.values():  # what a combined list got from the samples, to open like the rest
+        rows = engine.rows(t["key"]) if t.get("combines") else []
+        if rows:
+            made[t["key"]] = rows[0].id
     for t in engine.tables.values():
         record = engine.get(made[t["key"]]) if made.get(t["key"]) else None
         if record is None:
@@ -375,6 +381,8 @@ def _bare(trial, engine, made, crashes):
     since = db.session.query(db.func.max(Run.id)).filter(Run.workspace_id == engine.ws.id).scalar() or 0
     bare = {}
     for n, t in enumerate(in_order(engine), start=1):
+        if t.get("combines"):
+            continue
         values = {k: v for k, v in sample_values(engine, t, trial.owner_id, {**made, **bare}, 100 + n).items()
                   if (schema.field(t, k) or {}).get("required") or (schema.field(t, k) or {}).get("type") == "link"}
         if len(values) == len(sample_values(engine, t, trial.owner_id, made, 100 + n)):

@@ -1,6 +1,6 @@
 <div class="page-head">
   <div class="titles"><h1>{{ icon(t.icon or 'table') }}{{ t.label }}</h1><p class="sub">{{ total }} {{ t.label|lc if total != 1 else t.singular|lc }}{% if view.filters or quick or q %} shown{% endif %}{% if t.description %} · {{ t.description }}{% endif %}</p></div>
-  {% if member and member.can('editor') %}
+  {% if member and member.can('editor') and e.can(t, 'edit') %}
   <div class="row wrap">
     <div class="menu-wrap"><button class="btn" type="button" data-menu>{{ icon('ellipsis') }}More</button>
       <div class="menu" hidden>

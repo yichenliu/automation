@@ -63,6 +63,15 @@ def save_version(workspace, blueprint, changes, source, message_id=None, by=None
         db.session.rollback()
         workspace.blueprint, workspace.version = blueprint, number
         kept = []
+    from ..engine import combined
+    for t in combined.changed(before, blueprint):  # a combined list new or put together differently: made again
+        try:
+            n = combined.rebuild(Engine(workspace, by="builder"), t)
+            kept.append(f"Put together {t['label']} from {', '.join(combined.sources(blueprint, t))}: {n} record{'s' if n != 1 else ''}")
+        except Exception:  # its records come with the next change to the lists it's made from
+            current_app.logger.exception("Putting together %s in workspace %s failed", t["key"], workspace.id)
+            db.session.rollback()
+            workspace.blueprint, workspace.version = blueprint, number
     if isinstance(changes, list):
         changes.extend(kept)
     db.session.add(Version(workspace_id=workspace.id, number=number, blueprint=blueprint, changes=list(changes or []) + ([] if isinstance(changes, list) else kept),

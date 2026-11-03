@@ -269,3 +269,34 @@ def test_an_app_with_an_old_problem_can_still_be_changed_by_hand_but_not_made_wo
     assert _change(client, ws, {"do": "add_field", "table": "customers", "label": "Phone", "type": "phone"}).get_json()["ok"]
     said = _change(client, ws, {"do": "remove_field", "table": "orders", "key": "number"}).get_json()["error"]
     assert "number" in said.lower()  # the rule's message uses it: that would be a new problem
+
+
+def test_how_a_field_shows_is_set_once_for_every_screen(app, client, owner):
+    from app.web.filters import pill
+    user, ws = owner
+    _built(ws, SHOP + [{"op": "add_field", "table": "orders", "field": {"key": "margin", "type": "number"}},
+                       {"op": "add_field", "table": "orders", "field": {"key": "in_stock", "type": "checkbox"}}])
+    login(client)
+    _change(client, ws, {"do": "update_field", "table": "orders", "key": "status", "option_colors": {"Packed": "violet", "Nope": "red"}})
+    status = schema.field(schema.table(ws.blueprint, "orders"), "status")
+    assert status["option_colors"] == {"Packed": "violet"} and pill(status, "Packed") == "violet"
+    model = client.get(f"/w/{ws.id}/app/studio/data.json").get_json()
+    shown = next(f for f in next(t for t in model["tables"] if t["key"] == "orders")["fields"] if f["key"] == "status")
+    assert shown["colours"]["Packed"] == "violet" and model["colours"][0] == "slate"
+    _change(client, ws, {"do": "rename_option", "table": "orders", "key": "status", "old": "Packed", "new": "Boxed"})
+    assert schema.field(schema.table(ws.blueprint, "orders"), "status")["option_colors"] == {"Boxed": "violet"}
+    _change(client, ws, {"do": "update_field", "table": "orders", "key": "number", "before": "SO-", "after": ""})
+    _change(client, ws, {"do": "update_field", "table": "orders", "key": "in_stock", "yes_label": "In stock", "no_label": "Out of stock"})
+    _change(client, ws, {"do": "update_field", "table": "orders", "key": "margin", "signs": "normal", "after": " pts"})
+    e = Engine(ws)
+    orders = schema.table(ws.blueprint, "orders")
+    order = e.create("orders", {"number": "1001", "margin": -3, "in_stock": False})
+    assert e.display(schema.field(orders, "number"), "1001") == "SO-1001"
+    assert e.display(schema.field(orders, "margin"), -3) == "-3 pts"
+    assert e.display(schema.field(orders, "in_stock"), False) == "Out of stock"
+    assert e.colours(orders, e.get(order.id))["fields"] == {"margin": "red"}
+    page = client.get(f"/w/{ws.id}/app/t/orders/{order.id}").get_data(as_text=True)
+    assert "SO-1001" in page and "Out of stock" in page
+    _change(client, ws, {"do": "update_field", "table": "orders", "key": "margin", "signs": ""})
+    assert not schema.table(ws.blueprint, "orders").get("colors")
+    assert not schema.check(ws.blueprint)

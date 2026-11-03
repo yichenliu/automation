@@ -19,7 +19,9 @@ NEW_TYPES = ["text", "long_text", "number", "money", "percent", "date", "datetim
 # Kinds a field can change between while it has values: they're kept the same way, so nothing is lost or misread.
 SAFE_CHANGES = [{"text", "long_text", "rich_text"}, {"number", "money"}, {"date", "datetime"}]
 FIELD_SETTINGS = ("label", "help", "required", "unique", "default", "placeholder", "options", "multiple", "expression", "format",
-                  "sensitive", "decimals", "unit", "currency", "prefix", "digits", "max", "min", "access", "readonly")
+                  "sensitive", "decimals", "unit", "currency", "prefix", "digits", "max", "min", "access", "readonly", "option_colors",
+                  "before", "after", "yes_label", "no_label")
+SIGNED = {"number", "money", "percent", "formula", "rollup", "duration"}  # what can be coloured by its sign
 STEP_TYPES = ["notify", "send_email", "task", "request_approval", "update_record", "create_record", "wait", "assign", "branch",
               "generate_document", "ai_fill", "ai_check", "webhook"]
 STEP_WORDS = {"notify": "Tell someone", "send_email": "Send an email", "task": "Ask someone to do something",
@@ -84,14 +86,42 @@ def data_model(engine, about, counts, positions):
                            "options": list(f.get("options") or []), "default": f.get("default"), "expression": f.get("expression", ""),
                            "decimals": f.get("decimals"), "unit": f.get("unit", ""), "currency": f.get("currency", ""),
                            "access": f.get("access", ""), "title": f["key"] == t.get("title_field"),
-                           "stage": f["key"] == (t.get("workflow") or {}).get("field")})
+                           "stage": f["key"] == (t.get("workflow") or {}).get("field"), "before": f.get("before", ""),
+                           "after": f.get("after", ""), "yes_label": f.get("yes_label", ""), "no_label": f.get("no_label", ""),
+                           "option_colors": f.get("option_colors") or {},
+                           "signs": signs_of(t, f["key"]) if f["type"] in SIGNED else None})
             if target in keys:
                 links.append({"from": t["key"], "field": f["key"], "to": target, "many": bool(f.get("multiple")), "label": f["label"]})
+        combines = list(dict.fromkeys(a["table"] for a in t.get("combines") or [] if a["table"] in keys))
         out.append({"key": t["key"], "label": t["label"], "singular": t["singular"], "icon": t.get("icon") or "table",
                     "embedded": bool(t.get("embedded")), "module": t.get("module") or "", "count": counts.get(t["key"], 0),
-                    "fields": fields, "title_field": t.get("title_field")})
-    return {"tables": out, "links": links, "positions": {k: v for k, v in (positions or {}).items() if k in keys},
+                    "fields": fields, "title_field": t.get("title_field"), "combines": combines})
+    combined = [{"from": source, "to": t["key"]} for t in out for source in t["combines"]]
+    return {"tables": out, "links": links, "combined": combined, "positions": {k: v for k, v in (positions or {}).items() if k in keys},
             "sections": [{"key": m["key"], "label": m["label"]} for m in shown.get("modules", [])]}
+
+
+def _sign_rule(rule, key):
+    when = rule.get("when") or []
+    return (rule.get("field") == key and len(when) == 1 and when[0].get("field") == key and when[0].get("op") in ("greater_than", "less_than")
+            and str(when[0].get("value")) in ("0", "0.0"))
+
+
+def signs_of(t, key):
+    """How a number is coloured by its sign: "normal" (above nothing green, below red), "inverted", or ""."""
+    rules = [r for r in t.get("colors", []) if _sign_rule(r, key)]
+    up = next((r["color"] for r in rules if r["when"][0]["op"] == "greater_than"), None)
+    return "normal" if up == "green" else "inverted" if up == "red" else ""
+
+
+def _signs(t, key, mode):
+    """The table's colour rules with this field's sign colours set to `mode` ("", "normal" or "inverted")."""
+    rules = [r for r in t.get("colors", []) if not _sign_rule(r, key)]
+    if mode in ("normal", "inverted"):
+        up, down = ("green", "red") if mode == "normal" else ("red", "green")
+        rules += [{"field": key, "when": [{"field": key, "op": "greater_than", "value": 0}], "color": up},
+                  {"field": key, "when": [{"field": key, "op": "less_than", "value": 0}], "color": down}]
+    return rules
 
 
 def data_ops(bp, change, filled):
@@ -190,9 +220,19 @@ def data_ops(bp, change, filled):
         for k in ("default", "unit", "currency", "help", "placeholder", "access", "expression"):
             if k in updates and updates[k] in (None, ""):
                 updates[k] = None
-        if not updates:
+        for k in ("before", "after", "yes_label", "no_label"):
+            if k in updates and not str(updates[k] or "").strip():
+                updates[k] = None
+        if "option_colors" in updates:
+            updates["option_colors"] = {o: c for o, c in (updates["option_colors"] or {}).items() if c in schema.CHOICE_COLOURS} or None
+        out = []
+        if "signs" in change and f["type"] in SIGNED and change["signs"] != signs_of(t, f["key"]):
+            out.append({"op": "update_table", "table": t["key"], "colors": _signs(t, f["key"], change["signs"]) or None})
+        if updates:
+            out.insert(0, {"op": "update_field", "table": t["key"], "key": f["key"], "changes": _without_empty(f, updates)})
+        if not out:
             raise SchemaError("Nothing to change")
-        return [{"op": "update_field", "table": t["key"], "key": f["key"], "changes": _without_empty(f, updates)}], []
+        return out, []
     if do == "rename_option":
         t = _table(bp, change.get("table"))
         f = _field(t, change.get("key"))
@@ -244,6 +284,8 @@ def rename_choice(bp, table, key, old, new):
     f = schema.field(t, key)
     said = 0
     f["options"] = [new if o == old else o for o in f["options"]]
+    if old in (f.get("option_colors") or {}):
+        f["option_colors"][new] = f["option_colors"].pop(old)
     if f.get("default") == old:
         f["default"], said = new, said + 1
     if isinstance(f.get("default"), list):

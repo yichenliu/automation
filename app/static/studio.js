@@ -178,7 +178,7 @@
       const title = node("text", {x: 12, y: 18, "font-size": 13.5, "font-weight": 650, fill: colours.text}, g);
       title.textContent = clip(t.label, 26);
       const sub = node("text", {x: 12, y: 32, "font-size": 11, fill: colours.faint}, g);
-      sub.textContent = (t.embedded ? "Lines inside another list · " : "") + plural(t.count, "record", "records");
+      sub.textContent = (t.combines.length ? `Put together from ${plural(t.combines.length, "list", "lists")} · ` : t.embedded ? "Lines inside another list · " : "") + plural(t.count, "record", "records");
       if (canEdit) {
         const plus = node("g", {class: "link-handle", transform: `translate(${W - 22},${HEAD / 2})`, "data-handle": t.key}, g);
         node("circle", {r: 9, fill: colours.panel, stroke: colours.accent}, plus);
@@ -218,6 +218,17 @@
         node("path", {d, fill: "none", stroke: hot ? colours.accent : colours.line, "stroke-width": hot ? 2 : 1.3, "stroke-dasharray": l.many ? "5 4" : "",
                       "data-from": l.from, "data-to": l.to, class: "link-line"}, linksLayer);
         node("circle", {cx: self ? fx + W : x2, cy: y2, r: 3.6, fill: hot ? colours.accent : colours.line}, linksLayer);
+      });
+      (model.combined || []).forEach((l) => {  // a combined list and each list it's put together from
+        if (!places[l.from] || !places[l.to]) return;
+        const [fx, fy] = places[l.from], [tx, ty] = places[l.to];
+        const right = tx > fx + W / 2;
+        const x1 = right ? fx + W : fx, x2 = right ? tx : tx + W, y1 = fy + HEAD / 2, y2 = ty + HEAD / 2;
+        const bend = Math.max(40, Math.abs(x2 - x1) / 2);
+        const hot = selected && (selected.table === l.from || selected.table === l.to);
+        const p = node("path", {d: `M${x1} ${y1} C${x1 + (right ? bend : -bend)} ${y1} ${x2 + (right ? -bend : bend)} ${y2} ${x2} ${y2}`, fill: "none",
+                                stroke: colours.accent, "stroke-width": hot ? 2.4 : 1.6, "stroke-dasharray": "2 4", "stroke-linecap": "round", opacity: hot ? 1 : 0.7}, linksLayer);
+        node("title", {}, p).textContent = `${(tableOf(l.to) || {}).label} is put together from ${(tableOf(l.from) || {}).label}`;
       });
     }
 
@@ -416,7 +427,8 @@
       const box = html(`<div class="stack">
         <div class="row"><button type="button" class="btn sm ghost" data-back>${icon("chevron-left")}All lists</button>
           ${t.embedded ? "" : `<a class="btn sm ghost" href="${esc(root.dataset.openTable.replace("__table__", t.key))}">Open the list${icon("external-link")}</a>`}</div>
-        <div><h2 class="panel-title">${icon(t.icon)}${esc(t.label)}</h2><p class="small muted">${plural(t.count, "record", "records")}${t.embedded ? " · filled in inside another record" : ""}</p></div>
+        <div><h2 class="panel-title">${icon(t.icon)}${esc(t.label)}</h2><p class="small muted">${plural(t.count, "record", "records")}${t.embedded ? " · filled in inside another record" : ""}</p>
+          ${t.combines.length ? `<p class="small">${icon("layers")} Put together from ${esc(t.combines.map((k) => (tableOf(k) || {label: k}).label).join(", "))}, and kept up to date as they change: nobody adds to it by hand. Ask the AI to change what goes into it.</p>` : ""}</div>
         ${canEdit ? `<form class="stack" data-form="table">
           <label class="field"><span>Name of the list</span><input type="text" name="label" value="${esc(t.label)}" required maxlength="80"></label>
           <label class="field"><span>One of them is called</span><input type="text" name="singular" value="${esc(t.singular)}" maxlength="60"></label>
@@ -474,7 +486,9 @@
 
     function fieldPanel(t, f) {
       const family = [["text", "long_text", "rich_text"], ["number", "money"], ["date", "datetime"]].find((x) => x.includes(f.type));
-      const kinds = f.calculated ? [] : model.types.filter((x) => x.type === f.type || !x.type.match(/formula|autonumber/) && (family ? family.includes(x.type) : true));
+      // what it can change to: any kind while nothing's filled in; once something is, only a kind those values fit
+      const kinds = f.calculated ? [] : model.types.filter((x) => x.type === f.type || !x.type.match(/formula|autonumber/)
+        && (f.filled ? !!family && family.includes(x.type) : true));
       const numeric = ["number", "percent", "formula", "rollup"].includes(f.type);
       const box = html(`<div class="stack">
         <div class="row"><button type="button" class="btn sm ghost" data-back>${icon("chevron-left")}${esc(t.label)}</button></div>
@@ -484,7 +498,8 @@
         <form class="stack" data-form="field">
           <label class="field"><span>Name</span><input type="text" name="label" value="${esc(f.label)}" required maxlength="80"></label>
           ${kinds.length > 1 ? `<label class="field"><span>It keeps</span><select name="type">${kinds.map((x) => `<option value="${x.type}" ${x.type === f.type ? "selected" : ""}>${esc(x.label)}</option>`).join("")}</select>
-            <span class="help">${family ? "It can change to a kind its values already fit." : "Any kind, while nothing is filled in yet."}</span></label>` : ""}
+            <span class="help">${f.filled ? `${plural(f.filled, "record has", "records have")} one, so only a kind they already fit.` : "Any kind, while nothing is filled in yet."}</span></label>`
+            : f.filled && !f.calculated ? `<p class="help">${plural(f.filled, "record has", "records have")} one, so it stays ${esc(f.kind.toLowerCase())}: add a new field for another kind.</p>` : ""}
           ${f.type === "formula" ? `<label class="field"><span>Worked out as</span><input type="text" name="expression" value="${esc(f.expression)}"></label>` : ""}
           <label class="field"><span>Help shown under it</span><input type="text" name="help" value="${esc(f.help)}" maxlength="200" placeholder="What to put here"></label>
           ${f.calculated ? "" : `<label class="check"><input type="checkbox" name="required" ${f.required ? "checked" : ""}> It must be filled in</label>`}
@@ -494,6 +509,11 @@
           ${numeric ? `<div class="row"><label class="field grow"><span>Decimal places</span><input name="decimals" type="number" min="0" max="6" value="${f.decimals ?? ""}"></label>
             <label class="field grow"><span>Unit</span><input type="text" name="unit" value="${esc(f.unit)}" maxlength="12" placeholder="kg, hrs"></label></div>` : ""}
           ${f.type === "money" ? `<label class="field"><span>Currency</span><input type="text" name="currency" value="${esc(f.currency)}" maxlength="3" placeholder="The app's own"></label>` : ""}
+          ${["text", "number", "formula", "rollup", "barcode", "autonumber"].includes(f.type) ? `<div class="row"><label class="field grow"><span>Shown before it</span><input type="text" name="before" value="${esc(f.before)}" maxlength="12" placeholder="ABN, #"></label>
+            <label class="field grow"><span>Shown after it</span><input type="text" name="after" value="${esc(f.after)}" maxlength="12" placeholder="pcs, km"></label></div>` : ""}
+          ${f.signs !== null && f.signs !== undefined ? `<label class="field"><span>Colour it</span><select name="signs">${[["", "No colour"], ["normal", "Green above nothing, red below"], ["inverted", "Red above nothing, green below (costs, discounts)"]].map(([v, l]) => `<option value="${v}" ${v === f.signs ? "selected" : ""}>${l}</option>`).join("")}</select></label>` : ""}
+          ${f.type === "checkbox" ? `<div class="row"><label class="field grow"><span>Yes shows as</span><input type="text" name="yes_label" value="${esc(f.yes_label)}" maxlength="30" placeholder="Yes"></label>
+            <label class="field grow"><span>No shows as</span><input type="text" name="no_label" value="${esc(f.no_label)}" maxlength="30" placeholder="No"></label></div>` : ""}
           ${!f.calculated && !["select", "multi_select", "link", "user", "file", "image", "signature"].includes(f.type) ? `<label class="field"><span>Filled in to start with</span><input type="text" name="default" value="${esc(f.default ?? "")}" maxlength="200"></label>` : ""}
           <button class="btn primary sm">Save</button></form>
         ${["select", "multi_select"].includes(f.type) ? choices(t, f) : ""}
@@ -518,6 +538,7 @@
         if (form.elements.unit) body.unit = fd.get("unit");
         if (form.elements.currency) body.currency = fd.get("currency").toUpperCase();
         if (form.elements.default) body.default = fd.get("default");
+        for (const k of ["before", "after", "yes_label", "no_label", "signs"]) if (form.elements[k]) body[k] = fd.get(k);
         change(body);
       });
       $("[data-title]", box)?.addEventListener("click", () => change({do: "update_table", table: t.key, title_field: f.key}));
@@ -530,6 +551,8 @@
       return `<div class="stack"><div class="label">Choices <span class="faint tiny">· drag to put them in order</span></div>
         <ul class="studio-choices" data-choices>${f.options.map((o) => `<li draggable="true" data-key="${esc(o)}">${icon("grip-vertical", "grip")}
           <input type="text" value="${esc(o)}" data-old="${esc(o)}" aria-label="Choice ${esc(o)}" maxlength="80">
+          <label class="choice-colour pill ${esc((f.colours || {})[o] || "slate")}" title="Its colour"><span class="sr-only">Colour of ${esc(o)}</span>
+            <select data-colour="${esc(o)}">${model.colours.map((c) => `<option value="${c}" ${c === (f.colours || {})[o] ? "selected" : ""}>${c === "slate" ? "Grey" : c[0].toUpperCase() + c.slice(1)}</option>`).join("")}</select></label>
           <button type="button" class="btn sm ghost icon" data-drop="${esc(o)}" aria-label="Remove ${esc(o)}" title="Remove">${icon("x")}</button></li>`).join("")}</ul>
         <form class="row" data-form="choice"><input type="text" name="choice" placeholder="Another choice" maxlength="80" aria-label="Another choice"><button class="btn sm">${icon("plus")}Add</button></form>
         <p class="help">Renaming a choice renames it on every record that has it, and everywhere your app uses it.</p></div>`;
@@ -542,6 +565,8 @@
         if (now && now !== input.dataset.old) change({do: "rename_option", table: t.key, key: f.key, old: input.dataset.old, new: now});
       }));
       $$("[data-drop]", list).forEach((b) => b.addEventListener("click", () => change({do: "update_field", table: t.key, key: f.key, options: f.options.filter((o) => o !== b.dataset.drop)})));
+      $$("[data-colour]", list).forEach((sel) => sel.addEventListener("change", () => change({do: "update_field", table: t.key, key: f.key,
+        option_colors: {...(f.option_colors || {}), [sel.dataset.colour]: sel.value}})));
       $("[data-form=choice]", box).addEventListener("submit", (ev) => {
         ev.preventDefault();
         const v = ev.target.elements.choice.value.trim();

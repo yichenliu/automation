@@ -8,5 +8,5 @@
     <div class="card-body"><div class="t">{{ e.title(r) }}</div>
       {% for f in card_fields %}{% set v = e.value(r, f.key) %}{% if v not in (none, '', []) %}<div class="kv small"><span class="muted">{{ f.label }}</span><span class="ellipsis">{{ value(e, f, v) }}</span></div>{% endif %}{% endfor %}</div>
   </a>{% endfor %}</div>
-{% else %}<div class="card">{{ empty_state('No ' ~ t.label|lc ~ ' yet', 'Add the first one to see it here.', url_for('app.new', wid=ws.id, table=t.key), 'New ' ~ t.singular|lc, t.icon or 'layout-grid') }}</div>{% endif %}
+{% else %}<div class="card">{{ empty_state('No ' ~ t.label|lc ~ ' yet', 'Add the first one to see it here.' if e.can(t, 'edit') else 'None to show yet.', url_for('app.new', wid=ws.id, table=t.key) if e.can(t, 'edit') else none, 'New ' ~ t.singular|lc, t.icon or 'layout-grid') }}</div>{% endif %}
 {% endblock %}

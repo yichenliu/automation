@@ -29,6 +29,7 @@
 {%- elif f.display == 'progress' -%}{% set n = ((v or 0) * 100)|round|int %}<span class="progress"><i style="width: {{ [[n, 0]|max, 100]|min }}%"></i></span><span class="small">{{ n }}%</span>
 {%- elif f.type == 'signature' -%}{% if v %}<img class="thumb sig-thumb" src="{{ url_for('app.file', wid=e.ws.id, fid=v[0].id) }}" alt="Signed">{% endif %}
 {%- elif f.type == 'user' -%}<span class="person"><span class="avatar sm">{{ e.display(f, v)[:1]|upper }}</span>{{ e.display(f, v) }}</span>
+{%- elif f.type == 'checkbox' and (f.yes_label or f.no_label) -%}<span class="{{ 'good-text' if v else 'faint' }}">{{ e.display(f, v or False) }}</span>
 {%- elif f.type == 'checkbox' -%}{% if v %}<span class="tick">{{ icon('check') }}</span>{% else %}<span class="faint">—</span>{% endif %}
 {%- elif f.type == 'rating' -%}<span class="stars" title="{{ v }} of {{ f.max or 5 }}">{{ e.display(f, v) }}</span>
 {%- elif f.type == 'email' -%}<a href="mailto:{{ v }}">{{ v }}</a>
@@ -86,7 +87,7 @@
   {% elif f.type == 'link' %}{% set m = options.get(f.key ~ '__match') %}{% set adds = e and e.role and f.table in e.tables and e.can(e.tables[f.table], 'edit') %}<div class="row link-pick"><select name="{{ n }}" class="grow" data-searchable {% if m %}data-match-field="{{ m.field }}"{% endif %}
       {% if adds %}data-quick-link="{{ url_for('app.quick_add', wid=e.ws.id, table=f.table) }}" data-title-field="{{ e.tables[f.table].title_field }}" data-singular="{{ e.tables[f.table].singular }}" data-full="{{ url_for('app.new', wid=e.ws.id, table=f.table) }}"{% endif %}><option value="">—</option>{% if adds %}<option value="" data-quick-new>+ New {{ e.tables[f.table].singular|lc }}…</option>{% endif %}{% for id, title in options.get(f.key, []) %}<option value="{{ id }}" {% if m %}data-match="{{ m.by.get(id, '') }}"{% endif %} {{ 'selected' if val is not none and val|string == id|string }}>{{ title }}</option>{% endfor %}</select></div>
   {% elif f.type == 'user' %}<select name="{{ n }}"><option value="">—</option>{% for uid, who in (members or {}).items() %}<option value="{{ uid }}" {{ 'selected' if val is not none and val|string == uid|string }}>{{ who }}</option>{% endfor %}</select>
-  {% elif f.type == 'checkbox' %}<label class="check"><input type="checkbox" name="{{ n }}" value="1" {{ 'checked' if val and val not in ('0', 'false', 'False') }}><span>Yes</span></label>
+  {% elif f.type == 'checkbox' %}<label class="check"><input type="checkbox" name="{{ n }}" value="1" {{ 'checked' if val and val not in ('0', 'false', 'False') }}><span>{{ f.yes_label or 'Yes' }}</span></label>
   {% elif f.type == 'date' %}<input type="date" name="{{ n }}" value="{{ val if val is not none }}">
   {% elif f.type == 'datetime' %}<input type="datetime-local" name="{{ n }}" value="{{ (val|string)[:16]|replace(' ', 'T') if val is not none and val != '' }}">
   {% elif f.type == 'rating' %}<div class="rating-input">{% for i in range(1, (f.max or 5) + 1) %}<label><input type="radio" name="{{ n }}" value="{{ i }}" {{ 'checked' if val and val|int == i }}><span>★</span></label>{% endfor %}<label class="clear"><input type="radio" name="{{ n }}" value="" {{ 'checked' if not val }}><span>none</span></label></div>

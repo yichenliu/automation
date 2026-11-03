@@ -33,6 +33,7 @@ CALCULATED = {"formula", "rollup", "lookup", "autonumber", "created_time", "modi
 AI_FILLABLE = {"text", "long_text", "rich_text", "number", "money", "percent", "date", "datetime", "checkbox", "select",
                "multi_select", "rating", "address", "link"}  # a link: the AI picks the matching record (the invoice a payment is for)
 COLOURS_NAMED = ["red", "orange", "amber", "yellow", "green", "teal", "blue", "indigo", "violet", "pink", "gray"]
+CHOICE_COLOURS = ["slate", "blue", "amber", "green", "violet", "red", "teal", "pink"]  # a choice's badge, set by hand
 NUMERIC = {"number", "money", "percent"}
 SENSITIVE_TYPES = {"text", "number", "phone", "email", "barcode"}  # what can be kept encrypted and shown masked
 RESERVED = {"id", "created_at", "updated_at", "created_by", "record", "today", "now", "payload"}
@@ -482,6 +483,22 @@ def normalize_field(raw):
                 field[key] = as_fraction(field[key])
     if slug(_first(raw, "display", "show_as", "style", default="")) in ("progress", "bar", "progress_bar") and ftype in ("percent", "formula", "rollup"):
         field["display"] = "progress"
+    colours = _first(raw, "option_colors", "option_colours", "choice_colors", "choice_colours")
+    if isinstance(colours, dict) and ftype in ("select", "multi_select"):  # a choice's badge colour, where it's set by hand
+        named = {"grey": "slate", "gray": "slate", "purple": "violet", "orange": "amber", "yellow": "amber", "indigo": "blue"}
+        kept = {str(o): named.get(slug(c), slug(c)) for o, c in colours.items() if str(o) in field["options"]}
+        kept = {o: c for o, c in kept.items() if c in CHOICE_COLOURS}
+        if kept:
+            field["option_colors"] = kept
+    for side in ("before", "after"):  # shown either side of the value: "ABN " before a number, " pcs" after one
+        said = _first(raw, f"show_{side}", f"shown_{side}", side, "text_" + side)
+        if said not in (None, "") and ftype in ("text", "number", "formula", "rollup", "barcode", "autonumber"):
+            field[side] = str(said)[:12]
+    if ftype == "checkbox":  # what yes and no say: In stock / Out of stock
+        for side, names in (("yes_label", ("yes_label", "true_label", "yes", "on_label")), ("no_label", ("no_label", "false_label", "no", "off_label"))):
+            said = _first(raw, *names)
+            if isinstance(said, str) and said.strip():
+                field[side] = said.strip()[:30]
     if ftype == "url" and _first(raw, "template", "link_template", "url_template", "builds_from"):
         # a link made from the record's own details (a parcel's tracking page from its tracking number): opened, not typed
         field["template"] = str(_first(raw, "template", "link_template", "url_template", "builds_from"))[:500]
@@ -803,6 +820,9 @@ def normalize_table(raw):
     table["icon"] = icons.resolve(raw.get("icon")) or icons.icon_for(label)
     if raw.get("embedded") in (True, "true", "yes", 1) or _first(raw, "line_items_of", "lines_of", "parent_table"):
         table["embedded"] = True
+    combines = _first(raw, "combines", "union", "combined_from", "put_together_from")
+    if combines:  # a list put together from others, kept by the platform (engine/combined.py)
+        table["combines"] = [_combine_arm(a, label) for a in _list(combines)]
     description = _first(raw, "description", "about", "purpose")
     if description:
         table["description"] = str(description)[:300]
@@ -911,6 +931,22 @@ def normalize_table(raw):
     if journey:
         table["journey"] = normalize_journey(journey, label)
     return table
+
+
+def _combine_arm(raw, label):
+    """One list a combined list is put together from: {"table", "where": [conditions] (only those), "values": {this
+    list's field: a value or {{record.x}} of the record it comes from}}."""
+    if not isinstance(raw, dict) or not _first(raw, "table", "from", "source"):
+        raise SchemaError(f"{label} is put together from lists like {{\"table\": \"stock_movements\", \"values\": {{\"quantity\": "
+                          f"\"{{{{record.quantity}}}}\"}}}}: each needs its \"table\"")
+    values = _first(raw, "values", "fields", "map", "set", default={})
+    if not isinstance(values, dict) or not values:
+        raise SchemaError(f"each list {label} is put together from needs \"values\": what goes in each of {label}'s fields")
+    arm = {"table": slug(_first(raw, "table", "from", "source")), "values": {slug(k): _one_expression(v) for k, v in values.items() if k}}
+    where = _first(raw, "where", "only", "filters", "conditions")
+    if where:
+        arm["where"] = [normalize_condition(c) for c in _list(where)]
+    return arm
 
 
 def normalize_change_approval(raw, label=""):
@@ -2373,6 +2409,22 @@ def _check_table(t, tables, modules, problems):
         problems.append(f"the table {t['label']} is in module “{t['module']}”, which doesn't exist")
     if t.get("embedded") and not any(f["type"] == "link" for f in t["fields"]):
         problems.append(f"{t['label']} is shown inside another table's records, so it needs a link field to that table")
+    for n, arm in enumerate(t.get("combines") or [], start=1):
+        where = f"{t['label']} (put together from list {n})"
+        source = tables.get(arm["table"])
+        if source is None or arm["table"] == t["key"]:
+            problems.append(f"{where}: “{arm['table']}” isn't another table")
+            continue
+        if source.get("combines"):
+            problems.append(f"{where}: {source['label']} is put together itself: name the lists it comes from instead")
+        _check_values(arm["values"], t, where, problems, [f["key"] for f in source["fields"]])
+        _check_conditions(arm.get("where"), source, where, problems, tables)
+        missing = [f["label"] for f in t["fields"] if f.get("required") and f["key"] not in arm["values"]]
+        if missing:
+            problems.append(f"{where}: it must fill in {', '.join(missing)}, which must be filled in on {t['label']} (or make them optional)")
+    if t.get("combines") and (t.get("workflow") or t.get("public_form") or t.get("embedded")):
+        problems.append(f"{t['label']} is put together from other lists, so people don't add to it: it can't have stages, a public form "
+                        f"or be lines of another record")
     for f in t["fields"]:
         where = f"{t['label']} › {f['label']}"
         if f["type"] == "url" and f.get("template"):

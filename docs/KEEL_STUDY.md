@@ -38,11 +38,11 @@ as flowcharts with how often each step ran, and **trying a rule on a real record
 | keel.so | Ours |
 |---|---|
 | Models, relationships, enums, unique, defaults, computed fields | ✅ 36 field types, links, formulas, rollups, lookups |
-| **Unions**: one read-only list from several models (stock outlook = movements + PO lines − SO lines) | ❌ next |
-| Enum display name, **colour and display order** set once for every screen | ⚠️ order: dragged in the Data model studio; colours come by themselves (by meaning, or position): next, set by hand |
-| Number formats (currency, unit, percent), **prefix/suffix, colour +/−**, sensitive masked until hover, boolean labels and colours, URL preview | ⚠️ currency, unit, decimals, percent, private fields, links; next: prefix/suffix, colour +/−, yes/no labels |
+| **Unions**: one read-only list from several models (stock outlook = movements + PO lines − SO lines) | ✅ combined lists, kept up to date as their lists change |
+| Enum display name, **colour and display order** set once for every screen | ✅ set in the Data model studio (colours by hand, or by meaning and position) |
+| Number formats (currency, unit, percent), **prefix/suffix, colour +/−**, sensitive masked until hover, boolean labels and colours, URL preview | ✅ currency, unit, decimals, percent, text before and after, colour by sign, yes/no words, private fields, links |
 | Generated tools: table, **inbox**, **kanban**, **gallery** layouts; sections (shown by condition); embedded lists; toolbar actions with conditions; related-list tabs; field links | ✅ all, plus calendar, timeline, map, tree, sheet |
-| Spaces per team: groups, **useful links** (favicon), **metrics** (live counts) | ✅ team menus with groups and useful links; ⚠️ live counts on a team's menu: next |
+| Spaces per team: groups, **useful links** (favicon), **metrics** (live counts) | ✅ team menus with groups, useful links, and how many are in each filtered view now |
 | Tasks: queues, priority, assignment, defer, hand over, audit of each change | ✅ built (To do: take, give back, not now, next task) |
 | Flows: steps with UI pages (text, number, date, boolean, scan with lookup, image capture with captions, datagrid, pick list, select one/table, iterator, print, banners, markdown, tables, files) | ✅ info, form, scan, pick, photo, signature, decide, print; ⚠️ a table to fill in (datagrid) and repeating a screen per item: later |
 | Flows run on a **schedule**, child flows, shareable/**public flows by signed link**, prevent concurrent runs | ⚠️ rules run on schedules; public forms exist; flows by link: later |

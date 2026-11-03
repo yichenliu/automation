@@ -998,6 +998,8 @@ table.lines-editor .combo-button:hover { border-color: var(--border); }
 .studio-fields li, .studio-choices li { display: flex; align-items: center; gap: 4px; border-radius: var(--radius-sm); }
 .studio-fields li[draggable] .grip, .studio-choices .grip { cursor: grab; color: var(--faint); flex: none; }
 .studio-choices input { flex: 1; height: 32px; }
+.choice-colour { position: relative; width: 26px; height: 26px; padding: 0; flex: none; cursor: pointer; border: 1px solid var(--border-strong); }
+.choice-colour select { position: absolute; inset: 0; opacity: 0; cursor: pointer; height: 100%; width: 100%; }
 li.dragging { opacity: .5; background: var(--accent-weak); }
 .danger-zone { border-top: 1px solid var(--border); padding-top: 10px; } .danger-zone summary { cursor: pointer; color: var(--muted); } .danger-zone > * + * { margin-top: 8px; }
 .add-field > summary { list-style: none; } .add-field > summary::-webkit-details-marker { display: none; } .add-field[open] > summary { margin-bottom: 8px; }

@@ -242,6 +242,8 @@ class Engine:
         t = self.tables.get(t) if isinstance(t, str) else t
         if t is None:
             return False
+        if action == "edit" and t.get("combines"):
+            return False  # put together from other lists: they're changed there
         need = (t.get("access") or {}).get(action) or ("viewer" if action == "view" else "editor")
         if action == "edit":
             need = max(need, (t.get("access") or {}).get("view") or "viewer", "editor", key=ROLES.index)
@@ -842,7 +844,14 @@ class Engine:
         return round(n * rates[source] / rates[target], 2)
 
     def display(self, f, value, record=None):
-        """A value as text for people: $1,234.50, 3 Nov 2026, 15%, Yes, the linked record's name."""
+        """A value as text for people: $1,234.50, 3 Nov 2026, 15%, Yes, the linked record's name; with what the field
+        shows before and after it ("ABN 51 824 753 556", "12 pcs")."""
+        text = self._display(f, value, record)
+        if f is not None and (f.get("before") or f.get("after")) and text != "—":
+            return f"{f.get('before', '')}{text}{f.get('after', '')}"
+        return text
+
+    def _display(self, f, value, record=None):
         if value is None or value == "" or value == []:
             return "—"
         if f is not None and f["type"] == "lookup":
@@ -912,7 +921,7 @@ class Engine:
             d = to_datetime(value)
             return f"{d.day} {d:%b %Y}, {d.hour % 12 or 12}:{d:%M} {'am' if d.hour < 12 else 'pm'}" if d else str(value)
         if kind == "checkbox":
-            return "Yes" if to_bool(value) else "No"
+            return (f or {}).get("yes_label", "Yes") if to_bool(value) else (f or {}).get("no_label", "No")
         return str(value)
 
     def colours(self, t, record):
@@ -2013,6 +2022,7 @@ class Engine:
         t = self.tables.get(table)
         if t is None:
             raise FieldErrors({"_": f"there's no table “{table}”"})
+        self._not_combined(t)
         if self.role is not None and not self.can(t, "edit"):
             raise FieldErrors({"_": f"Your role can't add {schema.lc(t['label'])}."})
         values = self._clean(t, data or {}, creating=True)
@@ -2042,8 +2052,20 @@ class Engine:
             if automations:
                 from . import automations as auto
                 auto.on_change(self, self.get(record.id) or record, None, depth=depth)
+            self._combine(record)
         self._saved(record, after)
         return record
+
+    def _not_combined(self, t):
+        if t.get("combines") and not getattr(self, "combining", False):
+            from .combined import sources
+            raise FieldErrors({"_": f"{t['label']} is put together from {', '.join(sources(self.bp, t))}: change those instead."})
+
+    def _combine(self, record):
+        """The combined lists this record goes into follow it (engine/combined.py)."""
+        if any(x.get("combines") for x in self.bp.get("tables", [])):
+            from . import combined
+            combined.sync(self, record)
 
     def update(self, record, data, *, by=None, automations=True, depth=0, ai_filled=False, expected_version=None):
         """Change a record. ai_filled: the AI wrote these values (it may rewrite them later); otherwise a person or a rule
@@ -2052,6 +2074,7 @@ class Engine:
         if expected_version not in (None, "") and str(expected_version) != str(record.version):
             raise Conflict()
         t = self.tables.get(record.table)
+        self._not_combined(t)
         if self.role is not None and not self.can(t, "edit"):
             raise FieldErrors({"_": f"Your role can't change {schema.lc(t['label'])}."})
         values = self._clean(t, data or {}, creating=False, record=record)
@@ -2091,6 +2114,7 @@ class Engine:
             if automations:
                 from . import automations as auto
                 auto.on_change(self, self.get(record.id) or record, old, depth=depth)
+            self._combine(record)
         try:
             self._saved(record, after)
         except Conflict:
@@ -2121,6 +2145,7 @@ class Engine:
 
     def delete(self, record, *, by=None, automations=True, depth=0):
         t = self.tables.get(record.table)
+        self._not_combined(t)
         if self.role is not None and not self.can(t, "edit"):
             raise FieldErrors({"_": f"Your role can't delete {schema.lc(t['label'])}."})
         self._check_lock(record, None)
@@ -2131,12 +2156,13 @@ class Engine:
             if automations:
                 from . import automations as auto
                 auto.on_delete(self, record, depth=depth)
+            self._combine(record)
         self._saved(record, after)
 
     def restore(self, record, *, by=None):
         record.deleted_at = None
         db.session.add(RecordChange(workspace_id=self.ws.id, record_id=record.id, kind="restored", by=by or self.by))
-        self._saved(record)
+        self._saved(record, lambda: self._combine(record))
 
     def counts(self):
         rows = (db.session.query(Record.table, db.func.count(Record.id))

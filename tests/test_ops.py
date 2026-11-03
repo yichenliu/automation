@@ -134,17 +134,22 @@ def test_a_team_sees_its_own_menu_and_can_see_everything(app, client, owner):
     user, ws = owner
     _built(ws, STOCK + [
         {"op": "set_team", "team": {"key": "warehouse", "name": "Warehouse"}},
-        {"op": "add_view", "table": "products", "view": {"key": "low", "label": "Running low", "type": "list"}},
+        {"op": "add_view", "table": "products", "view": {"key": "low", "label": "Running low", "type": "list",
+                                                         "filters": [{"field": "name", "op": "contains", "value": "flour"}]}},
         {"op": "set_space", "space": {"label": "Warehouse", "for": ["warehouse"], "groups": [
             {"label": "Stock", "items": [{"table": "products", "view": "low"}]}],
             "links": [{"label": "Carrier bookings", "url": "https://carrier.example.com"}, {"label": "Bad", "url": "javascript:alert(1)"}]}}])
     space = schema.spaces(ws.blueprint)[0]
     assert space["links"] == [{"label": "Carrier bookings", "url": "https://carrier.example.com"}]  # only web addresses
     _person(ws, "wes@example.com", "Wes", "editor", teams=["warehouse"])
+    e = Engine(ws)
+    for name in ("Flour 25kg", "Flour 10kg", "Sugar"):
+        e.create("products", {"name": name})
     client.post("/login", data={"email": "wes@example.com", "password": "password1234"})
     base = f"/w/{ws.id}/app"
     menu = client.get(f"{base}/").get_data(as_text=True)
     assert "Running low" in menu and "Carrier bookings" in menu and "Work orders" not in menu and "Everything else" in menu
+    assert '<span class="count" title="2 in it now">2</span>' in menu  # how many are in it now, like the To do count
     client.post(f"{base}/menu", data={"show": "all"})
     menu = client.get(f"{base}/").get_data(as_text=True)
     assert "Work orders" in menu and "Just my team" in menu

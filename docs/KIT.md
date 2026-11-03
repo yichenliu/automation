@@ -50,7 +50,14 @@ after a cooling-off period; the record's registered contact is told with a link 
 nobody but whoever sent each one sees what's in it until the tender's closing time, admins and the AI included; nobody
 changes it after, except the fields the business fills in then, like scores) · every opening of a record kept in its
 history · a journey shown on each record across the business (Submitted → Approved → Ordered → Delivered → Paid, each
-step done by its own stage or by the records that follow from it).
+step done by its own stage or by the records that follow from it) · combined lists, put together from several others
+and kept up to date by the platform (a stock outlook from stock movements, confirmed purchase lines and open order lines,
+each with its own values and conditions; it follows them as they're added, changed, deleted or brought back, reads like
+any list, and nobody changes it by hand).
+
+✅ How a field shows, set once for every screen: a choice's colour (by hand, or by meaning and position), text before or
+after a value ("ABN", "pcs"), a number coloured by its sign (or the other way round for costs), what yes and no say
+("In stock" / "Out of stock").
 
 ✅ Filters and conditions: equals, contains, empty, more or less than, one of, before or after today, within the next or
 last N days, this or last week, month, quarter, year and financial year (its first month set in settings), changed (to) · "any" (or) and "all" groups, nested · through a link (an invoice's customer's account

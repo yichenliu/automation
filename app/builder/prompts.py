@@ -29,6 +29,11 @@ never add those. Give each a "module" (a menu section such as sales, operations,
 users, invoice, project, calendar, truck, package, wrench, house, money, task, document).
   Line items: a table with "embedded": true (Invoice lines, Order lines, Quote lines) is edited inside its parent record
   through its link field and isn't in the menu. Use it whenever a document has lines.
+  Combined lists: "combines": [{{"table": "stock_movements", "where": [conditions], "values": {{"kind": "Committed",
+  "quantity": "{{{{record.quantity}}}}"}}}}, {{"table": "po_lines", ...}}] makes a read-only list put together from several
+  others, one record for each of theirs (a stock outlook from movements, open purchase lines and open order lines; every
+  money movement from sales, refunds and expenses). It follows them by itself; nobody adds to it. Every list must fill
+  in each of its required fields.
   "sections": [{{"label": "Billing", "fields": [...]}}] groups a record's fields on its page and form. Sections, views and
   forms only arrange fields: every field must be defined in the table's "fields" (key, label, type, settings).
 Field types:
@@ -619,6 +624,8 @@ _FLOW = {"type": "object", "required": ["label", "table", "steps"], "properties"
 _OP = {"type": "object", "required": ["op"], "properties": {  # a table's fields before the sections and views that arrange them
     "op": {"type": "string", "enum": ops.OPS}, "table": _STRING, "key": _STRING, "label": _STRING, "singular": _STRING,
     "module": _STRING, "icon": _STRING, "embedded": {"type": "boolean"}, "title_field": _STRING, "description": _STRING,
+    "combines": {"type": "array", "items": {"type": "object", "required": ["table", "values"], "properties": {
+        "table": _STRING, "where": _CONDITIONS, "values": {"type": "object"}}}},
     "fields": {"type": "array", "items": _FIELD}, "field": _FIELD, "changes": {"type": "object"},
     "sections": {"type": "array", "items": {"type": "object", "properties": {"label": _STRING, "fields": _STRINGS, "show_if": _CONDITIONS}}},
     "view": _VIEW, "views": {"type": "array", "items": _VIEW}, "page": _PAGE, "document": _DOCUMENT,
@@ -787,6 +794,9 @@ def outline(bp, counts, extra=""):
              "Modules: " + (", ".join(f"{m['key']} \"{m['label']}\"" for m in bp.get("modules", [])) or "none")]
     for t in bp.get("tables", []):
         flags = "; line items (embedded)" if t.get("embedded") else ""
+        if t.get("combines"):
+            flags += "; put together from " + ", ".join(f"{a['table']} ({json.dumps(a['values'])}{', where ' + json.dumps(a['where']) if a.get('where') else ''})"
+                                                         for a in t["combines"])
         lines.append(f"\nTable {t['key']} \"{t['label']}\" (one {t['singular']}; module {t.get('module') or '-'}; icon {t.get('icon')}; "
                      f"named by {t.get('title_field')}; {counts.get(t['key'], 0)} records{flags})")
         for f in t["fields"]:
