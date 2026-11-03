@@ -28,6 +28,8 @@ STEPS = [
     ["ALTER TABLE message ADD COLUMN checks JSON"],  # 11: the builder tries each change out (the feedback table is new: created whole)
     ["ALTER TABLE approval ADD COLUMN decided_by_id INTEGER"],  # 12: who approved, for the record's "Approved by"
     ["ALTER TABLE invite ADD COLUMN teams JSON"],  # 13: an invitation says which teams the person joins
+    ["ALTER TABLE approval ADD COLUMN priority INTEGER DEFAULT 1", "ALTER TABLE approval ADD COLUMN deferred_until DATETIME",
+     "ALTER TABLE approval ADD COLUMN taken_by_id INTEGER", "ALTER TABLE approval ADD COLUMN flow VARCHAR(64)"],  # 14: work queues
 ]
 # Kept up whatever the step: the full-text index of the AI's knowledge (rowid = chunk.id).
 ALWAYS = ["CREATE VIRTUAL TABLE IF NOT EXISTS chunk_fts USING fts5(title, body, ws UNINDEXED, tokenize='porter unicode61 remove_diacritics 2')"]

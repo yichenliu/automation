@@ -6,7 +6,7 @@ and the run's history work as they do for any rule.
 """
 from ..blueprint import schema
 from ..extensions import db
-from ..models import File, FlowRun, utcnow
+from ..models import Approval, File, FlowRun, utcnow
 from . import automations
 from .records import FieldErrors
 
@@ -239,6 +239,13 @@ def finish(engine, run, by):
             file.record_id, file.field = record.id, field
     run.status, run.result_id, run.finished_at, run.record_id = "done", record.id, utcnow(), record.id
     db.session.commit()
+    task = db.session.get(Approval, run.task_id) if run.task_id else None
+    if task is not None and task.status == "pending":  # the task was to do this flow: done, with what the flow filled in
+        saved = engine.get(record.id)
+        try:
+            automations.complete(engine, task, by, {k: engine.value(saved, k) for k in task.fields or []}, None)
+        except FieldErrors:
+            pass  # it asks for more than the flow filled in: it stays on the To do list to finish there
     if flow.get("then"):
         summary = {step["key"]: _summary(step, data.get(step["key"]) or {}) for step in flow["steps"]}
         started = automations.start(engine, as_automation(flow), engine.get(record.id), f"{by} finished “{flow['label']}”",

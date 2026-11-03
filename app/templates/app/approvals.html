@@ -1,12 +1,12 @@
 {% extends "app/layout.html" %}{% from "macros.html" import empty_state, input %}
 {% block title %}To do{% endblock %}
 {% macro happened(a) %}{% for h in a.history or [] %}{{ {'reminded': 'reminded', 'escalated': 'passed up (no answer in time)', 'escalation': 'passed up from ' ~ (h.by or 'someone'), 'passed on': 'passed on by ' ~ (h.by or 'someone') ~ ((': “' ~ h.note ~ '”') if h.note else ''), 'covering': 'covering for ' ~ (h.for or 'someone') ~ ' while they’re away'}.get(h.what, h.what) }}{{ ' · ' if not loop.last }}{% endfor %}{% endmacro %}
-{% macro waiting_for(a) %}{{ e.members().get(a.assignee_id, 'someone') if a.assignee_id else teams.get((a.role or '')[5:], 'a team') if (a.role or '').startswith('team:') else {'owner': 'the owner', 'admin': 'an admin', 'editor': 'an editor'}.get(a.role or 'admin') }}{% endmacro %}
+{% macro waiting_for(a) %}{{ (e.members().get(a.taken_by_id, 'someone') ~ ', who took it') if a.taken_by_id else e.members().get(a.assignee_id, 'someone') if a.assignee_id else teams.get((a.role or '')[5:], 'a team') if (a.role or '').startswith('team:') else {'owner': 'the owner', 'admin': 'an admin', 'editor': 'an editor'}.get(a.role or 'admin') }}{% endmacro %}
 {% macro confirm_field() %}{% if not stepped %}<input type="password" name="step_up_code" class="step-up" autocomplete="one-time-code" placeholder="Your authenticator code or password" aria-label="Confirm it's you: your authenticator code or password" title="Approving this needs you to confirm it's you">{% endif %}{% endmacro %}
 {% macro change_table(a) %}<table class="change-table mt-1"><thead><tr><th>What</th><th>Now</th><th>Changed to</th></tr></thead><tbody>{% for label, pair in (a.proposal.shown or {}).items() %}<tr><td>{{ label }}</td><td class="muted">{{ pair[0] }}</td><td><b>{{ pair[1] }}</b></td></tr>{% endfor %}</tbody></table>{% endmacro %}
 {% block content %}{% set kinds = {'approval': ('amber', 'Approve'), 'task': ('blue', 'To do'), 'review': ('violet', 'Check the AI'), 'change': ('teal', 'Change')} %}
 <div class="page-head"><div class="titles"><h1>{{ icon('list-todo') }}To do</h1><p class="sub">Things waiting for your OK or your hand. Once you answer one, the work carries on by itself; saying no sends it back or stops it.</p></div>
-  <div class="actions">{% if away %}<form method="post" action="{{ url_for('app.away', wid=ws.id) }}" class="row"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><span class="pill amber">{{ icon('plane') }}Away {{ away.away_from.strftime('%d %b') }}–{{ away.away_until.strftime('%d %b') }}: {{ e.members().get(away.cover_id, 'someone') }} covers</span><button class="btn sm" name="back_now" value="1">I'm back</button></form>
+  <div class="actions">{% if mine|selectattr('kind', 'equalto', 'task')|list %}<form method="post" action="{{ url_for('app.next_task', wid=ws.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn primary" title="The most pressing task, then the oldest: it's yours">{{ icon('play') }}Next task</button></form>{% endif %}{% if away %}<form method="post" action="{{ url_for('app.away', wid=ws.id) }}" class="row"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><span class="pill amber">{{ icon('plane') }}Away {{ away.away_from.strftime('%d %b') }}–{{ away.away_until.strftime('%d %b') }}: {{ e.members().get(away.cover_id, 'someone') }} covers</span><button class="btn sm" name="back_now" value="1">I'm back</button></form>
   {% elif people %}<details class="away-form"><summary class="btn sm">{{ icon('plane') }}Going away?</summary>
     <form method="post" action="{{ url_for('app.away', wid=ws.id) }}" class="card card-body stack mt-1"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <p class="small muted">While you're away, your approvals and tasks go to someone else.</p>
@@ -16,7 +16,7 @@
 <div class="stack">
 {% for a in mine %}{% set run = runs[a.run_id] %}{% set rec = e.get(a.record_id) if a.record_id else none %}{% set task = a.kind in ('task', 'review') %}{% set review = a.kind == 'review' %}
 <div class="card" id="a{{ a.id }}"><div class="card-body">
-  <div class="row"><span class="pill {{ kinds[a.kind or 'approval'][0] }}">{{ kinds[a.kind or 'approval'][1] }}</span><b class="grow">{{ a.message }}</b><span class="faint tiny nowrap">{{ a.created_at|ago }}</span></div>
+  <div class="row"><span class="pill {{ kinds[a.kind or 'approval'][0] }}">{{ kinds[a.kind or 'approval'][1] }}</span>{% if (a.priority or 1) >= 2 %}<span class="pill {{ 'red' if a.priority >= 3 else 'amber' }}">{{ 'Urgent' if a.priority >= 3 else 'High' }}</span>{% elif a.priority == 0 %}<span class="pill slate">Low</span>{% endif %}<b class="grow">{{ a.message }}</b><span class="faint tiny nowrap">{{ a.created_at|ago }}</span></div>
   <p class="muted small mt-1">{% if rec %}<a href="{{ url_for('app.record', wid=ws.id, table=rec.table, rid=rec.id) }}">Open the {{ e.tables[rec.table].singular|lc if rec.table in e.tables else 'record' }}</a>{% set facts = ask_facts(e, rec) %}{% if facts %} · {{ facts }}{% endif %}{% endif %}{% if a.history %} · {{ happened(a) }}{% endif %}</p>
   {% if a.kind == 'change' %}{% set ready = a.proposal.ready_at and a.proposal.ready_at > now.isoformat() %}
   {{ change_table(a) }}
@@ -27,12 +27,18 @@
     <button class="btn primary" name="decision" value="approve" {{ 'disabled' if ready }}>{{ icon('check') }}{{ ('You can approve it from ' ~ (a.proposal.ready_at|when).split(',')[0]) if ready else 'Approve the change' }}</button>
     <button class="btn danger" name="decision" value="reject">{{ icon('x') }}Say no</button></form>
   {% elif task %}
+  {% if a.kind == 'task' %}<form method="post" action="{{ url_for('app.decide', wid=ws.id, aid=a.id) }}" class="row wrap mt-1 queue-row"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    {% if a.flow and rec %}<button class="btn primary" name="decision" value="start">{{ icon('play') }}Start</button>{% endif %}
+    {% if not a.assignee_id %}{% if a.taken_by_id == current_user.id %}<span class="pill teal">Yours</span><button class="btn sm ghost" name="decision" value="give_back" title="Back to the team, for anyone to take">Give back</button>
+    {% else %}<button class="btn sm" name="decision" value="take" title="So nobody else in the team picks it up">{{ icon('user') }}Take it</button>{% endif %}{% endif %}
+    <details class="defer"><summary class="btn sm ghost">Not now</summary><span class="row"><input type="date" name="until" min="{{ tomorrow }}" aria-label="Back on"><button class="btn sm" name="decision" value="defer">Put it off</button></span></details></form>{% endif %}
+  {% if not (a.flow and rec) %}
   <form method="post" action="{{ url_for('app.decide', wid=ws.id, aid=a.id) }}" class="mt-2"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     {% if review and a.proposal %}<p class="small mt-1"><span class="ai-tag">{{ icon('sparkles') }}AI</span> {{ a.proposal.why }}{% if a.proposal.unsure %}{{ ' · ' if a.proposal.why }}it wasn't sure of {{ a.proposal.unsure|join(', ') }}{% endif %}</p>{% endif %}
     {% set form = forms.get(a.id) %}{% if form %}<div class="form-grid">{% for f in form.fields %}{{ input(e, f, form['values'].get(f.key), form.options, none, members, unsure=(f.label in form.unsure)) }}{% endfor %}</div>{% endif %}
     <div class="row mt-2"><input type="text" name="comment" placeholder="Note (optional)" class="grow" aria-label="Note">
       <button class="btn primary" name="decision" value="done">{{ icon('check') }}{{ "Save: it's right, or as I've corrected it" if review else 'Done' }}</button>
-      {% if review %}<button class="btn danger" name="decision" value="reject" title="{{ 'What it made goes to the bin, and the automation stops' if a.proposal and a.proposal.created else 'Its answer is dropped, and the automation stops' }}">{{ icon('x') }}It's wrong</button>{% endif %}</div></form>
+      {% if review %}<button class="btn danger" name="decision" value="reject" title="{{ 'What it made goes to the bin, and the automation stops' if a.proposal and a.proposal.created else 'Its answer is dropped, and the automation stops' }}">{{ icon('x') }}It's wrong</button>{% endif %}</div></form>{% endif %}
   {% else %}
   <form method="post" action="{{ url_for('app.decide', wid=ws.id, aid=a.id) }}" class="row mt-2"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <input type="text" name="comment" placeholder="Note (optional)" class="grow" aria-label="Note">{% if (a.proposal or {}).step_up %}{{ confirm_field() }}{% endif %}<button class="btn primary" name="decision" value="approve">{{ icon('check') }}Approve</button>
@@ -45,6 +51,10 @@
 </div></div>
 {% else %}<div class="card">{{ empty_state('Nothing waiting for you', 'When an automation needs your approval or asks you to do something, it appears here and you get a notification.', ico='circle-check') }}</div>{% endfor %}
 </div>
+{% if later %}<h2 class="mt-3 mb-2">Put off</h2><div class="card">{% for a in later %}{% set rec = e.get(a.record_id) if a.record_id else none %}
+  <div class="list-row"><span class="pill slate">Back {{ a.deferred_until.strftime('%-d %b') }}</span>
+    <span class="grow">{{ a.message }}{% if rec %} · <a href="{{ url_for('app.record', wid=ws.id, table=rec.table, rid=rec.id) }}">{{ e.title(rec) }}</a>{% endif %}</span>
+    <span class="faint tiny nowrap">{{ a.created_at|ago }}</span></div>{% endfor %}</div>{% endif %}
 {% if others %}<h2 class="mt-3 mb-2">Waiting for others</h2><div class="card">{% for a in others %}{% set rec = e.get(a.record_id) if a.record_id else none %}
   <div class="list-row"><span class="pill {{ kinds[a.kind or 'approval'][0] }}">{{ kinds[a.kind or 'approval'][1] }}</span>
     <span class="grow">{{ a.message }}{% if rec %} · <a href="{{ url_for('app.record', wid=ws.id, table=rec.table, rid=rec.id) }}">{{ e.title(rec) }}</a>{% endif %}

@@ -238,7 +238,9 @@ Automations: a trigger, optional conditions, and steps (actions). Each step can 
                 stops; "{{{{reason}}}}" is what the approver wrote when saying no: "rejected_reason": "{{{{reason}}}}"); "not_by" (who may never approve it: "creator", a stage name for whoever moved it there, a person
                 field or team) and "step_up": true (confirm their sign-in). A chain is approval steps in turn: the
                 manager, then the owner "only_if" over $10,000.
-            task {{"to": who, "message": what to do, "fields": [fields they fill in to finish it]}} (the run waits until
+            task {{"to": who, "message": what to do, "fields": [fields they fill in to finish it], "priority": low |
+            normal | high | urgent or a field that says it (an Urgency choice), "flow": a flow done to finish it (a
+            stock count)}} (a task for a team is a queue: one person takes it, most pressing first) (the run waits until
                 it's done: pack and ship, filling in the tracking number); takes reminders and escalation too
             branch {{"paths": [{{"label": "Over $5,000", "when": [conditions], "steps": [...]}}, ...], "otherwise": [...]}} (the
                 first way whose conditions hold; a way's steps can branch again)
@@ -554,7 +556,7 @@ _TRIGGER = {"type": "object", "required": ["type"], "properties": {  # a schedul
 _ACTION = {"type": "object", "required": ["type"], "properties": {  # "target" before "values": an update says where, then what
     "type": {"type": "string", "enum": schema.ACTIONS}, "source": {"type": "object", "properties": {"table": _STRING, "via": _STRING, "of": _STRING, "nested": _STRING, "field": _STRING}},
     "table": _STRING, "document": _STRING, "field": _STRING, "target": _STRING, "values": {"type": "object"}, "where": _CONDITIONS,
-    "only_if": _CONDITIONS, "to": _STRING, "cc": _STRING, "subject": _STRING, "message": _STRING, "body": _STRING, "attach": _STRINGS,
+    "only_if": _CONDITIONS, "priority": _STRING, "flow": _STRING, "to": _STRING, "cc": _STRING, "subject": _STRING, "message": _STRING, "body": _STRING, "attach": _STRINGS,
     "approver": _STRING, "instructions": _STRING, "from": _STRING, "fields": _STRINGS, "attach_to": _STRING,
     "notes_field": _STRING, "reads": {"type": "array", "items": {"type": "object", "properties": {"table": _STRING, "where": _CONDITIONS}}},
     "read_files": {"type": "boolean"}, "use_knowledge": {"type": "boolean"}, "learn": {"type": "boolean"}, "manual": {"type": "boolean"},

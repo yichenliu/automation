@@ -122,6 +122,11 @@ gets what was filled in, scanned items become its lines, counts go on its lines,
 labels print, and the flow's own rule steps run with what was entered. Left part way, it waits to be carried on.
 The builder makes them; every try-out does each flow once.
 
+✅ **Work queues**: a task for a team or role is a queue: the most pressing first (low to urgent, fixed or read from
+the record), "Next task" takes the next one, "Take it" keeps it from the rest of the team ("Give back" returns it), "Not
+now" puts it off till a day, and a task can be done through a flow (starting it opens the flow; finishing the flow does
+the task).
+
 ✅ **Labels**: any record's label (its name, a few details the reader may see, and its barcode, or a QR code that opens
 it), for label printers (62 × 29, 50 × 25, 62 × 100 mm, 4 × 6 in shipping) or sheets (A4 21, Letter 30); a list's own
 label designs (which details, which barcode, one per box received); many at once from a list or a flow.

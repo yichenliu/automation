@@ -1,6 +1,6 @@
 """Dashboards, automations and their runs, the AI at work, approvals, notifications, the design's history, and searching
 everything."""
-from datetime import timedelta
+from datetime import date, datetime, timedelta
 
 import json
 import re
@@ -15,7 +15,7 @@ from ..builder import chat
 from ..engine import automations
 from ..extensions import db
 from ..models import Approval, File, Notification, Run, Version
-from .erp import bp, confirm_step_up, ctx, my_approvals
+from .erp import bp, confirm_step_up, ctx, in_my_queue, my_approvals
 
 
 @bp.route("/")
@@ -854,8 +854,9 @@ def approvals(wid):
     ws, engine = ctx(wid)
     from flask import g
     from ..models import Membership
-    mine = my_approvals(ws, g.member)
-    others = [a for a in Approval.query.filter_by(workspace_id=ws.id, status="pending").order_by(Approval.id).all() if a not in mine]
+    mine = sorted(my_approvals(ws, g.member), key=lambda a: (-(a.priority if a.priority is not None else 1), a.id))  # the most pressing first
+    later = [a for a in _could_do(ws, g.member) if in_my_queue(a, later=True)]
+    others = [a for a in Approval.query.filter_by(workspace_id=ws.id, status="pending").order_by(Approval.id).all() if a not in mine and a not in later]
     if not g.member.can("admin"):  # people see what's waiting for others only on records they asked for (or changed)
         others = [a for a in others if (rec := engine.get(a.record_id)) is not None and (getattr(rec, "created_by_id", None) == current_user.id
                                                                                        or (a.proposal or {}).get("by_id") == current_user.id)]
@@ -883,9 +884,58 @@ def approvals(wid):
             forms[a.id] = {"record": rec, "values": values, "fields": [f for f in (engine.field(t["key"], k) for k in a.fields) if f],
                            "options": _options(engine, t), "unsure": set((a.proposal or {}).get("unsure") or [])}
     return render_template("app/approvals.html", ws=ws, e=engine, mine=mine, others=others, recent=recent, people=people, forms=forms,
-                           members=engine.members(), runs={a.run_id: db.session.get(Run, a.run_id) for a in mine + others + recent},
+                           later=later, members=engine.members(), runs={a.run_id: db.session.get(Run, a.run_id) for a in mine + others + recent + later},
                            apart=apart, away=away, stepped=engine.stepped_up, teams={tm["key"]: tm["name"] for tm in schema.teams(engine.bp)},
-                           now=automations.utcnow())
+                           now=automations.utcnow(), tomorrow=(engine.today + timedelta(days=1)).isoformat())
+
+
+def _could_do(ws, member):
+    """Every pending approval and task this person could answer, whoever took it or whenever it's put off till."""
+    from ..engine.automations import may_decide
+    from ..models import Record
+    pending = Approval.query.filter_by(workspace_id=ws.id, status="pending").order_by(Approval.id).all()
+    return [a for a in pending if may_decide(a, member, current_user.id, db.session.get(Record, a.record_id) if a.record_id else None)]
+
+
+@bp.route("/approvals/next", methods=["POST"])
+@login_required
+def next_task(wid):
+    """Take the next task: the most pressing, then the oldest, of those waiting for this person or their team."""
+    from flask import g
+    ws, engine = ctx(wid, "viewer")
+    waiting = sorted([a for a in my_approvals(ws, g.member) if a.kind == "task"], key=lambda a: (-(a.priority if a.priority is not None else 1), a.id))
+    if not waiting:
+        flash("Nothing's waiting: all done.", "success")
+        return redirect(url_for("app.approvals", wid=wid))
+    task = waiting[0]
+    _take(engine, task)
+    if task.flow and task.record_id:
+        return _start_task_flow(engine, task)
+    return redirect(url_for("app.approvals", wid=wid) + f"#a{task.id}")
+
+
+def _take(engine, task):
+    if task.assignee_id is None and task.taken_by_id != current_user.id:  # a team's or a role's: now it's theirs
+        task.taken_by_id = current_user.id
+        task.history = (task.history or []) + [{"when": datetime.utcnow().isoformat(), "what": f"taken by {current_user.display}"}]
+        db.session.commit()
+
+
+def _start_task_flow(engine, task):
+    from ..engine import flows
+    from ..engine.records import FieldErrors
+    flow, record = flows.of(engine, task.flow), engine.get(task.record_id)
+    if flow is None or record is None:
+        flash("This task's steps aren't there any more: finish it here instead.", "error")
+        return redirect(url_for("app.approvals", wid=engine.ws.id) + f"#a{task.id}")
+    try:
+        run = flows.begin(engine, {**flow, "when": None}, current_user.id, record)
+    except FieldErrors as exc:
+        flash("; ".join(exc.errors.values()), "error")
+        return redirect(url_for("app.approvals", wid=engine.ws.id))
+    run.task_id = task.id
+    db.session.commit()
+    return redirect(url_for("app.flow_run", wid=engine.ws.id, run_id=run.id))
 
 
 @bp.route("/approvals/away", methods=["POST"])
@@ -935,6 +985,34 @@ def decide(wid, aid):
     back = request.form.get("back")
     back = back if back and back.startswith("/") and not back.startswith("//") else url_for("app.approvals", wid=wid)
     decision = request.form.get("decision")
+    if decision in ("take", "give_back", "defer", "start"):  # working through a queue
+        if approval.kind != "task":
+            abort(400)
+        if decision == "take":
+            _take(engine, approval)
+            flash("It's yours now: nobody else in the team will pick it up.", "success")
+        elif decision == "give_back":
+            approval.taken_by_id = None
+            approval.history = (approval.history or []) + [{"when": datetime.utcnow().isoformat(), "what": f"given back by {current_user.display}"}]
+            db.session.commit()
+            flash("Given back: anyone in the team can take it.", "success")
+        elif decision == "defer":
+            try:
+                until = date.fromisoformat(request.form.get("until") or "")
+            except ValueError:
+                flash("Choose the day it comes back.", "error")
+                return redirect(back)
+            if until <= engine.today:
+                flash("Choose a day after today.", "error")
+                return redirect(back)
+            approval.deferred_until = datetime.combine(until, datetime.min.time())
+            approval.history = (approval.history or []) + [{"when": datetime.utcnow().isoformat(), "what": f"put off till {until.strftime('%-d %b')} by {current_user.display}"}]
+            db.session.commit()
+            flash(f"Put off: it comes back on {until.strftime('%-d %B')}.", "success")
+        else:
+            _take(engine, approval)
+            return _start_task_flow(engine, approval)
+        return redirect(back)
     if decision == "pass":
         to = request.form.get("to", type=int)
         member = Membership.query.filter_by(workspace_id=ws.id, user_id=to).first() if to else None

@@ -1420,6 +1420,7 @@ def normalize_widget(raw):
     return widget
 
 
+PRIORITIES = {"low": 0, "normal": 1, "medium": 1, "high": 2, "important": 2, "urgent": 3, "critical": 3, "emergency": 3, "asap": 3}
 FLOW_STEPS = ["info", "form", "scan", "pick", "photo", "signature", "decide", "print"]
 FLOW_STEP_ALIASES = {"show": "info", "text": "info", "message": "info", "instructions": "info", "fields": "form", "fill": "form",
                      "inputs": "form", "ask": "form", "scan_items": "scan", "scanning": "scan", "barcode": "scan", "count": "pick",
@@ -1853,6 +1854,12 @@ def normalize_action(raw):
         if not message:
             raise SchemaError("a task needs \"message\": what the person is asked to do")
         action["message"] = str(message)[:1000]
+        priority = _first(raw, "priority", "urgency", "importance")
+        if priority:  # low, normal, high, urgent; or a field of the record that says it (an Urgency choice)
+            action["priority"] = slug(str(priority))
+        flow = _first(raw, "flow", "with_flow", "done_with", "using")
+        if flow:  # the task is done by doing this flow on the record (the stock count it asks for)
+            action["flow"] = slug(str(flow))
         fields = _first(raw, "fields", "fill", "inputs", "ask_for", "collect")
         if fields:  # what they fill in to finish it (the tracking number, the inspection result)
             action["fields"] = [slug(f if not isinstance(f, dict) else _first(f, "key", "field", "name"))
@@ -2177,6 +2184,7 @@ def _path_field(t, path, tables):
 
 
 _TEAM_KEYS = contextvars.ContextVar("team_keys", default=frozenset())
+_FLOW_KEYS = contextvars.ContextVar("flow_keys", default={})  # the design's flows while it's checked (a task done through one)
 
 
 def who_fits(t, who, tables, teams_=None):
@@ -2918,6 +2926,15 @@ def _check_automation(a, tables, problems, documents, bp_pages=(), automations=N
                         problems.append(f"{where}: the task asks for “{k}”, which isn't a field of {t['label'] if t else 'the record (there is none)'}")
                     elif f["type"] in CALCULATED:
                         problems.append(f"{where}: the task asks for “{f['label']}”, which is worked out, not filled in")
+                if act.get("priority") and act["priority"] not in PRIORITIES and not (t and field(t, act["priority"])):
+                    problems.append(f"{where}: the task's priority “{act['priority']}” isn't low, normal, high, urgent or a field")
+                if act.get("flow"):
+                    flow = _FLOW_KEYS.get().get(act["flow"])
+                    if flow is None:
+                        problems.append(f"{where}: the task is done through “{act['flow']}”, which isn't a flow")
+                    elif t is None or flow["table"] != t["key"] or flow["start"] != "record":
+                        problems.append(f"{where}: the task's flow “{flow['label']}” must be one started from a "
+                                        f"{t['singular'].lower() if t else 'record'} (start \"record\" on {t['key'] if t else 'its table'})")
             elif kind == "run_automation":
                 if automations is not None and act["automation"] not in automations:
                     problems.append(f"{where} runs “{act['automation']}”, which isn't an automation"
@@ -2943,10 +2960,12 @@ def _check_automation(a, tables, problems, documents, bp_pages=(), automations=N
 def check(bp):
     """Every reference in the blueprint that doesn't point at something real, as plain sentences."""
     token = _TEAM_KEYS.set(frozenset(tm["key"] for tm in teams(bp)))
+    known = _FLOW_KEYS.set({f["key"]: f for f in flows(bp)})
     try:
         return _check_all(bp)
     finally:
         _TEAM_KEYS.reset(token)
+        _FLOW_KEYS.reset(known)
 
 
 def _check_all(bp):

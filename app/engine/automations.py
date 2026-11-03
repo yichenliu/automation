@@ -1396,6 +1396,18 @@ def _assignees(engine, who, record, each=False):
     return [(uid, None) for uid in engine.people_at(record, who)] or [(None, "admin")]
 
 
+def _priority(engine, action, record):
+    """How pressing a task is, 0 (low) to 3 (urgent): as the step says, or as a field of the record says (Urgency:
+    Emergency)."""
+    said = action.get("priority")
+    if not said:
+        return 1
+    if said in schema.PRIORITIES:
+        return schema.PRIORITIES[said]
+    value = str(engine.value(record, said) or "").strip().lower() if record is not None and engine.field(record.table, said) else ""
+    return next((n for word, n in sorted(schema.PRIORITIES.items(), key=lambda x: -x[1]) if word in value), 1)
+
+
 def _named(engine, rows):
     names = []
     for r in rows:
@@ -1441,7 +1453,8 @@ def _ask(engine, automation, action, record, run, at):
             rows.append(Approval(workspace_id=engine.ws.id, run_id=run.id, record_id=record.id if record is not None else None,
                                  table=record.table if record is not None else None, message=message, assignee_id=uid, role=role,
                                  kind=kind, step=at, fields=action.get("fields") if task else None, history=history,
-                                 proposal=rules or None))
+                                 proposal=rules or None, priority=_priority(engine, action, record),
+                                 flow=action.get("flow") if task else None))
             db.session.add(rows[-1])
         db.session.commit()
         for r in rows:

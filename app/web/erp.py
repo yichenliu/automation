@@ -78,7 +78,17 @@ def my_approvals(ws, member):
     engine = g.get("engine") if g.get("engine") is not None and g.engine.ws.id == ws.id else None
     needs_record = lambda a: a.record_id and (a.assignee_id is None or (a.proposal or {}).get("not_by"))  # noqa: E731
     return [a for a in pending if may_decide(a, member, current_user.id, db.session.get(Record, a.record_id) if needs_record(a) else None,
-                                             engine=engine)]
+                                             engine=engine) and in_my_queue(a)]
+
+
+def in_my_queue(a, later=False):
+    """A task someone else in its team took isn't in anyone else's queue; one put off ("not now") comes back on its day.
+    With `later`, the ones put off instead."""
+    from ..models import utcnow
+    if a.taken_by_id and a.taken_by_id != current_user.id:
+        return False
+    put_off = bool(a.deferred_until and a.deferred_until > utcnow())
+    return put_off if later else not put_off
 
 
 def open_suggestions(ws):

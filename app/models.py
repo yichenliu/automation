@@ -243,6 +243,7 @@ class FlowRun(db.Model):
     data = db.Column(db.JSON, default=dict)  # each step's answers, by the step's key
     status = db.Column(db.String(20), default="open")  # open | done | cancelled
     result_id = db.Column(db.Integer)  # the record it saved to, once done
+    task_id = db.Column(db.Integer)  # the task (an Approval) doing this flow finishes
     run_id = db.Column(db.Integer)  # the rule run of its "then" steps
     created_at = db.Column(db.DateTime, default=utcnow)
     finished_at = db.Column(db.DateTime)
@@ -272,6 +273,12 @@ class Approval(db.Model):
     comment = db.Column(db.Text)
     decided_at = db.Column(db.DateTime)
     created_at = db.Column(db.DateTime, default=utcnow)
+    # a work queue: how pressing a task is (0 low … 3 urgent), "not now" until when, who in its team or role took it,
+    # and the flow it's done through (a stock count that is the task)
+    priority = db.Column(db.Integer, default=1)
+    deferred_until = db.Column(db.DateTime)
+    taken_by_id = db.Column(db.Integer)
+    flow = db.Column(db.String(64))
 
 
 class Notification(db.Model):
