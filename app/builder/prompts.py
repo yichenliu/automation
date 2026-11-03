@@ -590,6 +590,9 @@ Steps ("do"):
 - "press": press the button automation "button" (its key) on "record".
 - "approve" / "reject": answer what's waiting for someone's OK on "record", with "comment": what they'd write (why
   they said no). Each answers one approval: a chain (the team lead, then finance over $2,000) needs an approve for each.
+  An AI step whose work a person checks first ("review": "always") waits for that check: "approve" keeps its draft.
+- AI steps aren't asked in a try-out: one answers with what the example expects of the detail it fills (a price check
+  "Pass"), so say it, and what should follow; "equals": "non-empty" when any value will do (a drafted letter).
 - "wait": let "days" pass (for reminders, chasing, anything overdue or so many days old); then "run" a scheduled
   automation to have it look. Only a scheduled one: a rule that starts when something is added, changed or moved has
   already run by itself, so running it too would do it twice.

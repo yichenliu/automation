@@ -7,6 +7,7 @@ steps happen at once, so people see the result as they save; runs with AI steps 
 AI can't be reached, wait and carry on from the step they stopped at. A step that asks a person to approve pauses the
 run until they decide. Every run keeps its steps, so what an automation did (or why it didn't) can always be seen.
 """
+import contextvars
 import hashlib
 import random
 import hmac
@@ -30,6 +31,9 @@ MAX_DEPTH = 5  # automations started by automations, at most this deep (stops lo
 AI_RETRY_SECONDS = 30
 WEEKDAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 SLOW = {"ai_fill", "ai_extract", "ai_create_record"}  # steps done by the background worker
+# A try-out's answers for its AI steps, answer(record, field key) -> value or None: the AI isn't asked in a copy, so an AI
+# step answers as the example expects (a price check "Pass") and what comes after it is tried. Unset everywhere else.
+stand_in = contextvars.ContextVar("stand_in", default=None)
 
 
 SPOT_CHECK = 0.1  # of the AI's sure answers in a "check when unsure" step, the share a person still checks (keeps its record honest)
@@ -73,7 +77,10 @@ def on_change(engine, record, old, depth=0):
     if depth >= MAX_DEPTH:
         return []
     created = old is None
-    started = []
+    # Which rules this change starts is decided before any of them runs: one that runs at once can change the record (a
+    # check that approves it), and that's a change of its own, starting its own rules. Asked again afterwards, the record
+    # would already look approved, and the rule for "changed to Approved" would run twice.
+    due = []
     for a in engine.bp.get("automations", []):
         trig = a["trigger"]
         if not a.get("enabled", True) or trig.get("table") != record.table:
@@ -83,10 +90,10 @@ def on_change(engine, record, old, depth=0):
         if trig["type"] not in ("record_created", "record_updated", "record_created_or_updated"):
             continue
         if engine.matches(record, a["conditions"], old=old):
-            t = engine.tables[record.table]
-            what = "was added" if created else "was changed"
-            started.append(start(engine, a, record, f"{t['singular']} “{engine.title(record)}” {what}", depth))
-    return started
+            due.append(a)
+    t = engine.tables[record.table]
+    what = f"{t['singular']} “{engine.title(record)}” {'was added' if created else 'was changed'}"
+    return [start(engine, a, record, what, depth) for a in due]
 
 
 def on_delete(engine, record, depth=0):
@@ -130,7 +137,7 @@ def start(engine, automation, record, trigger, depth=0, context=None):
     db.session.add(run)
     db.session.commit()
     engine.started.append(run)  # so the screen can say what the save set off
-    if not any(act["type"] in SLOW for act in schema.steps_of(automation["actions"])):
+    if stand_in.get() is not None or not any(act["type"] in SLOW for act in schema.steps_of(automation["actions"])):
         execute(engine.system(), run)
     return run
 
@@ -447,7 +454,7 @@ def _ai_step(engine, automation, action, record, run, entry, log):
             return
         proposal, mode = work["proposal"], action.get("review", "never")
         entry.update(why=proposal.get("why"), sure=proposal["sure"])
-        if mode == "never" or mode == "when_unsure" and proposal["sure"] and random.random() >= SPOT_CHECK:
+        if mode == "never" or mode == "when_unsure" and proposal["sure"] and (stand_in.get() is not None or random.random() >= SPOT_CHECK):
             entry.update(_attempt(engine, automation, action, record, run, entry, log, do=lambda *_: _ai_apply(engine, automation, proposal)),
                          done=True, ai="applied")
             return
@@ -549,6 +556,15 @@ def _ai_work(engine, automation, action, record, run, at=None, learned=None):
     people corrected its work at this step before, unless the step says not to learn."""
     from .. import intelligence
     kind = action["type"]
+    answer = stand_in.get()
+    if answer is not None and record is not None:  # a try-out: answered as the example expects, so what follows is tried
+        keys = [action["field"]] if kind in ("ai_fill", "ai_check") else list(action.get("fields") or []) if kind == "ai_extract" else []
+        values = {k: v for k in keys for v in [answer(record, k)] if v not in (None, "", [])
+                  and (kind != "ai_extract" or (record.data or {}).get(k) in (None, "", []))}
+        if not values:
+            return {"result": "Not tried: the AI isn't asked while an app is tried out"}
+        return {"proposal": {"table": record.table, "record_id": record.id, "values": values, "sure": True, "unsure": [],
+                             "why": "As the example expects (the AI isn't asked while an app is tried out)"}}
     if learned is None:
         learned = corrections(engine, automation["key"], at) if at is not None and action.get("learn", True) else []
     action = {**action, "_examples": learned}
@@ -1536,7 +1552,7 @@ def _carry_on(engine, run):
     run.status, run.next_try = "queued", None
     db.session.commit()
     automation = next((a for a in engine.bp.get("automations", []) if a["key"] == run.automation), None)
-    if automation and not any(act["type"] in SLOW for act in schema.steps_of(automation["actions"])):
+    if automation and (stand_in.get() is not None or not any(act["type"] in SLOW for act in schema.steps_of(automation["actions"]))):
         execute(engine.system(), run)  # the rule carries on as itself: the person who answered moves records only by its buttons
     return run
 

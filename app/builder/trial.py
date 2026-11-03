@@ -622,7 +622,11 @@ def _act(trial, engine, step, names):
     do = step.get("do")
     if do == "add":
         t = _table(engine, step.get("table"))
-        record = engine.create(t["key"], _values(engine, t, step.get("values"), names), ai=False)
+        names["_adding"] = step.get("as")
+        try:
+            record = engine.create(t["key"], _values(engine, t, step.get("values"), names), ai=False)
+        finally:
+            names.pop("_adding", None)
         if step.get("as"):
             names[step["as"]] = record.id
         names.setdefault("_added", []).append((t["key"], record.id))
@@ -698,6 +702,8 @@ def _act(trial, engine, step, names):
         said = step.get("comment") or step.get("reason") or next((v for v in (step.get("values") or {}).values() if isinstance(v, str)), None)
         if approval.kind == "task":
             automations.complete(decider, approval, decider.by, comment=said)
+        elif approval.kind == "review" and do == "approve":  # a person checks the AI's draft and keeps it as it is
+            automations.complete_review(decider, approval, decider.by, comment=said)
         else:  # what they'd write answering it ("the quote is too old"): the rule's {{reason}}
             automations.decide(decider, approval, do == "approve", decider.by, comment=said, by_id=decider.user_id)
     else:
@@ -783,7 +789,12 @@ BAD_VALUE = re.compile(r"isn't an? (number|date|time|duration|colour|location|em
                        r"isn't one of: |isn't a member of this workspace|^a rating is a number|isn't valid JSON")
 
 
+FILLED = re.compile(r"^\s*(non[- ]?empty|not empty|filled( in)?|any(thing)?|<any>|\*)\s*$", re.I)  # "anything, as long as it's there"
+
+
 def _same(engine, f, actual, wanted, names):
+    if isinstance(wanted, str) and FILLED.match(wanted):
+        return actual not in (None, "", [])
     if wanted in (None, "") or (isinstance(wanted, list) and not wanted):
         return actual in (None, "", [])
     kind = engine.kind(f) if f else None
@@ -857,6 +868,40 @@ def play(trial, example):
     example itself names what isn't there."""
     engine, names = trial.engine(), {}
     out = {"title": str(example.get("title") or "An example")[:160], "ok": False, "lines": [], "problem": None, "kind": None, "detail": []}
+    token = automations.stand_in.set(_ai_answers(trial, engine, example, names))
+    try:
+        return _play(trial, engine, example, names, out)
+    finally:
+        automations.stand_in.reset(token)
+
+
+def _ai_answers(trial, engine, example, names):
+    """How the app's AI steps answer while this example is tried: what the example expects of the field the step fills
+    for that record (the AI's own judgement can't be tried; what the app does with it can), or an ordinary value."""
+    filled = {(a["trigger"].get("table"), k) for a in engine.bp.get("automations", []) for act in schema.steps_of(a["actions"])
+              for k in ([act.get("field")] if act.get("type") in ("ai_fill", "ai_check") else act.get("fields") or []
+                        if act.get("type") == "ai_extract" else [])}
+    wanted = {}
+    for c in example.get("expect") or []:
+        if c.get("record") and c.get("field") and "." not in str(c["field"]) and "equals" in c:
+            wanted.setdefault(c["record"], {})[c["field"]] = c["equals"]
+
+    def answer(record, key):
+        f = engine.field(record.table, key)
+        if f is None or (record.table, key) not in filled:
+            return None
+        alias = next((a for a, rid in names.items() if rid == record.id and key in wanted.get(a, {})), None)
+        adding = names.get("_adding")  # a rule run as the record is added, before the example has named it
+        if alias is None and key in wanted.get(adding, {}) and record.id not in names.values():
+            alias = adding
+        value = wanted[alias][key] if alias else None
+        if value is None or (isinstance(value, str) and FILLED.match(value)):  # "anything": an ordinary value
+            value = sample_value(engine, engine.tables[record.table], f, trial.owner_id, {}, 300, 0)
+        return value
+    return answer
+
+
+def _play(trial, engine, example, names, out):
     last_run = db.session.query(db.func.max(Run.id)).filter(Run.workspace_id == trial.ws_id).scalar() or 0
     steps, by_hand = _not_by_hand(engine, example)
     if by_hand:

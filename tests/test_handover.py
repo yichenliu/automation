@@ -311,3 +311,50 @@ def test_a_reply_says_lists_and_rules_unless_the_owner_or_the_app_uses_the_word(
     assert plain("I set up the fields and two automations in your ERP. Workflows run by themselves.", bp, "we sell online") \
         == "I set up the details and two rules in your app. Processes run by themselves."
     assert plain("Each table and chair has its fields.", bp, "We make tables") == "Each table and chair has its details."
+
+
+def test_an_ai_step_answers_as_the_example_expects_in_a_try_out_so_what_follows_is_tried(app, owner):
+    _, ws = owner
+    _built(ws, [
+        {"op": "create_table", "table": "quotes", "label": "Quotes", "fields": [
+            {"key": "supplier", "type": "text", "required": True},
+            {"key": "price_check", "label": "Price check", "type": "select", "options": ["Pass", "Issues"]},
+            {"key": "status", "type": "select", "options": ["Checking", "Approved", "Needs review"], "default": "Checking"}]},
+        {"op": "add_automation", "automation": {
+            "key": "check", "name": "Check the quote's prices", "trigger": {"type": "record_created", "table": "quotes"},
+            "actions": [{"type": "ai_fill", "field": "price_check", "instructions": "Compare the quoted prices with the contract."},
+                        {"type": "branch", "paths": [
+                            {"label": "Fine", "when": [{"field": "price_check", "op": "equals", "value": "Pass"}],
+                             "steps": [{"type": "update_record", "values": {"status": "Approved"}}]},
+                            {"label": "Not", "when": [{"field": "price_check", "op": "equals", "value": "Issues"}],
+                             "steps": [{"type": "update_record", "values": {"status": "Needs review"}}]}]}]}}])
+    clean = {"title": "A clean quote is approved", "steps": [{"do": "add", "as": "q", "table": "quotes", "values": {"supplier": "Acme"}}],
+             "expect": [{"record": "q", "field": "price_check", "equals": "Pass"}, {"record": "q", "field": "status", "equals": "Approved"}]}
+    dear = {"title": "A dear quote goes for review", "steps": [{"do": "add", "as": "q", "table": "quotes", "values": {"supplier": "Bo"}}],
+            "expect": [{"record": "q", "field": "price_check", "equals": "Issues"}, {"record": "q", "field": "status", "equals": "Needs review"}]}
+    wrong = {"title": "A dear quote is approved anyway", "steps": [{"do": "add", "as": "q", "table": "quotes", "values": {"supplier": "Cy"}}],
+             "expect": [{"record": "q", "field": "price_check", "equals": "Issues"}, {"record": "q", "field": "status", "equals": "Approved"}]}
+    _, (a, b, c) = trial.try_out(ws, [clean, dear, wrong], screens=False)
+    assert a["ok"] and b["ok"], (a, b)  # the rule after the AI step ran, both ways
+    assert not c["ok"] and "Status came out Needs review" in c["plain"]  # what the app does with the answer is still checked
+
+
+def test_a_rule_set_off_by_another_rules_change_runs_once(app, owner):
+    user, ws = owner
+    _built(ws, [
+        {"op": "create_table", "table": "quotes", "label": "Quotes", "fields": [{"key": "supplier", "type": "text", "required": True},
+            {"key": "status", "type": "select", "options": ["Received", "Checking", "Approved"], "default": "Received"}],
+         "workflow": {"field": "status", "transitions": [{"from": ["Received"], "to": "Checking", "label": "Start check"}]}},
+        {"op": "create_table", "table": "purchase_orders", "label": "Purchase orders", "fields": [
+            {"key": "quote", "type": "link", "table": "quotes", "required": True}]},
+        {"op": "add_automation", "automation": {"key": "check", "name": "Check", "trigger": {"type": "record_updated", "table": "quotes"},
+            "conditions": [{"field": "status", "op": "changed_to", "value": "Checking"}],
+            "actions": [{"type": "update_record", "values": {"status": "Approved"}}]}},
+        {"op": "add_automation", "automation": {"key": "po", "name": "Raise PO", "trigger": {"type": "record_updated", "table": "quotes"},
+            "conditions": [{"field": "status", "op": "changed_to", "value": "Approved"}],
+            "actions": [{"type": "create_record", "table": "purchase_orders", "values": {"quote": "{{record}}"}}]}}])
+    me = _as(ws, user)
+    quote = me.create("quotes", {"supplier": "Acme"})
+    me.move(me.get(quote.id), 0)
+    assert me.get(quote.id).data["status"] == "Approved"
+    assert len(me.rows("purchase_orders")) == 1  # not two: the check's approval set it off once, the move didn't again
