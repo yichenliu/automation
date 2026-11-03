@@ -908,6 +908,17 @@ BAD_VALUE = re.compile(r"isn't an? (number|date|time|duration|colour|location|em
 FILLED = re.compile(r"^\s*(non[- ]?empty|not empty|filled( in)?|any(thing)?|<any>|\*)\s*$", re.I)  # "anything, as long as it's there"
 
 
+def _shows_a_link(engine, f):
+    """A lookup whose value is a linked record (a treatment note's patient, through its appointment)."""
+    if f is None or f["type"] != "lookup":
+        return False
+    try:
+        source = engine.source(f)
+    except Exception:  # noqa: BLE001 - a lookup that can't be followed isn't a link
+        return False
+    return bool(source) and source["type"] == "link"
+
+
 def _same(engine, f, actual, wanted, names):
     if isinstance(wanted, str) and FILLED.match(wanted):
         return actual not in (None, "", [])
@@ -921,7 +932,7 @@ def _same(engine, f, actual, wanted, names):
     if kind in ("number", "money", "percent", "duration", "rating") or (isinstance(wanted, (int, float)) and not isinstance(wanted, bool)):
         a, w = to_number(actual), to_number(str(wanted).replace("$", "").replace(",", "")) if not isinstance(wanted, (int, float)) else wanted
         return a is not None and w is not None and abs(a - w) <= max(0.011, abs(w) * 0.001)
-    if f is not None and f["type"] == "link":
+    if f is not None and (f["type"] == "link" or _shows_a_link(engine, f)):  # a lookup of a link (a note's patient, by its visit) too
         ids = actual if isinstance(actual, list) else [actual]
         wanted_id = names.get(wanted) if isinstance(wanted, str) else wanted
         return any(str(i) == str(wanted_id) for i in ids) or any(engine.title(engine.get(i)).lower() == str(wanted).strip().lower()
@@ -975,7 +986,7 @@ def _expect(engine, c, names):
     label = automations._path_label(engine, t["key"], path)
     shown = engine.display(f, actual) if actual not in (None, "", []) else "empty"
     expected = engine.display(f, schema.as_fraction(wanted) if engine.kind(f) == "percent" else wanted) \
-        if wanted not in (None, "") and f["type"] not in ("link", "user") else str(wanted or "empty")
+        if wanted not in (None, "") and f["type"] not in ("link", "user") and not _shows_a_link(engine, f) else str(wanted or "empty")
     plain = f"{t['singular']}’s {label}: {shown}" if ok else f"{t['singular']}’s {label} came out {shown}, expected {expected}"
     return ok, plain, f"{c.get('record')} ({t['key']}).{key} is {actual!r}; expected {wanted!r}"
 

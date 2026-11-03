@@ -324,3 +324,25 @@ def test_stages_nothing_leads_to_are_chained_in_order_and_a_step_finds_the_recor
     assert moves == [(["Draft"], "Submitted"), (["Submitted"], "Scored"), (["Scored"], "Recommended"), (["Recommended"], "Awarded"),
                      (["Recommended"], "Not awarded")]
     assert result.blueprint["automations"][0]["actions"][0]["target"] == "invoice"  # Paid is the invoice's, not the payment's
+
+
+def test_an_example_naming_the_record_a_lookup_shows_is_compared_by_that_record(app, owner):
+    """A treatment note's patient, looked up through its appointment, expected as the example's own patient p1."""
+    _, ws = owner
+    _built(ws, [
+        {"op": "create_table", "table": "patients", "label": "Patients", "fields": [{"key": "name", "type": "text", "required": True}]},
+        {"op": "create_table", "table": "appointments", "label": "Appointments", "fields": [
+            {"key": "patient", "type": "link", "table": "patients", "required": True}, {"key": "when", "type": "date"}]},
+        {"op": "create_table", "table": "notes", "label": "Treatment notes", "fields": [
+            {"key": "appointment", "type": "link", "table": "appointments", "required": True},
+            {"key": "patient", "type": "lookup", "link": "appointment", "field": "patient"}, {"key": "text", "type": "text"}]}])
+    example = {"title": "A note shows its patient", "steps": [
+        {"do": "add", "table": "patients", "as": "p1", "values": {"name": "Casey"}},
+        {"do": "add", "table": "patients", "as": "p2", "values": {"name": "Robin"}},
+        {"do": "add", "table": "appointments", "as": "a1", "values": {"patient": "p1", "when": "2026-11-10"}},
+        {"do": "add", "table": "notes", "as": "n1", "values": {"appointment": "a1", "text": "Knee"}}],
+        "expect": [{"record": "n1", "field": "patient", "equals": "p1"}]}
+    wrong = {**example, "title": "Expected the other patient", "expect": [{"record": "n1", "field": "patient", "equals": "p2"}]}
+    _, (right, other) = trial.try_out(ws, [example, wrong], screens=False)
+    assert right["ok"], right
+    assert not other["ok"] and other["plain"] == "Treatment note’s Patient came out Casey, expected p2"
