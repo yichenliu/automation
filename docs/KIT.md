@@ -126,6 +126,11 @@ The builder makes them; every try-out does each flow once.
 it), for label printers (62 × 29, 50 × 25, 62 × 100 mm, 4 × 6 in shipping) or sheets (A4 21, Letter 30); a list's own
 label designs (which details, which barcode, one per box received); many at once from a list or a flow.
 
+✅ **Printing straight to a printer**, without a print dialog: labels and documents go to the printers set up on the
+Mac the app runs on (a Brother or Dymo label printer, the office laser), or labels to a thermal printer on the network
+(Zebra, Honeywell, SATO) in its own language (ZPL), with the label stock it has loaded; a test print under Settings ›
+Printers. A flow's labels can print by themselves as soon as it's saved.
+
 ✅ **Scanning**: a camera button beside search opens whatever a code is (one of the app's labels, a barcode, a record's
 number); a USB or Bluetooth scanner typing into search does the same; barcode fields scan with the camera.
 

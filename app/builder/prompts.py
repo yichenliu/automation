@@ -177,7 +177,8 @@ Flows (work done a screen at a time on a phone or at a bench: receiving a delive
   field, count_into: the number field the count is saved in, code: the barcode to scan ("product.sku"), short: "ask"
   (say why) | "block" | "allow"}}; "photo" {{field: an image or file field}}; "signature" {{field: a signature field}};
   "decide" {{field, options: [{{label, value, finish: true to end there}}]}}; "print" {{document: a label or PDF, of:
-  "record" or a scan/pick step's key for its lines}} (printed once it's saved). Nothing is saved until the last step;
+  "record" or a scan/pick step's key for its lines, auto: true to print by itself}} (printed once it's saved, on the
+  printer chosen in Settings › Printers). Nothing is saved until the last step;
   then the form's fields and choices go on the record, scanned items become lines, counts go on the lines, and "then"
   runs. Make a flow when work happens on the floor in steps with scanning or counting; a form is enough otherwise.
 Public forms (a link anyone can fill in: enquiries, bookings, job requests): set_public_form {{table, form: {{title, intro,
@@ -578,7 +579,7 @@ _FLOW_STEP = {"type": "object", "required": ["kind"], "properties": {
     "lines": {"type": "object", "properties": {"table": _STRING, "via": _STRING}}, "target": _STRING, "count_into": _STRING,
     "code": _STRING, "short": {"type": "string", "enum": ["ask", "block", "allow"]}, "field": _STRING, "optional": {"type": "boolean"},
     "options": {"type": "array", "items": {"type": "object", "properties": {"label": _STRING, "value": _STRING, "finish": {"type": "boolean"}}}},
-    "document": _STRING, "of": _STRING}}
+    "document": _STRING, "of": _STRING, "auto": {"type": "boolean"}}}
 _FLOW = {"type": "object", "required": ["label", "table", "steps"], "properties": {
     "key": _STRING, "label": _STRING, "table": _STRING, "start": {"type": "string", "enum": ["record", "new"]}, "description": _STRING,
     "when": _CONDITIONS, "who": _STRINGS, "again": {"type": "boolean"}, "steps": {"type": "array", "items": _FLOW_STEP}, "then": _STEPS}}

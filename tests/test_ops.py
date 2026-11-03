@@ -77,3 +77,38 @@ def test_a_label_keeps_to_what_its_reader_may_see(app, owner):
     staff = _as(ws, sam)
     assert labels.for_records(staff, [staff.get(flour.id)], doc)[0]["lines"] == ["Bin: A-03"]  # the cost is kept to admins
     assert labels.for_records(e, [flour])[0]["kind"] == "barcode"
+
+
+def test_labels_and_documents_go_straight_to_the_printer_chosen(app, client, owner, monkeypatch):
+    from app import printing
+    user, ws = owner
+    _built(ws, STOCK + [{"op": "add_document", "table": "work_orders", "document": {"label": "Job card", "title": "Job card", "fields": ["title"]}}])
+    e = Engine(ws)
+    flour = e.create("products", {"name": "Flour 25kg", "sku": "FL25-0001", "boxes": 2})
+    job = e.create("work_orders", {"title": "Oak table"})
+    sent = []
+    monkeypatch.setattr(printing, "mac_printers", lambda: (["Brother_QL_820NWB", "Office_Laser"], "Office_Laser"))
+    monkeypatch.setattr(printing, "_send_mac", lambda name, pdf, copies=1, size=None: sent.append(("mac", name, pdf[:4], size)))
+    monkeypatch.setattr(printing, "_send_zpl", lambda address, data: sent.append(("zpl", address, data)))
+    login(client)
+    base, settings = f"/w/{ws.id}/app", f"/w/{ws.id}/settings/printers"
+    assert "Brother QL 820NWB" in client.get(settings).get_data(as_text=True)
+    record = client.get(f"{base}/t/products/{flour.id}").get_data(as_text=True)
+    assert "label/print" not in record  # no printer chosen: labels open as PDFs to print by hand
+    client.post(settings, data={"labels": "mac:Brother_QL_820NWB", "size": "62x29", "documents": "mac:Office_Laser"})
+    client.post(f"{base}/t/products/{flour.id}/label/print", data={"doc": "shelf_label"})
+    assert sent[-1][:3] == ("mac", "Brother_QL_820NWB", b"%PDF") and sent[-1][3] == "62x29"  # the stock loaded wins
+    client.post(f"{base}/t/work_orders/{job.id}/document/job_card/print")
+    assert sent[-1][:3] == ("mac", "Office_Laser", b"%PDF")
+    client.post(settings, data={"labels": "zpl", "zpl_address": "192.168.1.50", "dpi": "203", "size": "50x25"})
+    client.post(f"{base}/t/products/bulk", data={"ids": [flour.id], "action": "print_labels"})
+    kind, address, zpl = sent[-1]
+    assert (kind, address) == ("zpl", "192.168.1.50") and zpl.startswith("^XA") and "^BCN" in zpl and "^FDFL25-0001^FS" in zpl
+    assert "Sent 1 label to the label printer at 192.168.1.50" in client.get(f"{base}/t/products").get_data(as_text=True)
+    assert "as its IP address" in client.post(settings, data={"labels": "zpl", "zpl_address": "not an address!"}, follow_redirects=True).get_data(as_text=True)
+
+
+def test_zpl_keeps_its_own_marks_out_of_the_words():
+    from app import printing
+    out = printing.zpl([{"title": "Bolt ^XZ ~JA", "lines": ["Bin A"], "code": "https://x/1", "kind": "qr"}], "62x29")
+    assert out.count("^XA") == 1 and out.count("^XZ") == 1 and "^BQN" in out and "Bolt  XZ -JA" in out

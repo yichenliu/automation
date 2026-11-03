@@ -1108,6 +1108,8 @@ def bulk(wid, table):
               + (f" Locked, so not deleted: {', '.join(kept[:5])}{'…' if len(kept) > 5 else ''}" if kept else ""), "success" if not kept else "error")
     elif action and (action == "labels" or action.startswith("labels:")):  # a label for each one selected, ready to print
         return _labels_pdf(engine, t, rows, action[7:] or None, request.form.get("size"))
+    elif action and (action == "print_labels" or action.startswith("print_labels:")):  # …or straight to the label printer
+        _send_labels(engine, t, rows, action[13:] or None)
     elif action and action.startswith("pdf:"):  # one PDF per selected record, in a zip (mail merge, month-end statements)
         import zipfile
         from ..documents import build
@@ -1276,6 +1278,50 @@ def label(wid, table, rid):
     t = _table(engine, table)
     r = _record(engine, t, rid)
     return _labels_pdf(engine, t, [r], request.args.get("doc") or None, request.args.get("size"))
+
+
+@bp.route("/t/<table>/<int:rid>/label/print", methods=["POST"])
+@login_required
+def label_print(wid, table, rid):
+    """The record's label (or its "doc" label) straight to the label printer."""
+    ws, engine = ctx(wid)
+    t = _table(engine, table)
+    r = _record(engine, t, rid)
+    _send_labels(engine, t, [r], request.form.get("doc") or None)
+    return redirect(request.referrer or url_for("app.record", wid=wid, table=t["key"], rid=r.id))
+
+
+def _send_labels(engine, t, rows, key):
+    from .. import printing
+    from ..documents import labels
+    doc = next((d for d in t.get("documents", []) if d["key"] == key and d.get("format") == "label"), None)
+    if key and doc is None:
+        abort(404)
+    link = lambda r: url_for("app.record", wid=engine.ws.id, table=t["key"], rid=r.id, _external=True)  # noqa: E731
+    try:
+        flash(printing.print_labels(engine.ws, labels.for_records(engine, rows, doc, link), (doc or {}).get("size")), "success")
+    except printing.PrintProblem as exc:
+        flash(str(exc), "error")
+
+
+@bp.route("/t/<table>/<int:rid>/document/<key>/print", methods=["POST"])
+@login_required
+def document_print(wid, table, rid, key):
+    """A record's PDF document straight to the documents printer."""
+    from .. import printing
+    from ..documents import build
+    from ..documents import pdf as pdf_
+    ws, engine = ctx(wid, "editor")
+    t = _table(engine, table, "edit")
+    r = _record(engine, t, rid)
+    if not any(d["key"] == key and d.get("format") not in ("text", "label") for d in t.get("documents", [])):
+        abort(404)
+    data, _ = build(engine, r, key)
+    try:
+        flash(printing.print_pdf(ws, pdf_.render(data)), "success")
+    except printing.PrintProblem as exc:
+        flash(str(exc), "error")
+    return redirect(url_for("app.record", wid=wid, table=t["key"], rid=r.id))
 
 
 def _flows_here(engine, r):

@@ -169,13 +169,20 @@ def blank_in(f, values, errors):
     return values.get(f["key"]) in (None, "", [], False) and not errors.get(f["key"])
 
 
+def _printer_for(ws, role):
+    """The printer chosen for labels or documents, in words ("Brother QL-820NWB"), or None: print buttons send to it."""
+    from .. import printing
+    chosen = printing.chosen(ws, role)
+    return printing.describe(chosen) if chosen else None
+
+
 def register(app):
     app.jinja_env.tests["blank_in"] = blank_in
     app.jinja_env.filters.update(lc=lc, ago=ago, markdown=render_markdown, size=human_size, when=when, status_words=status_words, rule_words=rule_words,
                                  json=lambda v: escape(json.dumps(v, default=str)))  # for data-* attributes: quotes escaped, decoded by the browser
     from ..documents.labels import SIZES as LABEL_SIZES
     app.jinja_env.globals.update(pill=pill, icon=icon, now=datetime.now, about_field=about_field, ask_facts=ask_facts, MORE_AFTER=MORE_AFTER,
-                                 LABEL_SIZES={k: v[0] for k, v in LABEL_SIZES.items()})
+                                 LABEL_SIZES={k: v[0] for k, v in LABEL_SIZES.items()}, printer_for=_printer_for)
 
     @app.context_processor
     def platform():

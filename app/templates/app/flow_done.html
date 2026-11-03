@@ -7,7 +7,8 @@
   <h1 class="flow-title">Done{% if record %}: {{ e.title(record) }}{% endif %}</h1>
   <p class="muted">Everything from “{{ flow.label }}” is saved{% if rule %}{% if rule.status == 'done' %}, and what comes after it has been done{% elif rule.status in ('failed',) %}, but what comes after it stopped: {{ rule.error }}{% else %}; what comes after it is under way{% endif %}{% endif %}.</p>
   {% for p in prints %}
-    {% if p.url %}<a class="btn" href="{{ p.url }}" target="_blank" rel="noopener" data-flow-print>{{ icon('tag') }}{{ p.label }}</a>
+    {% if p.send %}<form method="post" action="{{ p.send }}" data-busy><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn">{{ icon('printer') }}{{ p.label }}{% if p.count > 1 %} ({{ p.count }}){% endif %}</button></form>
+    {% elif p.url %}<a class="btn" href="{{ p.url }}" target="_blank" rel="noopener" data-flow-print>{{ icon('tag') }}{{ p.label }}</a>
     {% elif p.lines %}<form method="post" action="{{ url_for('app.bulk', wid=ws.id, table=p.table) }}" target="_blank">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">{% for i in p.lines %}<input type="hidden" name="ids" value="{{ i }}">{% endfor %}
       <button class="btn" name="action" value="{{ ('labels:' ~ p.doc) if p.doc else 'labels' }}">{{ icon('tag') }}{{ p.label }} ({{ p.lines|length }})</button></form>

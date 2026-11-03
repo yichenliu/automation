@@ -105,6 +105,9 @@ def flow_run(wid, run_id):
                     flash("; ".join(exc.errors.values()), "error")
                     return redirect(url_for("app.flow_run", wid=wid, run_id=run.id))
             else:
+                for s_ in steps:  # what prints by itself, where there's a printer for it
+                    if s_["kind"] == "print" and s_.get("auto") and printer_chosen(ws, _role(engine, flow, s_, record)):
+                        _print_step(engine, flow, s_, record)
                 return redirect(url_for("app.flow_done", wid=wid, run_id=run.id, rid=record.id))
     record = flows.record_of(engine, run)
     shown = [n for n, s in enumerate(steps) if s["kind"] != "print"]
@@ -177,6 +180,56 @@ def flow_code(wid, run_id):
     return jsonify(id=found.id, title=engine.title(found))
 
 
+def _print_target(engine, flow, step, record):
+    """(table, records) a print step prints: the record, or the lines a scan or pick step worked on."""
+    if step["of"] == "record":
+        return record.table, [record]
+    spec = next((s.get("into") or s.get("lines") for s in flow["steps"] if s["key"] == step["of"]), None) or \
+        {"table": step["of"], "via": schema._line_link(engine.tables.get(step["of"]) or {"fields": []}, flow["table"]) or ""}
+    return spec["table"], (engine.related(record, spec["table"], spec["via"]) if spec.get("via") else [])
+
+
+def _print_step(engine, flow, step, record):
+    """Send a print step's labels or document to the printer; a message for the person either way."""
+    from .. import printing
+    from ..documents import build, labels
+    from ..documents import pdf as pdf_
+    table, rows = _print_target(engine, flow, step, record)
+    try:
+        if _is_label(engine, table, step["document"]):
+            doc = next((d for d in engine.tables[table].get("documents", []) if d["key"] == step["document"]), None)
+            link = lambda r: url_for("app.record", wid=engine.ws.id, table=table, rid=r.id, _external=True)  # noqa: E731
+            flash(printing.print_labels(engine.ws, labels.for_records(engine, rows, doc, link), (doc or {}).get("size")), "success")
+        else:
+            for r in rows:
+                data, _ = build(engine, r, step["document"])
+                flash(printing.print_pdf(engine.ws, pdf_.render(data)), "success")
+    except printing.PrintProblem as exc:
+        flash(str(exc), "error")
+
+
+def _role(engine, flow, step, record):
+    table, _ = _print_target(engine, flow, step, record)
+    return "labels" if _is_label(engine, table, step["document"]) else "documents"
+
+
+def printer_chosen(ws, role):
+    from .. import printing
+    return printing.chosen(ws, role) is not None
+
+
+@bp.route("/flows/run/<int:run_id>/print/<int:n>", methods=["POST"])
+@login_required
+def flow_print(wid, run_id, n):
+    ws, engine = ctx(wid, "editor")
+    run, flow = _run(engine, run_id)
+    record = engine.get(run.result_id) if run.result_id else None
+    if run.status != "done" or record is None or not 0 <= n < len(flow["steps"]) or flow["steps"][n]["kind"] != "print":
+        abort(404)
+    _print_step(engine, flow, flow["steps"][n], record)
+    return redirect(url_for("app.flow_done", wid=wid, run_id=run.id))
+
+
 @bp.route("/flows/run/<int:run_id>/done")
 @login_required
 def flow_done(wid, run_id):
@@ -186,8 +239,12 @@ def flow_done(wid, run_id):
         return redirect(url_for("app.flow_run", wid=wid, run_id=run.id))
     record = engine.get(run.result_id) if run.result_id else None
     prints = []
-    for step in flow["steps"]:
+    for n, step in enumerate(flow["steps"]):
         if step["kind"] != "print" or record is None:
+            continue
+        table, rows = _print_target(engine, flow, step, record)
+        if rows and printer_chosen(ws, _role(engine, flow, step, record)):  # straight to the printer
+            prints.append({"label": step["label"], "send": url_for("app.flow_print", wid=wid, run_id=run.id, n=n), "count": len(rows)})
             continue
         if step["of"] == "record":
             prints.append({"label": step["label"], "url": url_for("app.label", wid=wid, table=record.table, rid=record.id, doc=step["document"] or None)

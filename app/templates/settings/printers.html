@@ -1,0 +1,31 @@
+{% extends "settings/_layout.html" %}
+{% block title %}Printers{% endblock %}
+{% block content %}
+<h1>Printers</h1><p class="muted mt-1">Print labels and documents straight to a printer, without a print dialog.</p>
+<form method="post" class="stack mt-3"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+{% for role, label in roles.items() %}{% set c = chosen[role] %}
+<div class="card"><div class="card-head">{{ icon('tag' if role == 'labels' else 'printer') }}<h2 class="grow">{{ label }}</h2>
+  {% if c %}<span class="pill green">Set</span>{% else %}<span class="pill slate">Not set</span>{% endif %}</div>
+  <div class="card-body stack">
+    <label class="stack"><span>Print {{ 'labels' if role == 'labels' else 'documents' }} on</span>
+      <select name="{{ role }}" data-printer-kind>
+        <option value="">Nobody's printer: open them to print by hand</option>
+        {% for n in names %}<option value="mac:{{ n }}" {{ 'selected' if c and c.kind == 'mac' and c.name == n }}>{{ n|replace('_', ' ') }}{{ ' (this Mac’s default)' if n == default }}</option>{% endfor %}
+        {% if role == 'labels' %}<option value="zpl" {{ 'selected' if c and c.kind == 'zpl' }}>A label printer on the network (Zebra, Honeywell, SATO)</option>{% endif %}
+      </select></label>
+    {% if not names %}<p class="faint small">No printers are set up on this Mac yet. Add one in System Settings › Printers &amp; Scanners, then come back.</p>{% endif %}
+    {% if role == 'labels' %}
+      <label class="stack" data-zpl {{ 'hidden' if not (c and c.kind == 'zpl') }}><span>Its address on the network</span>
+        <input type="text" name="zpl_address" value="{{ c.address if c and c.kind == 'zpl' else '' }}" placeholder="192.168.1.50" inputmode="url">
+        <span class="faint small">Shown on its configuration label (hold the feed button as it turns on).</span></label>
+      <label class="stack" data-zpl {{ 'hidden' if not (c and c.kind == 'zpl') }}><span>Its print head</span>
+        <select name="dpi"><option value="203" {{ 'selected' if not c or c.dpi != '300' }}>203 dpi (most)</option><option value="300" {{ 'selected' if c and c.dpi == '300' }}>300 dpi</option></select></label>
+      <label class="stack"><span>The labels loaded in it</span>
+        <select name="size">{% for k, name in sizes.items() %}<option value="{{ k }}" {{ 'selected' if c and c.size == k }}>{{ name }}</option>{% endfor %}</select></label>
+    {% endif %}
+    <div class="row"><button class="btn sm" name="test" value="{{ role }}">{{ icon('printer') }}Save and print a test {{ 'label' if role == 'labels' else 'page' }}</button></div>
+  </div></div>
+{% endfor %}
+<div class="row"><button class="btn primary">Save</button></div>
+</form>
+{% endblock %}

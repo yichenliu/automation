@@ -1542,6 +1542,8 @@ def normalize_flow_step(raw, n=1):
         step["document"] = slug(_first(raw, "document", "label", "template", "doc", default=""))
         of = _first(raw, "of", "for", "lines", default="record")
         step["of"] = "record" if str(of).lower() in ("record", "it", "this", "") else slug(of)
+        if _first(raw, "auto", "automatic", "by_itself", "straight_away") in (True, "true", "yes", 1):
+            step["auto"] = True  # on the printer as soon as it's saved, where one is chosen
     return step
 
 

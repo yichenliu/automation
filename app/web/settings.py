@@ -217,6 +217,52 @@ def disconnect(wid):
     return redirect(url_for(".connections", wid=wid))
 
 
+@bp.route("/printers", methods=["GET", "POST"])
+@login_required
+def printers(wid):
+    """Which printer labels and documents go to: one of this Mac's printers, or a label printer on the network."""
+    from .. import printing
+    from ..documents import labels
+    ws = workspace(wid, "admin")
+    names, default = printing.mac_printers()
+    if request.method == "POST":
+        settings = _settings(ws)
+        chosen = dict(settings.get("printers") or {})
+        for role in printing.ROLES:
+            pick = request.form.get(role, "")
+            if pick.startswith("mac:") and pick[4:] in names:
+                chosen[role] = {"kind": "mac", "name": pick[4:]}
+            elif pick == "zpl" and role == "labels":
+                address = (request.form.get("zpl_address") or "").strip()
+                if not re.fullmatch(r"[\w.-]+(:\d{2,5})?", address):
+                    flash("Write the label printer's address as its IP address (192.168.1.50), with :port if it isn't 9100.", "error")
+                    return redirect(url_for("settings.printers", wid=wid))
+                chosen[role] = {"kind": "zpl", "address": address, "dpi": request.form.get("dpi") if request.form.get("dpi") in printing.DPI else "203"}
+            else:
+                chosen.pop(role, None)
+            if role == "labels" and role in chosen:
+                chosen[role]["size"] = labels.size_of(request.form.get("size"))
+        settings["printers"] = chosen
+        ws.settings = settings
+        db.session.commit()
+        if request.form.get("test"):
+            try:
+                if request.form["test"] == "labels":
+                    flash(printing.print_labels(ws, [{"title": "Test label", "lines": [ws.name, "If you can read this, it works"],
+                                                      "code": "TEST-0001", "kind": "barcode"}]), "success")
+                else:
+                    from ..documents import pdf
+                    flash(printing.print_pdf(ws, pdf.render({"title": "Test page", "number": "TEST", "business": {"name": ws.name},
+                                                              "notes": "If you can read this, documents print here."})), "success")
+            except printing.PrintProblem as exc:
+                flash(str(exc), "error")
+        else:
+            flash("Saved.", "success")
+        return redirect(url_for("settings.printers", wid=wid))
+    return render_template("settings/printers.html", ws=ws, names=names, default=default, chosen={r: printing.chosen(ws, r) for r in printing.ROLES},
+                           roles=printing.ROLES, sizes={k: v[0] for k, v in labels.SIZES.items() if v[3] is None}, section="printers")
+
+
 @bp.route("/forms", methods=["GET", "POST"])
 @login_required
 def forms(wid):

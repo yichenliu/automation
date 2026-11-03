@@ -574,4 +574,10 @@
     });
     draw();
   }
+
+  // --- Settings › Printers: a network label printer's address only when that's what's chosen ---------------------------
+  $$("[data-printer-kind]").forEach((sel) => {
+    const card = sel.closest(".card-body"), show = () => $$("[data-zpl]", card).forEach((el) => (el.hidden = sel.value !== "zpl"));
+    sel.addEventListener("change", show);
+  });
 })();
