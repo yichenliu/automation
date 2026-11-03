@@ -776,6 +776,9 @@ class Engine:
     def aggregate(self, rows, aggregate, key=None):
         if aggregate == "count":
             return len(rows)
+        if aggregate in ("min", "max") and rows and self.kind(self.field(rows[0].table, key)) in ("date", "datetime"):
+            days = [str(v) for v in (self.value(r, key) for r in rows) if v not in (None, "")]  # the first or last gift: kept as written, ISO, so in order
+            return (min(days) if aggregate == "min" else max(days)) if days else None
         numbers = [n for n in (to_number(self.value(r, key)) for r in rows) if n is not None]
         if not numbers:
             return 0 if aggregate == "sum" else None

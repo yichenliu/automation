@@ -1053,6 +1053,11 @@ def _expect(engine, c, names):
     if not ok and f.get("expression") and len(path) == 1:  # how it was worked out, to tell a wrong sum from a wrong expectation
         read = _formula_reads(engine, record, f["expression"], names)
         said += f" (worked out as `{f['expression']}`" + (f" from {read}" if read else "") + ")"
+    outside = _filled_from_outside(engine, record.table, key) if not ok and actual in (None, "", []) and len(path) == 1 else []
+    if outside:
+        said += (f" (only {', '.join(f'“{a}”' for a in outside)} fills it in, and that starts when something comes in from outside (an "
+                 f"email, another system, a file), which an example can't send: a {schema.lc(t['singular'])} added by hand doesn't "
+                 f"start it, so leave this out of the example)")
     if not ok and actual in (None, "", []) and len(path) == 1 and _checking(engine, record, key):
         plain += " (the AI's work is waiting for someone to check it)"
         said += (f" (the AI's work for it is waiting for someone to check it, as its step's review says: to try it as kept, "
@@ -1076,6 +1081,26 @@ def _formula_reads(engine, record, expression, names):
             value = _shifted(engine, g, value, names["_waited"])
         out.append(f"{name} = {value!r}")
     return ", ".join(out[:8])
+
+
+OUTSIDE = ("email_received", "webhook_received", "file_added")
+
+
+def _filled_from_outside(engine, table, key):
+    """The rules that fill a field in, when every one of them starts from outside (a bank feed sent by another system):
+    their names, else []."""
+    filling = []
+    for a in engine.bp.get("automations", []):
+        own = a["trigger"].get("table") == table
+        for act in schema.steps_of(a["actions"]):
+            sets = (own and act.get("type") in ("ai_fill", "ai_check") and act.get("field") == key) \
+                or (own and act.get("type") == "ai_extract" and key in (act.get("fields") or [])) \
+                or (own and act.get("type") == "update_record" and not act.get("target") and key in (act.get("values") or {})) \
+                or (act.get("type") in ("create_record", "ai_create_record") and act.get("table") == table and key in (act.get("values") or {}))
+            if sets:
+                filling.append(a)
+                break
+    return [a["name"] for a in filling] if filling and all(a["trigger"]["type"] in OUTSIDE for a in filling) else []
 
 
 def _checking(engine, record, key):

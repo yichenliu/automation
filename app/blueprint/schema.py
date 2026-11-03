@@ -2440,6 +2440,15 @@ def _check_table(t, tables, modules, problems):
             _check_template(f["template"], where, problems, list(keys))
         if f["type"] == "link" and f["table"] not in tables:
             problems.append(f"{where} links to “{f['table']}”, which isn't a table (tables: {', '.join(tables)})")
+        elif f["type"] == "link" and f.get("match"):  # only a tenant of this request's property: both sides must be there
+            other = tables[f["table"]]
+            for theirs, ours in f["match"].items():
+                if not field(other, theirs):
+                    problems.append(f"{where} only offers {other['label'].lower()} whose “{theirs}” matches, but {other['label']} has no "
+                                    f"field “{theirs}” (its fields: {', '.join(x['key'] for x in other['fields'])}), so it refuses every one: "
+                                    f"match on a field it has, or leave \"match\" out")
+                elif ours not in keys:
+                    problems.append(f"{where} only offers {other['label'].lower()} matching this record's “{ours}”, which isn't one of its fields")
         if f["type"] == "formula":
             _check_expression(f["expression"], set(keys) | {"record", "id", "created_at", "updated_at"}, where, problems)
             if f["key"] in expr.names_in(f["expression"]):

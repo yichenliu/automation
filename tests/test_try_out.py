@@ -565,3 +565,54 @@ def test_trying_it_out_signs_what_a_move_needs_signed_before_moving_on(app, owne
             {"from": ["Proposed"], "to": "Client signed", "label": "Client signs off", "requires": ["client_signature", "signed_on"]}]}}])
     walked, _ = trial.try_out(ws, [], screens=False)
     assert not [i for i in walked["issues"] if "refused although the move showed as open" in i["text"]], walked["issues"]
+
+
+def test_the_last_gift_a_donor_gave_is_the_latest_date(app, owner):
+    """A total that takes the latest (or earliest) of a date: the last gift, the first order. It came out empty, as if
+    dates were numbers that weren't there."""
+    _, ws = owner
+    _built(ws, [{"op": "create_table", "table": "donors", "label": "Donors", "fields": [
+        {"key": "name", "type": "text", "required": True},
+        {"key": "last_gift", "type": "rollup", "table": "donations", "via": "donor", "aggregate": "max", "field": "date"},
+        {"key": "first_gift", "type": "rollup", "table": "donations", "via": "donor", "aggregate": "min", "field": "date"}]},
+        {"op": "create_table", "table": "donations", "label": "Donations", "fields": [
+            {"key": "donor", "type": "link", "table": "donors", "required": True}, {"key": "date", "type": "date"}, {"key": "amount", "type": "money"}]}])
+    e = Engine(ws)
+    mark = e.create("donors", {"name": "Mark"})
+    for day in ("2026-11-04", "2026-11-01", "2026-10-20"):
+        e.create("donations", {"donor": mark.id, "date": day, "amount": 50})
+    e.reset()
+    assert e.value(e.get(mark.id), "last_gift") == "2026-11-04" and e.value(e.get(mark.id), "first_gift") == "2026-10-20"
+    assert e.display(e.field("donors", "last_gift"), e.value(e.get(mark.id), "last_gift")) == "4 Nov 2026"
+
+
+def test_a_link_kept_to_matching_records_must_name_fields_both_sides_have(app, owner):
+    """Only a tenant of the request's property: tenants with no property field refused every tenant there was."""
+    _, ws = owner
+    design = [{"op": "create_table", "table": "properties", "label": "Properties", "fields": [{"key": "address", "type": "text", "required": True}]},
+              {"op": "create_table", "table": "tenants", "label": "Tenants", "fields": [{"key": "name", "type": "text", "required": True}]},
+              {"op": "create_table", "table": "requests", "label": "Requests", "fields": [
+                  {"key": "property", "type": "link", "table": "properties"},
+                  {"key": "tenant", "type": "link", "table": "tenants", "match": {"property": "property"}}]}]
+    result = ops.apply(ws.blueprint, design, always_check=True)
+    assert any("Tenants has no field “property”" in p for p in result.problems), result.problems
+    design[1]["fields"].append({"key": "property", "type": "link", "table": "properties"})
+    assert not ops.apply(ws.blueprint, design, always_check=True).problems
+
+
+def test_an_example_expecting_what_only_a_rule_started_from_outside_fills_in_is_told_so(app, owner):
+    """A bank feed's payments are matched to their invoices when another system sends them: a payment added by hand in an
+    example never starts that, and the builder hears so rather than only that the invoice came out empty."""
+    _, ws = owner
+    _built(ws, [{"op": "create_table", "table": "invoices", "label": "Invoices", "fields": [{"key": "title", "type": "text", "required": True}]},
+                {"op": "create_table", "table": "payments", "label": "Payments", "fields": [
+                    {"key": "reference", "type": "text"}, {"key": "invoice", "type": "link", "table": "invoices"}]},
+                {"op": "add_automation", "automation": {
+                    "key": "feed", "name": "Bank feed payments", "trigger": {"type": "webhook_received", "table": "payments"},
+                    "actions": [{"type": "ai_create_record", "table": "payments"}, {"type": "ai_fill", "field": "invoice", "instructions": "Match it"}]}}])
+    example = {"title": "A payment is matched", "steps": [
+        {"do": "add", "table": "invoices", "as": "inv1", "values": {"title": "Chairs"}},
+        {"do": "add", "table": "payments", "as": "pay1", "values": {"reference": "INV-001"}}],
+        "expect": [{"record": "pay1", "field": "invoice", "equals": "inv1"}]}
+    _, (result,) = trial.try_out(ws, [example], screens=False)
+    assert not result["ok"] and "only “Bank feed payments” fills it in" in result["problem"] and "leave this out of the example" in result["problem"]
