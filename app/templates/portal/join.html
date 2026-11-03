@@ -1,0 +1,18 @@
+{% extends "base.html" %}{% from "macros.html" import input %}
+{% block title %}Join the {{ portal.title }}{% endblock %}
+{% block body %}
+<div class="centered"><div class="card auth-card wide-card">
+  <h1>{{ portal.title }}</h1>
+  {% if done %}<p>Thanks. We'll be in touch.</p>{% else %}
+  <p class="muted">Join {{ (ws.settings.get('business') or {}).get('name') or ws.blueprint.get('name') or ws.name }} as one of its {{ t.label|lc }}. We check new {{ t.label|lc }} before trading.</p>
+  <form method="post" class="stack mt-2"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    {% if errors.get('_') %}<div class="flash error">{{ errors['_'] }}</div>{% endif %}
+    <input type="text" name="website" tabindex="-1" autocomplete="off" class="hp" aria-hidden="true">
+    {% for f in fields %}{{ input(none, f, values.get(f.key), {}, errors.get(f.key), {}) }}{% endfor %}
+    <label class="field {{ 'has-error' if errors.get('email') }}"><span>Email</span><input type="email" name="email" value="{{ values.get('email', '') }}" required autocomplete="email">{% if errors.get('email') %}<small class="field-error">{{ errors.email }}</small>{% endif %}</label>
+    <label class="field {{ 'has-error' if errors.get('password') }}"><span>Password</span><input type="password" name="password" required minlength="10" autocomplete="new-password">{% if errors.get('password') %}<small class="field-error">{{ errors.password }}</small>{% endif %}</label>
+    <button class="btn primary">{{ icon('user-plus') }}Join</button>
+    <p class="small muted">Already joined? <a href="{{ url_for('auth.login') }}">Sign in</a></p>
+  </form>{% endif %}
+</div></div>
+{% endblock %}

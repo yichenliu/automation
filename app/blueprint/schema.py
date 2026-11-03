@@ -1,0 +1,2862 @@
+"""What a blueprint is made of, how loosely-written pieces (from the AI) are tidied into it, and how it is checked.
+
+A blueprint:
+    {"name": "Eth Analytic", "theme": {"accent", "density"}, "modules": [{"key", "label", "icon"}],
+     "tables": [{"key", "label", "singular", "module", "icon", "title_field", "embedded", "description",
+                 "fields": [...], "views": [...], "sections": [...], "documents": [...], "public_form": {...}}],
+     "pages": [{"key", "label", "module", "icon", "widgets": [...]}],
+     "automations": [{"key", "name", "enabled", "trigger": {...}, "conditions": [...], "actions": [...]}]}
+
+`normalize_*` accept the many ways a model (or a person) writes the same thing and return the one canonical form, or
+raise SchemaError with a sentence saying what's wrong. `check(blueprint)` finds references that don't line up.
+"""
+import contextvars
+import re
+from datetime import date, timedelta
+
+from .. import icons
+from . import expr
+
+FIELD_TYPES = ["text", "long_text", "rich_text", "number", "money", "percent", "duration", "rating", "date", "datetime",
+               "time", "checkbox", "select", "multi_select", "tags", "email", "phone", "url", "address", "location", "barcode",
+               "color", "json", "link", "user", "file", "image", "signature", "autonumber", "formula", "rollup", "lookup",
+               "created_time", "modified_time", "created_by", "modified_by", "button"]
+STORED = {"text", "long_text", "rich_text", "number", "money", "percent", "duration", "rating", "date", "datetime", "checkbox",
+          "select", "multi_select", "email", "phone", "url", "address", "location", "barcode", "link", "user", "autonumber",
+          "time", "tags", "color", "json"}
+SYSTEM = {"created_time", "modified_time", "created_by", "modified_by"}  # kept by the platform on every record
+DATES = {"date", "datetime"}
+ROLE_NAMES = ["viewer", "editor", "admin", "owner"]  # as models.ROLES: each can do everything the ones before it can
+WHO_WORDS = {"viewer", "editor", "admin", "owner", "creator", "portal", "everyone"}  # never a team's key
+FILES = {"file", "image", "signature"}  # kept as File rows, not in the record's data
+CALCULATED = {"formula", "rollup", "lookup", "autonumber", "created_time", "modified_time", "created_by", "modified_by", "button"}
+AI_FILLABLE = {"text", "long_text", "rich_text", "number", "money", "percent", "date", "datetime", "checkbox", "select",
+               "multi_select", "rating", "address", "link"}  # a link: the AI picks the matching record (the invoice a payment is for)
+COLOURS_NAMED = ["red", "orange", "amber", "yellow", "green", "teal", "blue", "indigo", "violet", "pink", "gray"]
+NUMERIC = {"number", "money", "percent"}
+SENSITIVE_TYPES = {"text", "number", "phone", "email", "barcode"}  # what can be kept encrypted and shown masked
+RESERVED = {"id", "created_at", "updated_at", "created_by", "record", "today", "now", "payload"}
+TYPE_ALIASES = {
+    "string": "text", "str": "text", "varchar": "text", "char": "text", "short_text": "text", "single_line": "text",
+    "textarea": "long_text", "longtext": "long_text", "notes": "long_text", "paragraph": "long_text",
+    "multiline": "long_text", "multi_line": "long_text", "description": "long_text",
+    "markdown": "rich_text", "formatted_text": "rich_text", "html": "rich_text", "richtext": "rich_text", "rich": "rich_text",
+    "multiselect": "multi_select", "multiple_select": "multi_select", "tags": "multi_select", "multiple_choice": "multi_select",
+    "checklist": "multi_select", "labels": "multi_select", "multi_choice": "multi_select",
+    "person": "user", "assignee": "user", "owner": "user", "member": "user", "staff": "user", "people": "user", "users": "user",
+    "attachment": "file", "attachments": "file", "files": "file", "document": "file", "documents": "file", "upload": "file",
+    "street_address": "address", "postal_address": "address", "addr": "address",
+    "time_of_day": "time", "clock": "time", "hour": "time", "colour": "color", "hex": "color", "swatch": "color",
+    "tag": "tags", "keywords": "tags", "free_tags": "tags", "object": "json", "data": "json", "raw": "json", "payload": "json",
+    "created": "created_time", "created_on": "created_time", "date_created": "created_time", "added_on": "created_time",
+    "modified": "modified_time", "updated": "modified_time", "last_modified": "modified_time", "updated_on": "modified_time",
+    "last_updated": "modified_time", "created_by_user": "created_by", "author": "created_by", "added_by": "created_by",
+    "modified_by_user": "modified_by", "updated_by": "modified_by", "last_modified_by": "modified_by",
+    "action": "button", "action_button": "button", "run_button": "button",
+    "gps": "location", "geo": "location", "coordinates": "location", "latlng": "location", "lat_lng": "location", "geolocation": "location",
+    "sign": "signature", "signoff": "signature", "sign_off": "signature", "e_signature": "signature", "esignature": "signature",
+    "barcode_field": "barcode", "qr": "barcode", "qr_code": "barcode", "ean": "barcode", "upc": "barcode", "scan": "barcode",
+    "photo": "image", "picture": "image", "logo": "image", "photos": "image", "img": "image",
+    "stars": "rating", "score": "rating", "rate": "rating",
+    "time_spent": "duration", "length": "duration", "elapsed": "duration",
+    "related": "lookup", "linked_field": "lookup", "lookup_field": "lookup",
+    "int": "number", "integer": "number", "float": "number", "decimal": "number", "numeric": "number", "quantity": "number",
+    "currency": "money", "price": "money", "amount": "money", "dollar": "money", "dollars": "money", "cost": "money",
+    "percentage": "percent", "pct": "percent",
+    "timestamp": "datetime", "time": "datetime", "date_time": "datetime", "date_and_time": "datetime", "appointment": "datetime",
+    "due_date": "date",
+    "bool": "checkbox", "boolean": "checkbox", "yes_no": "checkbox", "toggle": "checkbox", "flag": "checkbox",
+    "dropdown": "select", "enum": "select", "choice": "select", "choices": "select", "status": "select",
+    "single_select": "select", "category": "select", "picklist": "select", "option": "select", "options": "select",
+    "relation": "link", "relationship": "link", "reference": "link", "foreign_key": "link",
+    "belongs_to": "link", "many_to_one": "link", "fk": "link", "linked_record": "link", "link_to": "link", "ref": "link",
+    "auto_number": "autonumber", "sequence": "autonumber", "serial": "autonumber", "auto_increment": "autonumber",
+    "computed": "formula", "calculated": "formula", "calculation": "formula", "calc": "formula",
+    "aggregate": "rollup", "summary": "rollup", "sum": "rollup", "count": "rollup",
+    "phone_number": "phone", "tel": "phone", "telephone": "phone", "mobile": "phone",
+    "website": "url", "web": "url", "link_url": "url", "hyperlink": "url",
+    "e-mail": "email", "mail": "email", "email_address": "email",
+}
+FORMATS = ["number", "money", "percent", "date", "text", "checkbox"]
+AGGREGATES = ["count", "sum", "avg", "min", "max"]
+AGG_ALIASES = {"average": "avg", "mean": "avg", "total": "sum", "number": "count", "minimum": "min", "maximum": "max"}
+
+CONDITION_OPS = ["equals", "not_equals", "contains", "is_empty", "not_empty", "greater_than", "less_than", "at_least",
+                 "at_most", "one_of", "before_today", "after_today", "within_next_days", "within_last_days",
+                 "more_than_days_ago", "this_week", "last_week", "this_month", "last_month", "this_quarter", "last_quarter",
+                 "this_year", "last_year", "this_financial_year", "last_financial_year",
+                 "today", "tomorrow", "yesterday", "next_week", "next_month", "changed", "changed_to"]
+PERIOD_OPS = ("this_week", "last_week", "this_month", "last_month", "this_quarter", "last_quarter", "this_year", "last_year",
+              "this_financial_year", "last_financial_year", "today", "tomorrow", "yesterday", "next_week", "next_month")
+OP_ALIASES = {
+    "=": "equals", "==": "equals", "is": "equals", "eq": "equals", "equal": "equals", "equal_to": "equals",
+    "!=": "not_equals", "<>": "not_equals", "is_not": "not_equals", "neq": "not_equals", "not": "not_equals",
+    "not_equal": "not_equals", "ne": "not_equals",
+    ">": "greater_than", "gt": "greater_than", "greater": "greater_than", "more_than": "greater_than", "after": "greater_than",
+    "<": "less_than", "lt": "less_than", "less": "less_than", "fewer_than": "less_than", "before": "less_than",
+    ">=": "at_least", "gte": "at_least", "greater_or_equal": "at_least", "<=": "at_most", "lte": "at_most", "less_or_equal": "at_most",
+    "includes": "contains", "like": "contains", "has": "contains",
+    "empty": "is_empty", "blank": "is_empty", "is_blank": "is_empty", "is_null": "is_empty", "null": "is_empty", "missing": "is_empty",
+    "is_not_empty": "not_empty", "exists": "not_empty", "is_set": "not_empty", "not_blank": "not_empty", "has_value": "not_empty",
+    "in": "one_of", "any_of": "one_of", "is_one_of": "one_of",
+    "overdue": "before_today", "in_past": "before_today", "is_past": "before_today", "past": "before_today",
+    "in_future": "after_today", "is_future": "after_today", "future": "after_today",
+    "is_today": "today", "on_today": "today", "due_today": "today", "is_tomorrow": "tomorrow", "is_yesterday": "yesterday",
+    "due_within": "within_next_days", "in_next_days": "within_next_days", "next_days": "within_next_days",
+    "in_last_days": "within_last_days", "last_days": "within_last_days", "within_last": "within_last_days",
+    "within_past_days": "within_last_days", "in_the_last_days": "within_last_days", "past_days": "within_last_days",
+    "current_week": "this_week", "previous_week": "last_week", "prior_week": "last_week", "current_month": "this_month",
+    "previous_month": "last_month", "prior_month": "last_month", "current_quarter": "this_quarter",
+    "previous_quarter": "last_quarter", "current_year": "this_year", "previous_year": "last_year",
+    "this_fy": "this_financial_year", "current_financial_year": "this_financial_year", "this_fiscal_year": "this_financial_year",
+    "last_fy": "last_financial_year", "previous_financial_year": "last_financial_year", "last_fiscal_year": "last_financial_year",
+    "older_than": "more_than_days_ago", "days_ago": "more_than_days_ago", "older_than_days": "more_than_days_ago",
+    "was_changed": "changed", "is_changed": "changed", "changes": "changed", "modified": "changed",
+    "becomes": "changed_to", "changes_to": "changed_to", "became": "changed_to", "set_to": "changed_to", "changed_into": "changed_to",
+}
+NO_VALUE = {"is_empty", "not_empty", "before_today", "after_today", "changed", *PERIOD_OPS}
+
+
+def period(name, today, fy_start=7):
+    """The first and last day of a today / this_week / last_month / this_quarter… period (weeks start on Monday), or None. The
+    financial year starts in the month `fy_start` (July: Australia's)."""
+    if name in ("today", "tomorrow", "yesterday"):
+        day = today + timedelta(days={"today": 0, "tomorrow": 1, "yesterday": -1}[name])
+        return day, day
+    if name == "next_week":
+        first = today - timedelta(days=today.weekday()) + timedelta(weeks=1)
+        return first, first + timedelta(days=6)
+    if name == "next_month":
+        first = expr._add_months(date(today.year, today.month, 1), 1)
+        return first, expr._add_months(first, 1) - timedelta(days=1)
+    if name in ("this_financial_year", "last_financial_year"):
+        year = today.year if today.month >= fy_start else today.year - 1
+        year -= name == "last_financial_year"
+        first = date(year, fy_start, 1)
+        return first, expr._add_months(first, 12) - timedelta(days=1)
+    if name in ("this_week", "last_week"):
+        first = today - timedelta(days=today.weekday(), weeks=name == "last_week")
+        return first, first + timedelta(days=6)
+    if name in ("this_month", "last_month", "this_quarter", "last_quarter"):
+        span = 3 if name.endswith("quarter") else 1
+        first = date(today.year, span * ((today.month - 1) // span) + 1, 1)
+        if name.startswith("last"):
+            first = expr._add_months(first, -span)
+        return first, expr._add_months(first, span) - timedelta(days=1)
+    if name in ("this_year", "last_year"):
+        year = today.year - (name == "last_year")
+        return date(year, 1, 1), date(year, 12, 31)
+    return None
+
+
+TRIGGERS = ["record_created", "record_updated", "record_created_or_updated", "record_deleted", "schedule", "button",
+            "email_received", "file_added", "webhook_received"]
+TRIGGER_ALIASES = {
+    "created": "record_created", "on_create": "record_created", "new_record": "record_created", "record_added": "record_created",
+    "create": "record_created", "on_created": "record_created", "record_create": "record_created", "insert": "record_created",
+    "updated": "record_updated", "on_update": "record_updated", "record_changed": "record_updated", "field_changed": "record_updated",
+    "update": "record_updated", "changed": "record_updated", "on_change": "record_updated", "record_update": "record_updated",
+    "status_changed": "record_updated", "field_updated": "record_updated",
+    "created_or_updated": "record_created_or_updated", "saved": "record_created_or_updated", "record_saved": "record_created_or_updated",
+    "on_save": "record_created_or_updated", "record_created_or_changed": "record_created_or_updated",
+    "scheduled": "schedule", "daily": "schedule", "weekly": "schedule", "hourly": "schedule", "time": "schedule", "cron": "schedule",
+    "timer": "schedule", "every_day": "schedule", "recurring": "schedule",
+    "manual": "button", "on_click": "button", "action": "button", "click": "button",
+    "email": "email_received", "new_email": "email_received", "on_email": "email_received", "mail_received": "email_received",
+    "email_arrives": "email_received", "inbox": "email_received", "incoming_email": "email_received",
+    "deleted": "record_deleted", "on_delete": "record_deleted", "record_removed": "record_deleted", "removed": "record_deleted",
+    "webhook": "webhook_received", "incoming_webhook": "webhook_received", "api": "webhook_received", "http": "webhook_received",
+    "inbound_webhook": "webhook_received", "on_webhook": "webhook_received",
+    "file": "file_added", "new_file": "file_added", "file_uploaded": "file_added", "onedrive_file": "file_added", "on_file": "file_added",
+}
+EVERY = ["hour", "day", "week", "month"]
+ACTIONS = ["update_record", "create_record", "create_for_each", "update_each", "delete_record", "assign", "wait", "notify",
+           "send_email", "generate_document", "request_approval", "webhook", "ai_fill", "ai_extract", "ai_create_record",
+           "branch", "task", "run_automation", "ai_check", "copy_record"]
+APPROVAL_MODES = ["any", "all"]  # one of the approvers decides, or every one of them must approve
+AI_STEPS = ("ai_fill", "ai_extract", "ai_create_record", "ai_check")
+# Whether a person checks an AI step's work before it counts: every time, only when the AI isn't sure (and now and then
+# at random, so its track record stays honest), or never (harmless enrichment: summaries, tags).
+REVIEW_MODES = ["always", "when_unsure", "never"]
+ACTION_ALIASES = {
+    "update": "update_record", "set_field": "update_record", "set_fields": "update_record", "update_field": "update_record",
+    "set_value": "update_record", "set": "update_record", "update_fields": "update_record", "edit_record": "update_record",
+    "create": "create_record", "add_record": "create_record", "insert": "create_record", "new_record": "create_record",
+    "create_records": "create_record", "insert_record": "create_record",
+    "notification": "notify", "alert": "notify", "send_notification": "notify", "message": "notify", "remind": "notify",
+    "reminder": "notify", "notify_user": "notify",
+    "ai": "ai_fill", "ai_write": "ai_fill", "ai_generate": "ai_fill", "ai_classify": "ai_fill", "ai_summarize": "ai_fill",
+    "ai_summarise": "ai_fill", "generate": "ai_fill", "ai_field": "ai_fill", "ai_update": "ai_fill", "ai_set": "ai_fill",
+    "copy_lines": "create_for_each", "for_each": "create_for_each", "create_each": "create_for_each", "copy_records": "create_for_each",
+    "email": "send_email", "send_mail": "send_email", "mail": "send_email", "email_customer": "send_email",
+    "pdf": "generate_document", "create_pdf": "generate_document", "generate_pdf": "generate_document", "document": "generate_document",
+    "make_document": "generate_document", "create_document": "generate_document",
+    "approval": "request_approval", "approve": "request_approval", "ask_approval": "request_approval", "get_approval": "request_approval",
+    "http": "webhook", "post": "webhook", "call_url": "webhook", "api_call": "webhook",
+    "ai_read": "ai_extract", "extract": "ai_extract", "read_document": "ai_extract", "ai_read_file": "ai_extract",
+    "ai_create": "ai_create_record", "create_from_email": "ai_create_record", "create_from_file": "ai_create_record",
+    "ai_intake": "ai_create_record", "intake": "ai_create_record",
+    "delete": "delete_record", "remove_record": "delete_record", "remove": "delete_record", "archive": "delete_record",
+    "update_all": "update_each", "update_lines": "update_each", "update_related": "update_each", "for_each_update": "update_each",
+    "round_robin": "assign", "assign_to": "assign", "allocate": "assign", "assign_user": "assign",
+    "delay": "wait", "pause": "wait", "sleep": "wait", "wait_until": "wait", "wait_for": "wait",
+    "if": "branch", "if_else": "branch", "decision": "branch", "switch": "branch", "route": "branch", "split": "branch",
+    "branches": "branch", "condition": "branch", "choose": "branch",
+    "human_task": "task", "todo": "task", "to_do": "task", "assign_task": "task", "create_task": "task", "user_task": "task",
+    "manual_step": "task", "ask_to_do": "task",
+    "ai_verify": "ai_check", "ai_review": "ai_check", "verify": "ai_check", "check": "ai_check", "ai_compare": "ai_check",
+    "ai_validate": "ai_check", "validate": "ai_check", "ai_audit": "ai_check", "compare": "ai_check",
+    "call_automation": "run_automation", "start_automation": "run_automation", "trigger_automation": "run_automation",
+    "sub_workflow": "run_automation", "subflow": "run_automation", "run_workflow": "run_automation",
+    "duplicate": "copy_record", "duplicate_record": "copy_record", "copy": "copy_record", "revise": "copy_record",
+    "new_revision": "copy_record", "new_version": "copy_record", "clone": "copy_record", "renew": "copy_record",
+}
+VIEW_TYPES = ["list", "board", "calendar", "gallery", "timeline", "map", "tree", "sheet"]
+VIEW_ALIASES = {"table": "list", "grid": "list", "kanban": "board", "pipeline": "board", "columns": "board",
+                "cal": "calendar", "schedule": "calendar", "agenda": "calendar", "cards": "gallery", "tiles": "gallery",
+                "gantt": "timeline", "roadmap": "timeline", "plan": "timeline", "geo": "map", "locations": "map",
+                "hierarchy": "tree", "outline": "tree", "nested": "tree", "org_chart": "tree", "spreadsheet": "sheet",
+                "excel": "sheet", "edit_grid": "sheet", "bulk_edit": "sheet"}
+WIDGETS = ["metric", "chart", "list", "goal", "text", "pivot", "form", "actions", "activity", "heading", "map", "embed", "insight", "my_work"]
+WIDGET_ALIASES = {"my_tasks": "my_work", "inbox": "my_work", "waiting_for_me": "my_work", "my_approvals": "my_work", "work_queue": "my_work",
+                  "todo_list": "my_work", "kpi": "metric", "stat": "metric", "number": "metric", "card": "metric", "count": "metric", "total": "metric",
+                  "bar": "chart", "bar_chart": "chart", "graph": "chart", "pie": "chart", "pie_chart": "chart", "breakdown": "chart",
+                  "line": "chart", "line_chart": "chart", "donut": "chart", "trend": "chart",
+                  "table": "list", "records": "list", "recent": "list", "list_view": "list",
+                  "progress": "goal", "target": "goal", "gauge": "goal", "note": "text", "markdown": "text",
+                  "pivot_table": "pivot", "crosstab": "pivot", "matrix": "pivot", "report": "pivot", "summary_table": "pivot",
+                  "quick_add": "form", "entry_form": "form", "add_form": "form", "input": "form",
+                  "buttons": "actions", "shortcuts": "actions", "quick_actions": "actions", "links": "actions",
+                  "feed": "activity", "recent_changes": "activity", "timeline_feed": "activity", "log": "activity",
+                  "title": "heading", "section": "heading", "header": "heading", "divider": "heading",
+                  "geo": "map", "locations": "map", "iframe": "embed", "external": "embed", "web_page": "embed", "powerbi": "embed",
+                  "ai": "insight", "ai_insight": "insight", "commentary": "insight", "summary": "insight", "analysis": "insight"}
+CHART_STYLES = ["bar", "line", "donut", "funnel"]
+PERIODS = ["week", "month", "quarter", "year"]
+DENSITIES = ["comfortable", "compact"]
+APPROVER_ROLES = ["owner", "admin", "editor"]
+
+
+class SchemaError(ValueError):
+    pass
+
+
+def slug(text, fallback=""):
+    key = re.sub(r"[^a-z0-9]+", "_", str(text or "").strip().lower()).strip("_")
+    if key and key[0].isdigit():
+        key = f"f_{key}"
+    return key[:48] or fallback
+
+
+ACRONYMS = {"gst", "abn", "acn", "id", "po", "sku", "vat", "url", "pdf", "crm", "erp", "kpi", "ytd", "qty", "abn", "bsb", "eta",
+            "hr", "it", "sla", "roi", "tfn", "rrp", "ndis", "pos"}
+
+
+def label_of(key):
+    words = str(key).replace("_", " ").strip().split()
+    words = [w.upper() if w.lower() in ACRONYMS else w for w in words]
+    text = " ".join(words)
+    return text[:1].upper() + text[1:] if text else text
+
+
+def _first(raw, *names, default=None):
+    for name in names:
+        if isinstance(raw, dict) and raw.get(name) not in (None, ""):
+            return raw[name]
+    return default
+
+
+def _names(raw):
+    """One name or several: "Draft", "Draft, Rejected" or ["Draft", "Rejected"]."""
+    if isinstance(raw, str):
+        return [x.strip() for x in raw.split(",") if x.strip()]
+    return [str(x) for x in _list(raw) if str(x).strip()]
+
+
+def _options(raw):
+    if isinstance(raw, str):
+        raw = [o for o in re.split(r"[,;|/]", raw)]
+    out = []
+    for o in raw or []:
+        if isinstance(o, dict):
+            o = _first(o, "label", "value", "name")
+        o = str(o or "").strip()
+        if o and o.lower() not in [x.lower() for x in out]:
+            out.append(o)
+    return out
+
+
+def field_type(raw_type):
+    raw = str(raw_type or "text").strip().lower()
+    t = raw if raw in FIELD_TYPES else TYPE_ALIASES.get(raw) or TYPE_ALIASES.get(slug(raw)) or slug(raw)  # a real type's own name wins
+    if t not in FIELD_TYPES:
+        raise SchemaError(f"“{raw_type}” isn't a field type; use one of: {', '.join(FIELD_TYPES)}")
+    return t
+
+
+def normalize_field(raw):
+    """Returns the canonical field, or None for fields the platform already provides (id, created/updated times)."""
+    if isinstance(raw, str):
+        raw = {"label": raw}
+    if not isinstance(raw, dict):
+        raise SchemaError("a field must be an object with at least a label and a type")
+    label = str(_first(raw, "label", "name", "title", "key", default="")).strip()
+    key = slug(_first(raw, "key", "id", "name", default=label))
+    if not key:
+        raise SchemaError("a field needs a label")
+    if key in RESERVED:
+        return None
+    if not label or label == key:
+        label = label_of(key)
+    ftype = field_type(_first(raw, "type", "kind", "field_type", default="text"))
+    field = {"key": key, "label": label, "type": ftype}
+    if raw.get("required") in (True, "true", "yes", 1):
+        field["required"] = True
+    help_text = _first(raw, "help", "description", "hint")
+    if help_text:
+        field["help"] = str(help_text)[:200]
+    default = _first(raw, "default", "default_value", "initial")
+    if default is not None and ftype not in CALCULATED | FILES:
+        field["default"] = default
+    if raw.get("unique") in (True, "true", "yes", 1) and ftype in ("text", "email", "phone", "url", "number", "barcode"):
+        field["unique"] = True
+    for bound in ("min", "max"):
+        value = expr.to_number(raw.get(bound))
+        if value is not None and ftype in NUMERIC | {"rating", "duration"}:
+            field[bound] = value
+    placeholder = _first(raw, "placeholder", "example")
+    if placeholder and ftype in STORED:
+        field["placeholder"] = str(placeholder)[:80]
+    show_if = _first(raw, "show_if", "visible_if", "only_if", "show_when")
+    if show_if:
+        field["show_if"] = [normalize_condition(c) for c in _list(show_if)]
+    hide_if = _first(raw, "hide_if", "hidden_if", "hide_when")
+    if hide_if:  # hidden while these hold (shown otherwise)
+        field["hide_if"] = [normalize_condition(c) for c in _list(hide_if)]
+    readonly_if = _first(raw, "readonly_if", "read_only_if", "locked_if", "editable_unless")
+    if readonly_if and ftype in STORED:  # can't be changed while these hold (the amount once it's approved)
+        field["readonly_if"] = [normalize_condition(c) for c in _list(readonly_if)]
+    ai_spec = _first(raw, "ai", "ai_fill", "ai_instructions")
+    if ai_spec:
+        if ftype not in AI_FILLABLE:
+            raise SchemaError(f"the AI can't fill “{label}” ({ftype}); AI fields can be {', '.join(sorted(AI_FILLABLE))}")
+        instructions = ai_spec if isinstance(ai_spec, str) else _first(ai_spec, "instructions", "prompt", "task", default="")
+        if not str(instructions).strip():
+            raise SchemaError(f"the AI field “{label}” needs instructions, e.g. \"ai\": \"Summarise the notes in one sentence\"")
+        field["ai"] = {"instructions": str(instructions).strip()[:1000]}
+        if (isinstance(ai_spec, dict) and _first(ai_spec, "use_knowledge", "knowledge", "rag") in (True, "true", "yes", 1)) \
+                or raw.get("use_knowledge") in (True, "true", "yes", 1):
+            field["ai"]["use_knowledge"] = True
+        sources = ai_spec.get("from") if isinstance(ai_spec, dict) else None
+        if sources:
+            field["ai"]["from"] = [slug(x) for x in _list(sources)]
+    if ftype in ("select", "multi_select"):
+        options = _options(_first(raw, "options", "choices", "values", "enum", "items"))
+        by = _first(raw, "options_by", "choices_by", "depends_on", "options_for")
+        if not options and isinstance(by, dict) and isinstance(_first(by, "options", "choices", "map"), dict):
+            options = list(dict.fromkeys(o for v in _first(by, "options", "choices", "map").values() for o in _options(v)))
+        if not options:
+            raise SchemaError(f"the {ftype.replace('_', '-')} field “{label}” needs its options, e.g. \"options\": [\"Open\", \"Done\"]")
+        field["options"] = options
+        if default is not None and ftype == "select" and str(default).lower() not in [o.lower() for o in options]:
+            field.pop("default")
+        if ftype == "multi_select" and "default" in field:
+            field["default"] = [o for o in _options(default) if o.lower() in [x.lower() for x in options]]
+        if isinstance(by, dict) and _first(by, "field", "on", "parent") and isinstance(_first(by, "options", "choices", "map"), dict):
+            # the choices depend on another field: a Plumbing job's types are Leak and Blocked drain
+            mapping = {str(k): _options(v) for k, v in _first(by, "options", "choices", "map").items() if _options(v)}
+            if mapping:
+                field["options_by"] = {"field": slug(_first(by, "field", "on", "parent")), "options": mapping}
+                field["options"] = list(dict.fromkeys(field["options"] + [o for opts in mapping.values() for o in opts]))
+    elif ftype == "link":
+        target = _first(raw, "table", "target", "to", "references", "link_table", "linked_table", "table_key", "related_table")
+        if not target:
+            raise SchemaError(f"the link field “{label}” needs the table it links to, e.g. \"table\": \"clients\"")
+        field["table"] = slug(target)
+    if ftype in ("link", "user") and (raw.get("multiple") in (True, "true", "yes", 1) or str(raw.get("type", "")).lower() in (
+            "links", "many_to_many", "has_many", "users", "people", "members", "multi_link", "multi_user")):
+        field["multiple"] = True
+    elif ftype == "formula":
+        source = _first(raw, "expression", "formula", "expr", "calculation", "value")
+        if not source:
+            raise SchemaError(f"the formula field “{label}” needs an expression, e.g. \"expression\": \"hours * rate\"")
+        try:
+            expr.parse(str(source))
+        except expr.ExprError as exc:
+            raise SchemaError(f"the formula for “{label}”: {exc}") from exc
+        field["expression"] = str(source)
+        fmt = slug(_first(raw, "format", "result_type", "output", default="number"))
+        fmt = {"currency": "money", "dollar": "money", "string": "text", "boolean": "checkbox", "bool": "checkbox",
+               "percentage": "percent", "datetime": "date"}.get(fmt, fmt)
+        field["format"] = fmt if fmt in FORMATS else "number"
+    elif ftype == "rollup":
+        source = _first(raw, "table", "source_table", "of", "from", "child_table", "related_table")
+        via = _first(raw, "via", "link_field", "through", "by", "foreign_key", "on")
+        filters = _first(raw, "filters", "where", "conditions")
+        if not source or not (via or filters):
+            raise SchemaError(f"the rollup field “{label}” needs \"table\" (the records to total) and \"via\" (their link field to this "
+                              f"table), or \"where\" (conditions on {{{{record.x}}}}: every matching record of the table, like SUMIFS)")
+        via = via or ""  # no link: the whole table, filtered (this requester's other requests this week)
+        aggregate = slug(_first(raw, "aggregate", "function", "agg", "operation", default="sum" if _first(raw, "field", "sum_field", "of_field") else "count"))
+        aggregate = AGG_ALIASES.get(aggregate, aggregate)
+        if aggregate not in AGGREGATES:
+            raise SchemaError(f"the rollup “{label}” can count, sum, avg, min or max, not “{aggregate}”")
+        field.update(table=slug(source), via=".".join(slug(part) for part in str(via).split(".") if slug(part)), aggregate=aggregate)
+        of = _first(raw, "field", "sum_field", "of_field", "target_field", "column")
+        if of:
+            field["field"] = slug(of)
+        elif aggregate != "count":
+            raise SchemaError(f"the rollup “{label}” needs the \"field\" to {aggregate}")
+        if filters:
+            field["filters"] = [normalize_condition(c) for c in _list(filters)]
+    elif ftype == "autonumber":
+        field["prefix"] = str(_first(raw, "prefix", default=""))[:12]
+        digits = expr.to_number(_first(raw, "digits", "padding", "length", default=4))
+        field["digits"] = int(min(max(digits or 4, 1), 9))
+    elif ftype == "lookup" and _first(raw, "where", "find", "filters", "matching", "conditions"):
+        # found by conditions rather than through a link, like XLOOKUP: the price in force on the order date, the
+        # approver whose limit covers the amount, the tax rate for the region
+        source = _first(raw, "from", "table", "in", "source_table", "find_in")
+        of = _first(raw, "field", "of", "lookup_field", "show", "return", default="")  # left out: filled in once the tables are known
+        if not source:
+            raise SchemaError(f"the lookup “{label}” finds a record by conditions: it needs \"table\" (where to look), \"where\" "
+                              f"(conditions on {{{{record.x}}}}) and \"field\" (the found record's field to show)")
+        field.update(table=slug(source), field=".".join(slug(part) for part in str(of).split(".") if slug(part)),
+                     where=[normalize_condition(c) for c in _list(_first(raw, "where", "find", "filters", "matching", "conditions"))])
+        sort = _first(raw, "sort", "order_by", "pick", "take")
+        if isinstance(sort, str):  # "limit" (lowest first), "-effective_from" or "effective_from desc" (latest first)
+            word = sort.strip()
+            sort = {"field": word.lstrip("-").split()[0], "dir": "desc" if word.startswith("-") or word.lower().endswith(" desc") else "asc"}
+        if isinstance(sort, dict) and _first(sort, "field", "key", "by"):
+            direction = str(_first(sort, "dir", "direction", "order", default="asc")).lower()
+            field["sort"] = {"field": slug(_first(sort, "field", "key", "by")), "dir": "desc" if direction.startswith(("desc", "high", "late", "big")) else "asc"}
+    elif ftype == "lookup":
+        link = _first(raw, "link", "via", "through", "from", "link_field", "table")
+        of = _first(raw, "field", "of", "lookup_field", "show")
+        if not link and not of:
+            raise SchemaError(f"the lookup “{label}” needs \"link\" (a link field of this table) and \"field\" (the linked record's field to show)")
+        # "field" may go on through the linked record's links: a rent payment's lease → "property.owner"
+        field.update(link=slug(link or ""), field=".".join(slug(part) for part in str(of or "").split(".")))  # one left out is filled in once the tables are known
+    elif ftype == "rating":
+        field["max"] = int(min(max(expr.to_number(_first(raw, "max", "out_of", "scale", default=5)) or 5, 3), 10))
+    elif ftype == "file":
+        field["multiple"] = raw.get("multiple", True) not in (False, "false", 0)
+    elif ftype == "button":
+        automation = _first(raw, "automation", "run", "action", "does")
+        if not automation:
+            raise SchemaError(f"the button “{label}” needs \"automation\": the key of a button automation on this table")
+        field["automation"] = slug(automation)
+    if ftype == "link":
+        match = _first(raw, "match", "depends_on", "filter_by", "only_matching")
+        if isinstance(match, dict) and match:  # {"customer": "customer"}: only contacts of this record's customer
+            field["match"] = {slug(k): slug(v) for k, v in match.items()}
+    if raw.get("readonly") in (True, "true", "yes", 1) or raw.get("read_only") in (True, "true", "yes", 1):
+        field["readonly"] = True
+    pattern = _first(raw, "pattern", "regex", "format_rule")
+    if pattern and ftype in ("text", "phone", "barcode", "email", "url"):
+        try:
+            re.compile(str(pattern))
+        except re.error as exc:
+            raise SchemaError(f"the pattern for “{label}” isn't a valid regular expression: {exc}") from exc
+        field["pattern"] = str(pattern)[:200]
+        field["pattern_message"] = str(_first(raw, "pattern_message", "format_message", "invalid_message", default="") or
+                                       f"{label} isn't in the right format")[:200]
+    required_if = _first(raw, "required_if", "required_when", "mandatory_if")
+    if required_if:
+        field["required_if"] = [normalize_condition(c) for c in _list(required_if)]
+    decimals = expr.to_number(_first(raw, "decimals", "precision", "decimal_places"))
+    if decimals is not None and ftype in ("number", "percent", "formula", "rollup"):
+        field["decimals"] = int(min(max(decimals, 0), 6))
+    unit = _first(raw, "unit", "suffix", "units")
+    if unit and ftype in ("number", "formula", "rollup", "duration"):
+        field["unit"] = str(unit).strip()[:12]
+    if ftype == "duration":  # kept in hours and shown as "30m" or "1h 30m": a default of 30 minutes is half an hour, never 30 hours
+        unit = str(field.pop("unit", "") or "").lower()
+        if field.get("default") not in (None, ""):
+            field["default"] = _hours(field["default"], 1 / 60 if unit.startswith("min") else 1)
+    if ftype == "percent":  # kept as a fraction: a default (or limit) of 10 is 10%, never 1000% filled in on every new form
+        for key in ("default", "min", "max"):
+            if field.get(key) not in (None, ""):
+                field[key] = as_fraction(field[key])
+    if slug(_first(raw, "display", "show_as", "style", default="")) in ("progress", "bar", "progress_bar") and ftype in ("percent", "formula", "rollup"):
+        field["display"] = "progress"
+    if ftype in ("text", "barcode", "number") and raw.get("unique") in (True, "true", "yes", 1):
+        field["unique"] = True
+    if ftype in ("money", "rollup") or (ftype == "formula" and field.get("format") == "money"):
+        currency = _first(raw, "currency", "currency_code")
+        currency_field = _first(raw, "currency_field", "currency_from")
+        if currency_field:  # its own field of currency codes, or its order's ("po.currency" on a purchase order's lines)
+            field["currency_field"] = ".".join(slug(part) for part in str(currency_field).split(".")[:2])
+        elif currency and re.fullmatch(r"[A-Za-z]{3}", str(currency).strip()):
+            field["currency"] = str(currency).strip().upper()
+    if _yes(_first(raw, "sensitive", "secret", "masked", "encrypted", "confidential")) and ftype in SENSITIVE_TYPES:
+        field["sensitive"] = True  # a bank account: kept encrypted, shown masked, never sent to the AI or in emails
+        field.pop("unique", None)
+    access = slug(_first(raw, "access", "visible_to", "only_for", "restricted_to", default=""))
+    access = {"admins": "admin", "owners": "owner", "editors": "editor", "managers": "admin", "manager": "admin", "staff": "editor",
+              "internal": "editor", "private": "editor", "staff_only": "editor", "buyer_only": "editor", "hidden": "editor"}.get(access, access)
+    if access and ftype != "link" and (access in ROLE_NAMES[1:] or access not in ROLE_NAMES):
+        field["access"] = access  # a role (admins and up) or a team's key (only Finance); hiding a link hides the relationship
+    return field
+
+
+def _list(value):
+    if value is None:
+        return []
+    if isinstance(value, dict):
+        return [value]
+    return list(value)
+
+
+def _source(raw, table, via):
+    """The related records a step goes through: {table, via: their link field, of: the link field of the triggering record
+    they hang off when it isn't the record itself (the bill of materials of a work order's product), nested: the lines'
+    link to a sub-assembly, whose own lines a line naming one stands for (true: the one such link)}."""
+    source = {"table": slug(table), "via": slug(via)}
+    of = _first(raw, "of", "parent", "through", "from_field")
+    if of and slug(of) not in ("record", "this", "self", "trigger"):
+        source["of"] = ".".join(slug(part) for part in str(of).split(".") if part.strip())  # a path through links keeps its dots
+    nested = _first(raw, "nested", "sub_assembly", "sub_assemblies", "subassembly", "explode", "expand")
+    if nested and str(nested).strip().lower() not in ("false", "no"):
+        source["nested"] = True if nested is True or str(nested).strip().lower() in ("true", "yes") else slug(nested)
+    return source
+
+
+def nested_link(source, spec):
+    """The link of a bill of materials' lines to a sub-assembly (a drawer unit in a cabinet's), for a step with "nested"."""
+    via = field(source, spec["via"])
+    if not spec.get("nested") or not via or via["type"] != "link":
+        return None
+    links = [f for f in source["fields"] if f["type"] == "link" and f["table"] == via["table"] and f["key"] != via["key"]
+             and not f.get("multiple") and (spec["nested"] is True or f["key"] == spec["nested"])]
+    return links[0] if len(links) == 1 else None
+
+
+def _person(raw):
+    """Who a step is for: owner, admin or editor (anyone with that role), "creator" (who added the record), a team (its
+    key: anyone in Accounts payable), "portal" (the outside person the record is for: the supplier), a person field of
+    the record, or one through its links ("cost_centre.manager")."""
+    who = ".".join(slug(part) for part in str(raw or "admin").split(".") if slug(part)) or "admin"
+    return {"admins": "admin", "manager": "admin", "managers": "admin", "owners": "owner", "editors": "editor", "anyone": "editor",
+            "team": "editor", "everyone": "editor", "staff": "editor", "requester": "creator", "submitter": "creator",
+            "created_by": "creator", "raised_by": "creator", "author": "creator", "outside_person": "portal",
+            "portal_person": "portal", "portal_user": "portal", "external": "portal", "the_supplier": "portal",
+            "the_customer": "portal", "the_seller": "portal"}.get(who, who)
+
+
+def _not_by(raw):
+    """Separation of duties: who may not do this (whoever raised it, whoever moved it to a stage, the person in a field):
+    ["creator", "Recommended", "prepared_by"]. Stage names are kept as written; the rest as who-words."""
+    out = []
+    for x in _names(_first(raw, "not_by", "not", "except_by", "separate_from", "segregate_from", "different_from", "not_same_as",
+                           default=[])):
+        word = _person(x)
+        out.append(word if word in ("creator", "portal") or re.fullmatch(r"[a-z0-9_.]+", str(x).strip()) else str(x).strip())
+    return list(dict.fromkeys(o for o in out if o))[:6]
+
+
+def _yes(value):
+    return value in (True, "true", "yes", 1, "1")
+
+
+def _follow_up(raw, action):
+    """An approval's or a task's nudges: remind after so many days, then pass it up to someone else."""
+    remind = expr.to_number(_first(raw, "remind_after_days", "remind_after", "reminder_days", "remind_days"))
+    if remind and remind > 0:
+        action["remind_after_days"] = remind
+    escalate = expr.to_number(_first(raw, "escalate_after_days", "escalate_after", "escalation_days", "escalate_days"))
+    if escalate and escalate > 0:
+        action["escalate_after_days"] = escalate
+        action["escalate_to"] = _person(_first(raw, "escalate_to", "escalation", "then_to", default="owner"))
+
+
+def _branch(raw):
+    """{"type": "branch", "paths": [{"label", "when": conditions, "steps": [...]}], "otherwise": [...]}: the first path
+    whose conditions the record meets has its steps done (a big order goes to the owner, a small one straight through);
+    when none does, the "otherwise" steps."""
+    paths = _first(raw, "paths", "branches", "cases", "routes", "options")
+    said = _first(raw, "if", "when", "condition", "conditions", "only_if")
+    if not paths and said:  # if / then / else
+        paths = [{"when": said, "steps": _first(raw, "then", "steps", "do", "actions", default=[])}]
+    said_otherwise = _first(raw, "otherwise", "else", "default", "if_not")
+    otherwise = [normalize_action(x) for x in _list(said_otherwise)] if said_otherwise else None
+    out = []
+    for p in _list(paths):
+        if not isinstance(p, dict):
+            raise SchemaError("each path of a branch looks like {\"label\": \"Over $5,000\", \"when\": [conditions], \"steps\": [...]}")
+        when = _first(p, "when", "if", "conditions", "only_if", "condition")
+        steps = [normalize_action(x) for x in _list(_first(p, "steps", "then", "actions", "do", default=[]))]
+        if not when:  # a path without conditions is the rest
+            if otherwise is None:
+                otherwise = steps
+                continue
+            raise SchemaError("each path of a branch needs \"when\": the conditions that send a record down it")
+        out.append({"label": str(_first(p, "label", "name", "title", default="")).strip()[:80], "when": [normalize_condition(c) for c in _list(when)],
+                    "steps": steps})
+    if not out:
+        raise SchemaError("a branch needs \"paths\": [{\"when\": [conditions], \"steps\": [...]}], and \"otherwise\": [...] for the rest")
+    action = {"type": "branch", "paths": out}
+    if otherwise:
+        action["otherwise"] = otherwise
+    return action
+
+
+def normalize_workflow(raw, label=""):
+    """How a table's records move from stage to stage: {"field": the stage (a select), "start": the stage new records
+    begin at, "transitions": [{"from": [stages] (none: any), "to": a stage, "label": the button, "who": [roles, person
+    fields or "creator"], "requires": fields filled in first, "only_if": conditions}]}. People move records only these
+    ways (the owner can move them anywhere); automations aren't held to them."""
+    if isinstance(raw, list):
+        raw = {"transitions": raw}
+    if not isinstance(raw, dict):
+        raise SchemaError(f"the workflow of {label} looks like {{\"field\": \"status\", \"transitions\": [{{\"from\": [\"Draft\"], "
+                          f"\"to\": \"Submitted\", \"label\": \"Submit\"}}]}}")
+    moves = []
+    for m in _list(_first(raw, "transitions", "moves", "steps", "actions", default=[])):
+        if not isinstance(m, dict) or _first(m, "to", "into", "target", "stage", "status") is None:
+            raise SchemaError(f"each move of {label}'s workflow needs \"to\": the stage it moves a record to")
+        start = _first(m, "from", "from_stage", "from_stages", "when_in", "in")
+        move = {"from": [] if start in (None, "", "*", "any", "anywhere") else _names(start),
+                "to": str(_first(m, "to", "into", "target", "stage", "status")),
+                "label": str(_first(m, "label", "button", "name", "title", default="")).strip()[:60]}
+        who = _first(m, "who", "by", "role", "roles", "allowed", "can")
+        if who:
+            move["who"] = [_person(x) for x in _names(who)]
+        needs = _first(m, "requires", "required", "require", "needs", "required_fields")
+        if needs:
+            move["requires"] = [slug(f) for f in _names(needs)]
+        only = _first(m, "only_if", "if", "when", "conditions")
+        if only:
+            move["only_if"] = [normalize_condition(c) for c in _list(only)]
+        apart = _not_by(m)
+        if apart:  # separation of duties: whoever recommended an award can't approve it
+            move["not_by"] = apart
+        if _yes(_first(m, "step_up", "reauthenticate", "confirm_sign_in", "second_factor")):
+            move["step_up"] = True  # a fresh sign-in code first (putting a contract in force, approving a payment run)
+        moves.append(move)
+    if not moves:
+        raise SchemaError(f"the workflow of {label} needs \"transitions\": the moves between stages, like {{\"from\": [\"Draft\"], "
+                          f"\"to\": \"Submitted\", \"label\": \"Submit for approval\"}}")
+    flow = {"field": slug(_first(raw, "field", "status_field", "stage_field", default="status")), "transitions": moves}
+    if _first(raw, "start", "initial", "first"):
+        flow["start"] = str(_first(raw, "start", "initial", "first"))
+    return flow
+
+
+def _one_expression(value):
+    """“{{item.quantity}} * {{record.quantity}}” is one sum, not text: {{(item.quantity) * (record.quantity)}}."""
+    if not isinstance(value, str) or "{{" not in value:
+        return value
+    rest = expr.TEMPLATE.sub("", value)
+    if rest.strip() and re.fullmatch(r"[\s\d.+\-*/()]*", rest) and re.search(r"[+\-*/]", rest):
+        return "{{" + expr.TEMPLATE.sub(lambda m: f"({m.group(1)})", value).strip() + "}}"
+    return value
+
+
+# every record has created_at and updated_at; these names for them never mean a field people fill in
+SYSTEM_TIMES = {"created_time": "created_at", "modified_time": "updated_at", "updated_time": "updated_at", "last_modified": "updated_at",
+                "modified_at": "updated_at"}
+
+
+def normalize_condition(raw):
+    """{"field", "op", "value"}, or a group: {"any": [conditions]} holds when one of them does (urgent or overdue),
+    {"all": [conditions]} when every one does (inside an "any": over $5,000 and not yet approved)."""
+    if isinstance(raw, list):
+        raw = {"all": raw}
+    if not isinstance(raw, dict):
+        raise SchemaError("a condition must look like {\"field\": \"status\", \"op\": \"equals\", \"value\": \"Done\"}")
+    if not _first(raw, "field", "key", "column", "name"):
+        for kind, names in (("any", ("any", "or", "either", "one_of_these")), ("all", ("all", "and", "every", "both"))):
+            inner = _first(raw, *names)
+            if isinstance(inner, (list, dict)):
+                parts = [normalize_condition(c) for c in _list(inner)]
+                if not parts:
+                    raise SchemaError(f"an “{kind}” group needs the conditions in it")
+                return parts[0] if len(parts) == 1 else {kind: parts}
+    field = _first(raw, "field", "key", "column", "name")
+    if not field:
+        raise SchemaError("a condition needs the field it checks")
+    op_raw = str(_first(raw, "op", "operator", "comparison", "condition", "is", default="equals")).strip().lower()
+    op = OP_ALIASES.get(op_raw, OP_ALIASES.get(slug(op_raw), slug(op_raw)))
+    if op not in CONDITION_OPS:
+        raise SchemaError(f"“{op_raw}” isn't a condition; use one of: {', '.join(CONDITION_OPS)}")
+    path = [SYSTEM_TIMES.get(slug(part), slug(part)) for part in str(field).split(".")[:2]]
+    condition = {"field": ".".join(path), "op": op}  # customer.account_manager: through a link
+    if op not in NO_VALUE:
+        value = raw.get("value", raw.get("values", raw.get("to")))
+        if value is None and op not in ("equals", "not_equals"):
+            raise SchemaError(f"the condition on “{field}” ({op}) needs a value")
+        if op == "one_of":
+            value = _options(value) if not isinstance(value, list) else [str(v) for v in value]
+        condition["value"] = value
+    return condition
+
+
+def normalize_view(raw, table=None):
+    if not isinstance(raw, dict):
+        raise SchemaError("a view must be an object")
+    vtype = slug(_first(raw, "type", "kind", "layout", default="list"))
+    vtype = VIEW_ALIASES.get(vtype, vtype)
+    if vtype not in VIEW_TYPES:
+        raise SchemaError(f"“{vtype}” isn't a view type; use list or board")
+    label = str(_first(raw, "label", "name", "title", default="")).strip()
+    key = slug(_first(raw, "key", "id", default=label or vtype))
+    view = {"key": key, "label": label or label_of(key), "type": vtype}
+    columns = _first(raw, "columns", "fields", "show")
+    if columns:
+        view["columns"] = [slug(c if not isinstance(c, dict) else _first(c, "field", "key", "name")) for c in _list(columns)]
+    filters = _first(raw, "filters", "filter", "where", "conditions")
+    if filters:
+        view["filters"] = [normalize_condition(c) for c in _list(filters)]
+    sort = _first(raw, "sort", "order_by", "sort_by")
+    if sort:
+        if isinstance(sort, str):
+            desc = sort.startswith("-") or sort.lower().endswith(" desc")
+            sort = {"field": sort.lstrip("-").split()[0], "dir": "desc" if desc else "asc"}
+        elif isinstance(sort, list):
+            sort = sort[0] if sort else None
+        if isinstance(sort, dict) and _first(sort, "field", "key"):
+            direction = str(_first(sort, "dir", "direction", "order", default="asc")).lower()
+            view["sort"] = {"field": slug(_first(sort, "field", "key")), "dir": "desc" if direction.startswith("desc") else "asc"}
+    if vtype == "board":
+        group = _first(raw, "group_by", "group", "column_field", "stack_by", "status_field", "by")
+        if not group:
+            raise SchemaError(f"the board “{view['label']}” needs \"group_by\": a select field such as status")
+        view["group_by"] = slug(group)
+    elif vtype == "calendar":
+        date = _first(raw, "date_field", "date", "start_field", "start", "field", "by")
+        if not date:
+            raise SchemaError(f"the calendar “{view['label']}” needs \"date_field\": the date each record goes on")
+        view["date_field"] = slug(date)
+        end = _first(raw, "end_field", "end", "until")
+        if end:
+            view["end_field"] = slug(end)
+    elif vtype == "timeline":
+        start = _first(raw, "start_field", "start", "date_field", "from")
+        end = _first(raw, "end_field", "end", "until", "to")
+        if not start:
+            raise SchemaError(f"the timeline “{view['label']}” needs \"start_field\" (and \"end_field\"): the date fields each bar runs between")
+        view["start_field"] = slug(start)
+        if end:  # without one, the end date field is found by its name, or each bar is a day long
+            view["end_field"] = slug(end)
+    elif vtype == "gallery":
+        image = _first(raw, "image_field", "image", "cover", "photo")
+        if image:
+            view["image_field"] = slug(image)
+    elif vtype == "map":
+        where = _first(raw, "location_field", "location", "field", "position", "gps")
+        if not where:
+            raise SchemaError(f"the map “{view['label']}” needs \"location_field\": a location field")
+        view["location_field"] = slug(where)
+    elif vtype == "tree":
+        parent = _first(raw, "parent_field", "parent", "under", "reports_to", "field")
+        if not parent:
+            raise SchemaError(f"the tree “{view['label']}” needs \"parent_field\": the table's link to its own parent record")
+        view["parent_field"] = slug(parent)
+    if vtype in ("list", "timeline") and _first(raw, "group_by", "lanes", "lane_by", "swimlanes", "group"):
+        view["group_by"] = slug(_first(raw, "group_by", "lanes", "lane_by", "swimlanes", "group"))
+    if vtype == "calendar" and slug(_first(raw, "mode", "show", "range", default="")) in ("week", "weekly"):
+        view["mode"] = "week"
+    if vtype == "timeline":
+        depends = _first(raw, "depends_field", "dependencies", "depends_on", "after", "predecessors")
+        if depends:
+            view["depends_field"] = slug(depends)
+    colour = _first(raw, "color_by", "colour_by", "color", "colour")
+    if colour and vtype in ("calendar", "timeline", "gallery"):
+        view["color_by"] = slug(colour)
+    return view
+
+
+def normalize_table(raw):
+    if not isinstance(raw, dict):
+        raise SchemaError("a table must be an object")
+    label = str(_first(raw, "label", "name", "title", "plural", default="")).strip()
+    key = slug(_first(raw, "table", "key", "id", default=label))
+    if not key:
+        raise SchemaError("a table needs a name")
+    if key in RESERVED:
+        raise SchemaError(f"“{key}” can't be used as a table name")
+    if not label or label == key:
+        label = label_of(key)
+    singular = str(_first(raw, "singular", "record_name", "item_label", default="")).strip() or _singular(label)
+    table = {"key": key, "label": label, "singular": singular, "fields": [], "views": []}
+    module = _first(raw, "module", "group", "section", "app")
+    if module:
+        table["module"] = slug(module)
+    seen = set()
+    for f in _list(_first(raw, "fields", "columns", default=[])):
+        field = normalize_field(f)
+        if field is None or field["key"] in seen:
+            continue
+        seen.add(field["key"])
+        table["fields"].append(field)
+    title = _first(raw, "title_field", "display_field", "primary_field", "name_field")
+    if title and slug(title) in seen:
+        table["title_field"] = slug(title)
+    for v in _list(_first(raw, "views", default=[])):
+        table["views"].append(normalize_view(v))
+    table["icon"] = icons.resolve(raw.get("icon")) or icons.icon_for(label)
+    if raw.get("embedded") in (True, "true", "yes", 1) or _first(raw, "line_items_of", "lines_of", "parent_table"):
+        table["embedded"] = True
+    description = _first(raw, "description", "about", "purpose")
+    if description:
+        table["description"] = str(description)[:300]
+    sections = _first(raw, "sections", "groups") or (raw.get("layout") if isinstance(raw.get("layout"), list) else None)
+    if sections:
+        table["sections"] = [normalize_section(x) for x in _list(sections)]
+    documents = _first(raw, "documents", "templates", "pdfs")
+    if documents:
+        table["documents"] = [normalize_document(d) for d in _list(documents)]
+    form = _first(raw, "public_form", "form", "intake_form")
+    if form:
+        table["public_form"] = normalize_form(form)
+    access = _first(raw, "access", "permissions")
+    if isinstance(access, dict):
+        clean = {}
+        for action in ("view", "edit"):
+            role = slug(_first(access, action, f"{action}_role", f"can_{action}", default=""))
+            role = {"admins": "admin", "owners": "owner", "editors": "editor", "viewers": "viewer", "everyone": "viewer",
+                    "managers": "admin", "manager": "admin"}.get(role, role)
+            if role in ROLE_NAMES:
+                clean[action] = role
+        teams = [slug(x) for x in _names(_first(access, "teams", "team", "only_teams", "groups", default=[])) if slug(x)]
+        if teams:  # only these teams (and admins) see and change it: Payments for Finance
+            clean["teams"] = list(dict.fromkeys(teams))[:8]
+        if clean:
+            table["access"] = clean
+    rows = _first(raw, "row_access", "own_records", "only_own", "record_access")
+    if rows:
+        if isinstance(rows, str):
+            rows = {"field": rows}
+        if not isinstance(rows, dict) or not _first(rows, "field", "owner_field", "by"):
+            raise SchemaError(f"row_access on {label} looks like {{\"field\": \"owner\", \"roles\": [\"editor\"]}}: people with those "
+                              "roles see only records where that person field is them")
+        roles = [r for r in (slug(x) for x in _list(_first(rows, "roles", "for", "applies_to", default=["viewer", "editor"]))) if r in ROLE_NAMES[:3]]
+        path = ".".join(slug(part) for part in str(_first(rows, "field", "owner_field", "by")).split(".") if slug(part))
+        table["row_access"] = {"field": path, "roles": roles or ["viewer", "editor"]}
+        every = [slug(x) for x in _names(_first(rows, "teams", "except_teams", "all_for", "see_all", "except", default=[])) if slug(x)]
+        if every:  # teams who see every record all the same (Finance doing the books, while each manager sees their own)
+            table["row_access"]["teams"] = list(dict.fromkeys(every))[:8]
+    rules = _first(raw, "rules", "validations", "validation", "constraints", "checks")
+    if rules:
+        table["rules"] = [normalize_rule(r, label) for r in _list(rules)]
+    colours = _first(raw, "colors", "colours", "color_rules", "colour_rules", "highlight", "highlights", "conditional_formatting")
+    if colours:
+        table["colors"] = [normalize_colour_rule(c, label) for c in _list(colours)]
+    if raw.get("wizard") in (True, "true", "yes", 1) or raw.get("steps") in (True, "true", "yes", 1) or raw.get("step_by_step") in (True, "true", "yes", 1):
+        table["wizard"] = True
+    if slug(_first(raw, "layout", "record_layout", "page_layout", default="")) in ("tabs", "tabbed"):
+        table["layout"] = "tabs"
+    portal = _first(raw, "portal", "portal_access", "customer_portal")
+    if portal:
+        if isinstance(portal, str):
+            portal = {"via": portal}
+        if not isinstance(portal, dict) or not _first(portal, "via", "link", "field"):
+            raise SchemaError(f"portal on {label} looks like {{\"via\": \"customer\"}}: the link to the portal's people "
+                              "(each sees the records linked to them)")
+        table["portal"] = {"via": ".".join(slug(p) for p in str(_first(portal, "via", "link", "field")).split(".")[:2] if slug(p)),
+                           "fields": [slug(f) for f in _list(_first(portal, "fields", "show", "columns", default=[]))],
+                           "can_add": _first(portal, "can_add", "create", "add") in (True, "true", "yes", 1)}
+        edit = _first(portal, "edit", "can_edit", "editable", "they_fill_in", "they_can_change")
+        if edit:  # what they may change on their records (a bid's prices, their own phone number)
+            table["portal"]["edit"] = [slug(f) for f in _names(edit)] if not isinstance(edit, bool) else []
+        edit_if = _first(portal, "edit_if", "editable_if", "edit_while", "can_edit_if")
+        if edit_if:  # only while these hold (until the tender closes)
+            table["portal"]["edit_if"] = [normalize_condition(c) for c in _list(edit_if)]
+        show_if = _first(portal, "show_if", "only_if", "visible_if", "shown_if")
+        if show_if:  # only the records that meet these reach them (published answers)
+            table["portal"]["show_if"] = [normalize_condition(c) for c in _list(show_if)]
+        for part in ("sign_up", "profile"):  # said on the people's own table: their portal's, moved there by ops
+            said = _first(portal, part, "self_register" if part == "sign_up" else "own_fields")
+            if said:
+                table["portal"][part] = said if isinstance(said, (dict, list, bool)) else _names(said)
+    lock = _first(raw, "lock_if", "locked_when", "lock_when", "read_only_if")
+    if lock:
+        table["lock_if"] = [normalize_condition(c) for c in _list(lock)]
+        editable = _first(raw, "lock_except", "still_editable", "editable_when_locked")
+        if editable:
+            table["lock_except"] = [slug(x) for x in _list(editable)]
+    flow = _first(raw, "workflow", "stages", "status_flow", "transitions", "stage_flow")
+    if isinstance(flow, dict) or isinstance(flow, list) and flow and all(isinstance(x, dict) for x in flow):
+        table["workflow"] = normalize_workflow(flow, label)  # (a plain list of stage names is just the select's options)
+    unique = _first(raw, "unique_together", "unique", "no_duplicates", "unique_fields")
+    if unique and not isinstance(unique, (bool, int, dict)):  # no two records alike in these fields together (a supplier's invoice number)
+        groups = [unique] if isinstance(unique, str) or isinstance(unique, list) and unique and all(isinstance(x, str) for x in unique) else unique
+        clean = [[slug(f) for f in _names(g)] for g in _list(groups) if isinstance(g, (str, list))]
+        clean = [g for g in clean if len(g) >= 1]
+        if clean:
+            table["unique_together"] = clean[:4]
+    held = _first(raw, "approve_changes", "changes_need_approval", "change_approval", "maker_checker", "four_eyes_changes")
+    if held:
+        table["approve_changes"] = normalize_change_approval(held, label)
+    sealed = _first(raw, "sealed", "sealed_until", "seal", "blind_until")
+    if sealed:
+        if isinstance(sealed, str):
+            sealed = {"until": sealed}
+        if not isinstance(sealed, dict) or not _first(sealed, "until", "field", "opens", "open_at"):
+            raise SchemaError(f"sealed on {label} looks like {{\"until\": \"tender.closes_at\"}}: the date and time (on the record or "
+                              "through its link) until which nobody but its maker can see what's in it")
+        table["sealed"] = {"until": ".".join(slug(p) for p in str(_first(sealed, "until", "field", "opens", "open_at")).split(".")[:3] if slug(p))}
+        keep = _first(sealed, "keep_open", "editable_after", "still_editable", "then_editable")
+        if keep:  # what the business fills in once it's opened (scores, notes)
+            table["sealed"]["keep_open"] = [slug(f) for f in _names(keep)]
+    if _yes(_first(raw, "audit_views", "log_views", "audit_reads", "log_reads")) or table.get("sealed"):
+        table["audit_views"] = True  # every opening is kept in its history
+    journey = _first(raw, "journey", "timeline", "progress", "thread", "status_timeline")
+    if journey:
+        table["journey"] = normalize_journey(journey, label)
+    return table
+
+
+def normalize_change_approval(raw, label=""):
+    """Changes to some fields of a record (a supplier's bank account, a price) wait for someone else to approve them:
+    {"fields": [...] (none: any change), "approver": who, "wait_days": a cooling-off period before it can be approved,
+    "tell": an email field told of the change with a link to cancel it, "step_up": the approver confirms their sign-in}."""
+    if raw is True or isinstance(raw, str) or isinstance(raw, list):
+        raw = {"fields": [] if raw is True else raw}
+    if not isinstance(raw, dict):
+        raise SchemaError(f"approve_changes on {label} looks like {{\"fields\": [\"bank_account\"], \"approver\": \"finance\"}}")
+    out = {"fields": [slug(f) for f in _names(_first(raw, "fields", "of", "watch", default=[]))],
+           "approver": _person(_first(raw, "approver", "approved_by", "who", "by", default="admin"))}
+    wait = expr.to_number(_first(raw, "wait_days", "cooling_off_days", "cooling_off", "hold_days", "delay_days"))
+    if wait and wait > 0:
+        out["wait_days"] = min(wait, 60)
+    tell = _first(raw, "tell", "notify_field", "confirm_with", "tell_contact", "email_field")
+    if tell:
+        out["tell"] = slug(tell)
+    if _yes(_first(raw, "step_up", "reauthenticate", "confirm_sign_in", "second_factor")):
+        out["step_up"] = True
+    return out
+
+
+def normalize_journey(raw, label=""):
+    """The path a record takes across the business, shown on it: its own stages and the records that follow from it
+    (Submitted → Approved → Ordered → Delivered → Paid): [{"label", "when": conditions on the record}, or {"label", "table",
+    "via": their link to it, "when": conditions on them}]."""
+    steps = []
+    for x in _list(raw):
+        if isinstance(x, str):
+            x = {"label": x}
+        if not isinstance(x, dict) or not _first(x, "label", "name", "title"):
+            raise SchemaError(f"each step of {label}'s journey looks like {{\"label\": \"Ordered\", \"table\": \"purchase_orders\", "
+                              "\"via\": \"request\"}} or {\"label\": \"Approved\", \"when\": [conditions]}")
+        step = {"label": str(_first(x, "label", "name", "title")).strip()[:40]}
+        table = _first(x, "table", "records", "in")
+        if table:
+            step["table"] = slug(table)
+            step["via"] = ".".join(slug(p) for p in str(_first(x, "via", "link", "through", default="")).split(".")[:3] if slug(p))
+        when = _first(x, "when", "done_when", "if", "conditions")
+        if when:
+            step["when"] = [normalize_condition(c) for c in _list(when)]
+        steps.append(step)
+    return steps[:10]
+
+
+def normalize_portal(raw):
+    """The ERP's portal for outside people (customers, suppliers, subcontractors): who they are (a table with an email
+    field) and what the portal says. Which records they see is set on each table with "portal": {"via": ...}."""
+    if isinstance(raw, str):
+        raw = {"table": raw}
+    if not isinstance(raw, dict) or not _first(raw, "table", "people", "contacts", "for"):
+        raise SchemaError("the portal looks like {\"table\": \"customers\", \"email_field\": \"email\", \"title\": \"Customer portal\"}")
+    portal = {"table": slug(_first(raw, "table", "people", "contacts", "for")),
+              "email_field": slug(_first(raw, "email_field", "email", "login_field", default="email")),
+              "title": str(_first(raw, "title", "label", "name", default="Portal")).strip()[:80],
+              "enabled": raw.get("enabled", True) not in (False, "false", 0)}
+    welcome = _first(raw, "welcome", "intro", "message", "text")
+    if welcome:
+        portal["welcome"] = str(welcome)[:1000]
+    profile = _first(raw, "profile", "own_fields", "they_keep_up_to_date", "self_service")
+    if profile:  # what they see and keep up to date on their own record (their phone, their bank account: those changes
+        portal["profile"] = [slug(f) for f in _names(profile)] if not isinstance(profile, bool) else []  # may need approval)
+    join = _first(raw, "sign_up", "self_register", "registration", "join", "self_sign_up")
+    if join:  # outside people can join by themselves (suppliers registering); their record starts at its first stage
+        fields = _first(join, "fields", "ask", "questions", default=[]) if isinstance(join, dict) else []
+        portal["sign_up"] = {"fields": [slug(f) for f in _names(fields)]}
+    return portal
+
+
+def normalize_team(raw):
+    """A team of people (Accounts payable, Procurement, the evaluation panel): {"key", "name", "about"}. Who is in each
+    is set under Settings › People; steps, moves, approvals and tables name a team by its key."""
+    if isinstance(raw, str):
+        raw = {"name": raw}
+    if not isinstance(raw, dict) or not _first(raw, "name", "label", "key", "title"):
+        raise SchemaError("a team looks like {\"key\": \"accounts_payable\", \"name\": \"Accounts payable\"}")
+    name = str(_first(raw, "name", "label", "title", default="")).strip() or label_of(slug(_first(raw, "key")))
+    team = {"key": slug(_first(raw, "key", "id", default=name)), "name": name[:60]}
+    about = _first(raw, "about", "description", "does", "purpose")
+    if about:
+        team["about"] = str(about)[:200]
+    if team["key"] in WHO_WORDS:
+        raise SchemaError(f"“{team['key']}” is already a word for who does things; give the team another name")
+    return team
+
+
+def teams(bp):
+    return list(bp.get("teams") or [])
+
+
+def portals(bp):
+    """The ERP's portals, one for each kind of outside person (clients, subcontractors), as normalize_portal makes them.
+    (A design from before there could be several has a single "portal".)"""
+    return list(bp.get("portals") or ([bp["portal"]] if bp.get("portal") else []))
+
+
+def portal_of(bp, table):
+    """The portal whose people are the records of `table`, on or off, or None."""
+    return next((p for p in portals(bp) if p["table"] == table), None)
+
+
+def portal_shows(tables, t, people):
+    """Whether a table's records reach the people of the portal for the table `people`: its "portal" link points at
+    them, or at a record that links to them (a stage's project's client)."""
+    head, _, hop = (t.get("portal") or {}).get("via", "").partition(".")
+    via = field(t, head)
+    if via is None or via["type"] != "link":
+        return False
+    if hop:  # through a named link of the record it links to: a clarification's tender's invited suppliers
+        on = field(tables.get(via["table"]), hop)
+        return bool(on) and on["type"] == "link" and on["table"] == people
+    return via["table"] == people or any(f["type"] == "link" and f["table"] == people for f in (tables.get(via["table"]) or {}).get("fields", []))
+
+
+def portal_link(tables, t):
+    """The portal's first link on a table's records ("tender" of "tender.invited")."""
+    return field(t, (t.get("portal") or {}).get("via", "").partition(".")[0])
+
+
+def normalize_colour_rule(raw, table_label=""):
+    """{"when": conditions, "color": "red", "field": a field to colour (else the whole record)}: overdue invoices red,
+    VIP customers violet, stock below its reorder level amber."""
+    if not isinstance(raw, dict):
+        raise SchemaError(f"a colour rule on {table_label} looks like {{\"when\": [conditions], \"color\": \"red\"}}")
+    colour = slug(_first(raw, "color", "colour", "style", "tone", default=""))
+    colour = {"grey": "gray", "purple": "violet", "danger": "red", "warning": "amber", "success": "green", "info": "blue",
+              "good": "green", "bad": "red", "warn": "amber"}.get(colour, colour)
+    if colour not in COLOURS_NAMED:
+        raise SchemaError(f"a colour rule on {table_label} needs a \"color\": one of {', '.join(COLOURS_NAMED)}")
+    when = _first(raw, "when", "if", "conditions", "where")
+    if not when:
+        raise SchemaError(f"a colour rule on {table_label} needs \"when\": the conditions for the colour")
+    rule = {"when": [normalize_condition(c) for c in _list(when)], "color": colour}
+    target = _first(raw, "field", "column", "on")
+    if target:
+        rule["field"] = slug(target)
+    return rule
+
+
+def normalize_rule(raw, table_label=""):
+    """A rule every saved record must keep: {"check": "total_debit == total_credit", "message": "Debits and credits must
+    balance", "when": [conditions], "field": where to show the message}."""
+    if isinstance(raw, str):
+        raw = {"check": raw}
+    if not isinstance(raw, dict):
+        raise SchemaError(f"a rule on {table_label} looks like {{\"check\": \"end_date >= start_date\", \"message\": \"...\"}}")
+    check = _first(raw, "check", "expression", "formula", "must", "condition", "assert")
+    if not check:
+        raise SchemaError(f"a rule on {table_label} needs \"check\": an expression that must be true")
+    try:
+        expr.parse(str(check))
+    except expr.ExprError as exc:
+        raise SchemaError(f"the rule “{check}” on {table_label}: {exc}") from exc
+    rule = {"check": str(check), "message": str(_first(raw, "message", "error", "text", default="") or f"This must be true: {check}")[:300]}
+    when = _first(raw, "when", "only_if", "if", "applies_when")
+    if when:
+        rule["when"] = [normalize_condition(c) for c in _list(when)]
+    where = _first(raw, "field", "show_on", "on_field")
+    if where:
+        rule["field"] = slug(where)
+    return rule
+
+
+def normalize_section(raw):
+    if not isinstance(raw, dict):
+        raise SchemaError("a section looks like {\"label\": \"Billing\", \"fields\": [\"rate\", \"terms\"]}")
+    fields = [slug(f) for f in _list(_first(raw, "fields", "columns", default=[]))]
+    if not fields:
+        raise SchemaError("a section needs its fields")
+    section = {"label": str(_first(raw, "label", "name", "title", default="Details")).strip()[:60], "fields": fields}
+    show_if = _first(raw, "show_if", "visible_if", "only_if", "show_when")
+    if show_if:  # the whole section shows only while these hold (Delivery details for delivered orders)
+        section["show_if"] = [normalize_condition(c) for c in _list(show_if)]
+    return section
+
+
+def normalize_document(raw):
+    """A PDF the table can produce (an invoice, a quote): which fields go where. The layout itself is the platform's."""
+    if not isinstance(raw, dict):
+        raise SchemaError("a document template must be an object")
+    label = str(_first(raw, "label", "name", "title", default="")).strip()
+    key = slug(_first(raw, "key", "id", default=label or "document"))
+    fmt = slug(_first(raw, "format", "kind", "output", default="pdf"))
+    if fmt in ("text", "txt", "csv", "aba", "bank_file", "file", "fixed_width", "export", "xml"):
+        # a file in another system's layout (a bank's payment file, a CSV for the accountant): a header, a line per
+        # record listed, a footer, each a template with {{record.x}} / {{line.x}} and pad(), lpad(), digits(), cents()
+        lines = _first(raw, "lines", "line_items", "items", "rows")
+        doc = {"key": key, "label": label or label_of(key), "format": "text",
+               "extension": slug(_first(raw, "extension", "ext", "file_type", default="csv" if fmt == "csv" else "aba" if fmt in ("aba", "bank_file") else "txt"))[:8] or "txt",
+               "header": str(_first(raw, "header", "first_line", "top", default=""))[:4000],
+               "line": str(_first(raw, "line", "row", "each", "line_template", "row_template", default=""))[:4000],
+               "footer": str(_first(raw, "footer", "last_line", "bottom", "trailer", default=""))[:4000]}
+        if isinstance(lines, dict) and _first(lines, "table"):
+            doc["lines"] = _listing(lines)
+        if not doc["line"] and not doc["header"]:
+            raise SchemaError(f"the file “{doc['label']}” needs \"line\" (a template for each line) or \"header\"")
+        only = _first(raw, "only_if", "when", "show_if")
+        if only:  # offered only while these hold (the bank file once the payment run is approved)
+            doc["only_if"] = [normalize_condition(c) for c in _list(only)]
+        return doc
+
+    doc = {"key": key, "label": label or label_of(key), "title": str(_first(raw, "title", "heading", default=label or label_of(key))).strip()[:60]}
+    number = _first(raw, "number_field", "number", "reference_field")
+    if number:
+        doc["number_field"] = slug(number)
+    doc["fields"] = [slug(f) for f in _list(_first(raw, "fields", "meta", "header_fields", default=[]))]
+    to = _first(raw, "to", "recipient", "bill_to", "customer")
+    if isinstance(to, str):
+        to = {"field": to}
+    if isinstance(to, dict) and _first(to, "field", "link", "key"):
+        doc["to"] = {"field": slug(_first(to, "field", "link", "key")), "label": str(_first(to, "label", default="To")),
+                     "details": [slug(f) for f in _list(_first(to, "details", "fields", "lines", default=[]))]}
+    doc["details"] = [slug(f) for f in _list(_first(raw, "details", "extra_fields", default=[]))]
+    lines = _first(raw, "lines", "line_items", "items")
+    if isinstance(lines, dict) and _first(lines, "table"):
+        doc["lines"] = _listing(lines)
+    sections = [_listing(x) for x in _list(_first(raw, "sections", "more_lines", "lists", default=[])) if isinstance(x, dict) and _first(x, "table")]
+    if sections:  # more lists under their own headings: an owner statement's expenses after the rent collected
+        doc["sections"] = sections
+    doc["totals"] = [slug(f) for f in _list(_first(raw, "totals", "summary", default=[]))]
+    net = _first(raw, "net", "net_label", "balance_label")
+    if net:
+        doc["net"] = str(net).strip()[:60]
+    for key_ in ("notes", "footer"):
+        text = _first(raw, key_)
+        if text:
+            doc[key_] = str(text)[:2000]
+    only = _first(raw, "only_if", "show_if")
+    if only:
+        doc["only_if"] = [normalize_condition(c) for c in _list(only)]
+    return doc
+
+
+def _listing(raw):
+    """A list of records on a document: {table, via: their link to the record (or through one more link:
+    "property.owner"), columns, filters, total: the field summed under it, label, subtract: its total counts against}."""
+    via = str(_first(raw, "via", "link", "link_field", default=""))
+    out = {"table": slug(raw["table"]), "via": ".".join(slug(p) for p in via.split(".")),
+           "columns": [slug(c) for c in _list(_first(raw, "columns", "fields", default=[]))]}
+    only = _first(raw, "filters", "where", "only")  # a statement lists only what's still owed
+    if only:
+        out["filters"] = [normalize_condition(c) for c in _list(only)]
+    total = _first(raw, "total", "sum", "total_field")
+    if total:
+        out["total"] = slug(total)
+    label = _first(raw, "label", "heading", "title")
+    if label:
+        out["label"] = str(label).strip()[:60]
+    if raw.get("subtract") in (True, "true", "yes", 1) or raw.get("less") in (True, "true", "yes", 1):
+        out["subtract"] = True
+    return out
+
+
+def normalize_form(raw):
+    """A form anyone with its link can fill in (an enquiry, a booking request); each answer becomes a record."""
+    if raw is True:
+        raw = {}
+    if not isinstance(raw, dict):
+        raise SchemaError("a public form must be an object")
+    return {"enabled": raw.get("enabled", True) not in (False, "false", 0),
+            "title": str(_first(raw, "title", "heading", default="")).strip()[:120],
+            "intro": str(_first(raw, "intro", "description", "text", default="")).strip()[:1000],
+            "fields": [slug(f) for f in _list(_first(raw, "fields", "questions", default=[]))],
+            "submit": str(_first(raw, "submit", "submit_label", "button", default="Send")).strip()[:40],
+            "success": str(_first(raw, "success", "thanks", "confirmation", default="Thanks, we've received it.")).strip()[:300]}
+
+
+COLOURS = {"blue": "#2563eb", "indigo": "#5b5bd6", "violet": "#7c3aed", "purple": "#9333ea", "green": "#16a34a",
+           "emerald": "#059669", "teal": "#0d9488", "cyan": "#0891b2", "orange": "#ea580c", "amber": "#d97706",
+           "red": "#dc2626", "rose": "#e11d48", "pink": "#db2777", "slate": "#475569", "black": "#111827", "navy": "#1e3a8a",
+           "brown": "#92400e", "gold": "#b45309"}
+
+
+def normalize_theme(raw):
+    if isinstance(raw, str):
+        raw = {"accent": raw}
+    if not isinstance(raw, dict):
+        raise SchemaError("a theme looks like {\"accent\": \"#0d9488\", \"density\": \"compact\"}")
+    theme = {}
+    accent = str(_first(raw, "accent", "color", "colour", "brand", "primary", default="")).strip().lower()
+    if accent:
+        accent = COLOURS.get(accent, accent)
+        if not re.fullmatch(r"#[0-9a-f]{6}", accent):
+            raise SchemaError(f"“{accent}” isn't a colour; give a hex code like #0d9488 or a name like teal")
+        theme["accent"] = accent
+    density = slug(_first(raw, "density", "spacing", default=""))
+    if density:
+        density = {"dense": "compact", "tight": "compact", "comfy": "comfortable", "spacious": "comfortable", "normal": "comfortable"}.get(density, density)
+        if density not in DENSITIES:
+            raise SchemaError("density is comfortable or compact")
+        theme["density"] = density
+    return theme
+
+
+IRREGULAR = {"children": "child", "people": "person", "staff": "staff", "men": "man", "women": "woman", "feet": "foot",
+             "teeth": "tooth", "geese": "goose", "mice": "mouse", "series": "series", "species": "species", "news": "news",
+             "analyses": "analysis", "crises": "crisis", "diagnoses": "diagnosis", "criteria": "criterion"}
+
+
+def _singular(label):
+    words = label.split()
+    if not words:
+        return label
+    last = words[-1]
+    if last.lower() in IRREGULAR:
+        one = IRREGULAR[last.lower()]
+        last = one.capitalize() if last[:1].isupper() else one
+    elif last.lower().endswith("ies"):
+        last = last[:-3] + "y"
+    elif last.lower().endswith(("sses", "ches", "shes", "xes")):
+        last = last[:-2]
+    elif last.lower().endswith("s") and not last.lower().endswith("ss"):
+        last = last[:-1]
+    return " ".join(words[:-1] + [last])
+
+
+SYSTEM_KEYS = {"created_time": "created_at", "created": "created_at", "date_created": "created_at", "created_on": "created_at",
+               "creation_date": "created_at", "added": "created_at", "modified_time": "updated_at", "updated_time": "updated_at",
+               "last_modified": "updated_at", "modified": "updated_at", "updated": "updated_at", "last_updated": "updated_at"}
+
+
+def system_key(key):
+    """created_time, date_created... are the platform's own created_at (every record has it); likewise updated_at."""
+    return SYSTEM_KEYS.get(key, key)
+
+
+def normalize_widget(raw):
+    if not isinstance(raw, dict):
+        raise SchemaError("a widget must be an object")
+    raw = {k: (system_key(slug(v)) if k in ("group_by", "date_field", "rows", "across", "stack_by", "by", "group", "x", "dimension") and isinstance(v, str) else v)
+           for k, v in raw.items()}
+    if isinstance(raw.get("compare"), dict) and isinstance(raw["compare"].get("date_field"), str):
+        raw["compare"] = {**raw["compare"], "date_field": system_key(slug(raw["compare"]["date_field"]))}
+    wtype = slug(_first(raw, "type", "kind", "widget", default="metric"))
+    wtype = WIDGET_ALIASES.get(wtype, wtype)
+    if wtype not in WIDGETS:
+        raise SchemaError(f"“{wtype}” isn't a widget; use one of: {', '.join(WIDGETS)}")
+    width = expr.to_number(_first(raw, "width", "span", "size", "cols"))
+    width = {"small": 1, "quarter": 1, "half": 2, "medium": 2, "large": 3, "wide": 4, "full": 4}.get(str(_first(raw, "width", "span", "size", default="")).lower(), width)
+    shaped = {"width": int(min(max(width, 1), 4))} if width else {}
+    if wtype == "text":
+        text = _first(raw, "text", "content", "body", "markdown")
+        if not text and isinstance(raw.get("values"), dict):  # often written inside "values"
+            text = _first(raw["values"], "text", "content", "body", "markdown")
+        if not text:
+            raise SchemaError("a text widget needs its \"text\"")
+        return {"type": "text", "label": str(_first(raw, "label", "title", default="")).strip(), "text": str(text)[:4000], **shaped}
+    if wtype == "my_work":  # what's waiting for whoever is looking: approvals, tasks, checks of the AI's work
+        return {"type": "my_work", "label": str(_first(raw, "label", "title", default="Waiting for you")).strip()[:80], **shaped}
+    if wtype == "heading":
+        text = str(_first(raw, "label", "title", "text", default="")).strip()
+        if not text:
+            raise SchemaError("a heading needs its \"label\"")
+        return {"type": "heading", "label": text[:120], "width": 4, **({"text": str(raw["text"])[:300]} if raw.get("text") and raw.get("label") else {})}
+    if wtype == "actions":
+        buttons = []
+        for b in _list(_first(raw, "buttons", "actions", "items", "links", default=[])):
+            if not isinstance(b, dict):
+                continue
+            kind = slug(_first(b, "kind", "type", "do", default="new"))
+            kind = {"add": "new", "create": "new", "new_record": "new", "open": "view", "table": "view", "list": "view",
+                    "dashboard": "page", "run": "automation", "start": "automation", "url": "link", "web": "link"}.get(kind, kind)
+            if kind not in ("new", "view", "page", "automation", "link"):
+                raise SchemaError(f"a button can be new (add a record), view (open a table), page, automation (run a scheduled "
+                                  f"one now) or link, not “{kind}”")
+            button = {"kind": kind, "label": str(_first(b, "label", "text", "title", default="")).strip()[:60]}
+            for k in ("table", "view", "page", "automation"):
+                if b.get(k):
+                    button[k] = slug(b[k])
+            if kind == "link":
+                url = str(_first(b, "url", "href", default="")).strip()
+                if not re.match(r"^https?://", url, re.I):
+                    raise SchemaError("a link button needs a \"url\" starting with https://")
+                button["url"] = url[:500]
+            if isinstance(b.get("values"), dict):
+                button["values"] = {slug(k): v for k, v in b["values"].items()}
+            if kind in ("new", "view") and not button.get("table"):
+                raise SchemaError(f"the {kind} button “{button['label']}” needs its \"table\"")
+            if kind == "page" and not button.get("page"):
+                raise SchemaError(f"the page button “{button['label']}” needs its \"page\"")
+            if kind == "automation" and not button.get("automation"):
+                raise SchemaError(f"the automation button “{button['label']}” needs its \"automation\" (key)")
+            buttons.append(button)
+        if not buttons:
+            raise SchemaError("an actions widget needs \"buttons\": [{\"kind\": \"new\", \"table\": \"orders\", \"label\": \"New order\"}]")
+        return {"type": "actions", "label": str(_first(raw, "label", "title", default="")).strip(), "buttons": buttons[:12], **shaped}
+    if wtype == "embed":
+        url = str(_first(raw, "url", "src", "link", default="")).strip()
+        if not re.match(r"^https://", url, re.I):
+            raise SchemaError("an embed widget needs a \"url\" starting with https:// (a Power BI, Google or Looker report, a video)")
+        return {"type": "embed", "label": str(_first(raw, "label", "title", default="")).strip(), "url": url[:1000],
+                "height": int(min(max(expr.to_number(_first(raw, "height", default=420)) or 420, 200), 1200)), "width": shaped.get("width", 4)}
+    if wtype == "insight":
+        return {"type": "insight", "label": str(_first(raw, "label", "title", default="")).strip() or "What the numbers say",
+                **({"focus": str(raw["focus"])[:300]} if raw.get("focus") else {}), **shaped}
+    if wtype == "activity":
+        widget = {"type": "activity", "label": str(_first(raw, "label", "title", default="")).strip() or "Recent activity",
+                  "limit": int(min(max(expr.to_number(_first(raw, "limit", "count", default=12)) or 12, 3), 50)), **shaped}
+        tables = _first(raw, "tables", "table", "of")
+        if tables:
+            widget["tables"] = [slug(x) for x in _list(tables)]
+        return widget
+    table = _first(raw, "table", "source", "of", "from") or (_list(raw.get("tables")) or [None])[0]
+    if not table:
+        raise SchemaError(f"the {wtype} widget needs the table it shows")
+    widget = {"type": wtype, "table": slug(table), "label": str(_first(raw, "label", "title", "name", default="")).strip()}
+    filters = _first(raw, "filters", "filter", "where", "conditions")
+    if filters:
+        widget["filters"] = [normalize_condition(c) for c in _list(filters)]
+    if wtype in ("metric", "chart", "goal", "pivot"):
+        aggregate = slug(_first(raw, "aggregate", "function", "agg", "calculation", default="count"))
+        aggregate = AGG_ALIASES.get(aggregate, aggregate)
+        if aggregate not in AGGREGATES:
+            raise SchemaError(f"a {wtype} can count, sum, avg, min or max, not “{aggregate}”")
+        widget["aggregate"] = aggregate
+        of = _first(raw, "field", "value_field", "sum_field", "measure")
+        if of:
+            widget["field"] = slug(of)
+        elif aggregate != "count":
+            raise SchemaError(f"the {wtype} “{widget['label']}” needs the \"field\" to {aggregate}")
+    if wtype == "chart":
+        group = _first(raw, "group_by", "group", "by", "category", "x", "dimension")
+        listed = [slug(f) for f in _list(raw.get("fields")) if isinstance(f, str)]
+        if not group and listed:  # "fields": ["campaign", "amount"]: by campaign, the amount summed
+            group = listed[0]
+            if len(listed) > 1 and not widget.get("field"):
+                widget.update(field=listed[1], aggregate=widget["aggregate"] if widget.get("aggregate", "count") != "count" else "sum")
+        group = group or _first(raw, "date_field")  # "Donations by month": its date, a bar a month
+        if not group:
+            raise SchemaError(f"the chart “{widget['label']}” needs \"group_by\": the field to break it down by")
+        widget["group_by"] = slug(group)
+        style = slug(_first(raw, "style", "chart", "kind", "chart_type", default=""))
+        style = {"pie": "donut", "doughnut": "donut", "bars": "bar", "column": "bar", "columns": "bar", "trend": "line", "area": "line",
+                 "stacked": "bar", "stacked_bar": "bar", "pipeline": "funnel", "conversion": "funnel"}.get(style, style)
+        if not style:
+            style = {"line": "line", "line_chart": "line", "trend": "line", "pie": "donut", "pie_chart": "donut", "donut": "donut"}.get(slug(_first(raw, "type", default="")), "bar")
+        widget["style"] = style if style in CHART_STYLES else "bar"
+    if wtype == "form":
+        fields = _first(raw, "fields", "columns", "ask")
+        if fields:
+            widget["fields"] = [slug(f) for f in _list(fields)]
+        widget["submit"] = str(_first(raw, "submit", "button", "submit_label", default="Add")).strip()[:40]
+        values = _first(raw, "values", "defaults", "preset")
+        if isinstance(values, dict):
+            widget["values"] = {slug(k): v for k, v in values.items()}
+    if wtype == "metric":
+        compare = _first(raw, "compare", "compare_to", "trend", "vs")
+        if compare:
+            if isinstance(compare, str):
+                compare = {"period": compare}
+            period = slug(_first(compare, "period", "every", "by", default="month")) if isinstance(compare, dict) else "month"
+            period = {"monthly": "month", "weekly": "week", "yearly": "year", "annual": "year", "quarterly": "quarter",
+                      "previous_month": "month", "last_month": "month", "previous_period": "month"}.get(period, period)
+            date_field = _first(compare, "date_field", "date", "field") if isinstance(compare, dict) else None
+            widget["compare"] = {"period": period if period in PERIODS else "month", **({"date_field": slug(date_field)} if date_field else {})}
+    if wtype == "chart":
+        stack = _first(raw, "stack_by", "split_by", "series", "color_by", "stack")
+        if stack:
+            widget["stack_by"] = slug(stack)
+    if wtype == "map":
+        where = _first(raw, "location_field", "location", "field")
+        if not where:
+            raise SchemaError(f"the map “{widget['label']}” needs \"location_field\"")
+        widget["location_field"] = slug(where)
+    date_basis = _first(raw, "date_field", "by_date", "period_field")
+    if date_basis and wtype in ("metric", "chart", "list", "goal", "pivot", "map"):
+        widget["date_field"] = slug(date_basis)
+    if wtype == "pivot":
+        rows = _first(raw, "rows", "group_by", "row_field", "by", "group")
+        cols = _first(raw, "across", "columns", "column_field", "split_by", "columns_by")
+        cols = cols if not isinstance(cols, list) or len(cols) == 1 else None
+        if not rows:
+            raise SchemaError(f"the pivot “{widget['label']}” needs \"rows\": the field each row is (a customer, a month)")
+        widget["rows"] = slug(rows if not isinstance(rows, list) else rows[0])
+        if cols:
+            widget["across"] = slug(cols if not isinstance(cols, list) else cols[0])
+    if wtype == "goal":
+        target = expr.to_number(_first(raw, "target", "goal", "max"))
+        if not target:
+            raise SchemaError(f"the goal “{widget['label']}” needs a \"target\" number")
+        widget["target"] = target
+    widget.update(shaped)
+    if wtype == "list":
+        widget["limit"] = int(min(max(expr.to_number(_first(raw, "limit", "count", "rows", default=5)) or 5, 1), 50))
+        columns = _first(raw, "columns", "fields")
+        if columns:
+            widget["columns"] = [slug(c) for c in _list(columns)]
+        sort = _first(raw, "sort", "order_by")
+        if sort:
+            view = normalize_view({"type": "list", "sort": sort})
+            if view.get("sort"):
+                widget["sort"] = view["sort"]
+    return widget
+
+
+def normalize_page(raw):
+    if not isinstance(raw, dict):
+        raise SchemaError("a page must be an object")
+    label = str(_first(raw, "label", "name", "title", default="")).strip()
+    key = slug(_first(raw, "key", "id", "page", default=label or "overview"))
+    page = {"key": key, "label": label or label_of(key), "widgets": [normalize_widget(w) for w in _list(_first(raw, "widgets", "cards", "items", default=[]))]}
+    module = _first(raw, "module", "group", "section")
+    if module:
+        page["module"] = slug(module)
+    page["icon"] = icons.resolve(raw.get("icon")) or "layout-dashboard"
+    home = _first(raw, "home_for", "home", "landing_for", "default_for")
+    if home:  # roles, or teams' keys (Accounts payable's home page)
+        roles = [r for r in (slug(x) for x in _list(home if not isinstance(home, str) else [home])) if r and r not in ("portal", "creator")]
+        if roles:
+            page["home_for"] = roles
+    access = slug(_first(raw, "access", "visible_to", "only_for", default=""))
+    access = {"admins": "admin", "owners": "owner", "editors": "editor", "managers": "admin", "manager": "admin"}.get(access, access)
+    if access and (access in ROLE_NAMES[1:] or access not in ROLE_NAMES):
+        page["access"] = access  # a role, or a team's key
+    return page
+
+
+WEEKDAY_NAMES = {"monday": "mon", "tuesday": "tue", "wednesday": "wed", "thursday": "thu", "friday": "fri", "saturday": "sat",
+                 "sunday": "sun"}
+
+
+def _timing(text):
+    """A schedule's timing written in words where it doesn't belong ("Friday 3pm", "daily at 08:00", "monthly")."""
+    text = text.lower()
+    said = {}
+    day = next((short for name, short in WEEKDAY_NAMES.items() if re.search(rf"\b({name}|{short})s?\b", text)), None)
+    if day:
+        said.update(every="week", weekday=day)
+    elif re.search(r"\b(monthly|every month|each month|month end|1st of)\b", text):
+        said["every"] = "month"
+    elif re.search(r"\b(hourly|every hour)\b", text):
+        said["every"] = "hour"
+    elif re.search(r"\b(daily|every day|each day|every morning|nightly)\b", text):
+        said["every"] = "day"
+    time = re.search(r"\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b|\b(\d{1,2}):(\d{2})\b", text)
+    if time:
+        said["at"] = time.group(0).replace(" ", "")
+    return said
+
+
+def normalize_trigger(raw):
+    if isinstance(raw, str):
+        raw = {"type": raw}
+    if not isinstance(raw, dict):
+        raise SchemaError("a trigger must be an object like {\"type\": \"record_updated\", \"table\": \"projects\"}")
+    ttype_raw = str(_first(raw, "type", "event", "on", "kind", "when", default="")).strip().lower()
+    ttype = TRIGGER_ALIASES.get(slug(ttype_raw), slug(ttype_raw))
+    if ttype not in TRIGGERS:
+        raise SchemaError(f"“{ttype_raw}” isn't a trigger; use one of: {', '.join(TRIGGERS)}")
+    trigger = {"type": ttype}
+    table = _first(raw, "table", "on_table", "object", "entity")
+    if table:
+        trigger["table"] = slug(table)
+    elif ttype not in ("schedule", "email_received", "file_added", "webhook_received"):
+        raise SchemaError(f"the {ttype} trigger needs the table it watches")
+    if ttype == "email_received":
+        for key in ("from_contains", "subject_contains", "body_contains"):
+            value = _first(raw, key, key.replace("_contains", ""))
+            if value:
+                trigger[key] = str(value)[:200]
+        if raw.get("has_attachment") in (True, "true", "yes", 1) or raw.get("with_attachments") in (True, "true", "yes", 1):
+            trigger["has_attachment"] = True
+    if ttype == "file_added":
+        folder = _first(raw, "folder", "path", "in", "onedrive_folder")
+        if not folder:
+            raise SchemaError("the file_added trigger needs the OneDrive \"folder\" to watch, e.g. \"Invoices/Incoming\"")
+        trigger["folder"] = str(folder).strip("/ ")[:300]
+    if ttype == "schedule":
+        said = _timing(" ".join(str(raw.get(k) or "") for k in ("label", "name", "when", "description", "cron", "subject_contains",
+                                                                "body_contains", "from_contains", "folder")))
+        every = slug(_first(raw, "every", "frequency", "interval", "period", default=""))
+        every = {"daily": "day", "days": "day", "weekly": "week", "weeks": "week", "hourly": "hour", "hours": "hour",
+                 "monthly": "month", "months": "month"}.get(every, every) or said.get("every") or \
+            {"weekly": "week", "hourly": "hour"}.get(ttype_raw, "day")
+        if every not in EVERY:
+            raise SchemaError(f"a schedule runs every hour, day, week or month, not “{every}”")
+        trigger["every"] = every
+        if said.get("weekday") and not _first(raw, "weekday", "day", "on_day"):
+            raw = {**raw, "weekday": said["weekday"]}
+        at = str(_first(raw, "at", "time", "hour", default=said.get("at") or "08:00"))
+        match = re.match(r"^(\d{1,2})(?::(\d{2}))?\s*(am|pm)?$", at.strip().lower())
+        hour, minute = (int(match.group(1)), int(match.group(2) or 0)) if match else (8, 0)
+        if match and match.group(3) == "pm" and hour < 12:
+            hour += 12
+        trigger["at"] = f"{min(hour, 23):02d}:{min(minute, 59):02d}"
+        if every == "week":
+            day = slug(_first(raw, "weekday", "day", "on_day", default="monday"))[:3]
+            trigger["weekday"] = day if day in ("mon", "tue", "wed", "thu", "fri", "sat", "sun") else "mon"
+    if ttype == "button":
+        trigger["label"] = str(_first(raw, "label", "button", "text", "name", default="Run")).strip()[:40]
+    return trigger
+
+
+def normalize_action(raw):
+    if not isinstance(raw, dict):
+        raise SchemaError("an action must be an object like {\"type\": \"notify\", \"message\": \"...\"}")
+    atype_raw = str(_first(raw, "type", "action", "do", "kind", default="")).strip().lower()
+    atype = ACTION_ALIASES.get(slug(atype_raw), slug(atype_raw))
+    if atype not in ACTIONS:
+        raise SchemaError(f"“{atype_raw}” isn't an action; use one of: {', '.join(ACTIONS)}")
+    if atype == "branch":
+        return _branch(raw)
+    action = {"type": atype}
+    if atype in AI_STEPS:
+        said = _first(raw, "review", "check", "human_review", "human_check", "checked_by_person", "approval")
+        said = {True: "always", "true": "always", "yes": "always", False: "never", "false": "never", "no": "never"}.get(said, said)
+        mode = slug(str(said or "never"))
+        mode = {"unsure": "when_unsure", "if_unsure": "when_unsure", "when_not_sure": "when_unsure", "low_confidence": "when_unsure",
+                "every_time": "always", "all": "always", "each": "always", "none": "never", "off": "never", "auto": "never"}.get(mode, mode)
+        if mode not in REVIEW_MODES:
+            raise SchemaError(f"an AI step's \"review\" is always, when_unsure or never, not “{said}”")
+        if mode != "never":
+            action["review"] = mode
+            action["reviewer"] = _person(_first(raw, "reviewer", "checked_by", "check_by", "review_by", default="editor"))
+    if atype in AI_STEPS:
+        reads = []  # reference records it reads besides the record (the supplier's contract prices)
+        for ref in _list(_first(raw, "reads", "reference", "references", "compare_with", "against", "look_at", "sources", default=[])):
+            if isinstance(ref, str):
+                ref = {"table": ref}
+            if not isinstance(ref, dict) or not _first(ref, "table", "from"):
+                raise SchemaError("an AI step's \"reads\" lists tables it looks at, like {\"table\": \"contract_prices\", \"where\": "
+                                  "[{\"field\": \"supplier\", \"op\": \"equals\", \"value\": \"{{record.supplier}}\"}]}")
+            one = {"table": slug(_first(ref, "table", "from"))}
+            where = _first(ref, "where", "filters", "only")
+            if where:
+                one["where"] = [normalize_condition(c) for c in _list(where)]
+            reads.append(one)
+        if reads:
+            action["reads"] = reads[:4]
+        if _first(raw, "read_files", "read_attachments", "attachments", "files") in (True, "true", "yes", 1):
+            action["read_files"] = True  # the record's attached files (a brief, a quote) as well as its fields
+        if _first(raw, "learn", "learn_from_corrections") in (False, "false", "no", 0):
+            action["learn"] = False  # it's shown people's past corrections of its work unless told not to
+        if raw.get("manual") in (True, "true", "yes", 1) or raw.get("enabled") in (False, "false", "no", 0) \
+                or str(raw.get("ai", "")).lower() in ("off", "false", "no"):
+            action["manual"] = True  # switched off: a person does the job instead, as a task
+    if atype in AI_STEPS and _first(raw, "use_knowledge", "knowledge", "search_knowledge",
+                                                                         "use_documents", "rag") in (True, "true", "yes", 1):
+        action["use_knowledge"] = True
+    only_if = _first(raw, "only_if", "if", "conditions", "when")
+    if only_if and isinstance(only_if, (list, dict)):
+        action["only_if"] = [normalize_condition(c) for c in _list(only_if)]
+    if atype == "delete_record":
+        target = _first(raw, "target", "record", "of")
+        if isinstance(target, str) and slug(target) not in ("record", "this", "self", "trigger", "current", "this_record"):
+            action["target"] = slug(target)
+        return action
+    if atype == "wait":
+        until = _first(raw, "until", "until_field", "date_field")
+        met = _first(raw, "until_met", "until_true", "until_condition", "until_conditions", "until_all")
+        if isinstance(until, (list, dict)):  # "until": [conditions]: until the record meets them
+            met, until = until, None
+        amount = {k: expr.to_number(_first(raw, k, k[:-1], default=0)) or 0 for k in ("days", "hours", "minutes")}
+        if met:  # until it's paid (or signed, or approved), at most "days" (then the steps after it go on regardless)
+            action["until_met"] = [normalize_condition(c) for c in _list(met)]
+            action.update({k: v for k, v in amount.items() if v})
+            return action
+        if until:
+            action["until"] = slug(until)
+        elif not any(amount.values()):
+            raise SchemaError("wait needs how long (\"days\", \"hours\" or \"minutes\"), \"until\": a date field of the record, "
+                          "or \"until_met\": conditions the record must meet (until it's paid)")
+        else:
+            action.update({k: v for k, v in amount.items() if v})
+        return action
+    if atype == "assign":
+        target = _first(raw, "field", "to_field", "into", "assignee_field")
+        if not target:
+            raise SchemaError("assign needs \"field\": the person field to fill")
+        action["field"] = slug(target)
+        pool = slug(_first(raw, "from", "role", "among", "pool", default="editor"))
+        action["from"] = {"admins": "admin", "editors": "editor", "everyone": "editor", "team": "editor"}.get(pool, pool)
+        return action
+    if atype == "copy_record":  # a new revision of a contract or order, a renewal, a repeat order: the record and its lines
+        values = _first(raw, "values", "set", "changes", "fields", default={})
+        action["values"] = {slug(k): _one_expression(v) for k, v in (values.items() if isinstance(values, dict) else []) if k}
+        back = _first(raw, "link_back", "previous", "previous_field", "link_to_original", "original_field")
+        if back:  # the copy's link to the record it was copied from ("previous version")
+            action["link_back"] = slug(back)
+        if _first(raw, "lines", "with_lines", "copy_lines") in (False, "false", "no", 0):
+            action["lines"] = False
+        return action
+    if atype in ("update_record", "create_record", "create_for_each", "update_each"):
+        said = (raw.get(k) for k in ("values", "fields", "set", "data", "record", "field_values", "updates", "payload"))
+        values = next((v for v in said if isinstance(v, dict) or isinstance(v, list) and any(isinstance(i, dict) for i in v)), None)
+        if isinstance(values, list):  # [{"field": "status", "value": "Done"}]
+            values = {_first(v, "field", "key", "name"): v.get("value") for v in values if isinstance(v, dict)}
+        if values in (None, {}, []) and atype in ("create_record", "create_for_each"):
+            values = {}  # nothing said: fields with the same name are copied across, and the links filled in (copy_matching)
+        elif not isinstance(values, dict) or not values:
+            raise SchemaError(f"the {atype} action needs \"values\": {{field: value}}")
+        action["values"] = {slug(k): _one_expression(v) for k, v in values.items() if k}
+        if atype in ("create_record", "create_for_each") and raw.get("copy_matching", True) not in (False, "false", 0):
+            action["copy_matching"] = True
+        if atype == "update_each":
+            source = _first(raw, "source", "for_each", "records", "each")
+            if isinstance(source, str):
+                source = {"table": source}
+            source = source or {}
+            if not _first(source, "table") or not _first(source, "via", "link"):
+                raise SchemaError("update_each needs \"source\": {\"table\": the related records, \"via\": their link to this record}")
+            action["source"] = _source(source, _first(source, "table"), _first(source, "via", "link"))
+            where = _first(raw, "where", "filters", "only_those")
+            if where:
+                action["where"] = [normalize_condition(c) for c in _list(where)]
+        elif atype in ("create_record", "create_for_each"):
+            table = _first(raw, "table", "in_table", "target_table", "into")
+            if not table and atype == "create_record":
+                raise SchemaError(f"the {atype} action needs the table to create records in")
+            action["table"] = slug(table) if table else None  # create_for_each: found from the step before it, if it can be
+            if atype == "create_for_each":
+                source = _first(raw, "source", "for_each", "from", "each")
+                if isinstance(source, str):
+                    source = {"table": source}
+                source = source or {}
+                each_of = _first(source, "field", "each_of", "people") or _first(raw, "each_of", "for_each_in", "per")
+                if each_of and not _first(source, "table"):  # one for each record or person in a field (each invited supplier)
+                    action["source"] = {"field": slug(each_of)}
+                    where = _first(raw, "where", "filters", "only_those")
+                    if where:
+                        action["where"] = [normalize_condition(c) for c in _list(where)]
+                    return action
+                source_table = _first(source, "table") or _first(raw, "source_table", "from_table")
+                via = _first(source, "via", "link", "link_field") or _first(raw, "source_via", "via")
+                if not source_table or not via:
+                    raise SchemaError("create_for_each needs \"source\": {\"table\": the records to go through, \"via\": their link field to the triggering record}")
+                action["source"] = _source(source, source_table, via)
+                where = _first(raw, "where", "filters", "only_those")
+                if where:  # only the billable timesheet entries
+                    action["where"] = [normalize_condition(c) for c in _list(where)]
+        else:
+            target = _first(raw, "target", "record", "on", "of")
+            if isinstance(target, str) and slug(target) not in ("record", "this", "self", "trigger", "current", "this_record"):
+                action["target"] = slug(target)  # a link field: update the linked record instead
+    elif atype == "notify":
+        message = _first(raw, "message", "text", "body", "content", "title")
+        if not message:
+            raise SchemaError("the notify action needs a message")
+        action["message"] = str(message)
+        # "from" too: the grammar has "to" before "message", so a recipient written after the message lands there
+        to = ".".join(slug(p) for p in str(_first(raw, "to", "who", "recipient", "notify", "from", default="everyone")).split(".") if slug(p)) or "everyone"
+        action["to"] = {"all": "everyone", "team": "everyone", "admins": "admin", "owners": "owner", "editors": "editor", "requester": "creator",
+                        "submitter": "creator", "created_by": "creator", "raised_by": "creator"}.get(to, to)
+    elif atype == "send_email":
+        to = _first(raw, "to", "recipient", "email", "address")
+        subject = _first(raw, "subject", "title")
+        body = _first(raw, "body", "message", "text", "content")
+        if not to or not subject or not body:
+            raise SchemaError("send_email needs \"to\" (an address or {{record.email}}), a \"subject\" and a \"body\"")
+        action.update(to=str(to), subject=str(subject)[:300], body=str(body)[:10000])
+        cc = _first(raw, "cc")
+        if cc:
+            action["cc"] = str(cc)
+        attach = _first(raw, "attach", "attachments", "attach_document", "documents")
+        if attach:
+            action["attach"] = [f"page:{slug(str(a)[5:])}" if str(a).startswith("page:") else slug(a) for a in _list(attach)]
+    elif atype == "generate_document":
+        document = _first(raw, "document", "template", "doc", "key")
+        if not document:
+            raise SchemaError("generate_document needs the \"document\" (a template's key) to produce")
+        action["document"] = slug(document)
+        save_to = _first(raw, "field", "save_to", "into")
+        if save_to:
+            action["field"] = slug(save_to)
+        target = _first(raw, "target", "record", "of", "for")  # "created": the record an earlier step made; or a link field
+        if isinstance(target, str) and slug(target) not in ("record", "this", "self", "trigger", "current", "this_record"):
+            action["target"] = slug(target)
+    elif atype == "request_approval":
+        several = [_person(a) for a in _names(_first(raw, "approvers", "approved_by", "chain", default=[]))][:10]
+        action["approver"] = several[0] if several else _person(_first(raw, "approver", "from", "who", "role", "assignee", default="admin"))
+        if len(several) > 1:
+            action["approvers"] = list(dict.fromkeys(several))
+            mode = slug(_first(raw, "mode", "needs", "require", "approval", default="any"))
+            action["mode"] = "all" if mode in ("all", "everyone", "each", "every", "unanimous", "all_of_them", "both") else "any"
+        action["message"] = str(_first(raw, "message", "question", "text", "reason", default="Please approve this."))[:1000]
+        _follow_up(raw, action)
+        apart = _not_by(raw)
+        if apart:
+            action["not_by"] = apart
+        if _yes(_first(raw, "step_up", "reauthenticate", "confirm_sign_in", "second_factor")):
+            action["step_up"] = True
+        rejected = _first(raw, "if_rejected", "on_reject", "on_rejected", "when_rejected", "rejected", "else", "otherwise")
+        if rejected:  # what happens on a no (say why, set it back to Draft); the run then stops
+            action["if_rejected"] = [normalize_action(x) for x in _list(rejected)]
+    elif atype == "task":
+        action["to"] = _person(_first(raw, "to", "assignee", "who", "for", "assign_to", "approver", default="editor"))
+        message = _first(raw, "message", "task", "instructions", "text", "title", "description")
+        if not message:
+            raise SchemaError("a task needs \"message\": what the person is asked to do")
+        action["message"] = str(message)[:1000]
+        fields = _first(raw, "fields", "fill", "inputs", "ask_for", "collect")
+        if fields:  # what they fill in to finish it (the tracking number, the inspection result)
+            action["fields"] = [slug(f if not isinstance(f, dict) else _first(f, "key", "field", "name"))
+                                for f in (_names(fields) if isinstance(fields, str) else _list(fields))][:12]
+        _follow_up(raw, action)
+        apart = _not_by(raw)
+        if apart:  # four eyes: the person who prepared it can't also check it
+            action["not_by"] = apart
+    elif atype == "run_automation":
+        key = _first(raw, "automation", "key", "workflow", "name", "run")
+        if not key:
+            raise SchemaError("run_automation needs \"automation\": the key of the automation to run")
+        action["automation"] = slug(key)
+        target = _first(raw, "target", "record", "for", "on")
+        if isinstance(target, str) and slug(target) not in ("record", "this", "self", "trigger", "current", "this_record"):
+            action["target"] = slug(target)
+    elif atype == "webhook":
+        url = str(_first(raw, "url", "endpoint", "address", default="")).strip()
+        if not re.match(r"^https?://", url, re.I):
+            raise SchemaError("a webhook needs a \"url\" starting with http:// or https://")
+        action["url"] = url[:500]
+        payload = _first(raw, "payload", "body", "data", "json")
+        if isinstance(payload, dict):
+            action["payload"] = payload
+        method = str(_first(raw, "method", "verb", default="POST")).upper()
+        action["method"] = method if method in ("GET", "POST", "PUT", "PATCH") else "POST"
+        save = _first(raw, "save", "save_to", "store", "response_to")
+        if isinstance(save, dict) and save:  # {"field": "path.in.the.answer"}: keep what the other system answers
+            action["save"] = {slug(k): str(v) for k, v in save.items()}
+    elif atype == "ai_extract":
+        source = slug(_first(raw, "from", "source", "file_field", "field", default=""))
+        source = "file" if source in ("files", "attachments", "attached_files", "its_files", "record_files") else source
+        if not source:
+            raise SchemaError("ai_extract needs \"from\": a file field of the record, or \"email\"/\"file\" for what started the automation")
+        action["from"] = source
+        fields = _first(raw, "fields", "into", "fill")
+        if fields:
+            action["fields"] = [slug(f) for f in _list(fields)]
+        instructions = _first(raw, "instructions", "prompt")
+        if instructions:
+            action["instructions"] = str(instructions)[:1000]
+    elif atype == "ai_create_record":
+        table = _first(raw, "table", "into", "in_table")
+        if not table:
+            raise SchemaError("ai_create_record needs the \"table\" to create the record in")
+        action["table"] = slug(table)
+        instructions = _first(raw, "instructions", "prompt", "task")
+        if instructions:
+            action["instructions"] = str(instructions)[:1000]
+        save_to = _first(raw, "attach_to", "file_field", "save_files_to")
+        if save_to:
+            action["attach_to"] = slug(save_to)
+    elif atype == "ai_check":
+        verdict = _first(raw, "field", "result_field", "verdict_field", "status_field", "into", "result")
+        instructions = _first(raw, "instructions", "check", "criteria", "rules", "prompt", "task")
+        if not verdict or not instructions:
+            raise SchemaError("ai_check needs \"field\": a choice field for its verdict (Pass, Issues) and \"instructions\": what to "
+                              "check the record against")
+        action.update(field=slug(verdict), instructions=str(instructions)[:2000])
+        notes = _first(raw, "notes_field", "findings_field", "details_field", "explain_in", "notes")
+        if notes:
+            action["notes_field"] = slug(notes)  # what it found, line by line
+    elif atype == "ai_fill":
+        field = _first(raw, "field", "target_field", "output_field", "into", "key")
+        instructions = _first(raw, "instructions", "prompt", "task", "description")
+        if not field or not instructions:
+            raise SchemaError("the ai_fill action needs the \"field\" to fill and \"instructions\" for the AI")
+        action.update(field=slug(field), instructions=str(instructions))
+    return action
+
+
+def normalize_automation(raw):
+    if not isinstance(raw, dict):
+        raise SchemaError("an automation must be an object")
+    name = str(_first(raw, "name", "label", "title", "description", default="")).strip()
+    key = slug(_first(raw, "key", "id", default=name or "automation"))
+    trigger_raw = _first(raw, "trigger", "when", "on", "event")
+    if trigger_raw is None and _first(raw, "trigger_type", "type"):
+        trigger_raw = {"type": _first(raw, "trigger_type", "type"), "table": raw.get("table")}
+    if isinstance(trigger_raw, dict) and not trigger_raw.get("table") and raw.get("table"):
+        trigger_raw = {**trigger_raw, "table": raw["table"]}
+    trigger = normalize_trigger(trigger_raw or {})
+    conditions = _list(_first(raw, "conditions", "condition", "if", "filters", "where", default=[]))
+    if isinstance(trigger_raw, dict):
+        conditions = _list(_first(trigger_raw, "conditions", "condition", "filters", "where", default=[])) + conditions
+        changed = _first(trigger_raw, "field", "watch_field", "changed_field")
+        if changed and trigger["type"] in ("record_updated", "record_created_or_updated"):
+            to = _first(trigger_raw, "to", "value", "changed_to")
+            conditions.insert(0, {"field": changed, "op": "changed_to" if to is not None else "changed", **({"value": to} if to is not None else {})})
+    actions = [normalize_action(a) for a in _list(_first(raw, "actions", "then", "do", "steps", default=[]))]
+    if not actions:
+        raise SchemaError(f"the automation “{name or key}” needs at least one action")
+    return {"key": key, "name": name or label_of(key), "enabled": raw.get("enabled", True) not in (False, "false", 0),
+            "trigger": trigger, "conditions": [normalize_condition(c) for c in conditions], "actions": actions}
+
+
+# --- checking a whole blueprint -------------------------------------------------------------------------------------
+
+def empty(name="My ERP"):  # "portals" are added by set_portal
+    return {"name": name, "modules": [], "tables": [], "pages": [], "automations": []}
+
+
+def table(bp, key):
+    return next((t for t in bp.get("tables", []) if t["key"] == key), None)
+
+
+def condition_leaves(conditions):
+    """Every plain condition of a list, those inside "any" and "all" groups too."""
+    for c in conditions or []:
+        if "any" in c or "all" in c:
+            yield from condition_leaves(c.get("any") or c.get("all"))
+        else:
+            yield c
+
+
+def step_at(actions, at):
+    """The step at a place in an automation: "2", or "3.1.0" (a branch's second way), "3.o.0" (its otherwise), "3.r.0"
+    (an approval's "if rejected")."""
+    parts, steps, step = str(at).split("."), actions, None
+    try:
+        step = steps[int(parts[0])]
+        for way, n in zip(parts[1::2], parts[2::2]):
+            steps = step["otherwise"] if way == "o" else step["if_rejected"] if way == "r" else step["paths"][int(way)]["steps"]
+            step = steps[int(n)]
+    except (IndexError, KeyError, ValueError, TypeError):
+        return None
+    return step
+
+
+def steps_of(actions):
+    """Every step of an automation in order, those on a branch's paths and an approval's "if rejected" too."""
+    for act in actions or []:
+        yield act
+        for path in act.get("paths") or []:
+            yield from steps_of(path["steps"])
+        yield from steps_of(act.get("otherwise"))
+        yield from steps_of(act.get("if_rejected"))
+
+
+HOPS = 3  # links a lookup, a rollup or a document's list follows at most (a rent payment → lease → property → owner)
+
+
+def field(t, key):
+    return next((f for f in (t or {}).get("fields", []) if f["key"] == key), None)
+
+
+def title_field(t):
+    if t.get("title_field") and field(t, t["title_field"]):
+        return t["title_field"]
+    for f in t["fields"]:
+        if f["type"] in ("text", "autonumber", "email"):
+            return f["key"]
+    return t["fields"][0]["key"] if t["fields"] else None
+
+
+def _check_expression(source, allowed, where, problems, record_fields=None):
+    try:
+        names = expr.names_in(source)
+    except expr.ExprError as exc:
+        problems.append(f"{where}: {exc}")
+        return
+    unknown = sorted(n for n in names if n not in allowed and n not in ("today", "now", "True", "False", "None"))
+    if unknown:
+        problems.append(f"{where}: “{', '.join(unknown)}” isn't a field here (fields: {', '.join(sorted(a for a in allowed if a != 'record')) or 'none'})")
+    if record_fields is not None:
+        import ast
+        for node in ast.walk(expr.parse(source)):
+            if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == "record" \
+                    and node.attr not in record_fields and node.attr not in ("id", "title", "created_at", "updated_at"):
+                problems.append(f"{where}: record.{node.attr} isn't a field of this table")
+
+
+def links_on(t, path, tables, depth=0):
+    """The link fields a dotted path from t goes through, each to one record, or None if it isn't such a path. A lookup
+    of a link on the way is read as the path behind it (rent payments' "owner" = "lease.property.owner")."""
+    out = []
+    for part in path.split("."):
+        f = field(t, part)
+        if f and f["type"] == "lookup" and f.get("link") and depth < HOPS:
+            behind = links_on(t, f"{f['link']}.{f['field']}", tables, depth + 1)
+            if not behind:
+                return None
+            out += behind
+        elif f and f["type"] == "link" and not f.get("multiple"):
+            out.append(f)
+        else:
+            return None
+        t = tables.get(out[-1]["table"])
+        if t is None:
+            return None
+    return out if len(out) <= HOPS else None
+
+
+def lookup_source(t, f, tables):
+    """The field a lookup of t shows: its linked record's field, or the field at the end of a path through that record's
+    links (a rent payment's lease → "property.owner"), or the field of the record it finds by its conditions."""
+    if "where" in f:
+        end = tables.get(f.get("table"))
+        if end is None:
+            return None
+    else:
+        link = field(t, f["link"])
+        if not link or link["type"] != "link" or link["table"] not in tables:
+            return None
+        end = tables[link["table"]]
+    through, _, key = f["field"].rpartition(".")
+    if through:
+        on = links_on(end, through, tables, depth=1)
+        if not on or len(on) >= HOPS:
+            return None
+        end = tables.get(on[-1]["table"])
+    return field(end, key)
+
+
+def as_fraction(value):
+    """A percentage as it's kept (15% is 0.15) from how people and the AI write it: "10", 10, "10%" → 0.1; 0.1 stays."""
+    if isinstance(value, bool) or value in (None, ""):
+        return value
+    text = str(value).strip()
+    n = expr.to_number(text.rstrip("%"))
+    if n is None:
+        return value
+    return n / 100 if text.endswith("%") or abs(n) > 1 else n
+
+
+def percents_fixed(t, source):
+    """A formula with its percentage fields used as they're kept: "subtotal * discount_percent / 100" is
+    "subtotal * discount_percent" (15% is already 0.15), and "discount_percent > 10" is "discount_percent > 0.1"."""
+    if not t or not isinstance(source, str):
+        return source
+    out = source
+    for f in t["fields"]:
+        if f["type"] != "percent" and not (f["type"] == "formula" and f.get("format") == "percent"):
+            continue
+        key = re.escape(f["key"])
+        out = re.sub(rf"(\b(?:record\.)?{key}\b)\s*/\s*100(?:\.0*)?(?![\d.])", r"\1", out)
+        out = re.sub(rf"\(\s*((?:record\.)?{key})\s*/\s*100(?:\.0*)?\s*\)", r"\1", out)
+        out = re.sub(rf"(\b(?:record\.)?{key}\b\s*(?:>=|<=|==|!=|>|<)\s*)(\d+(?:\.\d+)?)(?![\d.%])",
+                     lambda m: m.group(1) + (f"{float(m.group(2)) / 100:g}" if float(m.group(2)) > 1 else m.group(2)), out)
+    return out
+
+
+PRICE_WORDS = ("price", "rate", "cost", "fee", "charge")
+NAME_WORDS = ("description", "item_name", "name", "title", "details", "product_name")
+
+
+def fill_from(t, link, target):
+    """What picking a record in a link fills in beside it, {field of t: field of the picked record}: fields of the same
+    name (unit, GST code), its name into a description, its price into the line's price (a menu item on a quote line)."""
+    if not t or not target or link["type"] != "link":
+        return {}
+    out = {}
+    theirs = {f["key"]: f for f in target["fields"] if f["type"] in STORED and f["type"] not in ("autonumber",) and not f.get("sensitive")}
+    title = title_field(target)
+    for f in t["fields"]:
+        if f["key"] == link["key"] or f["type"] not in STORED or f["type"] in ("autonumber", "link", "user"):
+            continue
+        if f["key"] in theirs and theirs[f["key"]]["type"] == f["type"]:
+            out[f["key"]] = f["key"]
+        elif any(w == f["key"] or f["key"].endswith("_" + w) for w in NAME_WORDS) and f["type"] in ("text", "long_text") and title in theirs:
+            out[f["key"]] = title
+        elif f["type"] == "money" and any(w in f["key"] for w in PRICE_WORDS):
+            price = next((k for k, g in theirs.items() if g["type"] == "money" and any(w in k for w in PRICE_WORDS)), None)
+            if price:
+                out[f["key"]] = price
+    return out
+
+
+CODE_NAME = re.compile(r"(?<![\w@./:{-])[a-z][a-z0-9]*(?:_[a-z0-9]+)+(?![\w@/}-])")
+
+
+def named(bp, text):
+    """Text with each list's or detail's code name (material_shortage) as its name (material shortage), for people."""
+    names = {f["key"]: f["label"] for t in bp.get("tables", []) for f in t["fields"]} | {t["key"]: t["label"] for t in bp.get("tables", [])}
+    return CODE_NAME.sub(lambda m: lc(names[m.group(0)]) if m.group(0) in names else m.group(0).replace("_", " "), text or "")
+
+
+def converts(bp):
+    """Whether the app turns amounts from other currencies into its own (convert()): it needs exchange rates set."""
+    return any("convert(" in str(f.get("expression") or "") for t in bp.get("tables", []) for f in t["fields"]) \
+        or any("convert(" in str(act.get("values") or "") for a in bp.get("automations", []) for act in steps_of(a["actions"]))
+
+
+def person_path(t, who, tables):
+    """Whether `who` names people on a record of t: a person field, a lookup of one, or a path through its links that
+    ends at one (the cost centre's manager: "cost_centre.manager")."""
+    if not t or not who:
+        return False
+    current = t
+    parts = who.split(".")
+    for i, part in enumerate(parts[:HOPS + 1]):
+        f = field(current, part)
+        if f is None:
+            return False
+        if i == len(parts) - 1:
+            return f["type"] == "user" or f["type"] == "lookup" and (lookup_source(current, f, tables) or {}).get("type") == "user"
+        if f["type"] != "link" or f["table"] not in tables:
+            return False
+        current = tables[f["table"]]
+    return False
+
+
+def _path_field(t, path, tables):
+    """The field at the end of a dotted path from t through single links (a bid's "tender.closes_at"), or None."""
+    current, parts = t, path.split(".")
+    for part in parts[:-1]:
+        f = field(current, part)
+        if not f or f["type"] != "link" or f["table"] not in tables:
+            return None
+        current = tables[f["table"]]
+    return field(current, parts[-1])
+
+
+_TEAM_KEYS = contextvars.ContextVar("team_keys", default=frozenset())
+
+
+def who_fits(t, who, tables, teams_=None):
+    """Whether a step, move or check can be for `who`: a role, the record's creator, a team, the outside person the record
+    is for (its portal), or people named on the record."""
+    teams_ = _TEAM_KEYS.get() if teams_ is None else teams_
+    return who in APPROVER_ROLES or who in teams_ or bool(t) and (who == "creator" or who == "portal" and bool(t.get("portal"))
+                                                                 or person_path(t, who, tables))
+
+
+def _who_words(t):
+    teams_ = sorted(_TEAM_KEYS.get())
+    return ("owner, admin, editor, creator" + (", a team (" + ", ".join(teams_) + ")" if teams_ else "")
+            + (", portal" if t and t.get("portal") else "") + (f" or a person field of {t['label']}" if t else ""))
+
+
+def reach(t, source, via, tables):
+    """How records of `source` reach a record of t, for a rollup or a document's list: (path, anchor), or None. The path
+    is their link ("order"), or a path through their links ("property.owner"), a lookup of a link read as the path
+    behind it (rent payments' "owner" = "lease.property.owner"). It reaches the record itself (anchor None) or, when it
+    ends at a table t links to once, the record t links to there: a statement's owner (anchor "owner")."""
+    links = links_on(source, via, tables) if via else None
+    if not links:
+        return None
+    path, end = ".".join(f["key"] for f in links), links[-1]["table"]
+    if end == t["key"]:
+        return path, None
+    anchors = [f["key"] for f in t["fields"] if f["type"] == "link" and f["table"] == end and not f.get("multiple")]
+    return (path, anchors[0]) if len(anchors) == 1 else None
+
+
+def _check_conditions(conditions, t, where, problems, tables):
+    keys = {f["key"] for f in t["fields"]} | {"created_at", "updated_at"}
+    for c in condition_leaves(conditions):
+        head, _, rest = c["field"].partition(".")
+        if rest:  # through a link: an invoice's customer.account_manager
+            link = field(t, head)
+            linked = tables.get(link["table"]) if link and link["type"] == "link" else None
+            if linked is None:
+                problems.append(f"{where}: the condition checks “{c['field']}”, but “{head}” isn't a link field of {t['label']}")
+            elif not field(linked, rest) and rest not in ("created_at", "updated_at"):
+                problems.append(f"{where}: the condition checks “{c['field']}”, but “{rest}” isn't a field of {linked['label']}")
+        elif c["field"] not in keys:
+            problems.append(f"{where}: the condition checks “{c['field']}”, which isn't a field of {t['label']}")
+
+
+CONTEXT = {"record", "created", "item", "email", "file", "payload", "today", "now", "approver", "reason"}  # names automation values can use besides fields ("approver": who said yes; "reason": what they wrote answering)
+
+
+def _check_template(text, where, problems, context_fields):
+    for m in expr.TEMPLATE.finditer(text or ""):
+        _check_expression(m.group(1), set(context_fields) | CONTEXT, where, problems, record_fields=set(context_fields))
+
+
+def _check_values(values, target, where, problems, context_fields):
+    if target is None:
+        return  # the step's table is missing: that's reported where the table is named
+    keys = {f["key"]: f for f in target["fields"]}
+    for k, v in values.items():
+        f = keys.get(k)
+        if f is None:
+            problems.append(f"{where}: {target['label']} has no field “{k}” (fields: {', '.join(keys)})")
+        elif f["type"] in CALCULATED:
+            problems.append(f"{where}: “{k}” is worked out automatically and can't be set")
+        elif f["type"] in FILES:
+            problems.append(f"{where}: “{k}” holds files; files are added by generate_document, ai_create_record or by people")
+        if isinstance(v, str) and "{{" in v:
+            _check_template(v, where, problems, context_fields)
+
+
+def _check_table(t, tables, modules, problems):
+    keys = {f["key"]: f for f in t["fields"]}
+    if not t["fields"]:
+        problems.append(f"the table {t['label']} has no fields: define each one in its \"fields\" (key, label, type and the type's "
+                        f"settings); sections and views only arrange fields defined there")
+    if t.get("module") and t["module"] not in modules:
+        problems.append(f"the table {t['label']} is in module “{t['module']}”, which doesn't exist")
+    if t.get("embedded") and not any(f["type"] == "link" for f in t["fields"]):
+        problems.append(f"{t['label']} is shown inside another table's records, so it needs a link field to that table")
+    for f in t["fields"]:
+        where = f"{t['label']} › {f['label']}"
+        if f["type"] == "link" and f["table"] not in tables:
+            problems.append(f"{where} links to “{f['table']}”, which isn't a table (tables: {', '.join(tables)})")
+        if f["type"] == "formula":
+            _check_expression(f["expression"], set(keys) | {"record", "id", "created_at", "updated_at"}, where, problems)
+            if f["key"] in expr.names_in(f["expression"]):
+                problems.append(f"{where}: a formula can't use itself")
+        if f["type"] == "lookup" and "where" in f:
+            source = tables.get(f["table"])
+            if not source:
+                problems.append(f"{where} finds a record in “{f['table']}”, which isn't a table")
+                continue
+            if not f["field"]:
+                problems.append(f"{where}: the lookup needs \"field\": which field of the {source['label']} it finds to show "
+                                f"({', '.join(x['key'] for x in source['fields'][:12])})")
+            elif not lookup_source(t, f, tables):
+                problems.append(f"{where}: {source['label']} has no field “{f['field']}”")
+            _check_conditions(f["where"], source, where, problems, tables)
+            if f.get("sort") and not field(source, f["sort"]["field"]) and f["sort"]["field"] not in ("created_at", "updated_at"):
+                problems.append(f"{where} picks by “{f['sort']['field']}”, which isn't a field of {source['label']}")
+        elif f["type"] == "lookup":
+            link = keys.get(f["link"])
+            if link and link["type"] == "link" and not f["field"]:
+                shown = [x["key"] for x in (tables.get(link["table"]) or {}).get("fields", [])]
+                problems.append(f"{where}: the lookup needs \"field\": which field of {link['label']} to show" + (f" ({', '.join(shown[:12])})" if shown else ""))
+            elif not link or link["type"] != "link":
+                links = [x["key"] for x in t["fields"] if x["type"] == "link"]
+                problems.append(f"{where}: " + (f"“{f['link']}” must be" if f["link"] else "the lookup needs \"link\":")
+                                + f" a link field of {t['label']}" + (f" ({', '.join(links)})" if links else ""))
+            elif link["table"] in tables and not lookup_source(t, f, tables):
+                problems.append(f"{where}: {tables[link['table']]['label']} has no field “{f['field']}”"
+                                + (f" (a path goes through links to one record each, {HOPS} links at most)" if "." in f["field"] else ""))
+        if f["type"] == "rollup":
+            source = tables.get(f["table"])
+            if not source:
+                problems.append(f"{where} totals “{f['table']}”, which isn't a table")
+                continue
+            if not f["via"] and not f.get("filters"):
+                problems.append(f"{where}: a total over all of {source['label']} needs \"where\": conditions on {{{{record.x}}}} saying which")
+            elif f["via"] and not reach(t, source, f["via"], tables):
+                links = [x["key"] for x in source["fields"] if x["type"] == "link" and x["table"] == t["key"]]
+                problems.append(f"{where}: “{f['via']}” must be the field of {source['label']} that links to {t['label']}"
+                                + (f" (that's “{links[0]}”)" if links else f"; {source['label']} has no link to {t['label']} yet")
+                                + ", or a path through their links (“property.owner”) to it or to the record it links to")
+            if f.get("field"):
+                of = field(source, f["field"])
+                if not of:
+                    problems.append(f"{where}: {source['label']} has no field “{f['field']}”")
+                elif f["aggregate"] in ("sum", "avg") and of["type"] not in NUMERIC | {"duration", "rating", "rollup"} \
+                        and of.get("format") not in NUMERIC:
+                    problems.append(f"{where}: can't {f['aggregate']} “{of['label']}” because it isn't a number")
+            _check_conditions(f.get("filters"), source, where, problems, tables)
+        for kind in ("show_if", "hide_if", "readonly_if"):
+            _check_conditions(f.get(kind), t, where, problems, tables)
+        if f.get("options_by"):
+            parent = field(t, f["options_by"]["field"])
+            if not parent or parent["key"] == f["key"] or parent["type"] not in ("select", "text", "link", "checkbox"):
+                problems.append(f"{where}: its choices depend on “{f['options_by']['field']}”, which must be another choice or text field of {t['label']}")
+            elif parent["type"] == "select":
+                unknown = [k for k in f["options_by"]["options"] if k not in parent["options"]]
+                if unknown:
+                    problems.append(f"{where}: its choices are given for {', '.join(unknown)}, which aren't options of {parent['label']} ({', '.join(parent['options'])})")
+        for source in (f.get("ai") or {}).get("from", []):
+            if source not in keys:
+                problems.append(f"{where}: the AI reads “{source}”, which isn't a field of {t['label']}")
+    for section in t.get("sections", []):
+        missing = [k for k in section["fields"] if k not in keys]
+        if missing:
+            problems.append(f"the section {t['label']} › {section['label']} lists {', '.join(missing)}, which aren't fields")
+        _check_conditions(section.get("show_if"), t, f"the section {t['label']} › {section['label']}", problems, tables)
+    for v in t.get("views", []):
+        where = f"the view {t['label']} › {v['label']}"
+        needs = {"board": [("group_by", ("select",))], "calendar": [("date_field", ("date", "datetime")), ("end_field", ("date", "datetime"))],
+                 "timeline": [("start_field", ("date", "datetime")), ("end_field", ("date", "datetime"))], "gallery": [("image_field", ("image",))]}
+        for setting, kinds in needs.get(v["type"], []):
+            if not v.get(setting):
+                continue
+            f = keys.get(v[setting])
+            if not f or (f["type"] not in kinds and f.get("format") not in kinds):
+                fitting = [x["key"] for x in t["fields"] if x["type"] in kinds or x.get("format") in kinds]
+                problems.append(f"{where}: “{v[setting]}” must be a {' or '.join(kinds)} field" + (f" ({', '.join(fitting)})" if fitting else f"; {t['label']} has none"))
+        if v["type"] == "map" and (keys.get(v["location_field"]) or {}).get("type") != "location":
+            places = [x["key"] for x in t["fields"] if x["type"] == "location"]
+            problems.append(f"{where}: “{v['location_field']}” must be a location field" + (f" ({', '.join(places)})" if places else f"; {t['label']} has none"))
+        if v["type"] == "tree":
+            parent = keys.get(v["parent_field"])
+            if not parent or parent["type"] != "link" or parent["table"] != t["key"]:
+                problems.append(f"{where}: “{v['parent_field']}” must be a link from {t['label']} to {t['label']} (each record's parent)")
+        if v.get("depends_field"):
+            dep = keys.get(v["depends_field"])
+            if not dep or dep["type"] != "link" or dep["table"] != t["key"]:
+                problems.append(f"{where}: “{v['depends_field']}” must be a link from {t['label']} to {t['label']} (what each depends on)")
+        if v["type"] in ("list", "timeline") and v.get("group_by") and v["group_by"] not in keys:
+            problems.append(f"{where} groups by “{v['group_by']}”, which isn't a field")
+        if v.get("color_by") and v["color_by"] not in keys:
+            problems.append(f"{where} colours by “{v['color_by']}”, which isn't a field")
+        if v.get("sort") and v["sort"]["field"] not in keys and v["sort"]["field"] not in ("created_at", "updated_at"):
+            problems.append(f"{where} sorts by “{v['sort']['field']}”, which isn't a field")
+        _check_conditions(v.get("filters"), t, where, problems, tables)
+    for doc in t.get("documents", []):
+        where = f"the document {t['label']} › {doc['label']}"
+        if doc.get("format") == "text":
+            for part in ("header", "line", "footer"):
+                try:
+                    expr.TEMPLATE.sub("", doc.get(part) or "")
+                    for m in expr.TEMPLATE.finditer(doc.get(part) or ""):
+                        expr.parse(m.group(1))
+                except expr.ExprError as exc:
+                    problems.append(f"{where}: its {part} can't be read: {exc}")
+            if doc.get("lines") and doc["lines"]["table"] not in tables:
+                problems.append(f"{where} lists “{doc['lines']['table']}”, which isn't a table")
+            elif doc.get("lines") and not reach(t, tables[doc["lines"]["table"]], doc["lines"]["via"], tables):
+                problems.append(f"{where}: “{doc['lines']['via']}” must be the link of {tables[doc['lines']['table']]['label']} to {t['label']}")
+            continue
+        for k in doc.get("fields", []) + doc.get("details", []) + doc.get("totals", []) + ([doc["number_field"]] if doc.get("number_field") else []):
+            if k not in keys:
+                problems.append(f"{where} shows “{k}”, which isn't a field of {t['label']}")
+        to = doc.get("to")
+        if to and to["field"] == "record":  # a statement to the customer or owner it's about
+            for k in to.get("details", []):
+                if k not in keys:
+                    problems.append(f"{where}: {t['label']} has no field “{k}”")
+        elif to:
+            target = keys.get(to["field"])
+            if not target:
+                problems.append(f"{where} is addressed to “{to['field']}”, which isn't a field")
+            elif to.get("details"):
+                if target["type"] != "link" or target["table"] not in tables:
+                    problems.append(f"{where}: details of the recipient need “{to['field']}” to be a link field")
+                else:
+                    for k in to["details"]:
+                        if not field(tables[target["table"]], k):
+                            problems.append(f"{where}: {tables[target['table']]['label']} has no field “{k}”")
+        for lines in ([doc["lines"]] if doc.get("lines") else []) + doc.get("sections", []):
+            source = tables.get(lines["table"])
+            if not source:
+                problems.append(f"{where} lists lines from “{lines['table']}”, which isn't a table")
+                continue
+            if not reach(t, source, lines["via"], tables):
+                links = [x["key"] for x in source["fields"] if x["type"] == "link" and x["table"] == t["key"]]
+                problems.append(f"{where}: lines need “via” to be {source['label']}'s link to {t['label']}, or a path through their links "
+                                f"(“property.owner”) to it or to the record it links to" + (f" (“{links[0]}”)" if links else ""))
+            for c in lines["columns"] + ([lines["total"]] if lines.get("total") else []):
+                if not field(source, c):
+                    problems.append(f"{where}: {source['label']} has no field “{c}”")
+            _check_conditions(lines.get("filters"), source, where, problems, tables)
+        for text in (doc.get("notes"), doc.get("footer")):
+            _check_template(text, where, problems, list(keys))
+    for rule in t.get("rules", []):
+        where = f"the rule “{rule['message']}” on {t['label']}"
+        _check_expression(rule["check"], set(keys) | {"record"}, where, problems)
+        _check_conditions(rule.get("when"), t, where, problems, tables)
+        if rule.get("field") and rule["field"] not in keys:
+            problems.append(f"{where} shows its message on “{rule['field']}”, which isn't a field")
+    _check_conditions(t.get("lock_if"), t, f"the lock on {t['label']}", problems, tables)
+    for k in t.get("lock_except", []):
+        if k not in keys:
+            problems.append(f"the lock on {t['label']} leaves “{k}” editable, but that isn't a field")
+    for rule in t.get("colors", []):
+        _check_conditions(rule["when"], t, f"a colour rule on {t['label']}", problems, tables)
+        if rule.get("field") and rule["field"] not in keys:
+            problems.append(f"a colour rule on {t['label']} colours “{rule['field']}”, which isn't a field")
+    portal = t.get("portal")
+    if portal:
+        head, _, hop = portal["via"].partition(".")
+        via = keys.get(head)
+        if not via or via["type"] != "link":
+            problems.append(f"the portal on {t['label']} needs “{head}” to be a link field (to the portal's people, or to a record "
+                            "that links to them)")
+        elif hop and (field(tables.get(via["table"]), hop) or {}).get("type") != "link":
+            problems.append(f"the portal on {t['label']} goes through “{portal['via']}”: “{hop}” must be a link field of "
+                            f"{(tables.get(via['table']) or {}).get('label', via['table'])} to the portal's people")
+        for k in portal["fields"] + portal.get("edit", []):
+            if k not in keys:
+                problems.append(f"the portal on {t['label']} shows “{k}”, which isn't a field")
+            elif k in portal.get("edit", []) and keys[k]["type"] in CALCULATED:
+                problems.append(f"the portal on {t['label']} lets them change “{keys[k]['label']}”, which is worked out, not filled in")
+        flow = t.get("workflow")
+        if flow and flow["field"] in portal.get("edit", []):
+            problems.append(f"the portal on {t['label']} can't edit the stage “{flow['field']}” directly; give a workflow move "
+                            f"\"who\": [\"portal\"] instead")
+        for kind in ("edit_if", "show_if"):
+            _check_conditions(portal.get(kind), t, f"the portal on {t['label']}", problems, tables)
+    for group in t.get("unique_together", []):
+        missing = [k for k in group if k not in keys]
+        if missing:
+            problems.append(f"{t['label']} can't have two records alike in {', '.join(missing)}: not fields of {t['label']}")
+    held = t.get("approve_changes")
+    if held:
+        where = f"the change approval on {t['label']}"
+        for k in held["fields"]:
+            if k not in keys:
+                problems.append(f"{where} watches “{k}”, which isn't a field")
+            elif keys[k]["type"] not in STORED:
+                problems.append(f"{where} watches “{keys[k]['label']}”, which is worked out, not filled in")
+        if not who_fits(t, held["approver"], tables):
+            problems.append(f"{where} asks “{held['approver']}” to approve: use {_who_words(t)}")
+        if held.get("tell") and (keys.get(held["tell"]) or {}).get("type") != "email" and not person_path(t, held["tell"], tables):
+            problems.append(f"{where} tells “{held['tell']}” about each change: it must be an email field of {t['label']}")
+    sealed = t.get("sealed")
+    if sealed:
+        end = _path_field(t, sealed["until"], tables)
+        if not end or engine_kind(end) not in DATES:
+            problems.append(f"sealed on {t['label']}: “{sealed['until']}” must be a date or date-and-time field, on the record or "
+                            "through its links (tender.closes_at)")
+        for k in sealed.get("keep_open", []):
+            if k not in keys:
+                problems.append(f"sealed on {t['label']} keeps “{k}” open, which isn't a field")
+    for step in t.get("journey", []):
+        where = f"the journey of {t['label']} › {step['label']}"
+        if step.get("table"):
+            source = tables.get(step["table"])
+            if not source:
+                problems.append(f"{where} follows “{step['table']}”, which isn't a table")
+                continue
+            if not reach(t, source, step.get("via") or "", tables):
+                links = [x["key"] for x in source["fields"] if x["type"] == "link" and x["table"] == t["key"]]
+                problems.append(f"{where}: “{step.get('via')}” must be {source['label']}'s link to {t['label']}"
+                                + (f" (that's “{links[0]}”)" if links else ", or a path through their links to it"))
+            _check_conditions(step.get("when"), source, where, problems, tables)
+        else:
+            _check_conditions(step.get("when"), t, where, problems, tables)
+    access = t.get("access") or {}
+    for team in access.get("teams", []):
+        if team not in _TEAM_KEYS.get():
+            problems.append(f"{t['label']} is kept to the team “{team}”, which isn't a team (add it with set_team)")
+    for f in t["fields"]:
+        if f.get("access") and f["access"] not in ROLE_NAMES and f["access"] not in _TEAM_KEYS.get():
+            problems.append(f"{t['label']} › {f['label']} is kept to “{f['access']}”: use admin, owner or a team")
+    rows = t.get("row_access")
+    for team in (rows or {}).get("teams") or []:
+        if team not in _TEAM_KEYS.get():
+            problems.append(f"row_access on {t['label']} lets the team “{team}” see every record, but it isn't a team (add it with set_team)")
+    if rows and rows["field"] != "created_by" and _person_path(t, rows["field"], tables) is None:
+        people = [x["key"] for x in t["fields"] if x["type"] == "user"] + [
+            f"{x['key']}.{y['key']}" for x in t["fields"] if x["type"] == "link" and x["table"] in tables
+            for y in tables[x["table"]]["fields"] if y["type"] == "user"]
+        problems.append(f"row_access on {t['label']} needs “{rows['field']}” to be a person (user) field, a linked record's "
+                        f"person field such as customer.sales_rep, or created_by" + (f" ({', '.join(people)})" if people else ""))
+    for f in t["fields"]:
+        if not f.get("currency_field"):
+            continue
+        head, _, rest = f["currency_field"].partition(".")
+        link = keys.get(head) if rest else None
+        codes = field(tables.get(link["table"]), rest) if link and link["type"] == "link" else None if rest else keys.get(head)
+        if (codes or {}).get("type") not in ("select", "text", "lookup", "formula"):
+            problems.append(f"{t['label']} › {f['label']} takes its currency from “{f['currency_field']}”, which must be a select or text field of currency codes"
+                            " (its own, or its linked record's: “po.currency”)")
+    form = t.get("public_form")
+    if form:
+        for k in form["fields"]:
+            f = keys.get(k)
+            if not f:
+                problems.append(f"the public form of {t['label']} asks for “{k}”, which isn't a field")
+            elif f["type"] in CALCULATED | {"user", "link"}:
+                problems.append(f"the public form of {t['label']} can't ask for “{f['label']}” ({f['type']})")
+
+
+def engine_kind(f):
+    """A field's kind as far as the blueprint can tell (a formula's format)."""
+    if f is None:
+        return None
+    return f.get("format") if f["type"] == "formula" else f["type"]
+
+
+def _person_path(t, path, tables):
+    """The person field a row_access path ends at: "owner", "customer.sales_rep" (through a link), or a lookup of one."""
+    parts = path.split(".")
+    f = field(t, parts[0])
+    if f is None:
+        return None
+    if len(parts) == 1:
+        if f["type"] == "lookup":
+            source = lookup_source(t, f, tables)
+            return source if source and source["type"] == "user" else None
+        return f if f["type"] == "user" else None
+    if f["type"] != "link" or f["table"] not in tables or len(parts) != 2:
+        return None
+    target = field(tables[f["table"]], parts[1])
+    return target if target and target["type"] == "user" else None
+
+
+def link_reached(t, of, tables):
+    """The link a step's "of" reaches records through: a link field of t, a lookup showing one (a work order's product,
+    shown from its order), or a path through links ("order.product"). None when it's none of those."""
+    f = _path_field(t, of, tables) if "." in of else field(t, of)
+    if f and f["type"] == "lookup" and "where" not in f and "." not in of:
+        f = lookup_source(t, f, tables)
+    return f if f and f["type"] == "link" and f["table"] in tables else None
+
+
+def _check_source(spec, source, t, where, problems, made=(), tables=None):
+    """Whether a step's related records hang off the triggering record (or, with "of", off the record one of its links
+    reaches, or off one made earlier in the run: the new invoice's lines)."""
+    via = field(source, spec["via"])
+    parent = t
+    if spec.get("of") == "created":
+        if not via or via["type"] != "link" or via["table"] not in made:
+            problems.append(f"{where} goes through the {lc(source['label'])} of a record it created, but no earlier step creates "
+                            f"the record “{spec['via']}” links to")
+            return False
+        return True
+    if spec.get("of"):
+        link = link_reached(t, spec["of"], tables or {}) if t else None
+        if not link:
+            problems.append(f"{where} goes through the {lc(source['label'])} of “{spec['of']}”, which isn't a link field of {t['label'] if t else 'the record'} "
+                            f"(use one of its links, a lookup of one, or a path through them like “order.product”)")
+            return False
+        parent = {"key": link["table"], "label": link["label"]}
+    if not parent or not via or via["type"] != "link" or via["table"] != parent["key"]:
+        problems.append(f"{where}: “{spec['via']}” must be {source['label']}'s link to {parent['label'] if parent else 'the triggering record'}")
+        return False
+    if spec.get("nested") and not nested_link(source, spec):
+        links = [f["key"] for f in source["fields"] if f["type"] == "link" and f["table"] == via["table"] and f["key"] != via["key"]]
+        problems.append(f"{where}: “nested” must be the link of {source['label']} to the sub-assembly a line is made of (another of "
+                        f"{parent['label']})" + (f": “{links[0]}”" if len(links) == 1 else f"; {source['label']} has none yet" if not links else ""))
+        return False
+    return True
+
+
+def stages(t):
+    """A table's stages in order (its workflow field's options), or []."""
+    flow = t.get("workflow")
+    f = field(t, flow["field"]) if flow else None
+    return list(f.get("options") or []) if f and f["type"] == "select" else []
+
+
+SAYS_NO = re.compile(r"\bnot\b|reject|declin|refus|lost|fail|unsuccess|cancel|void|withdrawn|abandon", re.I)
+
+
+ENDED = re.compile(r"clos|complet|\bdone\b|paid|finish|resolv|archiv", re.I)  # the work's end, not the next step of a new one
+STOPS = re.compile(r"cancel|void|withdrawn|abandon", re.I)  # stopped by whoever raised it, not a decision
+
+
+def lc(text):
+    """A label in lower case for the middle of a sentence, its words in capitals kept ("Edit PO lines", "your GST")."""
+    return re.sub(r"\S+", lambda m: m.group(0) if re.fullmatch(r"[A-Z0-9&/]{2,}s?", m.group(0)) else m.group(0).lower(), str(text or ""))
+
+
+def says_no(stage):
+    """Whether a stage is a "no" or a stop (Rejected, Not awarded, Cancelled) rather than a step onwards."""
+    return bool(SAYS_NO.search(str(stage or "")))
+
+
+def sending_on(bp, t):
+    """The moves a new record's form may make as it's saved ("Save and send for approval"): onwards from where it starts,
+    never a "no", the end of the work (Closed, Paid), or someone's decision (Approve beside Reject, or into the stage an
+    approval rule sets once it's approved): those are for later, by whoever decides. [(index, move)]."""
+    flow, start = t.get("workflow"), start_stage(t)
+    if not flow or not start:
+        return []
+    key = flow["field"]
+    out = [(i, m) for i, m in enumerate(flow["transitions"]) if (not m["from"] or start in m["from"]) and m["to"] != start]
+    approved_into = set()
+    for a in bp.get("automations", []):
+        if (a.get("trigger") or {}).get("table") != t["key"]:
+            continue
+        asked = False
+        for s in steps_of(a["actions"]):
+            asked = asked or s.get("type") == "request_approval"
+            if asked and s.get("type") == "update_record" and key in (s.get("values") or {}):
+                approved_into.add(str(s["values"][key]).lower())
+    deciders = [set(m.get("who") or []) for _, m in out if says_no(m["to"]) and not STOPS.search(m["to"]) and "creator" not in (m.get("who") or [])]
+
+    def decision(m):
+        who = set(m.get("who") or [])
+        return m["to"].lower() in approved_into or "creator" in (m.get("not_by") or []) or \
+            (who and "creator" not in who and any(who & d or not d for d in deciders))
+    return [(i, m) for i, m in out if not says_no(m["to"]) and not ENDED.search(m["to"]) and not decision(m)]
+
+
+def _hours(value, per=1):
+    """A duration as hours: 30 with minutes as the unit (per = 1/60), "30 minutes", "1h 30m", "1:30"."""
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return round(value * per, 4)
+    text = str(value).strip().lower()
+    clock = re.fullmatch(r"(\d+):(\d{1,2})", text)
+    if clock:
+        return round(int(clock.group(1)) + int(clock.group(2)) / 60, 4)
+    parts = re.findall(r"(\d+(?:\.\d+)?)\s*(h|hr|hrs|hour|hours|m|min|mins|minute|minutes)\b", text)
+    if parts:
+        return round(sum(float(n) / (60 if u.startswith("m") else 1) for n, u in parts), 4)
+    n = expr.to_number(text)
+    return round(n * per, 4) if n is not None else value
+
+
+def start_stage(t):
+    """The stage a new record of t begins at: the workflow's "start", the field's default, or its first option."""
+    flow, names = t.get("workflow"), stages(t)
+    if not names:
+        return None
+    f = field(t, flow["field"])
+    for said in (flow.get("start"), f.get("default")):
+        if said in names:
+            return said
+    return names[0]
+
+
+def _check_workflow(t, tables, problems):
+    flow = t["workflow"]
+    where = f"the workflow of {t['label']}"
+    f = field(t, flow["field"])
+    if not f or f["type"] != "select":
+        choices = [x["key"] for x in t["fields"] if x["type"] == "select"]
+        problems.append(f"{where} moves records through “{flow['field']}”, which must be a choice (select) field of {t['label']}"
+                        + (f" ({', '.join(choices)})" if choices else "; add one with the stages as its options"))
+        return
+    names = stages(t)
+    if flow.get("start") and flow["start"] not in names:
+        problems.append(f"{where} starts at “{flow['start']}”, which isn't one of {f['label']}'s options ({', '.join(names)})")
+    for m in flow["transitions"]:
+        for stage in m["from"] + [m["to"]]:
+            if stage not in names:
+                problems.append(f"{where} has a move with “{stage}”, which isn't one of {f['label']}'s options ({', '.join(names)})")
+        for who in m.get("who", []):
+            if not who_fits(t, who, tables):
+                problems.append(f"{where}: “{who}” can't make a move; use {_who_words(t)}")
+        for who in m.get("not_by", []):
+            if not _apart_fits(t, who, tables):
+                problems.append(f"{where}: the move to {m['to']} is kept from “{who}”; use creator, a stage of {f['label']} (whoever "
+                                f"moved it there), a team or a person field of {t['label']}")
+        for k in m.get("requires", []):
+            if not field(t, k):
+                problems.append(f"{where}: the move to {m['to']} needs “{k}” filled in, which isn't a field of {t['label']}")
+        _check_conditions(m.get("only_if"), t, where, problems, tables)
+
+
+def _apart_fits(t, who, tables):
+    """A "not_by" entry: the creator, a stage (whoever moved the record there), a team, or people named on the record."""
+    return who == "creator" or who in _TEAM_KEYS.get() or person_path(t, who, tables) \
+        or str(who).lower() in [x.lower() for x in stages(t)]
+
+
+def _check_automation(a, tables, problems, documents, bp_pages=(), automations=None):
+    where = f"the automation “{a['name']}”"
+    trig = a["trigger"]
+    t = tables.get(trig.get("table")) if trig.get("table") else None
+    if trig.get("table") and not t:
+        problems.append(f"{where} watches “{trig['table']}”, which isn't a table")
+        return
+    if t:
+        _check_conditions(a["conditions"], t, where, problems, tables)
+    elif a["conditions"]:
+        problems.append(f"{where} has conditions but no table to check them on")
+    context_fields = [f["key"] for f in t["fields"]] if t else []
+
+    def person(who, what):
+        """Whether a step can be for `who`: a role, a team, the record's creator, its outside person, or people named on it."""
+        if who_fits(t, who, tables):
+            return True
+        problems.append(f"{where} {what} “{who}”: use {_who_words(t)}" + ("" if t else " (it isn't about a record, so not a person field)"))
+        return False
+
+    def apart(act):
+        for who in act.get("not_by", []):
+            if not t or not _apart_fits(t, who, tables):
+                problems.append(f"{where} keeps a step from “{who}”: use creator, a stage (whoever moved the record there), a team or a "
+                                f"person field" + (f" of {t['label']}" if t else ""))
+
+    def check_steps(steps, created_table, made):
+        """Steps in order (a branch's paths and an approval's "if rejected" are checked the same way); returns the last
+        record made by them and every table they made records in."""
+        for act in steps or []:
+            kind = act["type"]
+            for ref in act.get("reads", []):
+                if ref["table"] not in tables:
+                    problems.append(f"{where}: the AI reads “{ref['table']}”, which isn't a table")
+                else:
+                    _check_conditions(ref.get("where"), tables[ref["table"]], where, problems, tables)
+            if act.get("only_if"):
+                if t:
+                    _check_conditions(act["only_if"], t, where, problems, tables)
+                else:
+                    problems.append(f"{where}: a step has conditions but there's no record to check them on")
+            if kind in ("update_record", "ai_fill", "ai_extract", "ai_check", "generate_document", "request_approval", "update_each", "assign", "branch") and not t \
+                    and not (kind in ("update_record", "generate_document") and act.get("target") == "created" and created_table):
+                problems.append(f"{where}: “{kind}” needs a record, but this automation isn't about one (add a table to the trigger)")
+                continue
+            if kind == "update_record":
+                target = t
+                if act.get("target") == "created":
+                    target = tables.get(created_table) if created_table else None
+                    if target is None:
+                        problems.append(f"{where} updates the record it created, but no earlier step creates one")
+                        continue
+                elif act.get("target"):
+                    link = field(t, act["target"])
+                    if not link or link["type"] != "link":
+                        problems.append(f"{where} updates “{act['target']}”, which isn't a link field of {t['label']}")
+                        continue
+                    target = tables.get(link["table"])
+                _check_values(act["values"], target, where, problems, context_fields)
+            elif kind in ("create_record", "create_for_each", "ai_create_record"):
+                target = tables.get(act["table"])
+                if not act["table"]:
+                    problems.append(f"{where}: the {kind} action needs \"table\": the table the new records go in")
+                    continue
+                if not target:
+                    problems.append(f"{where} creates records in “{act['table']}”, which isn't a table")
+                    continue
+                if kind != "create_for_each":  # "the record it created" stays the invoice while its lines are made
+                    created_table = act["table"]
+                    made.add(act["table"])
+                if kind == "create_for_each" and act["source"].get("field"):  # one for each record or person in a field
+                    each = field(t, act["source"]["field"]) if t else None
+                    if not each or each["type"] not in ("link", "user"):
+                        problems.append(f"{where} makes one record for each in “{act['source']['field']}”, which must be a link or "
+                                        f"person field" + (f" of {t['label']}" if t else " of the record (there is none)"))
+                        continue
+                    source = tables.get(each["table"]) if each["type"] == "link" else None
+                    if source is not None:
+                        _check_conditions(act.get("where"), source, where, problems, tables)
+                    _check_values(act["values"], target, where, problems, context_fields + [f["key"] for f in (source or {}).get("fields", [])])
+                elif kind == "create_for_each":
+                    source = tables.get(act["source"]["table"])
+                    if not source:
+                        problems.append(f"{where} goes through “{act['source']['table']}”, which isn't a table")
+                    else:
+                        _check_source(act["source"], source, t, where, problems, made, tables)
+                        _check_conditions(act.get("where"), source, where, problems, tables)
+                    item_fields = [f["key"] for f in source["fields"]] if source else []
+                    _check_values(act["values"], target, where, problems, context_fields + item_fields)
+                elif kind == "create_record":
+                    _check_values(act["values"], target, where, problems, context_fields)
+                elif act.get("attach_to") and not (field(target, act["attach_to"]) or {}).get("type") in FILES:
+                    problems.append(f"{where}: “{act['attach_to']}” must be a file field of {target['label']}")
+                if kind == "ai_create_record" and act.get("reviewer") and act["reviewer"] not in APPROVER_ROLES \
+                        and act["reviewer"] not in _TEAM_KEYS.get():
+                    problems.append(f"{where} asks “{act['reviewer']}” to check what the AI made: use owner, admin or editor (the "
+                                    f"new record has no person in it yet)")
+            elif kind == "update_each":
+                source = tables.get(act["source"]["table"])
+                if not source:
+                    problems.append(f"{where} updates “{act['source']['table']}”, which isn't a table")
+                elif _check_source(act["source"], source, t, where, problems, made, tables):
+                    _check_values(act["values"], source, where, problems, context_fields + [f["key"] for f in source["fields"]])
+                    _check_conditions(act.get("where"), source, where, problems, tables)
+            elif kind == "assign":
+                if (field(t, act["field"]) or {}).get("type") != "user":
+                    problems.append(f"{where} assigns “{act['field']}”, which must be a person field of {t['label']}")
+                if act.get("from") not in (*APPROVER_ROLES, "viewer") and act.get("from") not in _TEAM_KEYS.get():
+                    problems.append(f"{where} assigns among “{act.get('from')}”: use editor, admin or a team")
+            elif kind == "wait":
+                if act.get("until") and (not t or engine_kind(field(t, act["until"])) not in DATES):
+                    problems.append(f"{where} waits until “{act['until']}”, which must be a date field of the record")
+                if act.get("until_met"):
+                    if t:
+                        _check_conditions(act["until_met"], t, where, problems, tables)
+                    else:
+                        problems.append(f"{where} waits for conditions but there's no record to check them on")
+            elif kind == "delete_record":
+                if not t and act.get("target") != "created":
+                    problems.append(f"{where}: delete_record needs a record, but this automation isn't about one")
+            elif kind == "notify":
+                _check_template(act["message"], where, problems, context_fields)
+                if act["to"] not in ("everyone", "viewer") and not who_fits(t, act["to"], tables):
+                    problems.append(f"{where} notifies “{act['to']}”: use everyone, {_who_words(t)}")
+            elif kind == "send_email":
+                for text in (act["to"], act.get("cc"), act["subject"], act["body"]):
+                    _check_template(text, where, problems, context_fields)
+                pages_ = {p["key"] for p in bp_pages}
+                for k in act.get("attach", []):
+                    if k.startswith("page:"):
+                        if k[5:] not in pages_:
+                            problems.append(f"{where} attaches the page “{k[5:]}”, which doesn't exist")
+                        continue
+                    if k not in documents.get(t["key"] if t else "", {}) and k not in documents.get(created_table or "", {}) \
+                            and (not t or (field(t, k) or {}).get("type") not in FILES):
+                        problems.append(f"{where} attaches “{k}”, which isn't a document template or file field of {t['label'] if t else 'the record'}")
+            elif kind == "generate_document":
+                of = t
+                if act.get("target") == "created":
+                    of = tables.get(created_table) if created_table else None
+                    if of is None:
+                        problems.append(f"{where} produces a document for the record it created, but no earlier step creates one")
+                        continue
+                elif act.get("target"):
+                    link = field(t, act["target"])
+                    if not link or link["type"] != "link":
+                        problems.append(f"{where} produces a document for “{act['target']}”, which isn't a link field of {t['label']}")
+                        continue
+                    of = tables.get(link["table"]) or t
+                if act["document"] not in documents.get(of["key"], {}):
+                    problems.append(f"{where} produces “{act['document']}”, which isn't a document template of {of['label']}"
+                                    + (f" ({', '.join(documents.get(of['key'], {}))})" if documents.get(of["key"]) else "; add one with add_document"))
+                if act.get("field") and (field(of, act["field"]) or {}).get("type") not in FILES:
+                    problems.append(f"{where}: “{act['field']}” must be a file field of {of['label']} to save the document into")
+            elif kind == "copy_record":
+                if not t:
+                    problems.append(f"{where}: copy_record copies the record it's about, but this automation isn't about one")
+                    continue
+                _check_values(act["values"], t, where, problems, context_fields)
+                back = field(t, act.get("link_back", "")) if act.get("link_back") else None
+                if act.get("link_back") and (not back or back["type"] != "link" or back["table"] != t["key"]):
+                    problems.append(f"{where}: “{act['link_back']}” must be a link from {t['label']} to {t['label']} (the copy's original)")
+                created_table = t["key"]
+                made.add(t["key"])
+            elif kind == "request_approval":
+                apart(act)
+                for who in act.get("approvers") or [act["approver"]]:
+                    person(who, "asks")
+                if act.get("escalate_to"):
+                    person(act["escalate_to"], "passes overdue approvals to")
+                _check_template(act["message"], where, problems, context_fields)
+                check_steps(act.get("if_rejected"), created_table, set(made))
+            elif kind == "webhook":
+                for v in (act.get("payload") or {}).values():
+                    if isinstance(v, str):
+                        _check_template(v, where, problems, context_fields)
+            elif kind == "ai_check":
+                if act.get("reviewer"):
+                    person(act["reviewer"], "asks to check the AI's work")
+                verdict = field(t, act["field"])
+                if not verdict or verdict["type"] not in ("select", "checkbox"):
+                    choices = [x["key"] for x in t["fields"] if x["type"] == "select"]
+                    problems.append(f"{where}: the AI's verdict goes in “{act['field']}”, which must be a choice field of {t['label']} "
+                                    f"(Pass, Issues, Fail)" + (f" ({', '.join(choices)})" if choices else "; add one"))
+                if act.get("notes_field") and (field(t, act["notes_field"]) or {}).get("type") not in ("text", "long_text", "rich_text"):
+                    problems.append(f"{where}: what the AI found goes in “{act['notes_field']}”, which must be a long text field of {t['label']}")
+            elif kind == "ai_fill":
+                if act.get("reviewer"):
+                    person(act["reviewer"], "asks to check the AI's work")
+                f = field(t, act["field"])
+                if not f:
+                    problems.append(f"{where} has the AI fill “{act['field']}”, which isn't a field of {t['label']}")
+                elif f["type"] not in AI_FILLABLE:
+                    problems.append(f"{where}: the AI can't fill “{f['label']}” ({f['type']})")
+            elif kind == "ai_extract":
+                if act.get("reviewer"):
+                    person(act["reviewer"], "asks to check the AI's work")
+                if act["from"] not in ("email", "file") and (field(t, act["from"]) or {}).get("type") not in FILES:
+                    problems.append(f"{where} reads “{act['from']}”, which isn't a file field of {t['label']} (or email/file)")
+                for k in act.get("fields", []):
+                    f = field(t, k)
+                    if not f or f["type"] not in AI_FILLABLE | {"link", "email", "phone", "url"}:
+                        problems.append(f"{where}: the AI can't fill “{k}” of {t['label']}")
+            elif kind == "branch":
+                for path in act["paths"]:
+                    _check_conditions(path["when"], t, where, problems, tables)
+                    check_steps(path["steps"], created_table, set(made))
+                check_steps(act.get("otherwise"), created_table, set(made))
+            elif kind == "task":
+                apart(act)
+                person(act["to"], "gives a task to")
+                _check_template(act["message"], where, problems, context_fields)
+                for k in act.get("fields", []):
+                    f = field(t, k) if t else None
+                    if not f:
+                        problems.append(f"{where}: the task asks for “{k}”, which isn't a field of {t['label'] if t else 'the record (there is none)'}")
+                    elif f["type"] in CALCULATED:
+                        problems.append(f"{where}: the task asks for “{f['label']}”, which is worked out, not filled in")
+            elif kind == "run_automation":
+                if automations is not None and act["automation"] not in automations:
+                    problems.append(f"{where} runs “{act['automation']}”, which isn't an automation"
+                                    + (f" ({', '.join(sorted(automations))})" if automations else ""))
+                elif act["automation"] == a["key"]:
+                    problems.append(f"{where} runs itself")
+                if act.get("target") == "created":
+                    if not created_table:
+                        problems.append(f"{where} runs “{act['automation']}” for the record it created, but no earlier step creates one")
+                elif act.get("target") and (not t or (field(t, act["target"]) or {}).get("type") != "link"):
+                    problems.append(f"{where} runs “{act['automation']}” for “{act['target']}”, which isn't a link field of the record")
+        return created_table, made
+
+    check_steps(a["actions"], None, set())
+    if trig["type"] == "webhook_received" and not any(x["type"] in ("ai_create_record", "create_record", "notify", "webhook", "send_email")
+                                                       for x in steps_of(a["actions"])):
+        problems.append(f"{where} starts from a webhook but does nothing with what it's sent; use create_record with {{{{payload.field}}}} values, or ai_create_record")
+    if trig["type"] in ("email_received", "file_added") and not any(x["type"] in ("ai_create_record", "notify", "webhook", "create_record")
+                                                                     for x in steps_of(a["actions"])):
+        problems.append(f"{where} starts from an email or file but does nothing with it; use ai_create_record to turn it into a record")
+
+
+def check(bp):
+    """Every reference in the blueprint that doesn't point at something real, as plain sentences."""
+    token = _TEAM_KEYS.set(frozenset(tm["key"] for tm in teams(bp)))
+    try:
+        return _check_all(bp)
+    finally:
+        _TEAM_KEYS.reset(token)
+
+
+def _check_all(bp):
+    problems = []
+    keys_ = [tm["key"] for tm in teams(bp)]
+    for key in {k for k in keys_ if keys_.count(k) > 1}:
+        problems.append(f"there are two teams called “{key}”")
+    tables = {t["key"]: t for t in bp.get("tables", [])}
+    modules = {m["key"] for m in bp.get("modules", [])}
+    documents = {t["key"]: {d["key"]: d for d in t.get("documents", [])} for t in bp.get("tables", [])}
+    for t in bp.get("tables", []):
+        _check_table(t, tables, modules, problems)
+        if t.get("workflow"):
+            _check_workflow(t, tables, problems)
+    pages = {p["key"] for p in bp.get("pages", [])}
+    automations = {a["key"] for a in bp.get("automations", [])}
+    for portal in portals(bp):
+        people = tables.get(portal["table"])
+        if not people:
+            problems.append(f"the {portal['title']} is for “{portal['table']}”, which isn't a table")
+        elif (field(people, portal["email_field"]) or {}).get("type") != "email":
+            problems.append(f"the {portal['title']} signs people in by “{portal['email_field']}”, which must be an email field of {people['label']}")
+        else:
+            for k in portal.get("profile", []):
+                f = field(people, k)
+                if k == (people.get("workflow") or {}).get("field"):
+                    problems.append(f"the {portal['title']} can't let them change their own {f['label'] if f else k}: it's the "
+                                    "stage the business moves them through (verified)")
+                elif not f or f["type"] not in STORED or f["type"] in ("autonumber",):
+                    problems.append(f"the {portal['title']} lets them keep “{k}” up to date, which must be a field of {people['label']} people fill in")
+            for k in (portal.get("sign_up") or {}).get("fields", []):
+                f = field(people, k)
+                if not f or f["type"] not in STORED or f["type"] in ("link", "user", "autonumber"):
+                    problems.append(f"the {portal['title']}'s sign-up asks for “{k}”, which must be a field of {people['label']} people fill in")
+    everyone = sorted(p["table"] for p in portals(bp))
+    for t in bp.get("tables", []) if everyone else []:
+        via = field(t, (t.get("portal") or {}).get("via", ""))
+        if t.get("portal") and via and not any(portal_shows(tables, t, people) for people in everyone):
+            problems.append(f"the portal on {t['label']}: “{via['key']}” must link to {' or '.join(everyone)} (or to a record that does)")
+    for p in bp.get("pages", []):
+        if p.get("module") and p["module"] not in modules:
+            problems.append(f"the page {p['label']} is in module “{p['module']}”, which doesn't exist")
+        for who in p.get("home_for", []) + ([p["access"]] if p.get("access") else []):
+            if who not in ROLE_NAMES and who not in _TEAM_KEYS.get():
+                problems.append(f"the page {p['label']} is for “{who}”: use viewer, editor, admin, owner or a team")
+        for w in p["widgets"]:
+            if w["type"] in ("text", "heading", "embed", "insight", "my_work"):
+                continue
+            if w["type"] == "actions":
+                for b in w["buttons"]:
+                    if b.get("table") and b["table"] not in tables:
+                        problems.append(f"the page {p['label']}: the button “{b['label']}” opens “{b['table']}”, which isn't a table")
+                    if b.get("page") and b["page"] not in pages:
+                        problems.append(f"the page {p['label']}: the button “{b['label']}” opens the page “{b['page']}”, which doesn't exist")
+                    if b.get("automation") and b["automation"] not in automations:
+                        problems.append(f"the page {p['label']}: the button “{b['label']}” runs “{b['automation']}”, which isn't an automation")
+                    elif b.get("automation") and next(a for a in bp["automations"] if a["key"] == b["automation"])["trigger"]["type"] != "schedule":
+                        problems.append(f"the page {p['label']}: the button “{b['label']}” can only run a scheduled automation "
+                                        "(buttons on records are made with a button trigger)")
+                continue
+            if w["type"] == "activity":
+                for k in w.get("tables", []):
+                    if k not in tables:
+                        problems.append(f"the page {p['label']}: the activity feed shows “{k}”, which isn't a table")
+                continue
+            where = f"the page {p['label']} › {w.get('label') or w['type']}"
+            t = tables.get(w["table"])
+            if not t:
+                problems.append(f"{where} shows “{w['table']}”, which isn't a table")
+                continue
+            keys = {f["key"]: f for f in t["fields"]}
+            if w.get("field") and w["field"] not in keys:
+                problems.append(f"{where}: {t['label']} has no field “{w['field']}”")
+            if w.get("group_by") and w["group_by"] not in keys and w["group_by"] not in ("created_at", "updated_at"):
+                problems.append(f"{where}: {t['label']} has no field “{w['group_by']}” to group by")
+            for k in (w.get("rows"), w.get("across"), w.get("stack_by"), (w.get("compare") or {}).get("date_field"), w.get("date_field"),
+                      w.get("location_field")):
+                if k and k not in keys and k not in ("created_at", "updated_at"):
+                    problems.append(f"{where}: {t['label']} has no field “{k}” to break it down by")
+            for k in w.get("fields", []) if w["type"] == "form" else []:
+                if k not in keys or keys[k]["type"] not in STORED - {"autonumber"} | FILES:
+                    problems.append(f"{where}: the form can't ask for “{k}” (it must be a field people fill in)")
+            for c in w.get("columns", []):
+                if c not in keys:
+                    problems.append(f"{where}: {t['label']} has no column “{c}”")
+            _check_conditions(w.get("filters"), t, where, problems, tables)
+    for a in bp.get("automations", []):
+        _check_automation(a, tables, problems, documents, bp.get("pages", []), automations)
+    return problems

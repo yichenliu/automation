@@ -1,0 +1,50 @@
+{% extends "app/layout.html" %}
+{% block title %}Add an AI helper{% endblock %}
+{% block content %}
+<div class="page-head"><div class="titles"><div class="crumbs"><a href="{{ url_for('app.ai_page', wid=ws.id) }}">{{ icon('bot') }}AI helpers</a></div>
+  <h1>Add an AI helper</h1><p class="sub">Give the AI one job in a process. You can change it, try it, or switch it off later.</p></div></div>
+<form method="{{ 'post' if t else 'get' }}" class="form-card stack ai-new" id="record-form">
+  {% if t %}<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">{% endif %}
+  <div class="card"><div class="card-head"><h2><span class="step-no">1</span>What does it work on?</h2></div><div class="card-body">
+    {% if t %}<input type="hidden" name="table" value="{{ t.key }}"><div class="row"><b>{{ t.label }}</b><a class="small" href="{{ url_for('app.ai_new', wid=ws.id) }}">Change</a></div>
+    {% else %}<select name="table" aria-label="Records" data-autosubmit><option value="">Choose…</option>{% for x in tables %}<option value="{{ x.key }}">{{ x.label }}</option>{% endfor %}</select>
+    <noscript><button class="btn mt-2">Next</button></noscript>{% endif %}
+  </div></div>
+  {% if t %}{% set fields = t.fields|selectattr('type', 'in', ['text', 'long_text', 'rich_text', 'select', 'multi_select', 'number', 'money', 'percent', 'date', 'checkbox', 'link', 'rating', 'address'])|list %}
+  <div class="card"><div class="card-head"><h2><span class="step-no">2</span>When does it work?</h2></div><div class="card-body choice-list">
+    <label class="check"><input type="radio" name="when" value="added" {{ 'checked' if (form.get('when') or 'added') == 'added' }}><span>When a {{ t.singular|lc }} is added</span></label>
+    <label class="check"><input type="radio" name="when" value="becomes" {{ 'checked' if form.get('when') == 'becomes' }}><span>When a {{ t.singular|lc }} reaches a stage or value <small>Like Status becoming Submitted</small></span></label>
+    <div class="inline-fields" data-show-if='[{"field": "when", "op": "equals", "value": "becomes"}]'>
+      <select name="when_field" aria-label="Which detail"><option value="">Which detail…</option>{% for f in t.fields if f.type in ('select', 'checkbox', 'text') %}<option value="{{ f.key }}" {{ 'selected' if form.get('when_field') == f.key or (not form.get('when_field') and t.workflow and t.workflow.field == f.key) }}>{{ f.label }}</option>{% endfor %}</select>
+      <span class="small faint">becomes</span><input type="text" name="when_value" value="{{ form.get('when_value', '') }}" placeholder="e.g. Submitted" aria-label="Value"></div>
+    <label class="check"><input type="radio" name="when" value="changed" {{ 'checked' if form.get('when') == 'changed' }}><span>Whenever a {{ t.singular|lc }} is changed</span></label>
+    <label class="check"><input type="radio" name="when" value="button" {{ 'checked' if form.get('when') == 'button' }}><span>When someone presses a button on it <small>The button shows on the {{ t.singular|lc }}</small></span></label>
+    <div class="inline-fields" data-show-if='[{"field": "when", "op": "equals", "value": "button"}]'>
+      <span class="small faint">Button label</span><input type="text" name="button" value="{{ form.get('button', '') }}" placeholder="Ask the AI" aria-label="Button label"></div>
+  </div></div>
+  <div class="card"><div class="card-head"><h2><span class="step-no">3</span>What does the AI do?</h2></div><div class="card-body stack">
+    <div class="choice-list">
+      <label class="check"><input type="radio" name="job" value="fill" {{ 'checked' if (form.get('job') or 'fill') == 'fill' }}><span>Write or fill something in <small>A draft (a statement of work, a reply), a summary, a category, the matching entry</small></span></label>
+      <label class="check"><input type="radio" name="job" value="check" {{ 'checked' if form.get('job') == 'check' }}><span>Check the {{ t.singular|lc }} <small>Against rules or lists like contract prices: it sets a verdict (Pass, Issues) and says what it found</small></span></label>
+      <label class="check"><input type="radio" name="job" value="read" {{ 'checked' if form.get('job') == 'read' }}><span>Read its attached files <small>Fills in the {{ t.singular|lc }} and its lines from a quote, an invoice or a form</small></span></label>
+    </div>
+    <div class="row wrap" data-show-if='[{"field": "job", "op": "one_of", "value": ["fill", "check"]}]'>
+      <label class="field"><span>What it fills in <small class="faint">(for a check: its verdict, a choice like Pass / Issues)</small></span><select name="field"><option value="">Choose…</option>{% for f in fields %}<option value="{{ f.key }}" {{ 'selected' if form.get('field') == f.key }}>{{ f.label }}</option>{% endfor %}</select></label>
+      <label class="field" data-show-if='[{"field": "job", "op": "equals", "value": "check"}]'><span>Where it writes what it found <small class="faint">(optional)</small></span><select name="notes_field"><option value="">Nowhere</option>{% for f in t.fields if f.type in ('long_text', 'rich_text', 'text') %}<option value="{{ f.key }}" {{ 'selected' if form.get('notes_field') == f.key }}>{{ f.label }}</option>{% endfor %}</select></label>
+    </div>
+    <label class="field wide"><span>In plain words</span><textarea name="instructions" rows="3" placeholder="e.g. Draft a statement of work from the request: scope, deliverables, timeline and acceptance. Or: compare each quoted line with the contract price and flag anything over by more than 2%.">{{ form.get('instructions', '') }}</textarea></label>
+    <div class="field wide"><span>What it reads besides the {{ t.singular|lc }}, its lines and what it links to</span><div class="chips-input">
+      <label class="chip-opt" data-show-if='[{"field": "job", "op": "not_equals", "value": "read"}]'><input type="checkbox" name="read_files" value="1" {{ 'checked' if form.get('read_files') }}><span>Its attached files</span></label>
+      <label class="chip-opt"><input type="checkbox" name="use_knowledge" value="1" {{ 'checked' if form.get('use_knowledge') }}><span>Your documents (Knowledge)</span></label>
+      {% for x in tables if x.key != t.key %}<label class="chip-opt"><input type="checkbox" name="reads" value="{{ x.key }}" {{ 'checked' if x.key in form.getlist('reads') }}><span>{{ x.label }}</span></label>{% endfor %}</div></div>
+  </div></div>
+  <div class="card"><div class="card-head"><h2><span class="step-no">4</span>Who checks its work?</h2></div><div class="card-body stack">
+    <div class="choice-list">{% for m, words, hint in [('always', 'A person, every time', 'Best for anything that leaves the business or commits it, and while it earns your trust.'), ('when_unsure', "A person, when the AI isn't sure", 'Everyday work in volume: what it is sure of goes straight through (1 in 10 still checked).'), ('never', 'Nobody: it runs on its own', 'Harmless extras people can see and change.')] %}
+    <label class="check"><input type="radio" name="review" value="{{ m }}" {{ 'checked' if (form.get('review') or 'always') == m }}><span>{{ words }}<small>{{ hint }}</small></span></label>{% endfor %}</div>
+    <label class="field"><span>Who checks</span><select name="reviewer">{% for v, label in [('editor', 'Any editor'), ('admin', 'An admin'), ('owner', 'The owner'), ('creator', 'Whoever added it')] %}<option value="{{ v }}" {{ 'selected' if form.get('reviewer') == v }}>{{ label }}</option>{% endfor %}
+      {% for f in t.fields if f.type == 'user' %}<option value="{{ f.key }}" {{ 'selected' if form.get('reviewer') == f.key }}>Its {{ f.label|lc }}</option>{% endfor %}</select></label>
+  </div></div>
+  <div class="form-actions"><button class="btn primary">{{ icon('sparkles') }}Add the AI helper</button><a class="btn ghost" href="{{ url_for('app.ai_page', wid=ws.id) }}">Cancel</a></div>
+  {% endif %}
+</form>
+{% endblock %}

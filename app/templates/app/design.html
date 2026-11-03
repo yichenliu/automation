@@ -1,0 +1,35 @@
+{% extends "app/layout.html" %}
+{% block title %}How it's set up{% endblock %}
+{% block content %}
+<div class="page-head"><div class="titles"><h1>{{ icon('history') }}How it's set up</h1><p class="sub">Every list in your app and what it keeps, and every change made to how it works. Going back to an earlier version only changes how it works: nothing you've entered is ever deleted.</p></div>
+  {% if member and member.can('admin') %}<a class="btn primary" href="{{ url_for('builder.build', wid=ws.id) }}" target="_top">{{ icon('sparkles') }}Change something</a>{% endif %}</div>
+<div class="record-grid">
+  <div class="stack">
+    {% for t in shown.get('tables', []) %}
+    {% set n = counts.get(t.key, 0) %}
+    <div class="card"><div class="card-head"><h2 class="grow">{{ icon(t.icon or 'table') }}{{ t.label }}{% if t.embedded and not t.label.lower().endswith('lines') %} <span class="tag" title="Filled in inside each {{ (e.tables[(t.fields|selectattr('type', 'equalto', 'link')|first).table].singular|lower) if (t.fields|selectattr('type', 'equalto', 'link')|first) and (t.fields|selectattr('type', 'equalto', 'link')|first).table in e.tables else 'record' }}">lines</span>{% endif %}</h2><span class="faint small">{{ n }} {{ t.label|lc if n != 1 else t.singular|lc }}</span>
+      {% if not t.embedded %}<a class="btn sm ghost" href="{{ url_for('app.table', wid=ws.id, table=t.key) }}">Open{{ icon('chevron-right') }}</a>{% endif %}</div>
+      <div class="card-body tight"><div class="fieldlist">{% for f in t.fields %}{% set kind, detail = about_field(e, t, f) %}
+        <div class="f"><span><b>{{ f.label }}</b>{% if f.required %} <span class="faint tiny">must be filled in</span>{% endif %}{% if f.unique %} <span class="faint tiny">no two the same</span>{% endif %}{% if f.sensitive %} <span class="faint tiny">kept private</span>{% endif %}{% if f.ai %} <span class="ai-tag">{{ icon('sparkles') }}AI</span>{% endif %}
+          {% if detail %}<div class="faint tiny" {% if f.type == 'formula' %}title="{{ f.expression }}"{% endif %}>{{ detail }}</div>{% endif %}
+          {% if f.ai %}<div class="faint tiny">AI: {{ f.ai.instructions }}</div>{% endif %}</span>
+          <span class="tag">{{ kind }}</span></div>{% endfor %}</div>
+        {% if t.documents %}<p class="small mt-2">{{ icon('file-down') }} Documents it makes: {{ t.documents|map(attribute='label')|join(', ') }}</p>{% endif %}
+        {% if t.public_form %}<p class="small">{{ icon('globe') }} A form anyone can fill in: {{ 'on' if t.public_form.enabled else 'off' }}</p>{% endif %}</div></div>
+    {% else %}<div class="card empty"><h3>Nothing set up yet</h3><p>Describe your business in the builder and your lists appear here.</p></div>{% endfor %}
+    {% if shown.get('automations') %}<div class="card"><div class="card-head"><h2>{{ icon('zap') }}Rules</h2></div><div class="card-body stack">
+      {% for a in shown.automations %}<div><b>{{ a.name }}</b>{% if not a.enabled %} <span class="tag">off</span>{% endif %}
+        <div class="small muted">{{ words[a.key].when|rule_words }}{% if words[a.key].only_if %}, only if {{ words[a.key].only_if|join(' and ')|rule_words }}{% endif %}: {{ words[a.key].then|join('; ')|rule_words }}</div></div>{% endfor %}</div></div>{% endif %}
+  </div>
+  {% if versions %}<div class="card"><div class="card-head"><h2>{{ icon('history') }}Changes</h2></div>
+    {% for v in versions %}
+    <div class="version"><span class="n" title="Version {{ v.number }}">v{{ v.number }}</span>
+      <div><div class="small">{% for c in v.changes[:6] %}<div>{{ c }}</div>{% endfor %}{% if v.changes|length > 6 %}<div class="faint">and {{ v.changes|length - 6 }} more</div>{% endif %}</div>
+        <div class="faint tiny mt-1">{{ {'chat': 'asked in the builder', 'restore': 'went back', 'start': 'start', 'manual': 'changed by hand', 'discovery': 'from Microsoft 365', 'import': 'from a file'}.get(v.source, v.source) }}{% if v.by %} · {{ v.by }}{% endif %} · {{ v.created_at|ago }}</div></div>
+      {% if v.number != ws.version and member and member.can('admin') %}<form method="post" action="{{ url_for('app.restore_version', wid=ws.id, number=v.number) }}" data-confirm-text="Go back to how it worked in version {{ v.number }}? Everything you've entered stays as it is.">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn sm">Go back</button></form>{% elif v.number == ws.version %}<span class="tag">now</span>{% endif %}
+    </div>
+    {% endfor %}
+  </div>{% endif %}
+</div>
+{% endblock %}

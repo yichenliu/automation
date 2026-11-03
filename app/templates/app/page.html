@@ -1,0 +1,95 @@
+{% extends "app/layout.html" %}{% from "macros.html" import value, is_num, empty_state, input %}
+{% block title %}{{ p.label }}{% endblock %}
+{% block head %}{{ super() }}{% if has_map %}<link rel="stylesheet" href="{{ url_for('static', filename='vendor/leaflet/leaflet.css') }}">{% endif %}{% endblock %}
+{% block content %}
+<div class="page-head"><div class="titles"><h1>{{ icon(p.icon or 'layout-dashboard') }}{{ p.label }}</h1><p class="sub">{{ e.today.strftime('%A %-d %B %Y') }}</p></div>
+  <div class="row wrap">{% if has_dates %}<form method="get" class="inline-form"><select name="period" data-autosubmit aria-label="Period" class="{{ 'on' if period }}">{% for k, label in periods %}<option value="{{ k }}" {{ 'selected' if k == period }}>{{ label }}</option>{% endfor %}</select></form>{% endif %}
+  <a class="btn ghost" href="{{ url_for('app.page_pdf', wid=ws.id, key=p.key, period=period or none) }}" target="_blank" rel="noopener">{{ icon('printer') }}PDF</a></div></div>
+{% if not widgets %}<div class="card">{{ empty_state('This page is empty', 'Ask the builder to add numbers, charts, lists, forms or buttons to it.', ico='layout-dashboard') }}</div>{% endif %}
+<div class="widgets">
+  {% for w in widgets %}{% set span = 'w' ~ w.width %}
+  {% if w.type == 'heading' %}
+  <div class="widget-heading {{ span }}"><h2>{{ w.label }}</h2>{% if w.text %}<p class="muted small">{{ w.text }}</p>{% endif %}</div>
+  {% elif w.type == 'metric' %}
+  <a class="card widget metric {{ span }}" href="{{ url_for('app.table', wid=ws.id, table=w.table) }}">
+    <div class="muted small">{{ w.label or w.t.label }}{% if w.compare and w.period|lower not in (w.label or w.t.label)|lower %} · {{ w.period|lower }}{% endif %}</div><div class="value">{{ w.value }}</div>
+    {% if w.compare %}<div class="tiny {{ 'up' if w.up else 'down' }} delta">{% if w.change is not none %}{{ '▲' if w.up else '▼' }} {{ w.change|abs }}%{% endif %} <span class="faint">vs {{ w.before }} by now {{ w.word }}</span></div>
+    {% else %}<div class="faint tiny">{{ {'count': 'Number of', 'sum': 'Total', 'avg': 'Average', 'min': 'Lowest', 'max': 'Highest'}[w.aggregate or 'count'] }} {{ w.t.label|lc if (w.aggregate or 'count') == 'count' else '' }}{% if w.where %} · {{ w.where }}{% endif %}</div>{% endif %}</a>
+  {% elif w.type == 'goal' %}
+  <div class="card widget metric {{ span }}"><div class="muted small">{{ w.label or w.t.label }}</div>
+    <div class="value">{{ w.value }} <span class="faint small">of {{ w.target_shown }}</span></div>
+    <div class="bar mt-1"><i style="width: {{ w.percent }}%"></i></div><div class="faint tiny mt-1">{{ w.percent }}%{% if w.where %} · {{ w.where }}{% endif %}</div></div>
+  {% elif w.type == 'text' %}
+  <div class="card widget {{ span }}"><div class="card-body prose">{% if w.label %}<h3>{{ w.label }}</h3>{% endif %}{{ w.text|markdown }}</div></div>
+  {% elif w.type == 'embed' %}
+  <div class="card widget {{ span }}">{% if w.label %}<div class="card-head"><h2>{{ w.label }}</h2></div>{% endif %}<iframe class="embed" src="{{ w.url }}" style="height: {{ w.height }}px" loading="lazy" referrerpolicy="no-referrer" sandbox="allow-scripts allow-same-origin allow-popups allow-forms" title="{{ w.label or 'Embedded page' }}"></iframe></div>
+  {% elif w.type == 'insight' %}
+  <div class="card widget insight {{ span }}"><div class="card-head"><h2 class="grow">{{ icon('sparkles') }}{{ w.label }}</h2>{% if w.when %}<span class="faint tiny">{{ w.when|ago }}</span>{% endif %}</div>
+    <div class="card-body">{% if w.text %}<p>{{ w.text }}</p>{% elif w.waiting %}<p class="muted small"><span class="spin"></span> The AI is reading today's numbers; refresh in a minute.</p>{% else %}<p class="faint small">Nothing to say yet.</p>{% endif %}</div></div>
+  {% elif w.type == 'map' %}
+  <div class="card widget {{ span }}"><div class="card-head"><h2 class="grow">{{ w.label or w.t.label }}</h2><span class="faint small">{{ w.pins|length }}</span></div>
+    {% if w.pins %}<div class="map small-map" data-pins="{{ w.pins|json }}" role="region" aria-label="{{ w.label or w.t.label }}"></div>{% else %}<div class="card-body faint small">Nothing with a location yet.</div>{% endif %}</div>
+  {% elif w.type == 'actions' %}
+  <div class="card widget {{ span }}">{% if w.label %}<div class="card-head"><h2>{{ w.label }}</h2></div>{% endif %}<div class="card-body action-grid">
+    {% for b in w.buttons %}
+      {% if b.kind == 'new' %}<a class="action-tile" href="{{ b.url }}">{{ icon('plus') }}<span>{{ b.label or 'New ' ~ e.tables[b.table].singular|lc }}</span></a>
+      {% elif b.kind == 'view' %}<a class="action-tile" href="{{ url_for('app.table', wid=ws.id, table=b.table, view=b.view) }}">{{ icon(e.tables[b.table].icon or 'table') }}<span>{{ b.label or e.tables[b.table].label }}</span></a>
+      {% elif b.kind == 'page' %}<a class="action-tile" href="{{ url_for('app.page', wid=ws.id, key=b.page) }}">{{ icon('layout-dashboard') }}<span>{{ b.label }}</span></a>
+      {% elif b.kind == 'link' %}<a class="action-tile" href="{{ b.url }}" target="_blank" rel="noopener">{{ icon('external-link') }}<span>{{ b.label }}</span></a>
+      {% else %}<form method="post" action="{{ url_for('app.run_now', wid=ws.id, key=b.automation) }}" data-busy><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="back" value="{{ request.path }}"><button class="action-tile">{{ icon('zap') }}<span>{{ b.label }}</span></button></form>{% endif %}
+    {% endfor %}</div></div>
+  {% elif w.type == 'form' %}
+  <div class="card widget {{ span }}"><div class="card-head"><h2 class="grow">{{ w.label or 'New ' ~ w.t.singular|lc }}</h2><a class="btn sm ghost" href="{{ url_for('app.new', wid=ws.id, table=w.table) }}" title="The full form">{{ icon('external-link') }}</a></div>
+    <form class="card-body form-grid compact-form" method="post" action="{{ url_for('app.quick_add', wid=ws.id, table=w.table) }}" data-busy>
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="back" value="{{ request.path }}">
+      {% for k, v in (w.get('values') or {}).items() %}<input type="hidden" name="{{ k }}" value="{{ v }}">{% endfor %}
+      {% for f in w.fields %}{% if f.type == 'checkbox' %}<input type="hidden" name="has_{{ f.key }}" value="1">{% endif %}{{ input(e, f, f.default if f.default is not none else none, w.options, none, w.members) }}{% endfor %}
+      <div class="form-actions wide"><button class="btn primary">{{ icon('check') }}{{ w.submit or 'Add' }}</button></div></form></div>
+  {% elif w.type == 'my_work' %}{% set kinds = {'approval': ('amber', 'Approve'), 'task': ('blue', 'To do'), 'review': ('violet', 'Check the AI'), 'change': ('teal', 'Change')} %}
+  <div class="card widget {{ span }}"><div class="card-head"><h2 class="grow">{{ icon('list-todo') }}{{ w.label }}</h2>{% if w.total %}<span class="count-badge">{{ w.total }}</span>{% endif %}<a class="small" href="{{ url_for('app.approvals', wid=ws.id) }}">All</a></div>
+    {% if w['items'] %}<div class="card-body tight">{% for x in w['items'] %}<a class="list-row" href="{{ url_for('app.approvals', wid=ws.id) }}#a{{ x.a.id }}"><span class="pill {{ kinds[x.a.kind or 'approval'][0] }}">{{ kinds[x.a.kind or 'approval'][1] }}</span><span class="grow ellipsis">{{ x.a.message }}{% if x.r %} <span class="muted">· {{ e.title(x.r) }}</span>{% endif %}</span><span class="faint tiny nowrap">{{ x.a.created_at|ago }}</span></a>{% endfor %}</div>
+    {% else %}<div class="card-body faint small">{{ icon('circle-check') }} Nothing waiting for you.</div>{% endif %}</div>
+  {% elif w.type == 'activity' %}
+  <div class="card widget {{ span }}"><div class="card-head"><h2>{{ w.label }}</h2></div>
+    {% if w['items'] %}<ul class="activity">{% for a in w['items'] %}<li><span class="avatar sm">{{ a.who[:1]|upper }}</span><div class="grow small"><b>{{ a.who }}</b> {{ a.what }}{% if a.detail %} → <b>{{ a.detail }}</b>{% endif %} {{ 'on ' if a.what.startswith('changed') }}{{ a.t.singular|lc }} <a href="{{ url_for('app.record', wid=ws.id, table=a.t.key, rid=a.r.id) }}">{{ e.title(a.r) }}</a></div><span class="faint tiny nowrap">{{ a.when|ago }}</span></li>{% endfor %}</ul>
+    {% else %}<div class="card-body faint small">Nothing has happened yet.</div>{% endif %}</div>
+  {% elif w.type == 'chart' %}
+  <div class="card widget {{ span }}"><div class="card-head"><h2 class="grow">{{ w.label or (w.t.label ~ ' by ' ~ w.group_by) }}</h2>{% if w.where %}<span class="faint tiny">{{ w.where }}</span>{% endif %}</div><div class="card-body">
+    {% if w.style == 'stacked' %}
+      {% if not w.bars %}<p class="faint small">No {{ w.t.label|lc }} yet.</p>{% else %}
+      <div class="bars">{% for b in w.bars %}<div class="bar-row"><span class="ellipsis" title="{{ b.label }}">{{ b.label }}</span>
+        <div class="bar stacked">{% for part in b.parts %}<i class="c{{ part.c }}" style="width: {{ part.width }}%" title="{{ part.label }}: {{ part.value }}"></i>{% endfor %}</div><b class="small nowrap num">{{ b.shown }}</b></div>{% endfor %}</div>
+      <ul class="legend inline mt-1">{% for name in w.series %}<li><i class="c{{ loop.index0 }}"></i>{{ name }}</li>{% endfor %}</ul>{% endif %}
+    {% elif w.style == 'funnel' %}
+      {% if not w.stages %}<p class="faint small">No {{ w.t.label|lc }} yet.</p>{% else %}
+      <div class="funnel">{% for s in w.stages %}<div class="funnel-step"><div class="funnel-bar" style="width: {{ s.width }}%"><span>{{ s.label }}</span><b>{{ s.shown }}</b></div>{% if s.rate is not none %}<span class="faint tiny">{{ s.rate }}% carry on</span>{% endif %}</div>{% endfor %}</div>{% endif %}
+    {% elif not w.bars %}<p class="faint small">No {{ w.t.label|lc }} yet.</p>
+    {% elif w.style == 'line' %}
+      <svg class="linechart" viewBox="0 0 100 100" preserveAspectRatio="none" role="img" aria-label="{{ w.label }}"><polyline points="{{ w.points }}" vector-effect="non-scaling-stroke"/></svg>
+      <div class="line-labels">{% for b in w.bars %}<span title="{{ b.label }}: {{ b.shown }}"><b>{{ b.shown }}</b>{{ b.label }}</span>{% endfor %}</div>
+    {% elif w.style == 'donut' %}
+      <div class="donut-wrap"><svg class="donut" viewBox="0 0 42 42" role="img" aria-label="{{ w.label }}">{% for a in w.arcs %}
+        <circle cx="21" cy="21" r="15.915" fill="transparent" stroke-width="7" class="arc c{{ loop.index0 % 8 }}" stroke-dasharray="{{ a.share }} {{ 100 - a.share }}" stroke-dashoffset="{{ 25 - a.offset }}"></circle>{% endfor %}</svg>
+        <ul class="legend">{% for a in w.arcs %}<li><i class="c{{ loop.index0 % 8 }}"></i><span class="grow ellipsis">{{ a.label }}</span><b>{{ a.shown }}</b><span class="faint tiny">{{ a.share|round|int }}%</span></li>{% endfor %}</ul></div>
+    {% else %}
+      <div class="bars">{% for b in w.bars %}<div class="bar-row"><span class="ellipsis" title="{{ b.label }}">{{ b.label }}</span>
+        <div class="bar"><i style="width: {{ b.width }}%"></i></div><b class="small nowrap num">{{ b.shown }}</b></div>{% endfor %}</div>
+    {% endif %}
+  </div></div>
+  {% elif w.type == 'pivot' %}
+  <div class="card widget pivot {{ span }}"><div class="card-head"><h2 class="grow">{{ w.label or (w.value_label ~ ' by ' ~ w.row_label|lower) }}</h2>{% if w.where %}<span class="faint tiny">{{ w.where }}</span>{% endif %}</div>
+    {% if w.table %}<div class="table-wrap"><table class="grid"><thead><tr><th>{{ w.row_label }}</th>{% for c in w.columns %}<th class="num">{{ c }}</th>{% endfor %}<th class="num">{{ 'Total' if w.columns else w.value_label }}</th></tr></thead>
+      <tbody>{% for row in w.table %}<tr><td>{{ row.label }}</td>{% for c in row.cells %}<td class="num">{{ c }}</td>{% endfor %}<td class="num"><b>{{ row.total }}</b></td></tr>{% endfor %}</tbody>
+      <tfoot><tr><td>Total{% if w.more %} <span class="faint tiny">({{ w.more }} more rows)</span>{% endif %}</td>{% for c in w.footer %}<td class="num">{{ c }}</td>{% endfor %}<td class="num">{{ w.grand }}</td></tr></tfoot></table></div>
+    {% else %}<div class="card-body faint small">No {{ w.t.label|lc }} yet.</div>{% endif %}</div>
+  {% else %}
+  <div class="card widget {{ span }}"><div class="card-head"><h2 class="grow">{{ w.label or w.t.label }}</h2><span class="faint small">{{ w.total }}</span>
+    <a class="btn sm ghost" href="{{ url_for('app.table', wid=ws.id, table=w.table) }}">All{{ icon('chevron-right') }}</a></div>
+    {% if w.rows %}<div class="table-wrap"><table class="grid"><tbody>{% for r in w.rows %}{% set tint = e.colours(w.t, r) if w.t.colors else {} %}<tr data-open="{{ url_for('app.record', wid=ws.id, table=w.table, rid=r.id) }}" class="{{ 'tint ' ~ tint.row if tint.row }}">
+      {% for f in w.columns %}<td class="{{ is_num(e, f) }}">{{ value(e, f, e.value(r, f.key), r) }}</td>{% endfor %}</tr>{% endfor %}</tbody></table></div>
+    {% else %}<div class="card-body faint small">{{ icon('circle-check') }} Nothing here right now.</div>{% endif %}</div>
+  {% endif %}
+  {% endfor %}
+</div>
+{% endblock %}
+{% block scripts %}{% if has_map %}<script src="{{ url_for('static', filename='vendor/leaflet/leaflet.js') }}"></script><script src="{{ url_for('static', filename='map.js') }}"></script>{% endif %}{% endblock %}

@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block title %}Cancel a change{% endblock %}
+{% block body %}
+<div class="centered"><div class="card auth-card wide-card">
+  {% if done is true %}<h1>Cancelled</h1><p>Nothing was changed, and the team has been told.</p>
+  {% elif done is false %}<h1>Already dealt with</h1><p>That change has already been approved, turned down or cancelled. If something's wrong, call the business on the number you know.</p>
+  {% elif change %}<h1>Cancel this change?</h1>
+    <p>{% for label, pair in (change.proposal.shown or {}).items() %}{{ label }}: {{ pair[0] }} → <b>{{ pair[1] }}</b>{{ '; ' if not loop.last }}{% endfor %}</p>
+    <p class="muted small">Made by {{ change.proposal.by }}. If that wasn't you or someone you trust, cancel it.</p>
+    <form method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn danger">This wasn't me: cancel it</button></form>
+  {% else %}<h1>Nothing to cancel</h1><p>This link has been used, or the change was already decided.</p>{% endif %}
+</div></div>
+{% endblock %}

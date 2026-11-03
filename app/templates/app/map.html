@@ -1,0 +1,11 @@
+{% extends "app/layout.html" %}{% from "macros.html" import empty_state %}
+{% block title %}{{ t.label }}{% endblock %}
+{% block head %}{{ super() }}<link rel="stylesheet" href="{{ url_for('static', filename='vendor/leaflet/leaflet.css') }}">{% endblock %}
+{% block content %}
+{% include "app/_views.html" %}
+{% if pins %}
+<div class="card map-card"><div id="map" class="map" data-pins="{{ pins|json }}" role="region" aria-label="Map of {{ t.label|lc }}"></div></div>
+<p class="faint tiny mt-1">{{ pins|length }} on the map{% if missing %} · {{ missing }} without a location aren't shown{% endif %} · Map data © OpenStreetMap contributors</p>
+{% else %}<div class="card">{{ empty_state('Nothing to show on the map', 'Records appear here once they have a location. Open one and press “Where I am”, or type its latitude and longitude.', ico='map-pin') }}</div>{% endif %}
+{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='vendor/leaflet/leaflet.js') }}"></script><script src="{{ url_for('static', filename='map.js') }}"></script>{% endblock %}

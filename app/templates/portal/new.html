@@ -1,0 +1,12 @@
+{% extends "portal/layout.html" %}{% from "macros.html" import input %}
+{% block title %}New {{ t.singular|lc }}{% endblock %}
+{% block content %}
+<div class="page-head"><div class="titles"><div class="crumbs"><a href="{{ url_for('portal.home', wid=ws.id) }}">{{ icon('chevron-left') }}{{ portal.title }}</a></div><h1>New {{ t.singular|lc }}</h1>
+  {% if t.sealed %}<p class="sub">{{ icon('lock') }}Sealed: nobody at {{ ws.blueprint.get('name') or ws.name }} can see what you send until it closes. You can change it until then.</p>{% endif %}</div></div>
+<form method="post" class="form-card" enctype="multipart/form-data"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  {% if errors.get('_') %}<div class="flash error">{{ icon('triangle-alert') }}<span>{{ errors['_'] }}</span></div>{% endif %}
+  <div class="card mb-2"><div class="card-body form-grid">{% for f in fields %}{{ input(e, f, values.get(f.key, f.default), options, errors.get(f.key), {}) }}{% endfor %}</div></div>
+  {% include "portal/_lines.html" %}
+  <div class="form-actions"><button class="btn primary">{{ icon('send') }}Send</button><a class="btn ghost" href="{{ url_for('portal.home', wid=ws.id) }}">Cancel</a></div>
+</form>
+{% endblock %}

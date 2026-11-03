@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block title %}{{ title }}{% endblock %}
+{% block body %}
+<div class="centered"><div class="card auth-card center">
+  <h1 class="mt-2">{{ title }}</h1>
+  <p class="muted mt-2">{{ text }}</p>
+  <p class="mt-3"><button class="btn primary" type="button" data-back>Go back</button> <a class="btn" href="/">Go to Home</a></p>
+</div></div>
+{% endblock %}

@@ -1,0 +1,13 @@
+{% extends "app/layout.html" %}
+{% block title %}Add from a document{% endblock %}
+{% block content %}
+<div class="page-head"><div class="titles"><div class="crumbs"><a href="{{ url_for('app.table', wid=ws.id, table=t.key) }}">{{ icon(t.icon or 'table') }}{{ t.label }}</a></div>
+  <h1>{{ icon('wand-sparkles') }}Add {{ t.singular|lc }} from a document</h1>
+  <p class="sub">Upload an invoice, receipt, order, form, photo or email. The AI reads it and fills in a new {{ t.singular|lc }}{% if t.key %} with its line items{% endif %}; you check it before anything is saved.</p></div></div>
+<form method="post" enctype="multipart/form-data" class="card card-body" data-busy="Reading…">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  <div class="drop big" data-drop><input type="file" name="files" multiple required accept=".pdf,.png,.jpg,.jpeg,.webp,.heic,.tif,.tiff,.docx,.txt,.eml,.csv,.xlsx"><span>{{ icon('upload', 'big') }}<b>Drop the document here</b><br>or <u>choose a file</u> · PDF, photo or scan, Word, email</span><em class="chosen"></em></div>
+  <label class="field mt-2"><span>Anything the AI should know? (optional)</span><input type="text" name="instructions" placeholder="e.g. The supplier is always Officeworks; amounts include GST"></label>
+  <div class="form-actions"><button class="btn primary">{{ icon('sparkles') }}Read it</button><a class="btn ghost" href="{{ url_for('app.table', wid=ws.id, table=t.key) }}">Cancel</a></div>
+</form>
+{% endblock %}

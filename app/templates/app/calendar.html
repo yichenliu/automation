@@ -1,0 +1,29 @@
+{% extends "app/layout.html" %}
+{% block title %}{{ t.label }}{% endblock %}
+{% block content %}
+{% include "app/_views.html" %}
+{% if mode != 'week' %}<div class="cal-head"><a class="btn sm" href="{{ url_for('app.table', wid=ws.id, table=t.key, month=prev, **args) }}">{{ icon('chevron-left') }}</a>
+  <h2>{{ month.strftime('%B %Y') }}</h2><a class="btn sm" href="{{ url_for('app.table', wid=ws.id, table=t.key, month=next, **args) }}">{{ icon('chevron-right') }}</a>
+  <a class="btn sm ghost" href="{{ url_for('app.table', wid=ws.id, table=t.key, **args) }}">Today</a>{% if undated %}<span class="faint small grow right">{{ undated }} without a date</span>{% endif %}</div>{% endif %}
+{% if mode == 'week' %}
+<div class="cal-head"><a class="btn sm" href="{{ url_for('app.table', wid=ws.id, table=t.key, mode='week', week=prev_week, **args) }}">{{ icon('chevron-left') }}</a>
+  <h2>Week of {{ days[0].date.strftime('%-d %b %Y') }}</h2><a class="btn sm" href="{{ url_for('app.table', wid=ws.id, table=t.key, mode='week', week=next_week, **args) }}">{{ icon('chevron-right') }}</a>
+  <a class="btn sm ghost" href="{{ url_for('app.table', wid=ws.id, table=t.key, mode='week', **args) }}">This week</a></div>
+<div class="week card">{% for d in days %}<div class="week-day {{ 'today' if d.date == today }}"><div class="week-date">{{ d.date.strftime('%a') }} <b>{{ d.date.day }}</b>
+    {% if e.can(t, 'edit') %}<a class="cal-add" href="{{ url_for('app.new', wid=ws.id, table=t.key, **{'f_' ~ view.date_field: d.date.isoformat()}) }}" title="Add on this day">{{ icon('plus') }}</a>{% endif %}</div>
+  {% for i in d['items'] %}<a class="week-item pill {{ pill(colour_field, i.colour) if colour_field else 'blue' }}" href="{{ url_for('app.record', wid=ws.id, table=t.key, rid=i.r.id) }}">{% if i.time %}<span class="tiny">{{ i.time }}</span>{% endif %}<span class="ellipsis">{{ e.title(i.r) }}</span></a>{% else %}<span class="faint tiny">—</span>{% endfor %}</div>{% endfor %}</div>
+{% else %}
+<div class="calendar card">
+  <div class="cal-row cal-days">{% for d in ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'] %}<div>{{ d }}</div>{% endfor %}</div>
+  {% for week in weeks %}<div class="cal-row">{% for day in week %}
+    <div class="cal-cell {{ 'out' if not day.in_month }} {{ 'today' if day.date == today }}">
+      <div class="cal-date">{{ day.date.day }}{% if e.can(t, 'edit') %}<a class="cal-add" href="{{ url_for('app.new', wid=ws.id, table=t.key, **{'f_' ~ view.date_field: day.date.isoformat()}) }}" title="Add on this day">{{ icon('plus') }}</a>{% endif %}</div>
+      {% for ev in day.events[:4] %}<a class="cal-ev pill {{ pill(colour_field, ev.colour) if colour_field else 'blue' }}" href="{{ url_for('app.record', wid=ws.id, table=t.key, rid=ev.r.id) }}">{{ e.title(ev.r) }}</a>{% endfor %}
+      {% if day.events|length > 4 %}<span class="faint tiny">+{{ day.events|length - 4 }} more</span>{% endif %}
+    </div>{% endfor %}</div>{% endfor %}
+</div>
+{% endif %}
+<details class="mt-2 small"><summary class="muted">{{ icon('calendar') }} Subscribe in Outlook, Google or Apple Calendar</summary>
+  <p class="faint tiny mt-1">Add this address as an internet calendar. It shows what you can see here and keeps itself up to date. Keep it to yourself.</p>
+  <div class="row mt-1"><input class="keybox grow small" type="text" readonly value="{{ feed }}" aria-label="Calendar address"><button class="btn sm" type="button" data-copy>{{ icon('copy') }}Copy</button></div></details>
+{% endblock %}

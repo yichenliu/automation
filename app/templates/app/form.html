@@ -1,0 +1,76 @@
+{% extends "app/layout.html" %}{% from "macros.html" import input %}
+{% block title %}{{ 'Edit' if r else 'New' }} {{ t.singular|lc }}{% endblock %}
+{% block content %}
+<div class="page-head"><div class="titles"><div class="crumbs"><a href="{{ url_for('app.table', wid=ws.id, table=t.key) }}">{{ icon(t.icon or 'table') }}{{ t.label }}</a></div>
+  <h1>{{ 'Edit ' ~ e.title(r) if r else ('Check what the AI read' if intake else 'New ' ~ t.singular|lc) }}</h1>
+  {% if intake %}<p class="sub">The AI filled this in from {{ intake.files|map(attribute='name')|join(', ') }}. Check it, change anything, then save.{% if intake.unsure %} It wasn't sure about the highlighted ones.{% endif %}</p>{% endif %}</div></div>
+<div class="{{ 'with-preview' if intake }}">
+<form method="post" enctype="multipart/form-data" class="form-card" id="record-form" {{ 'data-wizard' if t.wizard and not r }} action="{{ url_for('app.new', wid=ws.id, table=t.key) if not r else '' }}" data-suggest="{{ url_for('app.suggest', wid=ws.id, table=t.key, key='__key__') }}" {% if r %}data-record="{{ r.id }}"{% endif %}>
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  {% if r %}<input type="hidden" name="_version" value="{{ r.version }}">{% endif %}
+  {% if locked %}<div class="flash info">{{ icon('lock') }}<span>{{ locked }}</span></div>{% endif %}
+  {% if back %}<input type="hidden" name="back" value="{{ back }}">{% endif %}
+  {% for fid in attach or [] %}<input type="hidden" name="attach_file" value="{{ fid }}">{% endfor %}
+  {% if errors.get('_') %}<div class="flash error">{{ icon('triangle-alert') }}<span>{{ errors['_'] }}</span></div>{% endif %}
+  {% if errors and not errors.get('_') %}<div class="flash error">{{ icon('triangle-alert') }}<span>{{ errors|length }} thing{{ 's' if errors|length != 1 }} below need{{ 's' if errors|length == 1 }} a look.</span></div>{% endif %}
+  {% for s in sections %}
+  {% set editable = s.fields|rejectattr('type', 'in', ['formula', 'rollup', 'lookup', 'autonumber', 'created_time', 'modified_time', 'created_by', 'modified_by', 'button'])|list %}
+  {% set auto = s.fields|selectattr('type', 'in', ['formula', 'rollup', 'lookup', 'autonumber', 'created_time', 'modified_time', 'created_by', 'modified_by', 'button'])|rejectattr('type', 'equalto', 'button')|list %}
+  {% if editable %}
+  <div class="card mb-2" data-step="{{ s.label or 'Details' }}" {% if s.show_if %}data-show-if='{{ s.show_if|json }}'{% endif %}>{% if s.label %}<div class="card-head"><h2>{{ s.label }}</h2></div>{% endif %}
+    {% set asked = editable|rejectattr('key', 'equalto', stage_lock.key if (not r and stage_lock) else '')|list %}
+    {# a long form shows what must be filled in, what already is, and the first few; the rest wait under "More details" #}
+    {% set more = [] if (t.wizard and not r) or asked|length <= MORE_AFTER + 2 else
+       asked[MORE_AFTER:]|rejectattr('required')|select('blank_in', values, errors)|list %}
+    <div class="card-body form-grid">
+      {% for f in asked if f not in more %}{{ input(e, f, values.get(f.key), options, errors.get(f.key), members, unsure=(intake and f.label in intake.unsure),
+                                  stage=stage_lock if stage_lock and f.key == stage_lock.key else none) }}{% endfor %}
+    </div>
+    {% if more %}<details class="more-fields"><summary>{{ icon('chevron-down') }}More details (optional): {{ more|length }} more</summary>
+      <div class="card-body form-grid">{% for f in more %}{{ input(e, f, values.get(f.key), options, errors.get(f.key), members,
+                                  unsure=(intake and f.label in intake.unsure)) }}{% endfor %}</div></details>{% endif %}
+    {% if auto %}<div class="card-foot faint small">{{ icon('calculator') }} Worked out for you: {{ auto|map(attribute='label')|join(', ') }}.</div>{% endif %}
+  </div>
+  {% elif r and auto %}
+  <div class="card mb-2 summary-card">{% if s.label %}<div class="card-head"><h2>{{ s.label }}</h2><span class="faint small grow right">{{ icon('calculator') }} worked out for you</span></div>{% endif %}
+    <div class="card-body summary">{% for f in auto %}<div><span class="muted small">{{ f.label }}</span><b>{{ e.display(f, e.value(r, f.key)) }}</b></div>{% endfor %}</div></div>
+  {% endif %}
+  {% endfor %}
+  {% for c in children %}{% set rows = line_rows.get(c.table.key, []) %}
+  <div class="card mb-2" id="lines-{{ c.table.key }}" data-step="{{ c.table.label }}"><div class="card-head"><h2 class="grow">{{ c.table.label }}</h2><span class="faint small hide-phone">A new row appears as you type.</span></div>
+    <div class="table-wrap"><table class="grid lines-editor" data-lines="{{ c.table.key }}" data-next="{{ rows|length }}">
+      <thead><tr>{% for f in c.fields %}<th class="{{ 'num' if f.type in ('number', 'money', 'percent', 'duration') or (f.type == 'formula' and f.format in ('number', 'money', 'percent')) }}">{{ f.label }}</th>{% endfor %}<th></th></tr></thead>
+      <tbody>
+      {% for row in rows + [{'id': none, 'values': {}, 'blank': true}] %}{% set i = loop.index0 %}
+        <tr class="{{ 'blank' if row.blank }}" {% if row.blank %}data-template{% endif %}>
+          {% for f in c.fields %}{% set n = 'lines-' ~ c.table.key ~ '-' ~ i ~ '-' ~ f.key %}{% set v = row['values'].get(f.key) %}
+          <td class="{{ 'num' if f.type in ('number', 'money', 'percent', 'duration') }}">
+            {% if f.type in ('formula', 'rollup', 'lookup', 'autonumber') %}<span class="calc-cell" data-expr="{{ f.expression if f.type == 'formula' else '' }}" data-format="{{ f.format or 'number' }}">{{ e.display(f, e.value(e.get(row.id), f.key)) if row.id else '' }}</span>
+            {% elif f.type == 'select' %}<select name="{{ n }}"><option value=""></option>{% for o in f.options %}<option {{ 'selected' if v and v|string|lower == o|lower }}>{{ o }}</option>{% endfor %}</select>
+            {% elif f.type == 'link' %}<select name="{{ n }}" {% if options.get(f.key ~ '__fill') %}data-fill='{{ options[f.key ~ '__fill']|json }}'{% endif %}><option value=""></option>{% for id, title in options.get(f.key, []) %}<option value="{{ id }}" {{ 'selected' if v is not none and v|string == id|string }}>{{ title }}</option>{% endfor %}</select>
+            {% elif f.type == 'checkbox' %}<input type="checkbox" name="{{ n }}" value="1" {{ 'checked' if v }}>
+            {% elif f.type == 'date' %}<input type="date" name="{{ n }}" value="{{ v or '' }}">
+            {% else %}<input type="text" name="{{ n }}" value="{{ ('%.2f'|format(v) if f.type == 'money' and v is number else '%g'|format((v * 100)|round(4)) if f.type == 'percent' and v is number else v) if v is not none else '' }}" data-key="{{ f.key }}" {% if f.type in ('number', 'money', 'percent', 'duration') %}inputmode="decimal"{% endif %}>{% endif %}
+          </td>{% endfor %}
+          <td class="row-tools">{% if row.id %}<input type="hidden" name="lines-{{ c.table.key }}-{{ i }}-id" value="{{ row.id }}">{% endif %}
+            <label class="btn sm ghost icon" title="Remove this line"><input type="checkbox" name="lines-{{ c.table.key }}-{{ i }}-remove" value="1" hidden data-remove-line>{{ icon('trash-2') }}</label></td>
+        </tr>
+      {% endfor %}
+      </tbody></table></div>
+    {% if errors.get(c.table.key) %}<div class="card-foot field-error">{{ errors[c.table.key] }}</div>{% endif %}
+  </div>
+  {% endfor %}
+  <div class="form-actions">
+    {% if first_move %}<button class="btn primary" name="then" value="{{ first_move[0] }}">{{ icon('send') }}{{ first_move[1].label or ('Save and move to ' ~ first_move[1].to) }}</button>
+      <button class="btn">{{ icon('check') }}Save for later{% if stage_lock and stage_lock.value %} ({{ stage_lock.value|lower }}){% endif %}</button>
+    {% else %}<button class="btn primary">{{ icon('check') }}{{ 'Save' if r else 'Add ' ~ t.singular|lc }}</button>
+      {% if not r and not t.workflow %}<button class="btn" name="another" value="1">Add and start another</button>{% endif %}{% endif %}
+    <a class="btn ghost" href="{{ url_for('app.record', wid=ws.id, table=t.key, rid=r.id) if r else (back or url_for('app.table', wid=ws.id, table=t.key)) }}">Cancel</a></div>
+</form>
+{% if intake %}<aside class="doc-preview card">{% for f in intake.files %}
+  {% if f.mime == 'application/pdf' %}<iframe src="{{ url_for('app.file', wid=ws.id, fid=f.id) }}" title="{{ f.name }}"></iframe>
+  {% elif (f.mime or '').startswith('image/') %}<img src="{{ url_for('app.file', wid=ws.id, fid=f.id) }}" alt="{{ f.name }}">
+  {% else %}<div class="card-body"><a href="{{ url_for('app.file', wid=ws.id, fid=f.id) }}">{{ icon('paperclip') }}{{ f.name }}</a></div>{% endif %}
+{% endfor %}</aside>{% endif %}
+</div>
+{% endblock %}

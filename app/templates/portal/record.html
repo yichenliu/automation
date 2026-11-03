@@ -1,0 +1,31 @@
+{% extends "portal/layout.html" %}{% from "macros.html" import value, is_num, input %}
+{% block title %}{{ e.title(r) }}{% endblock %}
+{% block content %}
+<div class="page-head"><div class="titles"><div class="crumbs"><a href="{{ url_for('portal.home', wid=ws.id) }}">{{ icon('chevron-left') }}{{ portal.title }}</a></div><h1>{{ t.singular }} {{ e.title(r) }}</h1>
+  {% if sealed %}<p class="lock-note small">{{ icon('lock') }}{{ sealed }}{% if not locked %}: only you can see what's in it, and you can change it until then{% endif %}</p>{% elif locked %}<p class="lock-note small">{{ icon('lock') }}{{ locked }}</p>{% endif %}</div>
+  <div class="row wrap">{% for d in documents %}<a class="btn" href="{{ url_for('portal.document', wid=ws.id, table=t.key, rid=r.id, key=d.key) }}">{{ icon('file-down') }}{{ d.label }} PDF</a>{% endfor %}</div></div>
+{% if t.workflow %}{% set stage = (r.data or {}).get(t.workflow.field) %}{% set names = t.workflow and e.tables[t.key] and t.fields|selectattr('key', 'equalto', t.workflow.field)|map(attribute='options')|first %}
+<div class="stage-bar"><ol class="stage-path" aria-label="Stage">{% set at = names.index(stage) if names and stage in names else -1 %}{% for s in names or [] %}<li class="{{ 'done' if loop.index0 < at }}{{ ' current' if loop.index0 == at }}">{{ s }}</li>{% endfor %}</ol>
+  {% if moves %}<div class="stage-moves">{% for i, m, problem in moves %}<form method="post" action="{{ url_for('portal.move', wid=ws.id, table=t.key, rid=r.id, index=i) }}" data-busy><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <button class="btn sm {{ 'primary' if not problem }}" {{ 'disabled' if problem }} title="{{ problem or '' }}">{{ icon('arrow-right') }}{{ m.label or m.to }}</button></form>{% endfor %}</div>{% endif %}</div>{% endif %}
+{% for a in asks %}<div class="notice warn approval-card">{{ icon('list-todo' if a.kind == 'task' else 'circle-check') }}<div class="grow"><b>{{ 'For you to do' if a.kind == 'task' else 'Waiting for your answer' }}</b><div>{{ a.message }}</div></div>
+  <form method="post" action="{{ url_for('portal.answer', wid=ws.id, aid=a.id) }}" class="row"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="back" value="{{ request.path }}">
+    {% if a.kind == 'task' %}{% for k in a.fields or [] %}{% set f = e.field(t.key, k) %}{% if f %}<input type="text" name="{{ k }}" placeholder="{{ f.label }}" aria-label="{{ f.label }}">{% endif %}{% endfor %}<button class="btn primary sm" name="decision" value="done">Done</button>
+    {% else %}<input type="text" name="comment" placeholder="Comment (optional)" aria-label="Comment"><button class="btn primary sm" name="decision" value="approve">{{ icon('check') }}Agree</button><button class="btn sm danger" name="decision" value="reject">Decline</button>{% endif %}</form></div>{% endfor %}
+{% if editable %}
+<form method="post" action="{{ url_for('portal.edit', wid=ws.id, table=t.key, rid=r.id) }}" class="form-card mb-2"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="_version" value="{{ r.version }}">
+  <div class="card mb-2"><div class="card-head"><h2>Your part</h2></div><div class="card-body form-grid">{% for f in editable %}{{ input(e, f, (r.data or {}).get(f.key), options, none, {}) }}{% endfor %}</div></div>
+  {% if edit_lines %}{% include "portal/_lines.html" %}{% endif %}
+  <div class="form-actions"><button class="btn primary">{{ icon('check') }}Save</button></div></form>
+{% endif %}
+<div class="card mb-2"><div class="card-body"><dl class="fields">{% for f in fields if f.type not in ('file', 'image', 'signature') and f not in editable %}{% set v = e.value(r, f.key) %}{% if v not in (none, '', []) %}
+  <dt>{{ f.label }}</dt><dd>{% if f.type in ('long_text', 'rich_text', 'address') %}<div class="pre">{{ v }}</div>{% elif f.type == 'select' %}{{ value(e, f, v, r) }}{% else %}{{ e.display(f, v, r) }}{% endif %}</dd>{% endif %}{% endfor %}</dl></div></div>
+{% if not edit_lines %}{% for l in lines if l.rows %}<div class="card mb-2"><div class="card-head"><h2>{{ l.t.label }}</h2></div><div class="table-wrap"><table class="grid"><thead><tr>{% for f in l.cols %}<th class="{{ is_num(e, f) }}">{{ f.label }}</th>{% endfor %}</tr></thead>
+  <tbody>{% for x in l.rows %}<tr>{% for f in l.cols %}<td class="{{ is_num(e, f) }}">{{ e.display(f, e.value(x, f.key), x) }}</td>{% endfor %}</tr>{% endfor %}</tbody></table></div></div>{% endfor %}{% endif %}
+{% if files %}<div class="card mb-2"><div class="card-head"><h2>Files</h2></div><div class="card-body files">{% for f in files %}<a class="filechip" href="{{ url_for('portal.file', wid=ws.id, fid=f.id) }}">{{ icon('paperclip') }}{{ f.name }}</a>{% endfor %}</div></div>{% endif %}
+<div class="card" id="messages"><div class="card-head"><h2>Messages</h2></div><div class="card-body stack">
+  {% for m in messages %}<div class="comment"><b>{{ m.user.display if m.user else 'Someone' }}</b> <span class="faint tiny">{{ m.created_at|ago }}</span><div class="pre">{{ m.text }}</div></div>{% else %}<p class="faint small">Questions about this {{ t.singular|lc }}? Write to us here.</p>{% endfor %}
+  <form method="post" action="{{ url_for('portal.message', wid=ws.id, table=t.key, rid=r.id) }}" class="stack"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <textarea name="text" rows="3" placeholder="Write a message…" required></textarea><div><button class="btn primary">{{ icon('send') }}Send</button></div></form>
+</div></div>
+{% endblock %}

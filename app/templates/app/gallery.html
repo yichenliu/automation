@@ -1,0 +1,12 @@
+{% extends "app/layout.html" %}{% from "macros.html" import value, empty_state %}
+{% block title %}{{ t.label }}{% endblock %}
+{% block content %}
+{% include "app/_views.html" %}
+{% if rows %}<div class="gallery">{% for r in rows %}{% set img = e.value(r, image.key) if image else [] %}
+  <a class="card gcard" href="{{ url_for('app.record', wid=ws.id, table=t.key, rid=r.id) }}">
+    <div class="gimg">{% if img %}<img src="{{ url_for('app.file', wid=ws.id, fid=img[0].id) }}" alt="" loading="lazy">{% else %}{{ icon(t.icon or 'image', 'big') }}{% endif %}</div>
+    <div class="card-body"><div class="t">{{ e.title(r) }}</div>
+      {% for f in card_fields %}{% set v = e.value(r, f.key) %}{% if v not in (none, '', []) %}<div class="kv small"><span class="muted">{{ f.label }}</span><span class="ellipsis">{{ value(e, f, v) }}</span></div>{% endif %}{% endfor %}</div>
+  </a>{% endfor %}</div>
+{% else %}<div class="card">{{ empty_state('No ' ~ t.label|lc ~ ' yet', 'Add the first one to see it here.', url_for('app.new', wid=ws.id, table=t.key), 'New ' ~ t.singular|lc, t.icon or 'layout-grid') }}</div>{% endif %}
+{% endblock %}

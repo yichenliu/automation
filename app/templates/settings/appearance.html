@@ -1,0 +1,25 @@
+{% extends "settings/_layout.html" %}
+{% block title %}Appearance{% endblock %}
+{% block content %}
+<h1>Appearance</h1><p class="muted mt-1">Make it look like your business. The builder can change this too (“make it teal”).</p>
+<form method="post" enctype="multipart/form-data" class="stack mt-3">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  <div class="card card-body">
+    <span class="label">Brand colour</span>
+    <div class="swatches">{% for name, hex in colours.items() %}<label class="swatch" style="--c: {{ hex }}" title="{{ name|capitalize }}"><input type="radio" name="accent" value="{{ hex }}" {{ 'checked' if theme.get('accent') == hex }}><span></span></label>{% endfor %}
+      <label class="swatch custom" title="Your own colour"><input type="color" name="accent" value="{{ theme.get('accent', '#5b5bd6') }}"></label></div>
+  </div>
+  <div class="card card-body">
+    <span class="label">Density</span>
+    <div class="choices two"><label class="choice"><input type="radio" name="density" value="comfortable" {{ 'checked' if theme.get('density', 'comfortable') == 'comfortable' }}><span><b>Comfortable</b><small>Roomy, easy to scan.</small></span></label>
+      <label class="choice"><input type="radio" name="density" value="compact" {{ 'checked' if theme.get('density') == 'compact' }}><span><b>Compact</b><small>More rows on the screen.</small></span></label></div>
+  </div>
+  <div class="card card-body">
+    <span class="label">Logo (on documents)</span>
+    {% if ws.settings.get('logo_file_id') %}<p class="mt-1"><img class="logo-preview" src="{{ url_for('app.file', wid=ws.id, fid=ws.settings.logo_file_id) }}" alt="Logo"></p>
+      <label class="check mt-1"><input type="checkbox" name="remove_logo" value="1"><span>Remove it</span></label>{% endif %}
+    <div class="drop mt-1" data-drop><input type="file" name="logo" accept="image/png,image/jpeg"><span>{{ icon('image') }} Drop a PNG or JPG, or <u>choose</u></span><em class="chosen"></em></div>
+  </div>
+  <div class="form-actions"><button class="btn primary">Save</button></div>
+</form>
+{% endblock %}

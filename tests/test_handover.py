@@ -1,0 +1,242 @@
+"""What stopped apps being right when handed over (evals/analyst.py's headline), each kept fixed. Most of it was the
+builder's own worked examples failing for reasons that weren't the app's: a person they named who wasn't in the copy, an
+"approve" where the record's own button does it, an email the copy couldn't send. The rest was the platform's: an
+approval named for the one person kept from it, shift hours between two times, amounts in another currency with no
+rates. Every fix is the platform's, for any app."""
+import json
+
+from app.blueprint import ops
+from app.blueprint.expr import _hours_between
+from app.builder import checks, trial
+from app.engine import automations
+from app.engine.records import Engine, parse_duration
+from app.extensions import db
+from app.models import Approval
+
+from .conftest import login
+from .test_wave2 import PURCHASES, _as, _built, _person
+
+REQUESTS = [
+    {"op": "create_table", "table": "purchase_requests", "label": "Purchase requests", "fields": [
+        {"key": "title", "type": "text", "required": True},
+        {"key": "team_lead", "label": "Team lead", "type": "user"},
+        {"key": "total", "type": "money"},
+        {"key": "rejected_reason", "label": "Why it was rejected", "type": "text"},
+        {"key": "status", "type": "select", "options": ["Draft", "Waiting for approval", "Approved", "Rejected"], "default": "Draft"}],
+     "workflow": {"field": "status", "transitions": [{"from": ["Draft", "Rejected"], "to": "Waiting for approval", "label": "Send for approval"}]}},
+    {"op": "add_automation", "automation": {
+        "key": "route", "name": "The team lead approves", "trigger": {"type": "record_updated", "table": "purchase_requests"},
+        "conditions": [{"field": "status", "op": "changed_to", "value": "Waiting for approval"}],
+        "actions": [{"type": "request_approval", "approver": "team_lead", "message": "Please approve this.", "not_by": ["creator"],
+                     "if_rejected": [{"type": "update_record", "values": {"status": "Rejected", "rejected_reason": "{{reason}}"}}]},
+                    {"type": "update_record", "values": {"status": "Approved"}}]}},
+]
+
+
+def test_an_approval_for_whoever_raised_it_goes_to_an_admin_and_a_no_says_why(app, owner):
+    user, ws = owner
+    _built(ws, REQUESTS)
+    ava = _person(ws, "ava@example.com", "Ava", "admin")
+    mine = Engine(ws, by="Ethan", member=None)
+    me = _as(ws, user)
+    request = me.create("purchase_requests", {"title": "Laptop", "team_lead": user.id, "total": 1500})
+    me.move(me.get(request.id), 0)
+    approval = Approval.query.one()  # not left with Ethan, who may not answer it: it would wait for ever
+    assert approval.assignee_id is None and approval.role == "admin"
+    assert "Ethan can't answer it: they raised this purchase request" in approval.history[0]["what"]
+    assert automations.may_decide(approval, _as(ws, ava).member, ava.id, mine.get(request.id), _as(ws, ava))
+    automations.decide(_as(ws, ava).system(), approval, False, "Ava", comment="The quote is over 30 days old", by_id=ava.id)
+    assert mine.get(request.id).data["status"] == "Rejected"
+    assert mine.get(request.id).data["rejected_reason"] == "The quote is over 30 days old"  # the rule's {{reason}}
+
+
+def test_examples_name_people_press_the_records_own_button_and_say_when_no_ok_was_needed(app, owner):
+    _, ws = owner
+    _built(ws, REQUESTS + PURCHASES + [
+        {"op": "create_table", "table": "variations", "label": "Variations", "fields": [
+            {"key": "description", "type": "text", "required": True},
+            {"key": "status", "type": "select", "options": ["Proposed", "Client signed off", "Rejected"], "default": "Proposed"}],
+         "workflow": {"field": "status", "transitions": [
+             {"from": ["Proposed"], "to": "Client signed off", "label": "Client signs off"},
+             {"from": ["Proposed"], "to": "Rejected", "label": "Reject"}]}},
+        {"op": "create_table", "table": "notes", "label": "Notes", "fields": [{"key": "text", "type": "text", "required": True}]}])
+    named = {"title": "Priya, the team lead, approves a laptop Ethan asked for", "steps": [
+        {"do": "add", "as": "r", "table": "purchase_requests", "values": {"title": "Laptop", "team_lead": "Priya", "total": 1500}},
+        {"do": "move", "as": "", "record": "r", "to": "Waiting for approval"},
+        {"do": "approve", "as": "", "record": "r"}],
+        "expect": [{"record": "r", "field": "status", "equals": "Approved"}]}
+    rejected = {"title": "Priya says no, and why", "steps": [
+        {"do": "add", "as": "r", "table": "purchase_requests", "values": {"title": "Chairs", "team_lead": "Priya", "total": 900}},
+        {"do": "move", "as": "", "record": "r", "to": "Waiting for approval"},
+        {"do": "reject", "as": "", "record": "r", "comment": "Too dear"}],
+        "expect": [{"record": "r", "field": "rejected_reason", "equals": "Too dear"}]}
+    signed = {"title": "The client signs off a variation", "steps": [
+        {"do": "add", "as": "v", "table": "variations", "values": {"description": "Quartz benchtop"}},
+        {"do": "approve", "as": "", "record": "v"}],
+        "expect": [{"record": "v", "field": "status", "equals": "Client signed off"}]}
+    small = {"title": "A $300 purchase order", "steps": [
+        {"do": "add", "as": "po", "table": "purchase_orders", "values": {"supplier": "Bunnings"}},
+        {"do": "add", "as": "l", "table": "po_lines", "values": {"po": "po", "item": "Screws", "quantity": 3, "unit_cost": 100}},
+        {"do": "move", "as": "", "record": "po", "to": "Waiting for approval"},
+        {"do": "approve", "as": "", "record": "po"}],
+        "expect": [{"record": "po", "field": "status", "equals": "Approved"}]}
+    note = {"title": "Approving a note", "steps": [
+        {"do": "add", "as": "n", "table": "notes", "values": {"text": "Hello"}},
+        {"do": "approve", "as": "", "record": "n"}],
+        "expect": [{"record": "n", "field": "text", "equals": "Hello"}]}
+    _, (by_priya, why, button, under, nothing) = trial.try_out(ws, [named, rejected, signed, small, note], screens=False)
+    assert by_priya["ok"] and why["ok"] and button["ok"], (by_priya, why, button)
+    assert under["kind"] == "example" and "didn't need anyone's OK this time" in under["problem"] and "Under" in under["problem"]
+    assert nothing["kind"] == "example" and "nothing asks for someone's OK on a note" in nothing["problem"]
+
+
+def test_shift_hours_long_durations_and_emails_in_a_try_out(app, owner):
+    _, ws = owner
+    assert _hours_between("09:00", "12:00") == 3 and _hours_between("22:00", "06:00") == 8 and _hours_between("2:30 pm", "5pm") == 2.5
+    assert _hours_between("2026-11-03T09:00", "2026-11-03T17:30") == 8.5
+    assert parse_duration("01:30:00") == 1.5 and parse_duration("1:30") == 1.5
+    _built(ws, [
+        {"op": "create_table", "table": "donations", "label": "Donations", "fields": [
+            {"key": "email", "type": "email", "required": True}, {"key": "receipt_sent", "label": "Receipt sent", "type": "checkbox"}]},
+        {"op": "add_automation", "automation": {
+            "key": "receipt", "name": "Send a receipt", "trigger": {"type": "record_created", "table": "donations"},
+            "actions": [{"type": "send_email", "to": "{{record.email}}", "subject": "Thank you", "body": "Your receipt."},
+                        {"type": "update_record", "values": {"receipt_sent": True}}]}}])
+    receipt = {"title": "A donation gets its receipt", "steps": [{"do": "add", "as": "d", "table": "donations", "values": {"email": "jo@example.com"}}],
+               "expect": [{"record": "d", "field": "receipt_sent", "equals": True}]}
+    _, (sent,) = trial.try_out(ws, [receipt], screens=False)
+    assert sent["ok"], sent  # the copy acts as if the mailbox were connected, and sends nothing
+
+
+def test_amounts_in_another_currency_need_rates_and_getting_started_says_so(app, owner, client):
+    _, ws = owner
+    _built(ws, [{"op": "create_table", "table": "purchase_orders", "label": "Purchase orders", "fields": [
+        {"key": "supplier", "type": "text", "required": True}, {"key": "currency", "type": "select", "options": ["AUD", "USD"]},
+        {"key": "subtotal", "type": "money"},
+        {"key": "total", "type": "formula", "format": "money", "expression": "convert(subtotal, currency)"}]}])
+    said = [i["plain"] for i in checks.needs_rates(Engine(ws))]
+    assert said == ["Amounts in other currencies stay empty until you add your exchange rates in Settings › General"]
+    login(client)
+    assert "Add your exchange rates" in client.get(f"/w/{ws.id}/app/").get_data(as_text=True)
+    ws.settings = {**ws.settings, "money": {"base": "AUD", "rates": {"USD": 1.5}}}
+    db.session.commit()
+    assert not checks.needs_rates(Engine(ws))
+
+
+# A childcare centre's application, approved by its button: a child is added for it, and the absence it stands for
+# records who approved it. An invoice issued on the 10th is due on the 24th, however many days the example then waits.
+CENTRE = [
+    {"op": "create_table", "table": "children", "label": "Children", "fields": [
+        {"key": "first_name", "label": "First name", "type": "text", "required": True},
+        {"key": "last_name", "label": "Last name", "type": "text", "required": True}]},
+    {"op": "create_table", "table": "applications", "label": "Applications", "fields": [
+        {"key": "child_name", "label": "Child's name", "type": "text", "required": True},
+        {"key": "approved_by", "label": "Approved by", "type": "user"},
+        {"key": "approved_on", "label": "Approved on", "type": "date"},
+        {"key": "status", "type": "select", "options": ["Pending", "Approved", "Rejected"], "default": "Pending"}],
+     "workflow": {"field": "status", "transitions": [{"from": ["Pending"], "to": "Approved", "label": "Approve"},
+                                                     {"from": ["Pending"], "to": "Rejected", "label": "Reject"}]}},
+    {"op": "add_automation", "automation": {
+        "key": "enrol", "name": "Approved applications become children", "trigger": {"type": "record_updated", "table": "applications"},
+        "conditions": [{"field": "status", "op": "changed_to", "value": "Approved"}],
+        "actions": [{"type": "create_record", "table": "children", "values": {"first_name": "{{record.child_name}}"}}]}},
+    {"op": "create_table", "table": "invoices", "label": "Invoices", "fields": [
+        {"key": "issued", "type": "date", "required": True},
+        {"key": "due", "type": "formula", "format": "date", "expression": "add_days(issued, 14)"},
+        {"key": "status", "type": "select", "options": ["Sent", "Overdue"], "default": "Sent"}]},
+    {"op": "add_automation", "automation": {
+        "key": "chase", "name": "Overdue invoices", "trigger": {"type": "schedule", "table": "invoices", "every": "day", "at": "08:00"},
+        "conditions": [{"field": "status", "op": "equals", "value": "Sent"}, {"field": "due", "op": "before_today"}],
+        "actions": [{"type": "update_record", "values": {"status": "Overdue"}}]}},
+]
+
+
+def test_a_rule_missing_what_it_must_fill_is_found_a_stage_records_who_and_dates_stay_on_the_calendar(app, owner):
+    user, ws = owner
+    _built(ws, CENTRE)
+    said = [i for i in checks.left_unfilled(Engine(ws)) if i["level"] == "fix"]
+    assert [i["plain"] for i in said] == ["“Approved applications become children” can't add a child: it doesn't fill in last name, "
+                                          "which must be filled in"]
+    me = _as(ws, user)
+    application = me.create("applications", {"child_name": "Oliver"})
+    me.move(me.get(application.id), 0)
+    data = me.get(application.id).data
+    assert data["approved_by"] == user.id and data["approved_on"] == me.today.isoformat()  # the button records who and when
+    today = me.today
+    issued = (today.replace(day=1)).isoformat()
+    due = (today.replace(day=1) + __import__("datetime").timedelta(days=14)).isoformat()
+    late = {"title": "An invoice not paid 30 days after it's due is overdue", "steps": [
+        {"do": "add", "as": "i", "table": "invoices", "values": {"issued": issued}},
+        {"do": "wait", "as": "", "days": 45},
+        {"do": "run", "as": "", "rule": "chase"}],
+        "expect": [{"record": "i", "field": "due", "equals": due}, {"record": "i", "field": "status", "equals": "Overdue"}]}
+    twice = {"title": "Approving makes a child", "steps": [
+        {"do": "add", "as": "a", "table": "applications", "values": {"child_name": "Mia"}},
+        {"do": "move", "as": "", "record": "a", "to": "Approved"},
+        {"do": "run", "as": "", "rule": "enrol"}],
+        "expect": [{"table": "children", "count": 1}]}
+    _, (on_time, run_too) = trial.try_out(ws, [late, twice], screens=False)
+    assert on_time["ok"], on_time  # still due on the calendar date, though 45 days were let pass
+    assert run_too["kind"] == "example" and "“run” is for scheduled automations" in run_too["problem"]
+
+
+def test_an_ok_from_to_do_moves_the_record_on_when_an_older_rule_doesnt(app, owner):
+    user, ws = owner
+    older = json.loads(json.dumps(PURCHASES))  # built before the builder added "then Approved" after each approval
+    older[0]["workflow"]["transitions"].append({"from": ["Waiting for approval"], "to": "Approved", "label": "Approve", "who": ["owner"]})
+    over = older[2]["automation"]["actions"][0]["paths"][0]
+    over["steps"] = [over["steps"][0]]
+    ws.blueprint = ops.apply(ws.blueprint, older).blueprint
+    ws.blueprint["automations"][0]["actions"][0]["paths"][0]["steps"] = [over["steps"][0]]  # as it was saved back then
+    db.session.commit()
+    buyer = _person(ws, "kim@example.com", "Kim", "editor")
+    kim = _as(ws, buyer)
+    po = kim.create("purchase_orders", {"supplier": "Bunnings"})
+    kim.create("po_lines", {"po": po.id, "item": "Timber", "quantity": 2, "unit_cost": 4000})
+    kim.move(kim.get(po.id), 0)
+    me = _as(ws, user)
+    assert me.get(po.id).data["status"] == "Waiting for approval"
+    automations.decide(me.system(), Approval.query.one(), True, "Ethan", by_id=user.id)  # from To do, not the button
+    assert me.get(po.id).data["status"] == "Approved"
+
+
+# A plumber's jobs and quotes, linked both ways; the invoice for a finished job made only when it came from a quote; a
+# shop's low-stock count comparing two of a product's own numbers.
+JOBS = [
+    {"op": "create_table", "table": "jobs", "label": "Jobs", "fields": [
+        {"key": "title", "type": "text", "required": True},
+        {"key": "status", "type": "select", "options": ["Booked", "Completed"], "default": "Booked"}],
+     "workflow": {"field": "status", "transitions": [{"from": ["Booked"], "to": "Completed", "label": "Mark done"}]}},
+    {"op": "create_table", "table": "quotes", "label": "Quotes", "fields": [
+        {"key": "customer", "type": "text", "required": True}, {"key": "job", "type": "link", "table": "jobs"}]},
+    {"op": "add_field", "table": "jobs", "field": {"key": "quote", "type": "link", "table": "quotes"}},
+    {"op": "create_table", "table": "invoices", "label": "Invoices", "fields": [
+        {"key": "job", "type": "link", "table": "jobs", "required": True}]},
+    {"op": "add_automation", "automation": {
+        "key": "invoice", "name": "Draft invoice when job is done", "trigger": {"type": "record_updated", "table": "jobs"},
+        "conditions": [{"field": "status", "op": "changed_to", "value": "Completed"}],
+        "actions": [{"type": "branch", "paths": [{"label": "Has a quote", "when": [{"field": "quote", "op": "not_empty"}],
+                                                   "steps": [{"type": "create_record", "table": "invoices", "values": {"job": "{{record}}"}}]}]}]}},
+    {"op": "create_table", "table": "products", "label": "Products", "fields": [
+        {"key": "name", "type": "text", "required": True}, {"key": "on_hand", "label": "On hand", "type": "number"},
+        {"key": "reorder_level", "label": "Reorder level", "type": "number"}]},
+]
+
+
+def test_links_both_ways_stay_in_step_a_making_rule_for_only_some_is_found_and_a_field_named_bare_is_that_field(app, owner):
+    user, ws = owner
+    _built(ws, JOBS)
+    me = _as(ws, user)
+    job = me.create("jobs", {"title": "Burst pipe"})
+    quote = me.create("quotes", {"customer": "Ann", "job": job.id})
+    assert me.get(job.id).data["quote"] == quote.id  # the quote names the job, so the job names the quote
+    other = me.create("jobs", {"title": "Leaking tap"})
+    me.update(me.get(quote.id), {"job": other.id})
+    assert me.get(other.id).data.get("quote") == quote.id and me.get(job.id).data["quote"] == quote.id  # filled where empty only
+    said = [i["plain"] for i in checks.made_only_sometimes(Engine(ws))]
+    assert said == ["“Draft invoice when job is done” makes an invoice only when Quote is filled in: any other job gets none"]
+    low = me.create("products", {"name": "Tea", "on_hand": 2, "reorder_level": 5})
+    me.create("products", {"name": "Milk", "on_hand": 9, "reorder_level": 5})
+    wanted = [{"field": "on_hand", "op": "less_than", "value": "reorder_level"}]
+    assert [r.id for r in me.rows("products") if me.matches(r, wanted)] == [low.id]
+    assert automations.describe_condition(me, wanted[0], "products") == "On hand is less than its reorder level"

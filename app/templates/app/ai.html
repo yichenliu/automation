@@ -1,0 +1,98 @@
+{% extends "app/layout.html" %}{% from "macros.html" import empty_state %}
+{% block title %}AI helpers{% endblock %}
+{% macro who(s, t) -%}
+{%- set person = s.reviewer or 'editor' -%}
+{%- set f = e.field(t.key, person) if t else none -%}
+{{- {'owner': 'the owner', 'admin': 'an admin', 'editor': 'an editor', 'creator': 'whoever added it'}.get(person) or ('its ' ~ (f.label|lc if f else person)) -}}
+{%- endmacro %}
+{% block content %}
+{% set admin = member and member.can('admin') %}
+<div class="page-head"><div class="titles"><h1>{{ icon('bot') }}AI helpers</h1>
+  <p class="sub">Your AI helpers. Each does one job in one of your processes. You decide whether it's on, what it reads, and who checks its work. Switch one off and a person does that job instead.</p></div>
+  {% if admin %}<div class="row wrap"><a class="btn primary" href="{{ url_for('app.ai_new', wid=ws.id) }}">{{ icon('plus') }}Add an AI helper</a></div>{% endif %}
+</div>
+{% if count %}
+<div class="ai-summary card"><div class="card-body row wrap">
+  <span><b>{{ count }}</b> helper{{ 's' if count != 1 }}</span><span class="faint">·</span>
+  <span><b>{{ count - off }}</b> on</span>{% if off %}<span class="faint">·</span><span><b>{{ off }}</b> off (done by people)</span>{% endif %}
+  {% if waiting %}<span class="faint">·</span><a href="{{ url_for('app.approvals', wid=ws.id) }}"><b>{{ waiting }}</b> waiting for a person to check</a>{% endif %}
+</div></div>
+{% endif %}
+{% for process in processes %}
+<section class="ai-process">
+  <div class="ai-process-head"><h2>{{ process.a.name }}</h2><span class="small muted">{{ process.when }}</span>
+    <a class="small" href="{{ url_for('app.automations', wid=ws.id) }}#{{ process.a.key }}">See the whole process</a></div>
+  {% for x in process['items'] %}{% set s = x.step %}{% set r = x.record %}{% set off = s.manual %}{% set mode = s.review or 'never' %}
+  <article class="card ai-card {{ 'is-off' if off }}" id="ai-{{ x.a.key }}-{{ x.at }}">
+    <div class="ai-card-head">
+      <span class="ai-kind" title="{{ kinds[s.type][0] }}">{{ icon(kinds[s.type][1]) }}</span>
+      <div class="grow"><h3>{{ x.title }}</h3>{% if s.instructions %}<p class="ai-said">“{{ s.instructions|truncate(220) }}”</p>{% endif %}</div>
+      {% if admin %}<form method="post" action="{{ url_for('app.ai_switch', wid=ws.id, key=x.a.key, at=x.at) }}" class="ai-switch"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <input type="hidden" name="on" value="{{ '1' if off else '0' }}">
+        <button class="switch {{ 'on' if not off }}" title="{{ 'Switch the AI back on' if off else 'Switch the AI off: a person does this instead' }}" aria-label="{{ 'Switch the AI on' if off else 'Switch the AI off' }}"></button>
+        <span class="small {{ 'faint' if off else 'good-text' }}">{{ 'Off' if off else 'On' }}</span></form>
+      {% else %}<span class="pill {{ 'slate' if off else 'green' }}">{{ 'Off' if off else 'On' }}</span>{% endif %}
+    </div>
+    <div class="ai-facts">
+      <div><span class="k">{{ icon('user') }}Who checks</span>
+        <span>{% if off %}Nobody: the AI is off, so {{ who(s, x.t) }} does it by hand{% elif mode == 'always' %}{{ who(s, x.t)|capitalize }} checks every one{% elif mode == 'when_unsure' %}{{ who(s, x.t)|capitalize }}, when the AI isn't sure (and 1 in 10 of the rest){% else %}Nobody: it runs on its own{% endif %}</span></div>
+      <div><span class="k">{{ icon('chart-column') }}How it's doing</span>
+        {% if r.checked %}<span class="ai-bar" title="{{ r.right }} right, {{ r.corrected }} corrected, {{ r.wrong }} wrong"><i class="right" style="--w: {{ (100 * r.right / r.checked)|round(1) }}%"></i><i class="fixed" style="--w: {{ (100 * r.corrected / r.checked)|round(1) }}%"></i><i class="wrong" style="--w: {{ (100 * r.wrong / r.checked)|round(1) }}%"></i></span>
+          <span>{{ (r.share * 100)|round|int }}% right of {{ r.checked }} checked{% if r.unchecked %} · {{ r.unchecked }} without a check{% endif %}</span>
+        {% else %}<span class="faint">Nobody has checked its work yet{% if r.unchecked %} ({{ r.unchecked }} done on its own){% endif %}</span>{% endif %}</div>
+      <div><span class="k">{{ icon('sparkles') }}Learns</span><span>{% if s.learn == false %}No{% elif x.learned %}From {{ x.learned }} correction{{ 's' if x.learned != 1 }} people made{% else %}From people's corrections (none yet){% endif %}</span></div>
+    </div>
+    {% if not off and mode == 'always' and r.checked >= 20 and r.lower >= 0.9 %}<p class="ai-hint good">{{ icon('circle-check') }}It's been right {{ r.right }} of {{ r.checked }} times. You could let it run on its own when it's sure (it still asks when it isn't).</p>
+    {% elif not off and mode != 'always' and r.checked >= 10 and r.share < 0.8 %}<p class="ai-hint bad">{{ icon('triangle-alert') }}People had to fix {{ r.checked - r.right }} of its last {{ r.checked }}. Have every one checked, or switch it off.</p>{% endif %}
+    <details class="ai-setup" {{ 'open' if request.args.get('open') == x.a.key ~ '-' ~ x.at }}><summary>{{ icon('settings') }}Set it up and try it</summary>
+      <form method="post" action="{{ url_for('app.ai_settings', wid=ws.id, key=x.a.key, at=x.at) }}" class="stack mt-2"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <fieldset class="stack" {{ 'disabled' if not admin }}><input type="hidden" name="edited" value="1">
+          <label class="field wide"><span>{{ 'What to check' if s.type == 'ai_check' else 'What the AI does' }}</span>
+            <textarea name="instructions" rows="3" placeholder="{{ 'e.g. Compare each quoted line with the contract price; flag anything over by more than 2%' if s.type == 'ai_check' else 'e.g. Draft a statement of work from the request: scope, deliverables, timeline, acceptance' }}">{{ s.instructions or '' }}</textarea>
+            <small class="help">Plain words: what to do, how, and what to watch for.</small></label>
+          <div class="field wide"><span>What it reads</span><div class="chips-input">
+            <label class="chip-opt"><input type="checkbox" checked disabled><span>{{ 'What came in' if s.type == 'ai_create_record' else 'The record, its lines and what it links to' }}</span></label>
+            {% if s.type in ('ai_fill', 'ai_check') %}<label class="chip-opt"><input type="checkbox" name="read_files" value="1" {{ 'checked' if s.read_files }}><span>Its attached files</span></label>{% endif %}
+            <label class="chip-opt"><input type="checkbox" name="use_knowledge" value="1" {{ 'checked' if s.use_knowledge }}><span>Your documents (Knowledge)</span></label>
+            {% if s.type in ('ai_fill', 'ai_check') %}{% set chosen = (s.reads or [])|map(attribute='table')|list %}{% for t in x.references %}<label class="chip-opt"><input type="checkbox" name="reads" value="{{ t.key }}" {{ 'checked' if t.key in chosen }}><span>{{ t.label }}</span></label>{% endfor %}{% endif %}
+          </div>{% if s.type in ('ai_fill', 'ai_check') %}<small class="help">Tick the lists it should compare with, like contract prices or a policy list.</small>{% endif %}</div>
+          <div class="row wrap ai-checks">
+            <label class="field"><span>Who checks its work</span><select name="review">
+              {% for m, label in [('always', 'A person, every time'), ('when_unsure', "A person, when the AI isn't sure"), ('never', 'Nobody: it runs on its own')] %}<option value="{{ m }}" {{ 'selected' if mode == m }}>{{ label }}</option>{% endfor %}</select></label>
+            <label class="field"><span>Who that is{{ ' (and who does it when the AI is off)' }}</span><select name="reviewer">
+              {% for v, label in [('editor', 'Any editor'), ('admin', 'An admin'), ('owner', 'The owner')] + ([('creator', 'Whoever added it')] if s.type != 'ai_create_record' else []) %}<option value="{{ v }}" {{ 'selected' if (s.reviewer or 'editor') == v }}>{{ label }}</option>{% endfor %}
+              {% if s.type != 'ai_create_record' %}{% for f in x.people %}<option value="{{ f.key }}" {{ 'selected' if s.reviewer == f.key }}>Its {{ f.label|lc }}</option>{% endfor %}{% endif %}</select></label>
+            <label class="check"><input type="checkbox" name="learn" value="1" {{ 'checked' if s.learn != false }}><span>Learn from people's corrections</span></label>
+          </div>
+        </fieldset>
+        <div class="ai-try">
+          <div class="row wrap">
+            {% if s.type == 'ai_create_record' %}<textarea name="sample" rows="3" class="grow" placeholder="Paste an example email or document to see what the AI would make of it" aria-label="Example to try"></textarea>
+            {% elif x.samples %}<label class="small faint" for="try-{{ x.a.key }}-{{ x.at }}">Try it on</label><select name="record" id="try-{{ x.a.key }}-{{ x.at }}">{% for id, title in x.samples %}<option value="{{ id }}">{{ title }}</option>{% endfor %}</select>
+            {% else %}<span class="faint small">Add a {{ x.t.singular|lc if x.t else 'record' }} to try it on.</span>{% endif %}
+            <button type="button" class="btn" data-ai-try="{{ url_for('app.ai_try', wid=ws.id, key=x.a.key, at=x.at) }}">{{ icon('play') }}Try it</button>
+            <span class="grow"></span>
+            {% if admin %}<button class="btn primary">{{ icon('check') }}Save changes</button>{% endif %}
+          </div>
+          <div class="ai-result" data-ai-result hidden aria-live="polite"></div>
+          <p class="faint tiny">Trying it saves nothing and asks nobody. It uses the settings above as they are now, saved or not.</p>
+        </div>
+      </form>
+    </details>
+  </article>
+  {% endfor %}
+</section>
+{% endfor %}
+{% if not count %}<div class="card">{{ empty_state('No AI helpers yet', 'Add one to a process: it can write (a statement of work, a reply), check (a quote against contract prices), sort, match or read documents. You decide who checks its work.', url_for('app.ai_new', wid=ws.id) if admin else none, 'Add an AI helper', ico='bot') }}</div>{% endif %}
+{% if manual %}
+<section class="ai-process"><div class="ai-process-head"><h2>Jobs people do by hand that the AI could take over</h2></div>
+  {% for m in manual %}<div class="card ai-card is-off"><div class="ai-card-head"><span class="ai-kind" title="Done by hand">{{ icon('user') }}</span>
+    <div class="grow"><h3>{{ m.step.message }}</h3><p class="small muted">In {{ m.a.name }} · fills in {{ m.field.label }}</p></div></div>
+    {% if admin %}<details class="ai-setup"><summary>{{ icon('sparkles') }}Let the AI do this</summary>
+      <form method="post" action="{{ url_for('app.ai_take_over', wid=ws.id, key=m.a.key, at=m.at) }}" class="stack mt-2"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <label class="field wide"><span>What the AI does</span><textarea name="instructions" rows="2">{{ m.step.message }}</textarea></label>
+        <div class="row"><span class="faint small grow">To begin with, the person who does it now checks every one. You can loosen that once it's proven itself.</span><button class="btn primary">{{ icon('sparkles') }}Let the AI do it</button></div></form></details>{% endif %}
+  </div>{% endfor %}
+</section>{% endif %}
+{% if admin %}<p class="small muted mt-3">{{ icon('wand-sparkles') }}Something more involved, like an AI stage in a new process? <a href="{{ url_for('builder.build', wid=ws.id, say='Add an AI step to ') }}" target="_top">Describe it to the builder</a>.</p>{% endif %}
+{% endblock %}

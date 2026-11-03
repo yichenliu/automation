@@ -1,0 +1,15 @@
+{% extends "app/layout.html" %}
+{% block title %}Reading…{% endblock %}
+{% block content %}
+<div class="page-head"><div class="titles"><h1>{{ icon('wand-sparkles') }}Reading {{ files|map(attribute='name')|join(', ') }}</h1></div></div>
+<div class="card card-body" data-job="{{ url_for('builder.job_status', wid=ws.id, jid=job.id) }}" data-reload-when-done>
+  {% if job.status == 'failed' %}
+    <div class="notice bad">{{ icon('triangle-alert') }}<span>{{ job.error }}</span></div>
+    <p class="mt-2"><a class="btn" href="{{ url_for('app.intake', wid=ws.id, table=t.key) }}">Try another file</a> <a class="btn ghost" href="{{ url_for('app.new', wid=ws.id, table=t.key) }}">Fill it in myself</a></p>
+  {% else %}
+    <div class="row"><span class="spin"></span><strong class="grow" data-job-stage>{{ job.stage }}</strong></div>
+    <div class="bar mt-2"><i data-job-bar style="width: {{ job.progress or 5 }}%"></i></div>
+    <p class="faint small mt-2">{% if job.status == 'waiting_ai' %}Waiting for your AI: {{ job.error }}. It carries on by itself.{% else %}Your AI is reading it on this computer; this usually takes 10–60 seconds.{% endif %}</p>
+  {% endif %}
+</div>
+{% endblock %}

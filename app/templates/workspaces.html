@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}Your apps{% endblock %}
+{% block body %}
+<div class="content narrow">
+  <div class="page-head"><div class="titles"><div class="brand"><span class="mark">{{ platform_name[0] }}</span>{{ platform_name }}</div>
+    <h1 class="mt-3">Your apps</h1><p class="sub">Each is its own app, with its own lists, data and people.</p></div>
+    <a class="btn primary" href="{{ url_for('workspaces.new') }}">{{ icon('plus') }}New app</a>
+    <a class="btn ghost" href="{{ url_for('account.page') }}">{{ icon('user') }}Your account</a>
+    <form method="post" action="{{ url_for('auth.logout') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn ghost">{{ icon('log-out') }}Sign out</button></form></div>
+  <div class="list-cards">{% for m, w in spaces %}
+    <a class="card card-body ws-card" href="{{ url_for('portal.home', wid=w.id) if m.role == 'portal' else url_for('app.home', wid=w.id) }}">
+      <div class="row"><span class="logo" style="--c: {{ (w.blueprint.get('theme') or {}).get('accent', '#5b5bd6') }}">{{ (w.blueprint.get('name') or w.name)[:1]|upper }}</span>
+        <div class="grow"><h2>{{ w.blueprint.get('name') or w.name }}</h2><p class="faint tiny">{{ m.role|capitalize }}</p></div></div>
+      <p class="muted small mt-2">{{ w.blueprint.get('tables', [])|rejectattr('embedded')|list|length }} tables · {{ w.blueprint.get('automations', [])|length }} automations · {{ counts[w.id] }} records</p>
+    </a>{% else %}<div class="card empty">No apps yet.</div>{% endfor %}
+  </div>
+</div>
+{% endblock %}

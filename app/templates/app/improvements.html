@@ -1,0 +1,34 @@
+{% extends "app/layout.html" %}{% from "macros.html" import empty_state %}
+{% block title %}Suggestions{% endblock %}
+{% block content %}
+<div class="page-head"><div class="titles"><h1>{{ icon('sparkles') }}Suggestions</h1>
+  <p class="sub">Your analyst watches how {{ ws.blueprint.get('name') or ws.name }} is really used and suggests changes, each with the reason and, for a new rule, what it would have done on your own past work. Nothing changes until you apply it, and every change can be undone.</p></div>
+  <form method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn" {{ 'disabled' if looking }}>{{ icon('refresh-cw') }}{{ 'Looking…' if looking else 'Look now' }}</button></form></div>
+{% if said %}<h2 class="mb-1" id="said">{{ icon('message-circle-warning') }}What your team says isn't right</h2>
+{% for f in said %}
+<div class="card mb-2"><div class="card-body stack">
+  <div class="row"><b class="grow">{{ e.members().get(f.user_id, 'Someone') }}</b><span class="faint tiny">{{ f.created_at|ago }}{% if f.page %} · <a href="{{ f.page }}">where they were</a>{% endif %}</span></div>
+  <p>“{{ f.text }}”</p>
+  {% if f.status == 'asked' %}<div class="notice small">{{ icon('clock') }}<span>The builder is on it. <a href="{{ url_for('builder.build', wid=ws.id) }}" target="_top">See how it's going</a></span></div>{% endif %}
+  <form method="post" action="{{ url_for('app.decide_feedback', wid=ws.id, fid=f.id) }}" class="row"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    {% if f.status == 'open' %}<input type="text" name="more" class="grow" placeholder="Anything to add for the builder? (optional)" aria-label="Anything to add for the builder">
+    <button class="btn primary" name="decision" value="fix" formtarget="_top">{{ icon('sparkles') }}Ask the builder to fix it</button>{% endif %}
+    <button class="btn" name="decision" value="done">{{ icon('check') }}It's sorted</button><button class="btn ghost" name="decision" value="dismiss">Not a problem</button></form>
+</div></div>
+{% endfor %}<h2 class="mt-3 mb-1">Ideas from how your app is used</h2>{% endif %}
+{% if looking %}<div class="notice warn mb-2">{{ icon('clock') }}<span>Your analyst is looking at how your app has been used{% if looking.stage %}: {{ looking.stage|lower }}{% endif %}. New suggestions appear here.</span></div>{% endif %}
+{% for s in open_ %}
+<div class="card mb-2 improvement"><div class="card-head"><span class="pill {{ {'follow_up': 'violet', 'email': 'violet', 'failing': 'red', 'stuck': 'amber', 'question': 'blue', 'analyst': 'blue', 'ai_trust': 'teal'}.get(s.kind, 'slate') }}">{{ {'unused_field': 'Simpler form', 'text_to_select': 'Tidier data', 'default_value': 'Fewer clicks', 'follow_up': 'New rule', 'stuck': 'Nothing forgotten', 'failing': 'Fix', 'question': 'At a glance', 'email': 'Email', 'analyst': "Analyst's idea", 'ai_trust': 'AI checks'}.get(s.kind, s.kind) }}</span>
+  <h2 class="grow">{{ s.title }}</h2><span class="faint tiny">{{ s.created_at|ago }}</span></div>
+  <div class="card-body stack">
+    <p>{{ s.why }}</p>
+    {% if s.evidence %}<div><div class="muted small mb-1">What I saw</div><ul class="evidence">{% for x in s.evidence[:6] %}<li>{{ x }}</li>{% endfor %}</ul></div>{% endif %}
+    {% if s.proof and s.proof.summary %}<div class="notice good small">{{ icon('circle-check') }}<span><b>Tested on your history:</b> {{ s.proof.summary }}{% if s.proof.examples %} For example: {{ s.proof.examples|join(', ') }}.{% endif %}</span></div>{% endif %}
+    <details><summary class="muted small">What applying it changes</summary><ul class="small">{% for c in s.changes %}<li>{{ c }}</li>{% endfor %}</ul></details>
+    <form method="post" action="{{ url_for('app.decide_improvement', wid=ws.id, sid=s.id) }}" class="row"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <button class="btn primary" name="decision" value="apply">{{ icon('check') }}Apply</button><button class="btn ghost" name="decision" value="dismiss">Not for us</button></form>
+  </div></div>
+{% else %}<div class="card">{{ empty_state('Nothing to suggest right now', 'Your analyst looks every day. Suggestions appear once there is enough real use to learn from: a few weeks of records, questions and email.', ico='sparkles') }}</div>{% endfor %}
+{% if decided %}<h2 class="mt-3 mb-1">Decided</h2><div class="card">{% for s in decided %}<div class="list-row small"><span class="pill {{ 'green' if s.status == 'applied' else 'slate' }}">{{ 'Applied' if s.status == 'applied' else 'Dismissed' }}</span><span class="grow">{{ s.title }}</span><span class="faint tiny">{{ s.decided_by or '' }} · {{ s.decided_at|ago if s.decided_at }}</span></div>{% endfor %}</div>{% endif %}
+{% if last %}<p class="faint tiny mt-2">Last looked {{ last.finished_at|ago }}.</p>{% endif %}
+{% endblock %}

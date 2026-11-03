@@ -1,0 +1,22 @@
+{% extends "settings/_layout.html" %}
+{% block title %}Connections{% endblock %}
+{% block content %}
+<h1>Connections</h1><p class="muted mt-1">Other systems your app works with.</p>
+<div class="card mt-3"><div class="card-head">{{ icon('cloud') }}<h2 class="grow">Microsoft 365</h2>
+  {% if ms.connected %}<span class="pill green">Connected</span>{% elif ms.status == 'needs sign-in' %}<span class="pill amber">Needs sign-in</span>{% else %}<span class="pill slate">Not connected</span>{% endif %}</div>
+  <div class="card-body">
+    <p class="muted">Lets automations read incoming email and OneDrive files, send email from your mailbox (with PDFs attached), and lets the AI learn your business from your files and mail.</p>
+    {% if ms.connected %}<p class="mt-2">Connected as <b>{{ ms.account }}</b>{% if ms.checked_at %} · last checked {{ ms.checked_at|ago }}{% endif %}.</p>
+      <div class="row mt-2"><a class="btn" href="{{ url_for('builder.discover', wid=ws.id) }}">{{ icon('sparkles') }}Learn from it</a>
+        <form method="post" action="{{ url_for('settings.disconnect', wid=ws.id) }}" data-confirm-text="Disconnect Microsoft 365?"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn ghost danger">Disconnect</button></form></div>
+    {% elif ms.configured %}
+      {% if ms.problem %}<p class="notice warn mt-2">{{ icon('triangle-alert') }}<span>{{ ms.problem }}</span></p>{% endif %}
+      <form method="post" action="{{ url_for('connect.start', wid=ws.id) }}" class="mt-2"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn primary">{{ icon('cloud') }}Sign in with Microsoft</button></form>
+    {% else %}
+      <div class="notice warn mt-2">{{ icon('info') }}<div><b>The platform needs a Microsoft app first (once).</b>
+        <ol class="small mt-1"><li>In <a href="https://entra.microsoft.com" target="_blank" rel="noopener">Microsoft Entra</a> → App registrations → New registration. Redirect URI (Web): <code>{{ redirect_uri }}</code></li>
+          <li>Under Certificates &amp; secrets, create a client secret.</li>
+          <li>Add <code>MICROSOFT_CLIENT_ID</code>, <code>MICROSOFT_CLIENT_SECRET</code> (and <code>MICROSOFT_TENANT</code> if single-tenant) to the <code>.env</code> file and restart.</li></ol></div></div>
+    {% endif %}
+  </div></div>
+{% endblock %}

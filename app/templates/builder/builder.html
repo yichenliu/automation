@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block title %}{{ ws.blueprint.get('name') or ws.name }} · Builder{% endblock %}
+{% block body_class %}builder-page{% endblock %}
+{% block body %}
+<div class="builder" data-ws="{{ ws.id }}" data-send="{{ url_for('builder.send', wid=ws.id) }}" data-poll="/w/{{ ws.id }}/chat/">
+  <section class="chat">
+    <div class="chat-top">
+      <a class="brand" href="{{ url_for('workspaces.index') }}" title="Your apps"><span class="mark">{{ platform_name[0] }}</span></a>
+      <div class="grow"><div class="ws ellipsis">{{ ws.blueprint.get('name') or ws.name }}</div>
+        <div class="faint tiny">Tell me what you need, in your own words<span hidden id="version">{{ ws.version }}</span></div></div>
+      <span class="ai-chip" title="Your AI ({{ ai.model }}) runs on this computer, so your data stays here"><i></i>AI ready</span>
+    </div>
+    <div class="messages" id="messages">
+      {% if not messages and (ws.blueprint.get('tables') or []) %}
+      <div class="welcome" id="welcome">
+        <h2>What would you like to change?</h2>
+        <p class="muted">Say it in your own words, like you'd tell a colleague. You'll see the change appear on the right straight away, and you can undo anything.</p>
+        <div class="starters">{% for s in ['Add a due date to invoices and remind me about overdue ones every Monday', 'Let customers see their own invoices online', 'Make a page with this month’s sales and what’s waiting for me'] %}<button class="starter" data-starter>{{ icon('sparkles') }}<div>{{ s }}</div></button>{% endfor %}</div>
+      </div>
+      {% elif not messages %}
+      <div class="welcome" id="welcome">
+        <h2>Let's build your app</h2>
+        <p class="muted">Tell me how {{ ws.name }} works: what you sell or do, what you keep track of, and what you'd like to stop doing by hand. You'll see the system appear on the right. Everything can be changed, and every change can be undone.</p>
+        <div class="starters">
+          {% if focus == 'file' %}<div class="starter-file" data-pick-file>{{ icon('file-spreadsheet') }}<div><b>Drop your spreadsheet here</b><small>Or click to choose one. I'll build the app around it and bring its rows in.</small></div></div>{% endif %}
+          <a class="starter" href="{{ url_for('builder.discover', wid=ws.id) }}">{{ icon('cloud') }}<div><b>Learn from my Microsoft 365</b><small>Read my OneDrive spreadsheets and mail, and propose an app.</small></div></a>
+          {% for s in starters %}<button class="starter" data-starter>{{ icon('sparkles') }}<div>{{ s }}</div></button>{% endfor %}
+        </div>
+      </div>
+      {% endif %}
+      {% for m in messages %}{% include "builder/_message.html" %}{% endfor %}
+    </div>
+    <form class="composer" id="composer">
+      <div class="attached" id="attached"></div>
+      <div class="box">
+        <textarea id="prompt" rows="2" placeholder="{{ 'Describe your business…' if not messages else 'Ask for a change, e.g. “add a due date to invoices and email overdue ones every Monday”' }}">{{ say }}</textarea>
+        <div class="row">
+          <label class="btn sm ghost icon" title="Attach a spreadsheet or document">{{ icon('paperclip') }}<input type="file" id="files" multiple hidden accept=".csv,.xlsx,.xls,.xlsm,.pdf,.docx,.txt,.png,.jpg,.jpeg"></label>
+          <span class="faint tiny grow">Enter to send · Shift+Enter for a new line · drop files to attach</span>
+          <button class="btn primary sm" id="send">{{ icon('send') }}Send</button></div>
+      </div>
+    </form>
+  </section>
+  <section class="preview">
+    <div class="preview-bar">
+      <button class="btn sm ghost icon" id="back" title="Back">{{ icon('chevron-left') }}</button>
+      <button class="btn sm ghost icon" id="reload" title="Reload">{{ icon('refresh-cw') }}</button>
+      <div class="addr" id="addr">{{ start }}</div>
+      <a class="btn sm" id="newtab" href="{{ start }}" target="_blank">{{ icon('external-link') }}Open</a>
+    </div>
+    <iframe id="frame" src="{{ start }}" title="Your app"></iframe>
+  </section>
+</div>
+{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='builder.js') }}"></script>{% endblock %}

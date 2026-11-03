@@ -1,0 +1,49 @@
+{% extends "app/layout.html" %}{% from "macros.html" import empty_state %}
+{% block title %}Rules{% endblock %}
+{% macro flow(steps) %}<ol class="then">{% for step in steps %}<li>{{ step.text|rule_words }}{% if step.example %}<div class="example">{{ icon('eye') }}For example: “{{ step.example }}”</div>{% endif %}{% if step.ways %}<div class="ways">{% for way in step.ways %}
+  <div class="way"><div class="way-label">{{ way.label }}</div>{% if way.steps %}{{ flow(way.steps) }}{% else %}<div class="faint small">Nothing more</div>{% endif %}</div>{% endfor %}</div>{% endif %}</li>{% endfor %}</ol>{% endmacro %}
+{% block content %}
+<div class="page-head"><div class="titles"><h1>{{ icon('zap') }}Rules</h1><p class="sub">What your app does by itself: when something happens, it does the next thing for you. Each rule shows when it starts, what it does, and the last few times it ran.</p></div></div>
+{% if not items %}<div class="card">{{ empty_state('No rules yet', 'Tell the builder what should happen by itself, like “when a quote is accepted, create the job and tell me”.', ico='zap') }}</div>{% endif %}
+<div class="stack">
+{% for item in items %}{% set a = item.a %}
+<div class="card {{ 'off' if not a.enabled }}" id="{{ a.key }}">
+  <div class="card-head">
+    {% if member and member.can('admin') %}<form method="post" action="{{ url_for('app.toggle', wid=ws.id, key=a.key) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <button class="switch {{ 'on' if a.enabled }}" title="{{ 'Turn off' if a.enabled else 'Turn on' }}" aria-label="{{ 'Turn off' if a.enabled else 'Turn on' }}"></button></form>{% endif %}
+    <h2 class="grow">{{ a.name }}</h2>
+    {% if a.trigger.type == 'schedule' and member and member.can('admin' if reaches_out(a) else 'editor') %}<form method="post" action="{{ url_for('app.run_now', wid=ws.id, key=a.key) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn sm">{{ icon('play') }}Run now</button></form>{% endif %}
+  </div>
+  <div class="card-body">
+    <div class="rule">
+      <span class="k">When</span><span>{{ (item.words.when[5:] if item.words.when.startswith('When ') else item.words.when)|rule_words }}</span>
+      {% if item.words.only_if %}<span class="k">Only if</span><span>{{ item.words.only_if|join(' and ')|rule_words }}</span>{% endif %}
+      <span class="k">Then</span>{{ flow(item.words.flow) }}
+    </div>
+    {% for x in item.ai %}{% set r = x.record %}{% set mode = x.step.review or 'never' %}
+    <div class="ai-trust mt-2"><div class="row wrap"><span class="ai-tag">{{ icon('sparkles') }}AI</span><span class="small grow">{{ x.text }}</span>
+      <a class="small" href="{{ url_for('app.ai_page', wid=ws.id, open=a.key ~ '-' ~ x.at) }}#ai-{{ a.key }}-{{ x.at }}">{{ 'Switched off · ' if x.step.manual }}Set up and try it</a></div>
+      <div class="small muted mt-1">{% if r.checked %}People checked it {{ r.checked }} time{{ 's' if r.checked != 1 }}: right {{ r.right }}{% if r.corrected %}, corrected {{ r.corrected }}{% endif %}{% if r.wrong %}, wrong {{ r.wrong }}{% endif %} ({{ (r.share * 100)|round|int }}% right){% else %}Nobody has checked its work yet{% endif %}{% if r.unchecked %} · {{ r.unchecked }} done without a check{% endif %}</div>
+      {% if mode == 'always' and r.checked >= 20 and r.lower >= 0.9 %}<p class="small good-text mt-1">{{ icon('circle-check') }}It's been right {{ r.right }} of {{ r.checked }} times: it could run on its own when it's sure, and still ask when it isn't.</p>
+      {% elif mode != 'always' and r.checked >= 10 and r.share < 0.8 %}<p class="small bad-text mt-1">{{ icon('triangle-alert') }}People have had to fix {{ r.checked - r.right }} of its last {{ r.checked }}: have every one checked again?</p>{% endif %}
+      {% if member and member.can('admin') %}<form method="post" action="{{ url_for('app.ai_review', wid=ws.id, key=a.key, at=x.at) }}" class="row wrap mt-1"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <label class="small faint" for="mode-{{ a.key }}-{{ x.at }}">Who checks its work</label>
+        <select name="mode" id="mode-{{ a.key }}-{{ x.at }}">{% for m, label in [('always', 'A person, every time'), ('when_unsure', "A person, when the AI isn't sure"), ('never', 'Nobody: it runs on its own')] %}<option value="{{ m }}" {{ 'selected' if mode == m }}>{{ label }}</option>{% endfor %}</select>
+        <button class="btn sm">Save</button></form>{% endif %}
+    </div>{% endfor %}
+    {% if item.hook and member and member.can('admin') %}<div class="mt-2"><div class="muted small mb-1">{{ icon('webhook') }} Another system (your web shop, a form tool) starts this rule by sending its data to this address. Keep it private: anyone with it can start the rule.</div>
+      <div class="row"><input class="keybox grow small" type="text" readonly value="{{ item.hook }}" aria-label="Webhook address"><button class="btn sm" type="button" data-copy>{{ icon('copy') }}Copy</button></div></div>{% endif %}
+    {% if not a.enabled %}<p class="faint small mt-2">Off: it won't run until it's turned on.</p>{% endif %}
+  </div>
+  {% if item.runs %}
+  <div class="card-foot"><div class="faint tiny caps">The last times it ran</div>
+    <ul class="timeline-list">{% for run in item.runs %}<li>
+      <div class="row"><span class="status {{ run.status }}">{{ run.status|status_words }}</span><span class="small grow ellipsis">{{ run.trigger }}</span><span class="faint tiny nowrap">{{ run.created_at|ago }}</span></div>
+      {% if run.steps %}<ul class="steps">{% for s in run.steps %}<li class="{{ 'skipped' if s.skipped }} depth-{{ [((s.at or '')|string).count('.') // 2, 3]|min }}">{% if s.link %}<a href="{{ target_url(ws, s.link) }}">{{ s.result or s.action }}</a>{% elif s.file %}<a href="{{ url_for('app.file', wid=ws.id, fid=s.file) }}">{{ s.result }}</a>{% else %}{{ s.result or s.action }}{% endif %}</li>{% endfor %}</ul>{% endif %}
+      {% if run.error and run.status not in ('done',) %}<div class="small mt-1 {{ 'warn-text' if run.status == 'waiting_ai' else 'bad-text' }}">{{ run.error }}</div>{% endif %}
+    </li>{% endfor %}</ul></div>
+  {% endif %}
+</div>
+{% endfor %}
+</div>
+{% endblock %}

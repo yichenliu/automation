@@ -1,0 +1,44 @@
+{% extends "app/layout.html" %}{% from "macros.html" import empty_state %}
+{% block title %}What the AI knows{% endblock %}
+{% block content %}
+<div class="page-head"><div class="titles"><h1>{{ icon('book-open') }}What the AI knows</h1>
+  <p class="sub">The assistant and the AI steps in your automations look things up here before they answer, and say where they found it.</p></div></div>
+<div class="widgets">
+  <div class="card widget metric"><div class="muted small">Records</div><div class="value">{{ '{:,}'.format(status.records) }}</div><div class="faint tiny">every record, written out with its lines and comments</div></div>
+  <div class="card widget metric"><div class="muted small">Documents</div><div class="value">{{ '{:,}'.format(status.files) }}</div><div class="faint tiny">uploaded here, attached to records, or from OneDrive</div></div>
+  <div class="card widget metric"><div class="muted small">Emails</div><div class="value">{{ '{:,}'.format(status.emails) }}</div><div class="faint tiny">{{ 'new mail is read as it arrives' if mail_on else 'mail isn\'t being read' }}</div></div>
+  <div class="card widget metric"><div class="muted small">Still to read</div><div class="value">{{ '{:,}'.format(status.waiting) }}</div><div class="faint tiny">{% if status.model %}the AI finds things by what they mean, not just their words{% else %}found by their words{% endif %}{% if status.by_words_only %} · {{ status.by_words_only }} passages wait for the AI{% endif %}</div></div>
+</div>
+<div class="card mt-2"><div class="card-head">{{ icon('search') }}<h2 class="grow">Try a question</h2></div><div class="card-body">
+  <form class="row"><input type="search" name="q" value="{{ q }}" class="grow" placeholder="e.g. what's our refund policy for custom orders?"><button class="btn">Look it up</button></form>
+  {% if q %}{% if hits %}<div class="mt-2">{% for h in hits %}<a class="list-row link passage" href="{{ source_url(ws, h.link) or '#' }}" {% if h.link and h.link.startswith('http') %}target="_blank" rel="noopener"{% endif %}>
+      {{ icon({'file': 'file-text', 'email': 'mail', 'record': 'table'}.get(h.source, 'file-text')) }}<div class="grow"><b>{{ h.title }}</b><div class="faint small clamp-2">{{ h.text[:400] }}</div></div>
+      <span class="faint tiny nowrap">{{ ((h.similarity * 100)|round|int ~ '% alike') if h.similarity else 'by words' }}</span></a>{% endfor %}</div>
+  {% else %}<p class="faint small mt-2">Nothing the AI could find matches that. Add the document that answers it below.</p>{% endif %}{% endif %}
+</div></div>
+<div class="card mt-2"><div class="card-head">{{ icon('file-text') }}<h2 class="grow">Documents for the AI</h2><span class="faint small">{{ documents|length }}</span></div><div class="card-body stack">
+  <p class="muted small">Policies, price lists, terms, contracts, product sheets, procedures: anything people ask about. PDFs, Word, Excel, text and email files.</p>
+  {% if member.can('editor') %}<form method="post" enctype="multipart/form-data" class="stack"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="action" value="upload">
+    <div class="drop" data-drop><input type="file" name="files" multiple><span>{{ icon('upload') }} Drop documents here or <u>choose</u></span><em class="chosen"></em></div>
+    <div><button class="btn primary">{{ icon('plus') }}Add</button></div></form>{% endif %}
+  {% for d in documents %}<div class="row"><a class="grow" href="{{ url_for('app.file', wid=ws.id, fid=d.id) }}">{{ icon('file-text') }} {{ d.name }}</a>
+    <span class="faint tiny">{{ d.size|size }} · {{ d.created_at|ago }} · {{ 'read' if d.id|string in read else 'reading…' }}</span>
+    {% if member.can('editor') %}<form method="post" data-confirm-text="Remove {{ d.name }}? The AI stops using it."><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="action" value="remove"><button class="btn sm ghost icon" name="file" value="{{ d.id }}" aria-label="Remove">{{ icon('trash-2') }}</button></form>{% endif %}</div>
+  {% endfor %}
+</div></div>
+{% if member.can('admin') %}
+<div class="card mt-2"><div class="card-head">{{ icon('cloud') }}<h2 class="grow">From Microsoft 365</h2></div><div class="card-body stack">
+  {% if not connected %}<p class="muted small">Connect Microsoft 365 in <a href="{{ url_for('settings.connections', wid=ws.id) }}" target="_top">Settings › Connections</a> and the AI can learn from your mail and OneDrive documents.</p>
+  {% else %}
+  <div class="row wrap"><form method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <button class="btn" name="action" value="{{ 'mail_off' if mail_on else 'mail_on' }}">{{ icon('mail') }}{{ 'Stop reading new mail' if mail_on else 'Read new mail as it arrives' }}</button></form>
+    <form method="post" data-busy><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn" name="action" value="mail_history">{{ icon('history') }}Read the last six months of mail</button></form></div>
+  <form method="post" class="row" data-busy><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="action" value="onedrive">
+    <input type="text" name="folder" class="grow" placeholder="A OneDrive folder, e.g. Policies (empty: all of OneDrive)"><button class="btn">{{ icon('folder-kanban') }}Read its documents</button></form>
+  <p class="faint tiny">Mail is only shown to editors and above. Read-only members never see it in answers.</p>
+  {% endif %}
+  {% for j in background %}<div class="row small"><span class="status {{ j.status }}">{{ j.status|status_words }}</span><span class="grow">{{ {'knowledge_mail': 'Reading mail', 'knowledge_onedrive': 'Reading OneDrive', 'knowledge_rebuild': 'Reading everything again'}[j.kind] }}{% if j.stage and j.status == 'running' %}: {{ j.stage }}{% endif %}{% if j.error %} · {{ j.error }}{% endif %}</span><span class="faint tiny">{{ j.created_at|ago }}</span></div>{% endfor %}
+  <form method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn sm ghost" name="action" value="rebuild">{{ icon('refresh-cw') }}Read everything again</button></form>
+</div></div>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,48 @@
+{% extends "app/layout.html" %}{% from "macros.html" import value, is_num, empty_state %}
+{% block title %}{{ t.label }}{% endblock %}
+{% block content %}
+{% include "app/_views.html" %}
+{% set can_edit = e.can(t, 'edit') %}
+<div class="hint" data-hint="list-{{ ws.id }}-{{ t.key }}" hidden>{{ icon('info') }}<span>This is where your {{ t.label|lc }} are kept.
+  {% if can_edit %}Press <b>New {{ t.singular|lc }}</b> to add one. {% endif %}Click any row to open it{% if can_edit %} and see what to do next{% endif %}. Type in the search box to find one.</span>
+  <button class="btn sm" type="button" data-hint-close>Got it</button></div>
+<form method="post" action="{{ url_for('app.bulk', wid=ws.id, table=t.key) }}" id="bulk-form">
+<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+<div class="bulkbar" hidden><span><b data-count>0</b> selected</span>
+  <select name="field" data-bulk-field><option value="">Choose what to change…</option>{% for f in t.fields if f.type in ('select', 'checkbox', 'date', 'user', 'text', 'number', 'money') %}<option value="{{ f.key }}" data-type="{{ f.type }}" data-options='{{ (f.options or [])|json }}'>{{ f.label }}</option>{% endfor %}</select>
+  <input type="text" name="value" placeholder="to…" data-bulk-value hidden>
+  <button class="btn sm" name="action" value="set" data-bulk-set hidden>Apply</button>
+  <button class="btn sm" formaction="{{ url_for('app.compare', wid=ws.id, table=t.key) }}" title="See the selected side by side">{{ icon('scale') }}Compare</button>
+  {% for d in t.documents or [] if d.format != 'text' %}<button class="btn sm" name="action" value="pdf:{{ d.key }}">{{ icon('file-down') }}{{ d.label }} PDFs</button>{% endfor %}
+  <button class="btn sm danger" name="action" value="delete" data-confirm-text="Delete the selected {{ t.label|lc }}? Each can be brought back from its history.">{{ icon('trash-2') }}Delete</button>
+</div>
+<div class="card table-wrap">
+  {% if rows %}
+  <table class="grid as-cards" data-table="{{ url_for('app.table', wid=ws.id, table=t.key) }}">
+    <thead><tr>{% if can_edit %}<th class="sel"><input type="checkbox" data-select-all aria-label="Select all"></th>{% endif %}{% for f in columns %}
+      {% set dir = 'desc' if sort and sort.field == f.key and sort.dir == 'asc' else 'asc' %}
+      <th class="{{ is_num(e, f) }}"><a href="{{ url_for('app.table', wid=ws.id, table=t.key, sort=f.key, dir=dir, **args) }}">{{ f.label }}{% if sort and sort.field == f.key %}{{ icon('arrow-up-down', 'sorted') }}{% endif %}</a></th>
+    {% endfor %}</tr></thead>
+    {% for g in (groups or [{'label': none, 'rows': rows}]) %}
+    {% if g.label is not none %}<tbody class="group"><tr class="group-row"><td colspan="{{ columns|length + (1 if can_edit else 0) }}"><b>{{ g.label }}</b> <span class="faint small">{{ g.count }}</span>
+      {% for f in columns if f.key in g.totals %}<span class="small muted group-total">{{ f.label }} <b>{{ e.display(f, g.totals[f.key]) }}</b></span>{% endfor %}</td></tr></tbody>{% endif %}
+    <tbody>{% for r in g.rows %}
+      {% set tint = tints.get(r.id) or {} %}
+      <tr data-open="{{ url_for('app.record', wid=ws.id, table=t.key, rid=r.id) }}" data-id="{{ r.id }}" class="{{ 'tint ' ~ tint.row if tint.row }}">
+        {% if can_edit %}<td class="sel"><input type="checkbox" name="ids" value="{{ r.id }}" aria-label="Select"></td>{% endif %}
+        {% for f in columns %}{% set v = e.value(r, f.key) %}
+        {% set editable_cell = can_edit and f.type in inline and not loop.first %}
+        <td data-label="{{ f.label }}" class="{{ is_num(e, f) }}{{ ' editable' if editable_cell }}{{ ' cell-tint ' ~ tint.fields[f.key] if tint.fields and tint.fields.get(f.key) }}" {% if editable_cell %}data-field="{{ f.key }}" data-type="{{ f.type }}" data-raw="{{ v|json if v is not none else '' }}" {% if f.type in ('select',) %}data-options='{{ f.options|json }}'{% endif %}{% if f.type == 'user' %}data-options='{{ e.members()|json }}'{% endif %}{% endif %}>{% if loop.first %}<a class="row-link" href="{{ url_for('app.record', wid=ws.id, table=t.key, rid=r.id) }}">{{ value(e, f, v, r) }}</a>{% else %}{{ value(e, f, v, r) }}{% endif %}</td>{% endfor %}
+      </tr>
+    {% endfor %}</tbody>{% endfor %}
+    {% if totals %}<tfoot><tr>{% if can_edit %}<td></td>{% endif %}{% for f in columns %}<td class="{{ is_num(e, f) }}">{% if f.key in totals %}{{ e.display(f, totals[f.key]) }}{% elif loop.first %}Total{% endif %}</td>{% endfor %}</tr></tfoot>{% endif %}
+  </table>
+  {% elif q or quick or view.filters %}{{ empty_state('Nothing matches', 'Try a different search, or clear the filters.', ico='search') }}
+  {% else %}{{ empty_state('No ' ~ t.label|lc ~ ' yet', 'Add the first one, bring them in from a spreadsheet, or let the AI read one from a document.', url_for('app.new', wid=ws.id, table=t.key) if can_edit else none, 'New ' ~ t.singular|lc, t.icon or 'table') }}{% endif %}
+</div>
+</form>
+{% if pages > 1 %}<div class="row mt-2"><span class="faint small grow">Page {{ page }} of {{ pages }} · {{ total }} in all</span>
+  {% if page > 1 %}<a class="btn sm" href="{{ url_for('app.table', wid=ws.id, table=t.key, **dict(args, page=page - 1, sort=request.args.get('sort'), dir=request.args.get('dir'))) }}">{{ icon('chevron-left') }}Previous</a>{% endif %}
+  {% if page < pages %}<a class="btn sm" href="{{ url_for('app.table', wid=ws.id, table=t.key, **dict(args, page=page + 1, sort=request.args.get('sort'), dir=request.args.get('dir'))) }}">Next{{ icon('chevron-right') }}</a>{% endif %}</div>{% endif %}
+
+{% endblock %}

@@ -1,0 +1,46 @@
+{% if m.role == 'user' %}
+<div class="msg user" data-id="{{ m.id }}">{{ m.text }}{% if m.files %}<div class="msg-files">{% for fid in m.files %}<span class="filechip light">{{ icon('paperclip') }}attachment</span>{% endfor %}</div>{% endif %}</div>
+{% else %}
+<div class="msg ai" data-id="{{ m.id }}" data-status="{{ m.status }}" {% if m.navigate %}data-navigate="{{ m.navigate }}"{% endif %}>
+  <div class="who"><span class="mark"></span>Builder{% if m.finished_at and m.started_at %}<span class="faint"> · {{ ((m.finished_at - m.started_at).total_seconds())|round|int }}s</span>{% endif %}</div>
+  {% if m.status in ('queued', 'thinking') %}
+    <div class="working">
+      <div class="line"><span class="spin"></span><strong>{% if m.status == 'queued' %}Starting…{% elif m.progress %}Building your app{% elif m.thinking %}Thinking it through{% else %}Reading your request{% endif %}</strong>
+        <span class="faint small" data-started="{{ (m.started_at or m.created_at).isoformat() }}Z"></span></div>
+      {% if m.progress %}<ul>{% for line in m.progress %}<li class="{{ 'now' if loop.last }}{{ ' bad' if line.startswith(("Couldn't", "Didn't")) }}">{{ line }}</li>{% endfor %}</ul>{% endif %}
+      {% if m.thinking %}<div class="thinking" data-scroll-end>{{ m.thinking[-1500:] }}</div>{% endif %}
+      <div class="faint tiny mt-1">Your AI works on this computer: here, {{ 'building a whole business' if not m.version_before else 'a change' }} usually takes {{ build_minutes(not m.version_before) }}. Each part appears on the right as soon as it's ready; you can keep using your app meanwhile.</div>
+    </div>
+  {% elif m.status == 'waiting_ai' %}
+    <div class="notice warn">{{ icon('clock') }}<span>Waiting for your AI: {{ m.error }}. It tries again by itself every 20 seconds.</span></div>
+  {% else %}
+    {% if m.text %}<div class="text">{{ m.text }}</div>{% endif %}
+    {% if m.error %}<div class="notice bad">{{ icon('triangle-alert') }}<span>{{ m.error }}</span></div>{% endif %}
+    {% set tried = m.checks if m.checks is mapping else none %}
+    {% if tried and (tried.examples or tried.issues) %}{% set worked = tried.examples|selectattr('ok')|list %}
+    <div class="tried">
+      <div class="tried-head">{{ icon('flask-conical') }}<b>I tried it out</b>
+        <span class="faint small">{% if tried.examples %}{{ worked|length }} of {{ tried.examples|length }} example{{ 's' if tried.examples|length != 1 }} worked{% endif %}{% if tried.fixes %} · I fixed what the first try found{% endif %}</span></div>
+      {% for x in tried.examples %}
+      <details class="try {{ 'ok' if x.ok else 'bad' }}" {{ 'open' if not x.ok }}><summary>{{ icon('circle-check' if x.ok else 'circle-x') }}<span>{{ x.title }}</span></summary>
+        <ul>{% for ok, line in x.lines %}<li class="{{ '' if ok else 'bad' }}">{{ line }}</li>{% endfor %}{% if x.problem and not (x.lines|rejectattr(0)|list) %}<li class="bad">{{ x.problem }}</li>{% endif %}</ul></details>
+      {% endfor %}
+      {% for i in tried.issues %}<div class="try bad">{{ icon('circle-x') }}<span>{{ i }}</span></div>{% endfor %}
+    </div>{% endif %}
+    {% if m.progress %}<details class="steps"><summary>What I did, step by step</summary><ul>{% for line in m.progress %}<li class="{{ 'bad' if line.startswith(("Couldn't", "Didn't")) }}">{{ line }}</li>{% endfor %}</ul></details>{% endif %}
+    {% if m.changes %}<div class="changes">{% for c in m.changes %}<div class="ch">{{ icon('undo-2' if c.startswith('Went back') else 'check') }}<span>{{ c }}</span></div>{% endfor %}</div>{% endif %}
+    {% if m.results %}
+      <div class="results"><table class="grid"><thead><tr>{% for c in m.results.columns %}<th>{{ c }}</th>{% endfor %}</tr></thead><tbody>
+      {% for row in m.results.rows %}<tr data-open="/w/{{ ws.id }}/app/t/{{ m.results.table }}/{{ row.id }}">{% for cell in row.cells %}<td>{{ cell }}</td>{% endfor %}</tr>
+      {% else %}<tr><td colspan="{{ m.results.columns|length }}" class="faint">Nothing matches.</td></tr>{% endfor %}</tbody></table></div>
+    {% endif %}
+    <div class="msg-actions">
+      {% if m.navigate %}<button class="btn sm" data-go="{{ m.navigate }}">{{ icon('eye') }}Show me</button>{% endif %}
+      {% if m.version_after and m.version_before is not none and m.status == 'done' and not (m.changes and m.changes[0].startswith('Went back')) %}
+        <button class="btn sm ghost" data-undo="{{ url_for('builder.undo', wid=ws.id, mid=m.id) }}">{{ icon('undo-2') }}Undo</button>{% endif %}
+      {% if m.status == 'failed' %}<button class="btn sm" data-retry="{{ url_for('builder.retry', wid=ws.id, mid=m.id) }}">{{ icon('refresh-cw') }}Try again</button>{% endif %}
+      {% if m.status == 'done' and 'carry on' in (m.text or '').lower() %}<button class="btn sm primary" data-starter-text="Carry on building what isn't done yet">{{ icon('play') }}Carry on building</button>{% endif %}
+    </div>
+  {% endif %}
+</div>
+{% endif %}

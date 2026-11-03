@@ -1,0 +1,11 @@
+{% extends "portal/layout.html" %}{% from "macros.html" import input %}
+{% block title %}Your details{% endblock %}
+{% block content %}
+<div class="page-head"><div class="titles"><div class="crumbs"><a href="{{ url_for('portal.home', wid=ws.id) }}">{{ icon('chevron-left') }}{{ portal.title }}</a></div><h1>Your details</h1>
+  <p class="sub">Keep these up to date.{% if t.approve_changes %} Some changes (like where we pay you) are checked by our team before they're used.{% endif %}</p></div></div>
+{% for a in pending %}<div class="notice warn">{{ icon('shield') }}<div><b>A change waiting to be checked</b><div class="small">{% for label, pair in (a.proposal.shown or {}).items() %}{{ label }}: {{ pair[0] }} → {{ pair[1] }}{{ '; ' if not loop.last }}{% endfor %}</div></div></div>{% endfor %}
+<form method="post" class="form-card"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="_version" value="{{ contact.version }}">
+  {% if errors.get('_') %}<div class="flash error">{{ icon('triangle-alert') }}<span>{{ errors['_'] }}</span></div>{% endif %}
+  <div class="card mb-2"><div class="card-body form-grid">{% for f in fields %}{{ input(e, f, (contact.data or {}).get(f.key), options, errors.get(f.key), {}) }}{% endfor %}</div></div>
+  <div class="form-actions"><button class="btn primary">{{ icon('check') }}Save</button></div></form>
+{% endblock %}

@@ -1,0 +1,9 @@
+{% extends "app/layout.html" %}{% from "macros.html" import empty_state %}
+{% block title %}{{ ws.name }}{% endblock %}
+{% block content %}
+{% if building %}
+<div class="card mt-3">{{ empty_state('Your app is being built', 'The builder is working on it now. Your lists appear here as soon as the first part is ready (here, that usually takes ' ~ build_minutes(true) ~ ' for a whole business). You can watch it work in the builder.', url_for('builder.build', wid=ws.id) if member and member.can('admin') else none, 'Watch the builder', 'sparkles') }}</div>
+{% else %}
+<div class="card mt-3">{{ empty_state('Your app is empty', 'Tell the builder about your business in your own words, and your lists, screens and rules appear here.', url_for('builder.build', wid=ws.id) if member and member.can('admin') else none, 'Describe my business', 'sparkles') }}</div>
+{% endif %}
+{% endblock %}

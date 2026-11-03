@@ -1,0 +1,9 @@
+{
+  "name": "Keel",
+  "short_name": "Keel",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f6f7f9",
+  "theme_color": "#5b5bd6",
+  "icons": [{"src": "/static/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable"}]
+}

@@ -1,0 +1,21 @@
+{% extends "app/layout.html" %}
+{% block title %}Compare {{ t.label|lc }}{% endblock %}
+{% block content %}
+<div class="page-head"><div class="titles"><div class="crumbs"><a href="{{ url_for('app.table', wid=ws.id, table=t.key) }}">{{ icon(t.icon or 'table') }}{{ t.label }}</a></div>
+  <h1>{{ icon('scale') }}{{ rows|length }} {{ t.label|lc }} side by side</h1>
+  <p class="sub">What differs is marked; for numbers, the lowest and highest.</p></div>
+  <div class="actions"><a class="btn sm {{ 'primary' if only_differences }}" href="{{ url_for('app.compare', wid=ws.id, table=t.key, ids=rows|map(attribute='id')|list, differences='0' if only_differences else '1') }}">{{ icon('filter') }}{{ 'Show everything' if only_differences else 'Only what differs' }}</a></div></div>
+<div class="card table-wrap"><table class="grid compare">
+  <thead><tr><th></th>{% for r in rows %}<th><a href="{{ url_for('app.record', wid=ws.id, table=t.key, rid=r.id) }}">{{ heads[loop.index0] }}</a>{% if t.workflow %}{% set st = (r.data or {}).get(t.workflow.field) %}{% if st %}<div><span class="pill">{{ st }}</span></div>{% endif %}{% endif %}</th>{% endfor %}</tr></thead>
+  <tbody>{% for row in fields if row.differs or not only_differences %}<tr class="{{ 'differs' if row.differs }}"><th scope="row">{{ row.f.label }}</th>
+    {% for shown in row.shown %}{% set n = row.numbers[loop.index0] %}<td>{{ shown }}{% if n is not none and row.low is not none %}{% if n == row.low %} <span class="tag green">lowest</span>{% elif n == row.high %} <span class="tag">highest</span>{% endif %}{% endif %}</td>{% endfor %}</tr>{% endfor %}</tbody>
+</table></div>
+{% for l in lines %}
+<h2 class="mt-3 mb-2">{{ l.table.label }} <span class="faint small">by {{ l.key.label|lc }} · {{ l.amount.label|lc }}</span></h2>
+<div class="card table-wrap"><table class="grid compare">
+  <thead><tr><th>{{ l.key.label }}</th>{% for r in rows %}<th class="num">{{ heads[loop.index0] }}</th>{% endfor %}</tr></thead>
+  <tbody>{% for item in l['items'] %}<tr class="{{ 'differs' if item.low is not none or item.missing }}"><th scope="row">{{ item.label }}{% if item.missing %} <span class="tag amber" title="Not every one has this line">missing in {{ item.missing }}</span>{% endif %}</th>
+    {% for v in item['values'] %}<td class="num">{% if v is none %}<span class="faint">—</span>{% else %}{{ e.display(l.amount, v) }}{% if item.low is not none and v == item.low %} <span class="tag green">lowest</span>{% endif %}{% endif %}</td>{% endfor %}</tr>{% endfor %}</tbody>
+  <tfoot><tr><th>Total</th>{% for v in l.totals %}<td class="num"><b>{{ e.display(l.amount, v) }}</b>{% if l.low is not none and v == l.low %} <span class="tag green">lowest</span>{% endif %}</td>{% endfor %}</tr></tfoot>
+</table></div>{% endfor %}
+{% endblock %}

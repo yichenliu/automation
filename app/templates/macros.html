@@ -1,0 +1,107 @@
+{% macro flashes() %}
+{% with messages = get_flashed_messages(with_categories=true) %}{% if messages %}
+<div class="flashes" role="status">{% for kind, text in messages %}
+  {% if kind == 'undo' %}{% set parts = text.split('|') %}
+  <div class="flash success">{{ icon('circle-check') }}<span class="grow">{{ parts[0] }}</span><form method="post" action="{{ parts[1] }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn sm">{{ icon('undo-2') }}Undo</button></form></div>
+  {% else %}
+  <div class="flash {{ kind }}">{{ icon({'success': 'circle-check', 'error': 'triangle-alert', 'auto': 'zap', 'info': 'info'}.get(kind, 'info')) }}<span class="grow">{{ text }}</span><button type="button" class="flash-x" data-dismiss aria-label="Dismiss">{{ icon('x') }}</button></div>
+  {% endif %}
+{% endfor %}</div>
+{% endif %}{% endwith %}
+{% endmacro %}
+
+{% macro value(e, f, v, r=none) -%}
+{%- set kind = e.kind(f) -%}
+{%- if f.type == 'button' -%}{% if r and e.can(e.tables[r.table], 'edit') %}<form method="post" action="{{ url_for('app.press', wid=e.ws.id, table=r.table, rid=r.id, key=f.automation) }}" class="inline-form" data-busy><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn sm">{{ icon('zap') }}{{ f.label }}</button></form>{% endif %}
+{%- elif v is none or v == '' or v == [] -%}<span class="faint">—</span>
+{%- elif f.type == 'select' -%}<span class="pill {{ pill(f, v) }}">{{ v }}</span>
+{%- elif f.type == 'multi_select' -%}{% for x in v %}<span class="pill {{ pill(f, x) }}">{{ x }}</span> {% endfor %}
+{%- elif f.type == 'lookup' and e.source(f) and e.source(f).type == 'select' -%}<span class="pill {{ pill(e.source(f), v) }}">{{ v }}</span>
+{%- elif f.type == 'link' and f.multiple -%}{% for i in (v if v is not string else [v]) %}{% set linked = e.get(i, f.table) %}{% if linked %}<a class="linkchip" href="{{ url_for('app.record', wid=e.ws.id, table=f.table, rid=linked.id) }}">{{ e.title(linked) }}</a> {% endif %}{% endfor %}
+{%- elif f.type == 'link' -%}{% set linked = e.get(v, f.table) %}{% if linked %}<a href="{{ url_for('app.record', wid=e.ws.id, table=f.table, rid=linked.id) }}">{{ e.title(linked) }}</a>{% else %}<span class="faint">—</span>{% endif %}
+{%- elif f.type == 'user' and f.multiple -%}{% for uid in (v if v is not string else [v]) %}<span class="person"><span class="avatar sm">{{ e.display(f, [uid])[:1]|upper }}</span>{{ e.display(f, [uid]) }}</span> {% endfor %}
+{%- elif f.type == 'location' -%}{% if v.lat is defined %}<a href="https://www.openstreetmap.org/?mlat={{ v.lat }}&amp;mlon={{ v.lng }}#map=16/{{ v.lat }}/{{ v.lng }}" target="_blank" rel="noopener">{{ e.display(f, v) }}</a>{% endif %}
+{%- elif f.type == 'address' -%}{{ e.display(f, v) }}
+{%- elif f.type == 'barcode' -%}<code class="barcode">{{ v }}</code>
+{%- elif f.type == 'color' -%}<span class="swatch" style="background: {{ v }}"></span><code class="small">{{ v }}</code>
+{%- elif f.type == 'tags' -%}{% for x in (v if v is not string else [v]) %}<span class="tagchip">{{ x }}</span> {% endfor %}
+{%- elif f.type == 'json' -%}<code class="small json-inline">{{ e.display(f, v) }}</code>
+{%- elif f.display == 'progress' -%}{% set n = ((v or 0) * 100)|round|int %}<span class="progress"><i style="width: {{ [[n, 0]|max, 100]|min }}%"></i></span><span class="small">{{ n }}%</span>
+{%- elif f.type == 'signature' -%}{% if v %}<img class="thumb sig-thumb" src="{{ url_for('app.file', wid=e.ws.id, fid=v[0].id) }}" alt="Signed">{% endif %}
+{%- elif f.type == 'user' -%}<span class="person"><span class="avatar sm">{{ e.display(f, v)[:1]|upper }}</span>{{ e.display(f, v) }}</span>
+{%- elif f.type == 'checkbox' -%}{% if v %}<span class="tick">{{ icon('check') }}</span>{% else %}<span class="faint">—</span>{% endif %}
+{%- elif f.type == 'rating' -%}<span class="stars" title="{{ v }} of {{ f.max or 5 }}">{{ e.display(f, v) }}</span>
+{%- elif f.type == 'email' -%}<a href="mailto:{{ v }}">{{ v }}</a>
+{%- elif f.type == 'url' -%}<a href="{{ v }}" target="_blank" rel="noopener">{{ v.split('://')[-1].rstrip('/') }}</a>
+{%- elif f.type == 'phone' -%}<a href="tel:{{ v|replace(' ', '') }}">{{ v }}</a>
+{%- elif f.type == 'image' -%}{% if v %}<img class="thumb" src="{{ url_for('app.file', wid=e.ws.id, fid=v[0].id) }}" alt="{{ v[0].name }}" loading="lazy">{% endif %}
+{%- elif f.type == 'file' -%}{% for x in v[:3] %}<a class="filechip" href="{{ url_for('app.file', wid=e.ws.id, fid=x.id) }}">{{ icon('paperclip') }}{{ x.name }}</a> {% endfor %}{% if v|length > 3 %}<span class="faint">+{{ v|length - 3 }}</span>{% endif %}
+{%- elif f.type == 'rich_text' -%}{{ e.display(f, v) }}
+{%- else -%}{{ e.display(f, v, r) }}
+{%- endif -%}
+{%- endmacro %}
+
+{% macro full_value(e, f, v, r=none) -%}
+{%- if f.type == 'rich_text' and v -%}<div class="prose">{{ v|markdown }}</div>
+{%- elif f.type == 'long_text' and v -%}<div class="pre">{{ v }}</div>
+{%- elif f.type == 'json' and v -%}<pre class="code">{{ v|tojson(indent=2) }}</pre>
+{%- elif f.type == 'address' and v -%}<div class="pre">{{ v }}</div><a class="small" href="https://www.openstreetmap.org/search?query={{ v|replace('\n', ', ')|urlencode }}" target="_blank" rel="noopener">{{ icon('map-pin') }}Show on a map</a>
+{%- elif f.type == 'signature' and v -%}<a href="{{ url_for('app.file', wid=e.ws.id, fid=v[0].id) }}"><img class="signature-img" src="{{ url_for('app.file', wid=e.ws.id, fid=v[0].id) }}" alt="Signature"></a>
+{%- elif f.type == 'image' and v -%}<a href="{{ url_for('app.file', wid=e.ws.id, fid=v[0].id) }}"><img class="photo" src="{{ url_for('app.file', wid=e.ws.id, fid=v[0].id) }}" alt="{{ v[0].name }}"></a>
+{%- elif f.type == 'file' and v -%}<div class="files">{% for x in v %}<a class="filechip" href="{{ url_for('app.file', wid=e.ws.id, fid=x.id) }}">{{ icon('paperclip') }}{{ x.name }} <span class="faint">{{ x.size|size }}</span></a>{% endfor %}</div>
+{%- else -%}{{ value(e, f, v, r) }}
+{%- endif -%}
+{%- endmacro %}
+
+{% macro is_num(e, f) %}{{ 'num' if e.kind(f) in ('number', 'money', 'percent', 'duration') else '' }}{% endmacro %}
+
+{% macro input(e, f, val, options, error, members, name=none, unsure=false, stage=none) %}
+{% set n = name or f.key %}
+<label class="field {{ 'has-error' if error }} {{ 'wide' if f.type in ('long_text', 'rich_text', 'file') }} {{ 'unsure' if unsure }}"
+  {% if f.show_if %}data-show-if='{{ f.show_if|json }}'{% endif %}{% if f.hide_if %} data-hide-if='{{ f.hide_if|json }}'{% endif %}{% if f.readonly_if %} data-readonly-if='{{ f.readonly_if|json }}'{% endif %}>
+  <span>{{ f.label }}{% if f.required %} <b class="req" title="Required">*</b>{% endif %}{% if f.ai %} <span class="ai-tag" title="The AI fills this in if you leave it empty">{{ icon('sparkles') }}AI</span>{% if not f.readonly %} <button type="button" class="suggest" data-suggest-field="{{ f.key }}" title="Let the AI suggest it from what's filled in so far (nothing is saved)">{{ icon('wand-sparkles') }}Suggest</button>{% endif %}{% endif %}{% if f.sensitive %} <span class="tag" title="Kept encrypted and shown masked">{{ icon('lock') }}private</span>{% endif %}{% if unsure %} <span class="unsure-tag">check this</span>{% endif %}</span>
+  {% if f.sensitive and not stage %}<input type="text" name="{{ n }}" value="" autocomplete="off" spellcheck="false" placeholder="{{ (val.masked ~ ' · type a new one to change it') if val is mapping and val.masked else (f.placeholder or '') }}">
+  {% elif stage %}<div class="readonly-value"><span class="pill">{{ stage.value or '—' }}</span> <span class="faint tiny">{{ stage.note }}</span></div>
+  {% elif f.readonly %}<div class="readonly-value">{{ e.display(f, val) if val not in (none, '', []) else '—' }} <span class="faint tiny">filled in automatically</span></div>
+  {% elif f.type == 'long_text' %}<textarea name="{{ n }}" rows="4" placeholder="{{ f.placeholder or '' }}">{{ val if val is not none }}</textarea>
+  {% elif f.type == 'time' %}<input type="time" name="{{ n }}" value="{{ val if val is not none }}">
+  {% elif f.type == 'color' %}<div class="row color-input"><input type="color" value="{{ val if val and val is string and val.startswith('#') else '#5b5bd6' }}" aria-label="Pick a colour" data-color-for="{{ n }}"><input type="text" name="{{ n }}" value="{{ val if val is not none }}" placeholder="#1e90ff or a name" class="grow mono"></div>
+  {% elif f.type == 'tags' %}<input type="text" name="{{ n }}" value="{{ (val|join(', ')) if val is not string and val else (val or '') }}" placeholder="{{ f.placeholder or 'Separate tags with commas' }}">
+  {% elif f.type == 'json' %}<textarea name="{{ n }}" rows="5" class="mono" placeholder='{"key": "value"}'>{{ (val|tojson(indent=2)) if val is not string and val is not none else (val or '') }}</textarea>
+  {% elif f.type == 'address' %}<textarea name="{{ n }}" rows="3" placeholder="{{ f.placeholder or 'Street, suburb, state, postcode (one per line)' }}" autocomplete="street-address">{{ val if val is not none }}</textarea>
+  {% elif f.type == 'location' %}<div class="row"><input type="text" name="{{ n }}" class="grow" value="{{ (val.lat ~ ', ' ~ val.lng) if val is mapping else (val if val is not none else '') }}" placeholder="-31.95, 115.86">
+    <button type="button" class="btn sm" data-locate>{{ icon('map-pin') }}Where I am</button></div>
+  {% elif f.type == 'barcode' %}<div class="row"><input type="text" name="{{ n }}" class="grow mono" value="{{ val if val is not none }}" autocomplete="off" placeholder="{{ f.placeholder or 'Scan or type' }}">
+    <button type="button" class="btn sm" data-scan>{{ icon('camera') }}Scan</button></div>
+  {% elif f.type == 'signature' %}<div class="signature" data-signature><canvas width="600" height="170" aria-label="Sign here"></canvas><input type="hidden" name="{{ n }}">
+    <div class="row"><span class="faint tiny grow">Sign with a finger, pen or mouse.</span><button type="button" class="btn sm ghost" data-sig-clear>Clear</button></div></div>
+  {% elif f.type == 'rich_text' %}<textarea name="{{ n }}" rows="7" placeholder="{{ f.placeholder or 'Write here. **bold**, *italic*, - lists and links work.' }}">{{ val if val is not none }}</textarea>
+  {% elif f.type == 'select' %}<select name="{{ n }}" {% if f.options_by %}data-options-by='{{ f.options_by|json }}'{% endif %}><option value="">—</option>{% for o in f.options %}<option {{ 'selected' if val and val|string|lower == o|lower }}>{{ o }}</option>{% endfor %}</select>
+  {% elif f.type == 'multi_select' %}{% set chosen = (val if val is not string else val.split(',')) or [] %}
+    <div class="chips-input" {% if f.options_by %}data-options-by='{{ f.options_by|json }}' data-name="{{ n }}"{% endif %}>{% for o in f.options %}<label class="chip-opt"><input type="checkbox" name="{{ n }}" value="{{ o }}" {{ 'checked' if o in chosen or o|lower in (chosen|map('lower')|list) }}><span>{{ o }}</span></label>{% endfor %}</div>
+  {% elif f.type in ('link', 'user') and f.multiple %}{% set chosen = ((val if val is not string else val.split(',')) or [])|map('string')|list %}
+    {% set choices = options.get(f.key, []) if f.type == 'link' else (members or {}).items()|list %}
+    <div class="chips-input" data-filter-chips>{% if choices|length > 12 %}<input type="search" class="chip-filter" placeholder="Find…" aria-label="Find">{% endif %}
+      {% for id, title in choices %}<label class="chip-opt"><input type="checkbox" name="{{ n }}" value="{{ id }}" {{ 'checked' if id|string in chosen }}><span>{{ title }}</span></label>{% endfor %}</div>
+  {% elif f.type == 'link' %}{% set m = options.get(f.key ~ '__match') %}<div class="row link-pick"><select name="{{ n }}" class="grow" data-searchable {% if m %}data-match-field="{{ m.field }}"{% endif %}><option value="">—</option>{% for id, title in options.get(f.key, []) %}<option value="{{ id }}" {% if m %}data-match="{{ m.by.get(id, '') }}"{% endif %} {{ 'selected' if val is not none and val|string == id|string }}>{{ title }}</option>{% endfor %}</select>
+    {% if e and e.role and f.table in e.tables and e.can(e.tables[f.table], 'edit') %}<button type="button" class="btn sm ghost" title="Add a new {{ e.tables[f.table].singular|lc }}" data-quick-link="{{ url_for('app.quick_add', wid=e.ws.id, table=f.table) }}" data-title-field="{{ e.tables[f.table].title_field }}" data-singular="{{ e.tables[f.table].singular }}" data-full="{{ url_for('app.new', wid=e.ws.id, table=f.table) }}">{{ icon('plus') }}New</button>{% endif %}</div>
+  {% elif f.type == 'user' %}<select name="{{ n }}"><option value="">—</option>{% for uid, who in (members or {}).items() %}<option value="{{ uid }}" {{ 'selected' if val is not none and val|string == uid|string }}>{{ who }}</option>{% endfor %}</select>
+  {% elif f.type == 'checkbox' %}<label class="check"><input type="checkbox" name="{{ n }}" value="1" {{ 'checked' if val and val not in ('0', 'false', 'False') }}><span>Yes</span></label>
+  {% elif f.type == 'date' %}<input type="date" name="{{ n }}" value="{{ val if val is not none }}">
+  {% elif f.type == 'datetime' %}<input type="datetime-local" name="{{ n }}" value="{{ (val|string)[:16]|replace(' ', 'T') if val is not none and val != '' }}">
+  {% elif f.type == 'rating' %}<div class="rating-input">{% for i in range(1, (f.max or 5) + 1) %}<label><input type="radio" name="{{ n }}" value="{{ i }}" {{ 'checked' if val and val|int == i }}><span>★</span></label>{% endfor %}<label class="clear"><input type="radio" name="{{ n }}" value="" {{ 'checked' if not val }}><span>none</span></label></div>
+  {% elif f.type in ('number', 'money', 'duration') %}<input type="text" inputmode="decimal" name="{{ n }}" value="{{ (e.display(f, val) if e and f.type == 'duration' and val is number else val) if val is not none }}" placeholder="{{ f.placeholder or ('0.00' if f.type == 'money' else '1:30 or 1.5h' if f.type == 'duration' else '') }}">
+  {% elif f.type == 'percent' %}<div class="suffix"><input type="text" inputmode="decimal" name="{{ n }}" value="{{ '%g'|format((val * 100)|round(4)) if val is number else (val|replace('%', '') if val is not none else '') }}"><span>%</span></div>
+  {% elif f.type == 'email' %}<input type="email" name="{{ n }}" value="{{ val if val is not none }}" placeholder="{{ f.placeholder or '' }}">
+  {% elif f.type == 'url' %}<input type="url" name="{{ n }}" value="{{ val if val is not none }}" placeholder="https://">
+  {% elif f.type == 'phone' %}<input type="tel" name="{{ n }}" value="{{ val if val is not none }}">
+  {% elif f.type in ('file', 'image') %}<div class="drop" data-drop><input type="file" name="{{ n }}" {{ 'multiple' if f.type == 'file' and f.multiple != false }} {{ 'accept=image/*' if f.type == 'image' }}><span>{{ icon('upload') }} Drop {{ 'files' if f.type == 'file' else 'an image' }} here or <u>choose</u></span><em class="chosen"></em></div>
+  {% else %}<input type="text" name="{{ n }}" value="{{ val if val is not none }}" placeholder="{{ f.placeholder or '' }}">{% endif %}
+  {% if f.help %}<small class="help">{{ f.help }}</small>{% endif %}
+  {% if error %}<small class="field-error">{{ error }}</small>{% endif %}
+</label>
+{% endmacro %}
+
+{% macro empty_state(title, text, action_url=none, action_label=none, ico='inbox') %}
+<div class="empty">{{ icon(ico, 'big') }}<h3>{{ title }}</h3><p>{{ text }}</p>{% if action_url %}<p class="mt-2"><a class="btn primary" href="{{ action_url }}">{{ action_label }}</a></p>{% endif %}</div>
+{% endmacro %}

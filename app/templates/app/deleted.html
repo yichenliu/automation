@@ -1,0 +1,9 @@
+{% extends "app/layout.html" %}{% from "macros.html" import empty_state %}
+{% block title %}Deleted {{ t.label|lc }}{% endblock %}
+{% block content %}
+<div class="page-head"><div class="titles"><div class="crumbs"><a href="{{ url_for('app.table', wid=ws.id, table=t.key) }}">{{ icon(t.icon or 'table') }}{{ t.label }}</a></div>
+  <h1>{{ icon('trash-2') }}Deleted {{ t.label|lc }}</h1><p class="sub">Nothing is lost: bring any of them back with everything they had.</p></div></div>
+<div class="card">{% for r in rows %}<div class="list-row"><div class="grow"><b>{{ e.title(r) }}</b><div class="faint tiny">deleted {{ r.deleted_at|ago }}{% if r.updated_by %} · last changed by {{ r.updated_by }}{% endif %}</div></div>
+  <form method="post" action="{{ url_for('app.restore', wid=ws.id, table=t.key, rid=r.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn sm">{{ icon('undo-2') }}Bring back</button></form></div>
+{% else %}{{ empty_state('Nothing deleted', 'Deleted ' ~ t.label|lc ~ ' appear here, ready to bring back.', ico='trash-2') }}{% endfor %}</div>
+{% endblock %}

@@ -1,0 +1,16 @@
+{% extends "app/layout.html" %}{% from "macros.html" import value, empty_state %}
+{% block title %}{{ t.label }}{% endblock %}
+{% block content %}
+{% include "app/_views.html" %}
+{% macro branch(node, depth) %}
+<li>{% if node.children %}<details {{ 'open' if depth < 1 }}><summary>{% else %}<div class="leaf">{% endif %}
+  <a class="tree-name" href="{{ url_for('app.record', wid=ws.id, table=t.key, rid=node.r.id) }}">{{ e.title(node.r) }}</a>
+  {% if node.count %}<span class="faint tiny">{{ node.count }} under it</span>{% endif %}
+  <span class="tree-cols">{% for f in tree_columns %}{% set v = e.value(node.r, f.key) %}{% if v not in (none, '', []) %}<span class="kv small"><span class="muted">{{ f.label }}</span> {{ value(e, f, v, node.r) }}</span>{% endif %}{% endfor %}</span>
+  {% if node.children %}</summary><ul>{% for c in node.children %}{{ branch(c, depth + 1) }}{% endfor %}</ul></details>{% else %}</div>{% endif %}
+</li>
+{% endmacro %}
+{% if roots %}<div class="card card-body"><ul class="tree">{% for n in roots %}{{ branch(n, 0) }}{% endfor %}</ul></div>
+<p class="faint tiny mt-1"><a href="#" data-tree-all>Open everything</a> · <a href="#" data-tree-none>Close everything</a></p>
+{% else %}<div class="card">{{ empty_state('No ' ~ t.label|lc ~ ' yet', 'Add one, then give the others it as their parent to build the tree.', url_for('app.new', wid=ws.id, table=t.key) if e.can(t, 'edit') else none, 'New ' ~ t.singular|lc, 'layers') }}</div>{% endif %}
+{% endblock %}

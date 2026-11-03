@@ -1,0 +1,20 @@
+{% extends "app/layout.html" %}{% from "macros.html" import value, is_num %}
+{% block title %}{{ t.label }}{% endblock %}
+{% block content %}
+{% include "app/_views.html" %}
+{% set can_edit = e.can(t, 'edit') %}
+<div class="card table-wrap"><table class="grid sheet" data-sheet="{{ url_for('app.table', wid=ws.id, table=t.key) }}" data-quick="{{ url_for('app.quick_add', wid=ws.id, table=t.key) }}">
+  <thead><tr><th class="rownum">#</th>{% for f in columns %}<th class="{{ is_num(e, f) }}">{{ f.label }}{% if f.required %} <b class="req">*</b>{% endif %}</th>{% endfor %}</tr></thead>
+  <tbody>
+  {% for r in rows %}{% set tint = e.colours(t, r) if t.colors else {} %}
+    <tr data-id="{{ r.id }}" class="{{ 'tint ' ~ tint.row if tint.row }}"><td class="rownum"><a href="{{ url_for('app.record', wid=ws.id, table=t.key, rid=r.id) }}" title="Open">{{ loop.index }}</a></td>
+    {% for f in columns %}{% set v = e.value(r, f.key) %}{% set ok = can_edit and f.type in editable and not (f.multiple) and not e.locked(r) %}
+      <td class="{{ is_num(e, f) }}{{ ' cell' if ok }}" {% if ok %}tabindex="0" data-field="{{ f.key }}" data-type="{{ f.type }}" data-raw="{{ v|json if v is not none else '' }}"
+        {% if f.type == 'select' %}data-options='{{ f.options|json }}'{% elif f.type == 'user' %}data-options='{{ e.members()|json }}'{% elif f.type == 'link' %}data-options='{{ dict(options.get(f.key, []))|json }}'{% endif %}{% endif %}>{{ value(e, f, v, r) }}</td>
+    {% endfor %}</tr>
+  {% endfor %}
+  {% if can_edit %}<tr class="new-row" data-new><td class="rownum">{{ icon('plus') }}</td>{% for f in columns %}<td class="{{ is_num(e, f) }}{{ ' cell' if f.type in editable and not f.multiple }}" {% if f.type in editable and not f.multiple %}tabindex="0" data-field="{{ f.key }}" data-type="{{ f.type }}" data-raw=""
+      {% if f.type == 'select' %}data-options='{{ f.options|json }}'{% elif f.type == 'user' %}data-options='{{ e.members()|json }}'{% elif f.type == 'link' %}data-options='{{ dict(options.get(f.key, []))|json }}'{% endif %}{% endif %}></td>{% endfor %}</tr>{% endif %}
+  </tbody></table></div>
+<p class="faint tiny mt-1">{% if can_edit %}Arrow keys move, Enter or typing edits, Esc cancels. Paste a block from Excel to fill many cells at once. Type in the last row to add a {{ t.singular|lc }}.{% endif %}{% if more %} Showing the first 500 of {{ total }}; filter to narrow it down.{% endif %}</p>
+{% endblock %}

@@ -1,0 +1,11 @@
+{% extends "base.html" %}{% from "macros.html" import flashes %}
+{% block head %}{% set theme = ws.blueprint.get('theme') or {} %}{% if theme.accent %}<style>:root { --accent: {{ theme.accent }}; --accent-hover: color-mix(in srgb, {{ theme.accent }} 85%, black); --accent-weak: color-mix(in srgb, {{ theme.accent }} 12%, var(--panel)); --accent-text: color-mix(in srgb, {{ theme.accent }} 80%, var(--text)); }</style>{% endif %}{% endblock %}
+{% block body %}
+<header class="portal-bar"><div class="portal-inner">
+  <a class="portal-brand" href="{{ url_for('portal.home', wid=ws.id) }}"><span class="logo">{{ ((ws.settings.get('business') or {}).get('name') or ws.blueprint.get('name') or ws.name)[:1]|upper }}</span>
+    <span><b>{{ (ws.settings.get('business') or {}).get('name') or ws.blueprint.get('name') or ws.name }}</b><span class="faint small"> · {{ portal.title }}</span></span></a>
+  <span class="grow"></span><span class="small muted ellipsis">{{ e.title(contact) }}</span>
+  <form method="post" action="{{ url_for('auth.logout') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn sm ghost">{{ icon('log-out') }}Sign out</button></form>
+</div></header>
+<main class="content narrow portal-main">{{ flashes() }}{% block content %}{% endblock %}</main>
+{% endblock %}

@@ -1,0 +1,21 @@
+{% extends "base.html" %}{% from "macros.html" import flashes %}
+{% block title %}New app{% endblock %}
+{% block body %}
+<div class="centered"><div class="card auth-card wide-card">
+  <div class="brand"><span class="mark">{{ platform_name[0] }}</span>{{ platform_name }}</div>
+  <h1 class="mt-3">Start your app</h1>
+  <p class="muted mt-1">Name it, say in a sentence what the business does, and choose how to start. You can change everything later.</p>
+  <form method="post" class="stack mt-3">{{ flashes() }}
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <label class="field"><span>Business name</span><input type="text" name="name" value="{{ form.get('name', '') }}" placeholder="e.g. Maria's Kitchen" required autofocus></label>
+    <label class="field"><span>What the business does, in your own words</span><textarea name="about" rows="3" placeholder="e.g. We do catering for weddings and work lunches. Customers book by phone, I send a quote, they pay a deposit, and I invoice after the event.">{{ form.get('about', '') }}</textarea></label>
+    <div class="choices">
+      <label class="choice"><input type="radio" name="start" value="chat" checked><span>{{ icon('message-square') }}<b>Describe it</b><small>Tell the AI how your business works and watch your app appear.</small></span></label>
+      <label class="choice"><input type="radio" name="start" value="microsoft"><span>{{ icon('cloud') }}<b>Learn from Microsoft 365</b><small>The AI reads your OneDrive spreadsheets and mail, then proposes an app.</small></span></label>
+      <label class="choice"><input type="radio" name="start" value="file"><span>{{ icon('file-spreadsheet') }}<b>From a spreadsheet</b><small>Drop in the spreadsheet you run things from; it becomes your app.</small></span></label>
+    </div>
+    <button class="btn primary block">Continue</button>
+  </form>
+  {% if current_user.is_authenticated %}<p class="small muted mt-3"><a href="{{ url_for('workspaces.index') }}">← Your apps</a></p>{% endif %}
+</div></div>
+{% endblock %}

@@ -1,0 +1,35 @@
+{% extends "settings/_layout.html" %}
+{% block title %}People{% endblock %}
+{% block content %}
+<h1>People</h1><p class="muted mt-1">Who can use this app, and what each person can do.</p>
+<div class="card mt-3">{% for m in people if m.role != 'portal' %}
+  <div class="list-row"><span class="avatar">{{ m.user.display[:1]|upper }}</span><span class="grow"><b>{{ m.user.display }}</b> <span class="faint small">{{ m.user.email }}</span></span>
+    {% if m.role == 'owner' %}<span class="tag">Owner: can do everything</span>
+    {% elif m.user_id == current_user.id %}<span class="tag">{{ {'viewer': 'Can only look', 'editor': 'Can do the work', 'admin': 'Can also change the app'}.get(m.role, m.role) }} (you)</span>
+    {% else %}<form method="post" class="row"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="member" value="{{ m.id }}">
+      <select name="role" data-autosubmit>{% for r, said in [('viewer', 'Can only look'), ('editor', 'Can do the work'), ('admin', 'Can also change the app')] %}<option value="{{ r }}" {{ 'selected' if m.role == r }}>{{ said }}</option>{% endfor %}</select>
+      <input type="hidden" name="action" value="role"></form>
+      <form method="post" data-confirm-text="Remove {{ m.user.display }} from this app?"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="member" value="{{ m.id }}"><button class="btn sm ghost danger" name="action" value="remove">Remove</button></form>{% endif %}
+      {% if m.user_id != current_user.id and (m.role not in ('admin', 'owner') or me.role == 'owner') %}<form method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="member" value="{{ m.id }}"><button class="btn sm ghost" name="action" value="reset_link" title="A link to choose a new password">{{ icon('key') }}New sign-in link</button></form>{% endif %}
+  </div>
+  {% if teams %}<form method="post" class="member-teams row wrap"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="member" value="{{ m.id }}"><input type="hidden" name="action" value="teams">
+    <span class="faint small">{{ 'Your' if m.user_id == current_user.id else m.user.display ~ "'s" }} teams</span>{% for tm in teams %}<label class="chip-check" title="{{ tm.about or '' }}"><input type="checkbox" name="teams" value="{{ tm.key }}" {{ 'checked' if tm.key in (m.teams or []) }} data-autosubmit><span>{{ tm.name }}</span></label>{% endfor %}</form>{% endif %}
+  {% if m.away_until and m.away_until >= m.away_from %}<form method="post" class="member-teams row"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="member" value="{{ m.id }}"><input type="hidden" name="action" value="cover">
+    <span class="pill amber">{{ icon('plane') }}Away {{ m.away_from.strftime('%d %b') }}–{{ m.away_until.strftime('%d %b') }}: {{ names.get(m.cover_id, 'someone') }} covers</span><button class="btn sm ghost" name="clear" value="1">Clear</button></form>
+  {% elif m.user_id != current_user.id %}<details class="member-teams"><summary class="faint small">Away? Set who covers</summary>
+    <form method="post" class="row wrap mt-1"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="member" value="{{ m.id }}"><input type="hidden" name="action" value="cover">
+      <input type="date" name="from" required aria-label="From"><input type="date" name="until" required aria-label="Until"><select name="cover" aria-label="Who covers">{% for p in people if p.role != 'portal' and p.id != m.id %}<option value="{{ p.user_id }}">{{ p.user.display }}</option>{% endfor %}</select><button class="btn sm">Set</button></form></details>{% endif %}
+  {% endfor %}</div>
+{% if teams %}<p class="faint small mt-1">{{ icon('users') }} Your app has {{ 'a team' if teams|length == 1 else 'teams' }}: {{ teams|map(attribute='name')|join(', ') }}. Approvals and jobs for a team go to whoever is in it: tick the team under each person who's in it.</p>
+{% set empty = teams|rejectattr('key', 'in', people|map(attribute='teams')|select|sum(start=[]))|list %}
+{% if empty %}<div class="notice warn mt-1">{{ icon('triangle-alert') }}<span>Nobody is in {{ empty|map(attribute='name')|join(' or ') }} yet, so what's meant for {{ 'it' if empty|length == 1 else 'them' }} waits for an admin. Tick it under the right person, or when you invite them.</span></div>{% endif %}{% endif %}
+<h2 class="mt-3">Invite someone</h2>
+<form method="post" class="card card-body row wrap mt-1"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="action" value="invite">
+  <input type="email" name="email" placeholder="name@business.com" required class="grow"><select name="role"><option value="editor">Can do the work</option><option value="viewer">Can only look</option><option value="admin">Can also change the app</option></select>
+  {% if teams %}<div class="row wrap" style="flex-basis: 100%"><span class="faint small">In the team</span>{% for tm in teams %}<label class="chip-check" title="{{ tm.about or '' }}"><input type="checkbox" name="teams" value="{{ tm.key }}"><span>{{ tm.name }}</span></label>{% endfor %}</div>{% endif %}
+  <button class="btn primary">{{ icon('user-plus') }}Make an invitation link</button></form>
+{% if invites %}<div class="card mt-2">{% for i in invites %}
+  <div class="list-row"><span class="grow"><b>{{ i.email }}</b> <span class="faint small">{{ {'viewer': 'Can only look', 'editor': 'Can do the work', 'admin': 'Can also change the app'}.get(i.role, i.role) }}{% if i.teams %} · {{ teams|selectattr('key', 'in', i.teams)|map(attribute='name')|join(', ') }}{% endif %} · invited {{ i.created_at|ago }}</span>
+    <div class="copy-line mt-1"><input type="text" readonly value="{{ base }}/invite/{{ i.token }}"><button class="btn sm" type="button" data-copy>{{ icon('copy') }}Copy link</button></div></span>
+    <form method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="invite" value="{{ i.id }}"><button class="btn sm ghost" name="action" value="withdraw">Withdraw</button></form></div>{% endfor %}</div>{% endif %}
+{% endblock %}

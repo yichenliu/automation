@@ -1,0 +1,33 @@
+{% extends "base.html" %}{% from "macros.html" import flashes %}
+{% block title %}Your account{% endblock %}
+{% block body %}
+<div class="content narrow">
+  <div class="page-head"><div class="titles"><div class="crumbs"><a href="{{ url_for('workspaces.index') }}">{{ icon('chevron-left') }}Your apps</a></div><h1>Your account</h1><p class="sub">{{ current_user.email }}</p></div></div>
+  {{ flashes() }}
+  <form method="post" class="card card-body form-grid mb-2"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="action" value="profile">
+    <label class="field"><span>Your name</span><input type="text" name="name" value="{{ current_user.name or '' }}"></label>
+    <label class="field"><span>Notifications</span><label class="check"><input type="checkbox" name="notify_email" value="1" {{ 'checked' if current_user.notify_email }}><span>Also email them to me (where the app's Microsoft 365 is connected)</span></label></label>
+    <div class="form-actions wide"><button class="btn primary">Save</button></div></form>
+  <div class="card mb-2"><div class="card-head"><h2>Password</h2></div>
+  <form method="post" class="card-body form-grid"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="action" value="password">
+    <label class="field"><span>Current password</span><input type="password" name="current" autocomplete="current-password" required></label>
+    <label class="field"><span>New password</span><input type="password" name="new" autocomplete="new-password" minlength="10" required></label>
+    <div class="form-actions wide"><button class="btn">Change password</button></div></form></div>
+  {% if config.MICROSOFT_CLIENT_ID %}<div class="card card-body stack mb-2"><h2>Sign in with Microsoft</h2>
+    {% if current_user.ms_identity %}<p>{{ icon('circle-check') }} Linked: you can sign in with your Microsoft work account.</p>
+      <form method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn ghost" name="action" value="ms_unlink">Unlink</button></form>
+    {% else %}<p class="muted">Link your Microsoft work account to sign in with it.</p>
+      <form method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn" name="action" value="ms_link">{{ icon('building-2') }}Link Microsoft sign-in</button></form>{% endif %}</div>{% endif %}
+  <div class="card card-body stack"><h2>Two-step sign-in</h2>
+    {% if current_user.totp_secret %}<p>{{ icon('shield') }} On. Signing in asks for a code from your authenticator app.</p>
+      <form method="post" class="row"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="action" value="2fa_off">
+        <input type="text" name="code" inputmode="numeric" autocomplete="one-time-code" placeholder="Code from the app" required><button class="btn danger">Turn off</button></form>
+    {% elif setup %}<p>Add this account to your authenticator app (Microsoft Authenticator, Google Authenticator, 1Password): choose to enter a key, and type this one.</p>
+      <div class="keybox">{{ setup }}</div><p class="faint tiny">Or open this on your phone: <a href="{{ setup_uri }}">{{ setup_uri }}</a></p>
+      <form method="post" class="row"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="action" value="2fa_confirm">
+        <input type="text" name="code" inputmode="numeric" autocomplete="one-time-code" placeholder="The 6-digit code it shows" required autofocus><button class="btn primary">Turn on</button></form>
+    {% else %}<p class="muted">Off. With it on, a stolen password isn't enough to get in.</p>
+      <form method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="action" value="2fa_start"><button class="btn primary">{{ icon('shield') }}Set it up</button></form>{% endif %}
+  </div>
+</div>
+{% endblock %}

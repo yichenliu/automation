@@ -1,0 +1,17 @@
+{% extends "base.html" %}{% from "macros.html" import flashes %}
+{% block title %}Create an account{% endblock %}
+{% block body %}
+<div class="centered"><div class="card auth-card">
+  <div class="brand"><span class="mark">{{ platform_name[0] }}</span>{{ platform_name }}</div>
+  <h1 class="mt-3">{{ 'Join your team' if invite else 'Create your account' }}</h1>
+  <p class="muted mt-1">{{ 'Create an account to accept the invitation.' if invite else 'Your business app, built around how you work. Your data and the AI stay on this computer.' }}</p>
+  <form method="post" class="stack mt-3">{{ flashes() }}
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <label class="field"><span>Your name</span><input type="text" name="name" value="{{ form.get('name', '') }}" autofocus autocomplete="name"></label>
+    <label class="field"><span>Email</span><input type="email" name="email" value="{{ form.get('email', '') }}" required autocomplete="email"></label>
+    <label class="field"><span>Password</span><input type="password" name="password" required minlength="10" autocomplete="new-password"><small class="help">At least 10 characters.</small></label>
+    <button class="btn primary block">Create account</button>
+  </form>
+  <p class="small muted mt-3">Have an account? <a href="{{ url_for('auth.login') }}">Sign in</a></p>
+</div></div>
+{% endblock %}

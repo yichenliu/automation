@@ -1,0 +1,10 @@
+{% extends "app/layout.html" %}{% from "macros.html" import empty_state %}
+{% block title %}Notifications{% endblock %}
+{% block content %}
+<div class="page-head"><div class="titles"><h1>{{ icon('bell') }}Notifications</h1><p class="sub">From your automations and your team.</p></div>
+  {% if items %}<form method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn">{{ icon('check') }}Mark all read</button></form>{% endif %}</div>
+<div class="card">{% for n in items %}{% set unread = me not in (n.read_by or []) %}
+  <div class="list-row {{ 'unread' if unread }}">{{ icon({'approval': 'circle-check', 'mention': 'message-square', 'error': 'triangle-alert'}.get(n.kind, 'bell')) }}
+    <span class="grow">{% if n.link %}<a href="{{ target_url(ws, n.link) }}">{{ n.text }}</a>{% else %}{{ n.text }}{% endif %}</span><span class="faint tiny nowrap">{{ n.created_at|ago }}</span></div>
+{% else %}{{ empty_state('Nothing yet', 'Automations that notify you, approvals and @mentions show up here.', ico='bell') }}{% endfor %}</div>
+{% endblock %}

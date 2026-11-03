@@ -1,0 +1,23 @@
+{% extends "app/layout.html" %}{% from "macros.html" import value %}
+{% block title %}{{ t.label }}{% endblock %}
+{% block content %}
+{% include "app/_views.html" %}
+<div class="board" data-set="{{ url_for('app.table', wid=ws.id, table=t.key) }}" data-field="{{ group.key }}" {{ 'data-readonly' if not e.can(t, 'edit') }}>
+  {% for lane in lanes %}
+  <div class="lane" data-value="{{ lane.value }}">
+    <div class="lane-head">{% if lane.value %}<span class="pill {{ pill(group, lane.value) }}">{{ lane.label }}</span>{% else %}<span class="muted">{{ lane.label }}</span>{% endif %}<span class="faint small">{{ lane.rows|length }}</span>
+      {% if e.can(t, 'edit') and lane.value %}<a class="lane-add" href="{{ url_for('app.new', wid=ws.id, table=t.key, **{'f_' ~ group.key: lane.value}) }}" title="Add here">{{ icon('plus') }}</a>{% endif %}</div>
+    <div class="lane-body">
+      {% for r in lane.rows[:100] %}
+      {% set tint = e.colours(t, r) if t.colors else {} %}
+      <div class="bcard {{ 'tint ' ~ tint.row if tint.row }}" draggable="true" data-id="{{ r.id }}" data-open="{{ url_for('app.record', wid=ws.id, table=t.key, rid=r.id) }}" tabindex="0">
+        <div class="t">{{ e.title(r) }}</div>
+        {% for f in card_fields %}{% set v = e.value(r, f.key) %}{% if v not in (none, '', []) %}<div class="kv"><span>{{ f.label }}</span><span class="ellipsis">{{ value(e, f, v) }}</span></div>{% endif %}{% endfor %}
+      </div>
+      {% endfor %}
+      {% if lane.rows|length > 100 %}<a class="lane-more" href="{{ url_for('app.table', wid=ws.id, table=t.key, **{('f_' ~ group.key): lane.value or '__none__'}) }}">Show all {{ lane.rows|length }}{{ icon('chevron-right') }}</a>{% endif %}
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% endblock %}

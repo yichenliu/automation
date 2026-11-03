@@ -1,0 +1,43 @@
+{% extends "app/layout.html" %}
+{% block title %}Home{% endblock %}
+{% block content %}{% set kinds = {'approval': ('amber', 'Approve'), 'task': ('blue', 'To do'), 'review': ('violet', 'Check the AI'), 'change': ('teal', 'Change')} %}
+<div class="page-head"><div class="titles"><h1>{{ hello }}, {{ first }}</h1>
+  <p class="sub">{% if waiting %}{{ waiting|length }} thing{{ 's' if waiting|length != 1 }} {{ 'is' if waiting|length == 1 else 'are' }} waiting for you.{% else %}Nothing is waiting for you right now.{% endif %}</p></div></div>
+
+{% if steps %}
+<div class="card mb-3 getting-started"><div class="card-head"><h2 class="grow">{{ icon('flag') }}Getting started</h2>
+  <form method="post" action="{{ url_for('app.started', wid=ws.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn sm ghost">Hide this</button></form></div>
+  <ol class="start-steps">{% for s in steps %}
+    <li class="{{ 'done' if s.done }}"><span class="mark">{{ icon('check') if s.done else loop.index }}</span>
+      <div class="grow"><b>{% if s.url and not s.done %}<a href="{{ s.url }}" {% if 'build' in s.url %}target="_top"{% endif %}>{{ s.text }}</a>{% else %}{{ s.text }}{% endif %}</b><div class="small muted">{{ s.hint }}</div></div>
+      {% if s.url and not s.done %}<a class="btn sm {{ 'primary' if s.next }}" href="{{ s.url }}" {% if 'build' in s.url %}target="_top"{% endif %}>Do it{{ icon('arrow-right') }}</a>{% endif %}</li>{% endfor %}</ol></div>
+{% endif %}
+
+<div class="home-grid">
+  <section class="card">
+    <div class="card-head"><h2 class="grow">{{ icon('list-todo') }}Waiting for you</h2>{% if waiting %}<a class="small" href="{{ url_for('app.approvals', wid=ws.id) }}">See all</a>{% endif %}</div>
+    {% if waiting %}<div class="card-body tight">{% for a in waiting[:6] %}{% set rec = e.get(a.record_id) if a.record_id else none %}
+      <a class="list-row big-row" href="{{ url_for('app.approvals', wid=ws.id) }}#a{{ a.id }}"><span class="pill {{ kinds[a.kind or 'approval'][0] }}">{{ kinds[a.kind or 'approval'][1] }}</span>
+        <span class="grow ellipsis">{{ a.message }}{% set facts = ask_facts(e, rec) %}{% if facts %} <span class="muted">· {{ facts }}</span>{% endif %}</span><span class="btn sm">Open{{ icon('chevron-right') }}</span></a>{% endfor %}</div>
+    {% else %}<div class="card-body calm">{{ icon('circle-check') }}<div><b>You're all caught up.</b><div class="small muted">When something needs your OK or your hand, it shows up here.</div></div></div>{% endif %}
+  </section>
+
+  {% if start %}<section class="card">
+    <div class="card-head"><h2>{{ icon('plus') }}Start something</h2></div>
+    <div class="card-body start-tiles">{% for t in start %}
+      <a class="start-tile" href="{{ url_for('app.new', wid=ws.id, table=t.key) }}">{{ icon(t.icon or 'table') }}<span>New {{ t.singular|lc }}</span></a>{% endfor %}</div>
+  </section>{% endif %}
+
+  <section class="card">
+    <div class="card-head"><h2>{{ icon('history') }}What you worked on</h2></div>
+    {% if recent %}<div class="card-body tight">{% for x in recent %}
+      <a class="list-row" href="{{ url_for('app.record', wid=ws.id, table=x.t.key, rid=x.r.id) }}">{{ icon(x.t.icon or 'table') }}<span class="grow ellipsis">{{ e.title(x.r) }} <span class="muted small">· {{ x.t.singular|lc }}</span></span><span class="faint tiny nowrap">{{ {'created': 'added', 'updated': 'changed', 'viewed': 'opened'}.get(x.kind, x.kind) }} {{ x.when|ago }}</span></a>{% endfor %}</div>
+    {% else %}<div class="card-body faint small">Things you add or change show up here, so you can get back to them in one click.</div>{% endif %}
+  </section>
+
+  {% if pages %}<section class="card">
+    <div class="card-head"><h2>{{ icon('layout-dashboard') }}Your pages</h2></div>
+    <div class="card-body go-list">{% for p in pages %}<a class="go" href="{{ url_for('app.page', wid=ws.id, key=p.key) }}">{{ icon(p.icon or 'layout-dashboard') }}{{ p.label }}</a>{% endfor %}</div>
+  </section>{% endif %}
+</div>
+{% endblock %}

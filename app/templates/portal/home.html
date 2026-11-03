@@ -1,0 +1,26 @@
+{% extends "portal/layout.html" %}{% from "macros.html" import value, is_num %}
+{% block title %}{{ portal.title }}{% endblock %}
+{% block content %}
+<div class="page-head"><div class="titles"><h1>Hello, {{ e.title(contact) }}</h1>{% if portal.welcome %}<div class="sub prose">{{ portal.welcome|markdown }}</div>{% endif %}</div>
+  {% if portal.profile is defined %}<div class="actions"><a class="btn sm" href="{{ url_for('portal.profile', wid=ws.id) }}">{{ icon('user') }}Your details</a></div>{% endif %}</div>
+{% set waiting = [] %}{% for s in sections %}{% for r in s.rows if s.moves.get(r.id) %}{% if waiting.append((s.t, r, s.moves[r.id])) %}{% endif %}{% endfor %}{% endfor %}
+{% if asks or changes or waiting %}<div class="card mb-2 waiting-card"><div class="card-head"><h2>{{ icon('list-todo') }}Waiting for you</h2></div><div class="card-body tight">
+  {% for a in changes %}{% set first = (a.proposal.shown or {})|dictsort|first %}<div class="list-row was-this-you"><span class="pill amber">{{ icon('shield') }}Please check</span>
+    <span class="grow">Someone changed your {{ (a.proposal.shown or {})|list|join(' and ')|lower }}{% if first %} to <b>{{ first[1][1] }}</b>{% endif %} on {{ a.created_at|when }}. <b>Was this you?</b></span>
+    <form method="post" action="{{ url_for('portal.confirm', wid=ws.id, aid=a.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn sm">{{ icon('check') }}Yes, it was me</button></form>
+    <form method="post" action="{{ url_for('portal.cancel', wid=ws.id, aid=a.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn sm danger">No, cancel it</button></form></div>{% endfor %}
+  {% for a in asks %}{% set rec = e.get(a.record_id) if a.record_id else none %}<div class="list-row"><span class="pill {{ 'blue' if a.kind == 'task' else 'amber' }}">{{ 'To do' if a.kind == 'task' else 'Your answer' }}</span><span class="grow">{{ a.message }}</span>
+    {% if rec %}<a class="btn sm primary" href="{{ url_for('portal.record', wid=ws.id, table=rec.table, rid=rec.id) }}">Open</a>{% endif %}</div>{% endfor %}
+  {% for t, r, moves in waiting %}<div class="list-row"><span class="pill blue">{{ t.singular }}</span><span class="grow">{{ e.title(r) }}: {{ moves|map(attribute='label')|select|join(' or ') or 'move it on' }}</span>
+    <a class="btn sm primary" href="{{ url_for('portal.record', wid=ws.id, table=t.key, rid=r.id) }}">Open</a></div>{% endfor %}
+</div></div>{% endif %}
+{% for s in sections %}
+<div class="card mb-2"><div class="card-head"><h2 class="grow">{{ icon(s.t.icon or 'table') }}{{ s.t.label }}</h2><span class="faint small">{{ s.total }}</span>
+  {% if s.t.portal.can_add %}<a class="btn sm primary" href="{{ url_for('portal.new', wid=ws.id, table=s.t.key) }}">{{ icon('plus') }}New {{ s.t.singular|lc }}</a>{% endif %}</div>
+  {% if s.rows %}<div class="table-wrap"><table class="grid"><thead><tr><th>{{ s.t.singular }}</th>{% for f in s.fields if f.key != s.t.title_field %}<th class="{{ is_num(e, f) }}">{{ f.label }}</th>{% endfor %}</tr></thead><tbody>
+    {% for r in s.rows %}<tr data-open="{{ url_for('portal.record', wid=ws.id, table=s.t.key, rid=r.id) }}"><td><a href="{{ url_for('portal.record', wid=ws.id, table=s.t.key, rid=r.id) }}">{{ e.title(r) }}</a></td>
+      {% for f in s.fields if f.key != s.t.title_field %}<td class="{{ is_num(e, f) }}">{{ e.display(f, e.value(r, f.key), r) if f.type not in ('select',) else value(e, f, e.value(r, f.key), r) }}</td>{% endfor %}</tr>{% endfor %}
+  </tbody></table></div>{% else %}<div class="card-body faint small">Nothing here yet.</div>{% endif %}
+</div>
+{% else %}<div class="card card-body muted">There's nothing to show you yet.</div>{% endfor %}
+{% endblock %}

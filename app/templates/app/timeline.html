@@ -1,0 +1,18 @@
+{% extends "app/layout.html" %}{% from "macros.html" import empty_state %}
+{% block title %}{{ t.label }}{% endblock %}
+{% block content %}
+{% include "app/_views.html" %}
+{% if items %}
+<div class="card timeline">
+  <div class="tl-scale"><div class="tl-label"></div><div class="tl-track">{% for m in months %}<span style="left: {{ m.left }}%">{{ m.label }}</span>{% endfor %}</div></div>
+  {% if links %}<div class="tl-deps-wrap"><svg class="tl-deps" viewBox="0 0 100 {{ items|length }}" preserveAspectRatio="none" aria-hidden="true" style="height: {{ items|length * 39 }}px">{% for l in links %}
+    <path d="M{{ l.x1 }},{{ l.y1 }} C{{ l.x1 + 2 }},{{ l.y1 }} {{ l.x2 - 2 }},{{ l.y2 }} {{ l.x2 }},{{ l.y2 }}" class="{{ 'late' if l.late }}" vector-effect="non-scaling-stroke"/>{% endfor %}</svg></div>{% endif %}
+  {% for i in items %}{% if i.lane %}<div class="tl-row tl-lane"><div class="tl-label"><b>{{ i.lane }}</b></div><div class="tl-track"></div></div>{% else %}
+  <div class="tl-row"><a class="tl-label ellipsis" href="{{ url_for('app.record', wid=ws.id, table=t.key, rid=i.r.id) }}">{{ e.title(i.r) }}</a>
+    <div class="tl-track">{% if today_left is not none %}<i class="tl-today" style="left: {{ today_left }}%"></i>{% endif %}
+      <a class="tl-bar pill {{ pill(colour_field, i.colour) if colour_field else 'blue' }}{{ ' late' if i.late }}" href="{{ url_for('app.record', wid=ws.id, table=t.key, rid=i.r.id) }}" style="left: {{ i.left }}%; width: {{ i.width }}%" title="{{ e.title(i.r) }}: {{ i.start.strftime('%-d %b') }} – {{ i.end.strftime('%-d %b %Y') }}{{ ' · ' ~ i.late if i.late }}"></a></div></div>
+  {% endif %}{% endfor %}
+</div>
+{% if undated %}<p class="faint small mt-1">{{ undated }} {{ t.label|lc if undated != 1 else t.singular|lc }} without a start date {{ "aren't" if undated != 1 else "isn't" }} shown.</p>{% endif %}
+{% else %}<div class="card">{{ empty_state('Nothing to show on the timeline', 'Records need a start date to appear here.', ico='chart-gantt') }}</div>{% endif %}
+{% endblock %}

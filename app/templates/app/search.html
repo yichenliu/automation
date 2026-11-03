@@ -1,0 +1,13 @@
+{% extends "app/layout.html" %}{% from "macros.html" import empty_state %}
+{% block title %}Search{% endblock %}
+{% block content %}
+<div class="page-head"><div class="titles"><h1>{{ icon('search') }}Search</h1></div></div>
+<form class="toolbar"><div class="search-box big">{{ icon('search') }}<input type="search" name="q" value="{{ q }}" placeholder="Search every table" autofocus></div></form>
+{% if q and not found and not passages %}<div class="card">{{ empty_state('Nothing found for “' ~ q ~ '”', 'Try fewer or different words.', ico='search') }}</div>{% endif %}
+{% if passages %}<div class="card mb-2"><div class="card-head"><h2 class="grow">{{ icon('book-open') }}From your documents, mail and records</h2><span class="faint tiny">found by meaning</span></div>
+  {% for h in passages %}<a class="list-row link passage" href="{{ source_url(ws, h.link) or '#' }}" {% if h.link and h.link.startswith('http') %}target="_blank" rel="noopener"{% endif %}>
+    {{ icon({'file': 'file-text', 'email': 'mail', 'record': 'table'}.get(h.source, 'file-text')) }}<div class="grow"><b>{{ h.title }}</b><div class="faint small clamp-2">{{ h.text[:320] }}</div></div></a>{% endfor %}</div>{% endif %}
+{% for group in found %}<div class="card mb-2"><div class="card-head"><h2 class="grow">{{ icon(group.t.icon or 'table') }}{{ group.t.label }}</h2><span class="faint small">{{ group.total }}</span>
+  <a class="btn sm ghost" href="{{ url_for('app.table', wid=ws.id, table=group.t.key, q=q) }}">All{{ icon('chevron-right') }}</a></div>
+  {% for r in group.rows %}<a class="list-row link" href="{{ url_for('app.record', wid=ws.id, table=group.t.key, rid=r.id) }}">{{ e.title(r) }}</a>{% endfor %}</div>{% endfor %}
+{% endblock %}

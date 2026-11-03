@@ -1,0 +1,38 @@
+{% extends "settings/_layout.html" %}
+{% block title %}Business settings{% endblock %}
+{% block content %}
+<h1>Business</h1><p class="muted mt-1">Your app's name, and the details printed on invoices, quotes and other documents.</p>
+<form method="post" class="stack mt-3">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  <div class="card card-body form-grid">
+    <label class="field"><span>App name</span><input type="text" name="name" value="{{ ws.blueprint.get('name') or ws.name }}" required></label>
+    <label class="field"><span>Time zone</span><select name="timezone">{% for tz in timezones %}<option {{ 'selected' if tz == (ws.timezone or config.DEFAULT_TIMEZONE) }}>{{ tz }}</option>{% endfor %}</select></label>
+    <label class="field"><span>Currency symbol</span><input type="text" name="currency" value="{{ ws.currency or config.CURRENCY_SYMBOL }}" maxlength="4"></label>
+    <label class="field"><span>Document page size</span><select name="page_size"><option {{ 'selected' if ws.settings.get('page_size', 'A4') == 'A4' }}>A4</option><option {{ 'selected' if ws.settings.get('page_size') == 'Letter' }}>Letter</option></select></label>
+    <label class="field"><span>Your currency</span><input type="text" name="base_currency" value="{{ (ws.settings.get('money') or {}).get('base', '') }}" maxlength="3" placeholder="AUD"><small class="help">Its code. Amounts in other currencies are converted into it.</small></label>
+    <label class="field"><span>Exchange rates</span><textarea name="rates" rows="3" placeholder="USD 1.52&#10;EUR 1.65">{% for code, rate in ((ws.settings.get('money') or {}).get('rates') or {}).items() %}{{ code }} {{ rate }}
+{% endfor %}</textarea><small class="help">One per line: what one unit of that currency is worth in yours.</small></label>
+    <label class="field wide"><span>What the business does</span><textarea name="about" rows="2">{{ ws.about or '' }}</textarea><small class="help">The AI reads this to understand your business.</small></label>
+  </div>
+  <h2 class="mt-2">Working days</h2>{% set cal = ws.settings.get('calendar') or {} %}
+  <div class="card card-body form-grid">
+    <div class="field"><span>Working week</span><div class="row wrap">{% for d in ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'] %}<label class="chip-check"><input type="checkbox" name="workdays" value="{{ loop.index0 }}" {{ 'checked' if loop.index0 in (cal.get('workdays') or [0, 1, 2, 3, 4]) }}><span>{{ d }}</span></label>{% endfor %}</div>
+      <small class="help">Counted by working-day formulas (workday, workdays_between).</small></div>
+    <label class="field"><span>Financial year starts</span><select name="fy_start">{% for m in ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'] %}<option value="{{ loop.index }}" {{ 'selected' if loop.index == (cal.get('fy_start') or 7) }}>{{ m }}</option>{% endfor %}</select><small class="help">For “this financial year” in filters, dashboards and reports.</small></label>
+    <label class="field wide"><span>Holidays</span><textarea name="holidays" rows="3" placeholder="2026-12-25 Christmas Day&#10;2026-12-28 Boxing Day (observed)">{% for h in cal.get('holidays') or [] %}{{ h }}
+{% endfor %}</textarea><small class="help">One a line, the date first. They aren't working days.</small></label>
+  </div>
+  <h2 class="mt-2">On your documents</h2>
+  <div class="card card-body form-grid">
+    <label class="field"><span>Trading name</span><input type="text" name="business_name" value="{{ business.get('name', '') }}"></label>
+    <label class="field"><span>Legal name</span><input type="text" name="business_legal_name" value="{{ business.get('legal_name', '') }}"></label>
+    <label class="field"><span>ABN</span><input type="text" name="business_abn" value="{{ business.get('abn', '') }}"></label>
+    <label class="field"><span>Email</span><input type="email" name="business_email" value="{{ business.get('email', '') }}"></label>
+    <label class="field"><span>Phone</span><input type="text" name="business_phone" value="{{ business.get('phone', '') }}"></label>
+    <label class="field"><span>Website</span><input type="text" name="business_website" value="{{ business.get('website', '') }}"></label>
+    <label class="field wide"><span>Address</span><textarea name="business_address" rows="2">{{ business.get('address', '') }}</textarea></label>
+    <label class="field wide"><span>Payment details</span><textarea name="business_bank" rows="3" placeholder="Account name, BSB, account number">{{ business.get('bank', '') }}</textarea><small class="help">Printed on invoices in a “Payment details” box.</small></label>
+  </div>
+  <div class="form-actions"><button class="btn primary">Save</button></div>
+</form>
+{% endblock %}

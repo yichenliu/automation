@@ -1,0 +1,28 @@
+{% if m.role == 'user' %}<div class="amsg user" data-id="{{ m.id }}">{{ m.text }}</div>
+{% else %}
+<div class="amsg ai" data-id="{{ m.id }}" data-status="{{ m.status }}">
+  {% if m.status in ('queued', 'thinking') %}
+    <div class="row"><span class="spin"></span><span class="muted small">{{ (m.progress or ['Thinking'])[-1] }}…</span></div>
+  {% elif m.status == 'waiting_ai' %}<div class="notice warn small">{{ icon('clock') }}<span>Waiting for the AI to answer; it'll carry on by itself.</span></div>
+  {% elif m.status == 'failed' %}<div class="notice bad small">{{ icon('triangle-alert') }}<span>{{ m.error }}</span></div>
+  {% else %}
+    <div class="text">{{ m.text }}</div>
+    {% set sources = (m.results or {}).get('sources') or [] %}
+    {% if sources %}<div class="sources">{% for src in sources %}<a href="{{ source_url(ws, src.link) or '#' }}" title="{{ src.title }}" {% if src.link and src.link.startswith('http') %}target="_blank" rel="noopener"{% endif %}><b>{{ src.n }}</b>{{ icon({'file': 'file-text', 'email': 'mail', 'record': 'table'}.get(src.source, 'file-text')) }}<span>{{ src.title }}</span></a>{% endfor %}</div>{% endif %}
+    {% for lookup in (m.results or {}).get('lookups', []) if lookup.records %}
+      <div class="mini-list">{% for rec in lookup.records[:8] %}<a href="/w/{{ ws.id }}/app/t/{{ lookup.table_key }}/{{ rec.id }}">{{ rec.name }}</a>{% endfor %}</div>
+    {% endfor %}
+    {% for p in m.proposals or [] %}
+      <div class="proposal {{ p.status }}">
+        <div class="row"><b class="grow">{{ p.label }}</b>{% if p.status == 'done' %}<span class="pill green">Done</span>{% elif p.status == 'dismissed' %}<span class="pill slate">Dismissed</span>{% elif p.status == 'failed' %}<span class="pill red">Couldn't</span>{% endif %}</div>
+        <div class="small muted">{% for s in p.shown %}<div>{{ s.label }}: <b>{{ s.value }}</b></div>{% endfor %}</div>
+        {% if p.why %}<div class="faint tiny mt-1">{{ p.why }}</div>{% endif %}
+        {% if p.error %}<div class="field-error">{{ p.error }}</div>{% endif %}
+        {% if p.status == 'pending' %}<div class="row mt-1"><button class="btn sm primary" data-confirm="{{ url_for('app.assistant_confirm', wid=ws.id, mid=m.id, index=loop.index0) }}">{{ icon('check') }}Do it</button>
+          <button class="btn sm ghost" data-dismiss-proposal="{{ url_for('app.assistant_dismiss', wid=ws.id, mid=m.id, index=loop.index0) }}">Dismiss</button></div>
+        {% elif p.status == 'done' and p.record_id %}<a class="small" href="/w/{{ ws.id }}/app/t/{{ p.table }}/{{ p.record_id }}">Open {{ p.title }}</a>{% endif %}
+      </div>
+    {% endfor %}
+  {% endif %}
+</div>
+{% endif %}

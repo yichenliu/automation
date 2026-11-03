@@ -1,0 +1,45 @@
+{% extends "app/layout.html" %}
+{% block title %}Import into {{ t.label }}{% endblock %}
+{% block content %}
+<div class="page-head"><div class="titles"><div class="crumbs"><a href="{{ url_for('app.table', wid=ws.id, table=t.key) }}">{{ icon(t.icon or 'table') }}{{ t.label }}</a></div>
+  <h1>{{ icon('upload') }}Import {{ t.label|lc }}</h1></div></div>
+<ol class="steps-bar"><li class="{{ 'on' if step == 'upload' else 'done' }}">Choose a file</li><li class="{{ 'on' if step == 'map' else 'done' if step == 'progress' }}">Match the columns</li><li class="{{ 'on' if step == 'progress' }}">Import</li></ol>
+{% if step == 'upload' %}
+<form method="post" enctype="multipart/form-data" class="card card-body">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  <div class="drop big" data-drop><input type="file" name="file" required accept=".csv,.tsv,.txt,.xlsx,.xlsm,.xls"><span>{{ icon('file-spreadsheet', 'big') }}<b>Drop a CSV or Excel file</b><br>or <u>choose one</u></span><em class="chosen"></em></div>
+  <div class="form-actions"><button class="btn primary">Continue</button></div>
+</form>
+{% elif step == 'map' %}
+<form method="post" class="card">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  <div class="card-head"><h2 class="grow">{{ file.name }}</h2><span class="faint small">{{ info.row_count }} rows</span>
+    {% if info.sheets|length > 1 %}<select name="sheet" data-autosubmit>{% for s in info.sheets %}<option {{ 'selected' if s == info.sheet }}>{{ s }}</option>{% endfor %}</select>{% endif %}</div>
+  <div class="card-body"><p class="muted small">Each column of your file goes into the box on the right. The AI suggested these; change any that are wrong, or choose “Don't import”.</p></div>
+  <div class="table-wrap"><table class="grid"><thead><tr><th>Column in the file</th><th>Example values</th><th>Goes into</th></tr></thead><tbody>
+    {% for h in info.headers %}{% set i = loop.index0 %}<tr><td><b>{{ h }}</b></td>
+      <td class="muted small">{{ info.rows[:3]|map(attribute=i)|map('string')|reject('equalto', 'None')|join(' · ')|truncate(70) if info.rows }}</td>
+      <td><select name="map-{{ i }}"><option value="">Don't import</option>{% for f in fields %}<option value="{{ f.key }}" {{ 'selected' if mapping.get(h) == f.key }}>{{ f.label }}</option>{% endfor %}</select></td></tr>{% endfor %}
+  </tbody></table></div>
+  {% set keys = t.fields|selectattr('unique')|list + ([t.fields|selectattr('key', 'equalto', t.title_field)|first] if t.title_field else []) %}
+  <div class="card-body"><label class="field"><span>Rows already here</span><select name="match_on"><option value="">Add every row as a new {{ t.singular|lc }}</option>
+    {% for f in keys if f %}<option value="{{ f.key }}">Update the {{ t.singular|lc }} with the same {{ f.label }} (add the rest)</option>{% endfor %}</select>
+    <small class="help">Updating keeps one entry per {{ t.singular|lc }} when you import a refreshed list.</small></label></div>
+  <div class="card-foot form-actions"><button class="btn primary" name="go" value="1">{{ icon('upload') }}Import {{ info.row_count }} rows</button>
+    <span class="faint small">Rows that can't be imported are listed with the reason; nothing is skipped silently.</span></div>
+</form>
+{% else %}
+<div class="card card-body" {% if job.status in ('queued', 'running', 'waiting_ai') %}data-job="{{ url_for('builder.job_status', wid=ws.id, jid=job.id) }}" data-reload-when-done{% endif %}>
+  {% if job.status in ('queued', 'running', 'waiting_ai') %}
+    <div class="row"><span class="spin"></span><strong class="grow" data-job-stage>{{ job.stage }}</strong><span class="faint small" data-job-pct>{{ job.progress }}%</span></div>
+    <div class="bar mt-2"><i data-job-bar style="width: {{ job.progress or 3 }}%"></i></div>
+  {% elif job.status == 'failed' %}<div class="notice bad">{{ icon('triangle-alert') }}<span>{{ job.error }}</span></div>
+  {% else %}{% set res = job.result %}
+    <div class="notice good">{{ icon('circle-check') }}<span>Imported <b>{{ res.added }}</b> {{ t.label|lc }}{% if res.updated %} and updated <b>{{ res.updated }}</b>{% endif %}{% if res.skipped %}; <b>{{ res.skipped }}</b> row{{ 's' if res.skipped != 1 }} couldn't be imported{% endif %}.</span></div>
+    {% if res.errors %}<div class="table-wrap mt-2"><table class="grid"><thead><tr><th>Row</th><th>Why it wasn't imported</th></tr></thead><tbody>
+      {% for err in res.errors[:100] %}<tr><td>{{ err.row }}</td><td>{{ err.problem }}</td></tr>{% endfor %}</tbody></table></div>{% endif %}
+    <p class="mt-2"><a class="btn primary" href="{{ url_for('app.table', wid=ws.id, table=t.key) }}">See {{ t.label|lc }}</a></p>
+  {% endif %}
+</div>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,112 @@
+"""The ERP itself: every screen is drawn from the workspace's blueprint. The routes live in erp_records (tables and
+records), erp_pages (dashboards, automations, approvals, history) and erp_ai (the assistant, reading documents, imports);
+this module holds what they share."""
+from flask import Blueprint, g, url_for
+from flask_login import current_user
+from sqlalchemy import or_
+
+from ..engine.records import Engine
+from ..extensions import db
+from ..models import Approval, Notification
+from ..security import step_up, stepped_up, workspace
+
+bp = Blueprint("app", __name__, url_prefix="/w/<int:wid>/app")
+
+
+def ctx(wid, role="viewer"):
+    """The workspace (checked against the person's role) and an engine acting as them: it shows them only the tables,
+    records and fields their role allows."""
+    ws = workspace(wid, role)
+    g.engine = Engine(ws, by=current_user.display, member=g.member)
+    g.engine.stepped_up = stepped_up()
+    return ws, g.engine
+
+
+def confirm_step_up():
+    """A form that needs a confirmed sign-in carries the person's code (or password) as "step_up_code": checked here, it
+    counts for the engine of this request too. Returns whether they're confirmed now."""
+    from flask import request
+    if stepped_up():
+        return True
+    ok = step_up(current_user, request.form.get("step_up_code"))
+    if ok and g.get("engine") is not None:
+        g.engine.stepped_up = True
+    return ok
+
+
+def nav(ws):
+    """The ERP's menu: its sections, each with its pages and tables, then anything without a section. Line-item tables
+    (edited inside their parent) and tables this person may not see aren't listed."""
+    engine = g.get("engine")
+    bp_ = engine.visible_blueprint() if engine is not None and engine.ws.id == ws.id else ws.blueprint or {}
+    tables = [t for t in bp_.get("tables", []) if not t.get("embedded")]
+    sections, used = [], set()
+    for m in bp_.get("modules", []):
+        items = [{"kind": "page", "key": p["key"], "label": p["label"], "icon": p.get("icon") or "layout-dashboard"}
+                 for p in bp_.get("pages", []) if p.get("module") == m["key"]]
+        items += [{"kind": "table", "key": t["key"], "label": t["label"], "icon": t.get("icon") or "table"} for t in tables if t.get("module") == m["key"]]
+        if items:
+            sections.append({"label": m["label"], "items": items})
+            used |= {(i["kind"], i["key"]) for i in items}
+    loose = [{"kind": "page", "key": p["key"], "label": p["label"], "icon": p.get("icon") or "layout-dashboard"}
+             for p in bp_.get("pages", []) if ("page", p["key"]) not in used]
+    loose += [{"kind": "table", "key": t["key"], "label": t["label"], "icon": t.get("icon") or "table"} for t in tables if ("table", t["key"]) not in used]
+    if loose:
+        sections.insert(0, {"label": None, "items": loose})
+    return sections
+
+
+def unread(ws):
+    items = Notification.query.filter(Notification.workspace_id == ws.id,
+                                      or_(Notification.user_id.is_(None), Notification.user_id == current_user.id)).order_by(Notification.id.desc()).limit(200).all()
+    return sum(1 for n in items if current_user.id not in (n.read_by or []) and n.kind != "approval")  # those are counted under To do
+
+
+def my_approvals(ws, member):
+    """The approvals and tasks waiting for this person (not one they asked for themselves, through their role)."""
+    from ..engine.automations import may_decide
+    from ..models import Record
+    pending = Approval.query.filter_by(workspace_id=ws.id, status="pending").order_by(Approval.id).all()
+    engine = g.get("engine") if g.get("engine") is not None and g.engine.ws.id == ws.id else None
+    needs_record = lambda a: a.record_id and (a.assignee_id is None or (a.proposal or {}).get("not_by"))  # noqa: E731
+    return [a for a in pending if may_decide(a, member, current_user.id, db.session.get(Record, a.record_id) if needs_record(a) else None,
+                                             engine=engine)]
+
+
+def open_suggestions(ws):
+    from ..models import Suggestion
+    return Suggestion.query.filter_by(workspace_id=ws.id, status="open").count()
+
+
+def ai_count(ws):
+    """How many AI steps the business's automations have (the AI at work page)."""
+    from ..engine.automations import ai_steps
+    return sum(len(ai_steps(a)) for a in (ws.blueprint or {}).get("automations", []))
+
+
+@bp.app_context_processor
+def chrome():
+    return {"nav_for": nav, "unread_for": unread, "approvals_for": my_approvals, "suggestions_for": open_suggestions, "ai_count_for": ai_count,
+            "feedback_for": lambda ws: url_for("app.feedback", wid=ws.id), "checks_for": lambda ws: url_for("app.checks", wid=ws.id)}
+
+
+@bp.app_template_global()
+def target_url(ws, target):
+    """'table:invoices:record:7' (as automation steps record it) -> a link."""
+    from ..builder.chat import navigate_url
+    return navigate_url(ws, target) if target else None
+
+
+@bp.app_template_global()
+def source_url(ws, link):
+    """Where a passage the AI found came from: a record, a kept file, or an email in Outlook."""
+    if not link:
+        return None
+    if link.startswith(("https://", "http://")):
+        return link
+    if link.startswith("file:"):
+        return url_for("app.file", wid=ws.id, fid=int(link.split(":", 1)[1]))
+    return target_url(ws, link)
+
+
+from . import erp_ai, erp_learn, erp_pages, erp_records  # noqa: E402,F401 (they add their routes to bp)
