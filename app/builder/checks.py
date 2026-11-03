@@ -203,9 +203,9 @@ def needs_rates(engine):
     """Amounts turned into the business's own currency, with no exchange rates set: every one of them stays empty."""
     if not schema.converts(engine.bp) or engine.rates:
         return []
-    return [_issue("check", "convert() needs exchange rates, and none are set: tell the owner to add them in Settings › General "
+    return [_issue("check", "convert() needs exchange rates, and none are set: tell the owner to add them in Settings › Business details "
                             "(the builder can't), or the converted amounts stay empty",
-                   "Amounts in other currencies stay empty until you add your exchange rates in Settings › General")]
+                   "Amounts in other currencies stay empty until you add your exchange rates in Settings › Business details")]
 
 
 def out_of_reach(engine):

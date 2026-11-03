@@ -115,7 +115,7 @@ def test_amounts_in_another_currency_need_rates_and_getting_started_says_so(app,
         {"key": "subtotal", "type": "money"},
         {"key": "total", "type": "formula", "format": "money", "expression": "convert(subtotal, currency)"}]}])
     said = [i["plain"] for i in checks.needs_rates(Engine(ws))]
-    assert said == ["Amounts in other currencies stay empty until you add your exchange rates in Settings › General"]
+    assert said == ["Amounts in other currencies stay empty until you add your exchange rates in Settings › Business details"]
     login(client)
     assert "Add your exchange rates" in client.get(f"/w/{ws.id}/app/").get_data(as_text=True)
     ws.settings = {**ws.settings, "money": {"base": "AUD", "rates": {"USD": 1.5}}}

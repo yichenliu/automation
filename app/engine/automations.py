@@ -1333,14 +1333,20 @@ def copy_matching(engine, table, source, also=()):
             match = next((r for r in nearby if r.table == f["table"]), None)
             if match is not None:
                 out[f["key"]] = match.id
-            elif engine.field(source.table, f["key"]) and engine.field(source.table, f["key"]).get("table") == f["table"]:
-                out[f["key"]] = (source.data or {}).get(f["key"])
-            continue
-        theirs = engine.field(source.table, f["key"])
-        if theirs is not None and theirs["type"] == f["type"] and _filled_value((source.data or {}).get(f["key"])):
+                continue
+        # the source's own field of that name, else the record it came with (a PO line's stock movement takes the PO's
+        # warehouse; an order line's, the order's): the nearest one that has it filled in
+        for r in nearby:
+            theirs = engine.field(r.table, f["key"])
+            if theirs is None or theirs["type"] != f["type"] or (f["type"] == "link" and theirs.get("table") != f["table"]):
+                continue
+            value = (r.data or {}).get(f["key"])
+            if not _filled_value(value):
+                continue
             if f["type"] in ("select", "multi_select") and set(theirs.get("options", [])) - set(f.get("options", [])):
-                continue  # their choices don't all exist here (a job's Done isn't an invoice status)
-            out[f["key"]] = (source.data or {}).get(f["key"])
+                break  # their choices don't all exist here (a job's Done isn't an invoice status)
+            out[f["key"]] = value
+            break
     return out
 
 

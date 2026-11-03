@@ -252,3 +252,32 @@ def test_staff_see_only_what_they_may_open_and_lists_they_cant_add_to_offer_no_a
     item = client.get(f"/w/{ws.id}/app/t/items/{flour.id}").get_data(as_text=True)
     assert "/t/outlook/new" not in item  # put together by itself: nothing to add to it from here
     assert "/t/movements/new" in item
+
+
+def test_a_record_made_for_each_line_takes_what_the_line_lacks_from_its_record(app, owner):
+    user, ws = owner
+    _built(ws, [
+        {"op": "create_table", "table": "warehouses", "label": "Warehouses", "fields": [{"key": "name", "type": "text", "required": True}]},
+        {"op": "create_table", "table": "products", "label": "Products", "fields": [{"key": "name", "type": "text", "required": True}]},
+        {"op": "create_table", "table": "purchase_orders", "label": "Purchase orders", "fields": [
+            {"key": "number", "type": "text", "required": True}, {"key": "warehouse", "type": "link", "table": "warehouses"},
+            {"key": "status", "type": "select", "options": ["Draft", "Received"], "default": "Draft"}]},
+        {"op": "create_table", "table": "po_lines", "label": "PO lines", "embedded": True, "fields": [
+            {"key": "po", "type": "link", "table": "purchase_orders", "required": True}, {"key": "product", "type": "link", "table": "products", "required": True},
+            {"key": "quantity", "type": "number", "required": True}]},
+        {"op": "create_table", "table": "stock_movements", "label": "Stock movements", "fields": [
+            {"key": "product", "type": "link", "table": "products", "required": True}, {"key": "warehouse", "type": "link", "table": "warehouses", "required": True},
+            {"key": "quantity", "type": "number", "required": True}]},
+        {"op": "add_automation", "automation": {"key": "receive", "name": "Receiving adds stock", "trigger": {
+            "type": "record_updated", "table": "purchase_orders", "field": "status", "to": "Received"},
+            "actions": [{"type": "create_for_each", "table": "stock_movements", "source": {"table": "po_lines", "via": "po"},
+                         "values": {"product": "{{item.product}}", "quantity": "{{item.quantity}}"}}]}}])
+    e = Engine(ws)
+    main = e.create("warehouses", {"name": "Main"})
+    flour = e.create("products", {"name": "Flour"})
+    po = e.create("purchase_orders", {"number": "PO-1", "warehouse": main.id})
+    e.create("po_lines", {"po": po.id, "product": flour.id, "quantity": 10})
+    e.update(e.get(po.id), {"status": "Received"})
+    e.reset()
+    moved = e.rows("stock_movements")
+    assert [(m.data["warehouse"], m.data["quantity"]) for m in moved] == [(main.id, 10)]  # the PO's warehouse, the line's quantity

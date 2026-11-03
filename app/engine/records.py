@@ -831,7 +831,7 @@ class Engine:
 
     def convert(self, amount, source, target=None):
         """convert(total, "USD") into the workspace's own currency, or convert(total, "USD", "EUR"), at the exchange
-        rates in Settings › General."""
+        rates in Settings › Business details."""
         n = to_number(amount)
         if n is None:
             return None
@@ -840,7 +840,7 @@ class Engine:
         rates = {**self.rates, **({self.base_currency: 1.0} if self.base_currency else {})}
         for code in (source, target):
             if code not in rates:
-                raise expr.ExprError(f"there's no exchange rate for {code or 'that currency'} (add it in Settings › General)")
+                raise expr.ExprError(f"there's no exchange rate for {code or 'that currency'} (add it in Settings › Business details)")
         return round(n * rates[source] / rates[target], 2)
 
     def display(self, f, value, record=None):
