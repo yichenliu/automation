@@ -659,6 +659,7 @@
     let map = JSON.parse($("#studio-map").textContent);  // the whole app, worked out from its design (app/appmap.py)
     let tried = null;  // what "try it" said, shown on the rule's steps
     let played = null;  // an example played through a process in a copy: {process, title, ok, lines, problem, went, ran}
+    let stagesFor = null;  // the list "Give it stages" was pressed on
     const undoStack = [];
 
     const tableOf = (key) => data.tables.find((t) => t.key === key);
@@ -757,6 +758,7 @@
       else if (item.kind === "list") drawList(item.key);
       else if (item.kind === "rule") drawRule();
       else if (item.kind === "stages") drawStages();
+      else if (item.kind === "new") main.appendChild(html(`<div class="card empty"><h3>${icon("plus", "big")}<br>${esc(item.label)}</h3><p class="muted">Fill in the form beside this to make it.</p></div>`));
       else drawFlow();
       wire(main);  // the trail at the top, whatever's drawn below it
     }
@@ -867,7 +869,7 @@
           <li>${icon("user-check")}<span>Someone <b>approves</b> it there.</span></li>
           <li>${icon("sparkles")}<span>The <b>AI</b> fills something in or acts there.</span></li>
           <li>${icon("triangle-alert")}<span>The app's checks found something to look at.</span></li></ul>
-        <p class="muted">Use <b>Show</b> above the map to hide what you don't need. <b>What it keeps</b> shows every list's fields and links.
+        <p class="muted">Use <b>Show</b> above the map to hide what you don't need. <b>What it keeps</b> shows what each list keeps and how they link.
           ${map.examples.length ? "Open a process to <b>play an example</b> through it and watch where it goes." : ""}</p></details>`);
     }
 
@@ -970,7 +972,7 @@
           ${canEdit && c && !c.workflow ? `<button type="button" class="btn sm" data-add-stages="${esc(key)}">${icon("arrow-right")}Give it stages</button>` : ""}</div></div>`);
       panel.appendChild(box);
       wire(box);
-      $("[data-add-stages]", box)?.addEventListener("click", () => $("[data-wf-new-stages]")?.click());
+      $("[data-add-stages]", box)?.addEventListener("click", () => { stagesFor = key; $("[data-wf-new-stages]")?.click(); });
     }
 
     // what's clickable in a drawing or panel: opens it here; "What it keeps" opens the data view at that list
@@ -1615,7 +1617,7 @@
 
     // --- starting something new -----------------------------------------------------------------------------------
     $("[data-wf-new-rule]")?.addEventListener("click", () => {
-      item = null; draw();
+      item = {kind: "new", label: "A new rule"}; draw();
       panel.innerHTML = "";
       const box = html(`<div class="stack"><h2 class="panel-title">${icon("zap")}A new rule</h2>
         <form class="stack" data-form="new-rule"><label class="field"><span>Name</span><input type="text" name="name" required maxlength="80" placeholder="Tell the manager about big orders"></label>
@@ -1633,7 +1635,7 @@
       });
     });
     $("[data-wf-new-stages]")?.addEventListener("click", () => {
-      item = null; draw();
+      item = {kind: "new", label: "Stages for a list"}; draw();
       panel.innerHTML = "";
       const without = data.tables.filter((t) => !t.stages);
       const box = html(`<div class="stack"><h2 class="panel-title">${icon("arrow-right")}Stages for a list</h2>
@@ -1652,6 +1654,8 @@
       };
       form.elements.table.addEventListener("change", fill);
       form.elements.field.addEventListener("change", () => { $("[data-new]", form).hidden = !!form.elements.field.value; });
+      if (stagesFor && without.some((t) => t.key === stagesFor)) form.elements.table.value = stagesFor;  // the list it was asked from
+      stagesFor = null;
       fill();
       form.addEventListener("submit", (ev) => {
         ev.preventDefault();
