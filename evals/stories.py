@@ -106,11 +106,18 @@ class Shop:
         """Take a record to a stage as people would: by its buttons along the way (answering what waits for an OK), or by
         setting its Status where there are no buttons. Wrong if it can't get there."""
         t = self.engine.tables[record.table]
-        if not t.get("workflow"):
-            try:
-                self.engine.update(self.get(record), {self.status(t)["key"]: target})
-            except FieldErrors as exc:
-                raise Wrong(f"a {t['singular'].lower()} couldn't be set to {target}: {'; '.join(exc.errors.values())}")
+        if not t.get("workflow"):  # no buttons: its Status set on a step at a time, as people would (New, Scheduled, In production)
+            options = [str(o) for o in self.status(t).get("options") or []]
+            at = str(self.stage(record) or "")
+            way = options[options.index(at) + 1:options.index(target) + 1] if at in options and target in options \
+                and options.index(at) < options.index(target) else [target]
+            for stage in way:
+                if self.stage(record) == target:
+                    break
+                try:
+                    self.engine.update(self.get(record), {self.status(t)["key"]: stage})
+                except FieldErrors as exc:
+                    raise Wrong(f"a {t['singular'].lower()} couldn't be set to {stage}: {'; '.join(exc.errors.values())}")
             return
         way = self.route(t, self.stage(record), target)
         if way is None:
