@@ -90,6 +90,7 @@ def data_model(engine, about, counts, positions):
                            "stage": f["key"] == (t.get("workflow") or {}).get("field"), "before": f.get("before", ""),
                            "after": f.get("after", ""), "yes_label": f.get("yes_label", ""), "no_label": f.get("no_label", ""),
                            "option_colors": f.get("option_colors") or {},
+                           "ai_instructions": (f.get("ai") or {}).get("instructions", ""), "ai_fillable": f["type"] in schema.AI_FILLABLE,
                            "signs": signs_of(t, f["key"]) if f["type"] in SIGNED else None})
             if target in keys:
                 links.append({"from": t["key"], "field": f["key"], "to": target, "many": bool(f.get("multiple")), "label": f["label"]})
@@ -224,6 +225,11 @@ def data_ops(bp, change, filled):
         for k in ("before", "after", "yes_label", "no_label"):
             if k in updates and not str(updates[k] or "").strip():
                 updates[k] = None
+        if "ai" in change:  # the AI fills it in (with these instructions), or it stops: people fill it in
+            said = str(change.get("ai") or "").strip()
+            if said and f["type"] not in schema.AI_FILLABLE:
+                raise SchemaError(f"The AI can't fill in {f['label']}: it fills in text, numbers, dates, choices, yes-or-no and links to other records")
+            updates["ai"] = {**(f.get("ai") or {}), "instructions": said[:1000]} if said else None
         if "option_colors" in updates:
             updates["option_colors"] = {o: c for o, c in (updates["option_colors"] or {}).items() if c in schema.CHOICE_COLOURS} or None
         out = []
@@ -334,6 +340,53 @@ def rename_choice(bp, table, key, old, new):
             if w.get("table") == table:
                 said += _rename_in_conditions(w, key, old, new)
     return said
+
+
+def rename_records(ws, table, key, old, new):
+    """The records (the bin's too, so they come back right) that have the old choice given the new name. Returns how many."""
+    from .extensions import db
+    from .models import Record
+    n = 0
+    for r in Record.query.filter_by(workspace_id=ws.id, table=table).all():
+        v = (r.data or {}).get(key)
+        if v == old:
+            r.data = {**r.data, key: new}
+        elif isinstance(v, list) and old in v:
+            r.data = {**r.data, key: [new if x == old else x for x in v]}
+        else:
+            continue
+        n += 1
+    db.session.flush()
+    return n
+
+
+def remember_renames(ws, renames):
+    """Choices renamed by this version (the workspace's latest), kept so that going back to before it, by any way (a
+    studio's Take it back, Versions' Go back, the builder's undo), names the records as they were."""
+    if not renames:
+        return
+    from .extensions import db
+    kept = dict(((ws.settings or {}).get("studio") or {}).get("renamed") or {})
+    kept[str(ws.version)] = [list(r) for r in renames]
+    kept = dict(sorted(kept.items(), key=lambda kv: int(kv[0]))[-40:])
+    ws.settings = {**(ws.settings or {}), "studio": {**((ws.settings or {}).get("studio") or {}), "renamed": kept}}
+    db.session.commit()
+
+
+def rename_back(ws, to):
+    """Going back to version `to`: the choices renamed by later versions get their old names back on the records, the
+    latest first. Returns how many records."""
+    from .extensions import db
+    kept = dict(((ws.settings or {}).get("studio") or {}).get("renamed") or {})
+    undone = sorted((v for v in kept if int(v) > to), key=int, reverse=True)
+    n = 0
+    for v in undone:
+        for table, key, old, new in reversed(kept.pop(v)):
+            n += rename_records(ws, table, key, new, old)
+    if undone:
+        ws.settings = {**(ws.settings or {}), "studio": {**((ws.settings or {}).get("studio") or {}), "renamed": kept}}
+        db.session.commit()
+    return n
 
 
 def _rename_in_conditions(node, key, old, new):
@@ -456,6 +509,9 @@ def rule_diagram(engine, a, runs):
                     "text": automations.describe_action(engine, a, plain) if step["type"] != "branch" else "Go one of these ways",
                     "counts": counts.get(at, {}), "editable": step["type"] in STEP_TYPES, "step": step,
                     "only_if": automations.automations_words(engine, step["only_if"], table) if step.get("only_if") else ""}
+            if step["type"] == "task" and len(step.get("fields") or []) == 1:  # a job by hand the AI could take over
+                f = schema.field(engine.tables.get(table) or {"fields": []}, step["fields"][0])
+                node["ai_could"] = {"field": (f or {"label": step["fields"][0]})["label"]}
             if step["type"] in schema.AI_STEPS:  # the AI at work: who checks it, and how it's done when they have
                 mode = step.get("review") or "never"
                 record = automations.track_record(engine, a["key"], at)
@@ -675,6 +731,21 @@ def rule_ops(bp, change):
             if kept in old and kept not in (change.get("step") or {}):
                 new[kept] = old[kept]
         steps[i] = new
+    elif do == "set_ai_on":  # the AI switched off (a person does its job instead, as a task) or back on
+        steps, i = _step_at(a["actions"], change.get("at"))
+        if steps[i]["type"] not in schema.AI_STEPS:
+            raise SchemaError("Only an AI step can be switched off or on")
+        if _yes(change.get("on")):
+            steps[i].pop("manual", None)
+        else:
+            steps[i]["manual"] = True
+    elif do == "ai_take_over":  # a job people do by hand (a task with one field to fill) done by the AI, checked by them
+        steps, i = _step_at(a["actions"], change.get("at"))
+        step = steps[i]
+        if step["type"] != "task" or len(step.get("fields") or []) != 1:
+            raise SchemaError("The AI can take over a task that asks someone to fill in one field")
+        steps[i] = {"type": "ai_fill", "field": step["fields"][0], "review": "always", "reviewer": step.get("to") or "editor",
+                    "instructions": str(change.get("instructions") or "").strip()[:2000] or step.get("message") or "Fill this in."}
     elif do == "set_review":  # who checks an AI step's work: every time, when it isn't sure, or nobody
         from .engine import automations
         changed = automations.with_review(a, str(change.get("at") or ""), change.get("mode"))

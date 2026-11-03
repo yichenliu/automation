@@ -153,11 +153,19 @@ def _n(n, t):
 
 def publish(live, test_copy, user):
     """The test copy's design, as the live app's next version (undoable like any other). Its records stay where they are."""
+    from . import studio
     from .builder import chat
     said = changes(live.blueprint or {}, test_copy.blueprint or {})
     if not said:
         return None
-    chat.save_version(live, copying.deepcopy(test_copy.blueprint), [f"Published from the test copy: {s}" for s in said], "published", by=user.id)
-    test_copy.settings = {**(test_copy.settings or {}), "based_on": live.version}
+    # choices renamed in the test copy since it was made (or last published): the live records get the new names too
+    base = int((test_copy.settings or {}).get("published_from") or (test_copy.settings or {}).get("based_on") or 0)  # its own numbering
+    kept = ((test_copy.settings or {}).get("studio") or {}).get("renamed") or {}
+    renames = [tuple(r) for v in sorted(kept, key=int) if int(v) > base for r in kept[v]]
+    named = sum(studio.rename_records(live, *r) for r in renames)
+    told = [f"Published from the test copy: {s}" for s in said] + ([f"{named} live record{'s' if named != 1 else ''} named as in the test copy"] if named else [])
+    chat.save_version(live, copying.deepcopy(test_copy.blueprint), told, "published", by=user.id)
+    studio.remember_renames(live, renames)  # going back on the live app names them as they were
+    test_copy.settings = {**(test_copy.settings or {}), "based_on": live.version, "published_from": test_copy.version}
     db.session.commit()
     return live.version

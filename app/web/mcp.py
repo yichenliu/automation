@@ -5,7 +5,7 @@ in OpenAPI for code and BI tools.
                                 records; with the API key's role, permissions, rules and locks, as on the screens
     GET  /api/v1/openapi.json   this app's API, its own tables and fields as types (OpenAPI 3.1)
 
-An assistant is added with the app's address and an API key from Settings › API, e.g.
+An assistant is added with the app's address and an API key from Settings › API and AI assistants, e.g.
 
     claude mcp add --transport http keel https://<this app>/api/v1/mcp --header "Authorization: Bearer keel_…"
 """

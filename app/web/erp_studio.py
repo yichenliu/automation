@@ -15,7 +15,8 @@ from ..builder import chat
 from ..extensions import db
 from ..models import Record, Run
 from .erp import bp, ctx
-from .filters import KIND_WORDS, about_field, pill
+from ..engine import automations
+from .filters import KIND_WORDS, about_field, ago, pill, status_words
 
 
 class Refused(Exception):
@@ -65,32 +66,12 @@ def _save(ws, ops_, renames, what):
         raise Refused("That's how it is already")
     before = ws.version or 0
     for table, key, old, new in renames:  # the records too, before the version is saved (it carries values across)
-        n = _rename_records(ws, table, key, old, new)
+        n = studio.rename_records(ws, table, key, old, new)
         if n:
             changes.append(f"{n} record{'s' if n != 1 else ''} now say “{new}”")
     chat.save_version(ws, result.blueprint, changes, "studio", by=current_user.id)
-    if renames:  # kept, so taking the change back renames the records back too
-        kept = dict(((ws.settings or {}).get("studio") or {}).get("renamed") or {})
-        kept[str(ws.version)] = [list(r) for r in renames]
-        kept = dict(sorted(kept.items(), key=lambda kv: int(kv[0]))[-40:])
-        ws.settings = {**(ws.settings or {}), "studio": {**((ws.settings or {}).get("studio") or {}), "renamed": kept}}
-        db.session.commit()
+    studio.remember_renames(ws, renames)  # going back to before this version names the records as they were
     return changes, before
-
-
-def _rename_records(ws, table, key, old, new):
-    n = 0
-    for r in Record.query.filter_by(workspace_id=ws.id, table=table).all():  # the bin's too, so they come back right
-        v = (r.data or {}).get(key)
-        if v == old:
-            r.data = {**r.data, key: new}
-        elif isinstance(v, list) and old in v:
-            r.data = {**r.data, key: [new if x == old else x for x in v]}
-        else:
-            continue
-        n += 1
-    db.session.flush()
-    return n
 
 
 def _change(ws, what, make):
@@ -185,18 +166,10 @@ def studio_undo(wid):
     to = _body().get("to")
     if not isinstance(to, int) or to < 1 or to >= (ws.version or 0):
         return jsonify(error="There's nothing to take back"), 400
-    kept = dict(((ws.settings or {}).get("studio") or {}).get("renamed") or {})
-    undone = sorted((int(v) for v in kept if to < int(v) <= (ws.version or 0)), reverse=True)
-    try:
+    try:  # (restore names the records as they were then too: choices renamed since get their old names back)
         chat.restore(ws, to, by=current_user.id, why=f"Took back a change made in a studio (back to how it was at version {to})")
     except ValueError:
         return jsonify(error="That version isn't there any more"), 400
-    for v in undone:  # choices renamed since: the records get their old names back
-        for table, key, old, new in reversed(kept.pop(str(v))):
-            _rename_records(ws, table, key, new, old)
-    if undone:
-        ws.settings = {**(ws.settings or {}), "studio": {**((ws.settings or {}).get("studio") or {}), "renamed": kept}}
-    db.session.commit()
     return jsonify(ok=True, version=ws.version)
 
 
@@ -214,7 +187,15 @@ def _item(ws, engine, item_id):
         if a is None or (a["trigger"].get("table") and not engine.can(engine.tables.get(a["trigger"]["table"]))):
             return None
         runs = Run.query.filter_by(workspace_id=ws.id, automation=key).order_by(Run.id.desc()).limit(200).all()
-        return studio.rule_diagram(engine, a, runs)
+        drawn = studio.rule_diagram(engine, a, runs)
+        # what the rules list shows, here too: its last runs step by step, its address for other systems, running it now
+        drawn["recent"] = [{"status": r.status, "said": status_words(r.status), "trigger": r.trigger or "", "when": ago(r.created_at),
+                            "error": r.error if r.status not in ("done",) else "",
+                            "steps": [{"text": x.get("result") or x.get("action") or "", "skipped": bool(x.get("skipped"))} for x in (r.steps or [])][:12]}
+                           for r in runs[:8]]
+        drawn["hook"] = automations.hook_url(ws.id, key) if a["trigger"]["type"] == "webhook_received" and g.member.can("admin") else None
+        drawn["can_run"] = a["trigger"]["type"] == "schedule" and g.member.can("admin" if automations.reaches_out(a) else "editor")
+        return drawn
     if kind == "flow":
         f = next((x for x in engine.bp.get("flows") or [] if x["key"] == key), None)
         if f is None or not engine.can(engine.tables.get(f["table"])):
@@ -241,7 +222,9 @@ def studio_workflows(wid):
     ws, engine = ctx(wid)
     data = _workflow_page_data(ws, engine)
     first = next((i["id"] for grp in data["items"] for i in grp["items"]), None)
-    opened = request.args.get("open") or first
+    table = request.args.get("table")  # a list's own: its stages, else its first rule or flow (from the list or the Data model)
+    own = next((i["id"] for grp in data["items"] if grp["table"] == table for i in grp["items"]), None) if table else None
+    opened = request.args.get("open") or own or first
     return render_template("app/studio_workflows.html", ws=ws, e=engine, data=data, opened=_item(ws, engine, opened) if opened else None,
                            can_edit=g.member.can("admin"))
 

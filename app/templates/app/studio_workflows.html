@@ -11,7 +11,9 @@
 <div class="studio wf-studio" data-studio="workflows" data-can-edit="{{ 'yes' if can_edit else '' }}"
      data-item="{{ url_for('app.studio_workflow_item', wid=ws.id) }}" data-change="{{ url_for('app.studio_workflow_change', wid=ws.id) }}"
      data-try="{{ url_for('app.studio_workflow_try', wid=ws.id) }}" data-records="{{ url_for('app.studio_workflow_records', wid=ws.id) }}"
-     data-undo="{{ url_for('app.studio_undo', wid=ws.id) }}" data-here="{{ url_for('app.studio_workflows', wid=ws.id) }}">
+     data-undo="{{ url_for('app.studio_undo', wid=ws.id) }}" data-here="{{ url_for('app.studio_workflows', wid=ws.id) }}"
+     data-ai-page="{{ url_for('app.ai_page', wid=ws.id) }}" data-data-studio="{{ url_for('app.studio_data', wid=ws.id) }}"
+     data-run-now="{{ url_for('app.run_now', wid=ws.id, key='__key__') }}" data-all-runs="{{ url_for('app.automations', wid=ws.id) }}">
   <nav class="wf-rail" aria-label="Workflows"></nav>
   <section class="wf-main" aria-live="polite"></section>
   <aside class="studio-panel"></aside>

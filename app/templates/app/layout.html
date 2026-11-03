@@ -26,17 +26,19 @@
       <a href="{{ url_for('app.notifications', wid=ws.id) }}" class="{{ 'active' if 'notifications' in here }}">{{ icon('bell') }}<span>Notifications</span>{% if unread %}<span class="count hot">{{ unread }}</span>{% endif %}</a>
       {% if member and member.can('editor') %}{% set ai_n = ai_count_for(ws) %}{% set ideas = suggestions_for(ws) if member.can('admin') else 0 %}
       {% set in_setup = 'automations' in here or '/app/ai' in here or '/knowledge' in here or '/design' in here or '/improvements' in here or '/checks' in here or '/studio/' in here %}
-      <details class="setup-group" {{ 'open' if in_setup }}><summary title="How your app works: its rules, AI helpers and settings">{{ icon('settings') }}<span>Set up</span>{% if ideas %}<span class="dot-hot" title="{{ ideas }} suggestion{{ 's' if ideas != 1 }}"></span>{% endif %}{{ icon('chevron-down', 'caret') }}</summary>
-        <a href="{{ url_for('app.automations', wid=ws.id) }}" class="{{ 'active' if 'automations' in here }}" title="What your app does by itself: when this happens, do that">{{ icon('zap') }}<span>Rules</span><span class="count">{{ ws.blueprint.get('automations', [])|length }}</span></a>
-        {% if ai_n %}<a href="{{ url_for('app.ai_page', wid=ws.id) }}" class="{{ 'active' if here.endswith('/app/ai') or '/app/ai/' in here }}" title="The jobs the AI does for you, and who checks them">{{ icon('bot') }}<span>AI helpers</span><span class="count">{{ ai_n }}</span></a>{% endif %}
-        <a href="{{ url_for('app.knowledge_page', wid=ws.id) }}" class="{{ 'active' if '/knowledge' in here }}" title="The documents, mail and lists the AI reads">{{ icon('book-open') }}<span>What the AI knows</span></a>
+      <details class="setup-group" {{ 'open' if in_setup }}><summary title="How your app works: its lists, workflows, AI and settings">{{ icon('settings') }}<span>Set up</span>{% if ideas %}<span class="dot-hot" title="{{ ideas }} suggestion{{ 's' if ideas != 1 }}"></span>{% endif %}{{ icon('chevron-down', 'caret') }}</summary>
+        <div class="setup-label">Your app</div>
         <a href="{{ url_for('app.studio_data', wid=ws.id) }}" class="{{ 'active' if '/studio/data' in here }}" title="Every list, what it keeps and how they link: drawn, and changed by hand">{{ icon('network') }}<span>Data model</span></a>
-        <a href="{{ url_for('app.studio_workflows', wid=ws.id) }}" class="{{ 'active' if '/studio/workflows' in here }}" title="Stages, rules and step-by-step flows: drawn, tried on a record, and changed by hand">{{ icon('workflow') }}<span>Workflows</span></a>
-        <a href="{{ url_for('app.design', wid=ws.id) }}" class="{{ 'active' if '/design' in here }}" title="Every list and its details, and every change to how your app works">{{ icon('history') }}<span>How it's set up</span></a>
+        <a href="{{ url_for('app.studio_workflows', wid=ws.id) }}" class="{{ 'active' if '/studio/workflows' in here or 'automations' in here }}" title="Stages, rules (what your app does by itself) and step-by-step flows: drawn, tried on a record, changed by hand">{{ icon('workflow') }}<span>Workflows</span>{% if ws.blueprint.get('automations') %}<span class="count" title="{{ ws.blueprint.get('automations')|length }} rules">{{ ws.blueprint.get('automations')|length }}</span>{% endif %}</a>
+        <a href="{{ url_for('app.design', wid=ws.id) }}" class="{{ 'active' if '/design' in here }}" title="Every change to how your app works: go back to any, try changes in a test copy, add ready-made parts">{{ icon('history') }}<span>Versions</span></a>
+        <div class="setup-label">AI</div>
+        <a href="{{ url_for('app.ai_page', wid=ws.id) }}" class="{{ 'active' if here.endswith('/app/ai') or '/app/ai/' in here }}" title="The jobs the AI does in your processes: add one, switch it off, choose who checks it">{{ icon('bot') }}<span>AI helpers</span>{% if ai_n %}<span class="count">{{ ai_n }}</span>{% endif %}</a>
+        <a href="{{ url_for('app.knowledge_page', wid=ws.id) }}" class="{{ 'active' if '/knowledge' in here }}" title="The documents, mail and lists the AI reads">{{ icon('book-open') }}<span>What the AI knows</span></a>
+        <div class="setup-label">Keep it right</div>
         {% if checks_for is defined %}<a href="{{ checks_for(ws) }}" class="{{ 'active' if '/checks' in here }}" title="What your app must always do, tried after every change">{{ icon('flask-conical') }}<span>Checks</span></a>{% endif %}
         {% if member.can('admin') %}
         <a href="{{ url_for('app.improvements', wid=ws.id) }}" class="{{ 'active' if '/improvements' in here }}" title="Ideas to make your app work better, from how it's used">{{ icon('wand-sparkles') }}<span>Suggestions</span>{% if ideas %}<span class="count hot">{{ ideas }}</span>{% endif %}</a>
-        <a href="{{ url_for('settings.general', wid=ws.id) }}" target="_top" class="{{ 'active' if '/settings' in here }}">{{ icon('settings') }}<span>Settings</span></a>
+        <a href="{{ url_for('settings.general', wid=ws.id) }}" target="_top" class="setup-settings {{ 'active' if '/settings' in here }}">{{ icon('settings') }}<span>Settings</span></a>
         {% endif %}
       </details>
       {% endif %}

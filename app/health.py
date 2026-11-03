@@ -78,6 +78,12 @@ def report(ws):
                           "Screens are slow: a big list may need a filtered view, or the computer may be busy." if seen["slow"] >= 2000 else "",
                     "slowest": seen["slowest"]})
     data = Path(current_app.config["DATA_DIR"])
+    from .blueprint import schema  # every part of the design fits the rest (made before a newer check, it may not)
+    problems = schema.check(ws.blueprint or {})
+    out.append({"name": "Design", "ok": not problems,
+                "said": "every list, rule, flow, page and menu fits the rest" if not problems else
+                        f"{len(problems)} thing{'s' if len(problems) != 1 else ''} in how your app is set up don't fit together: {problems[0]}",
+                "do": "" if not problems else "Ask the AI to fix it (Change my app), or go back to an earlier version under Versions."})
     try:  # PostgreSQL, with pgvector for the AI's search by meaning
         from sqlalchemy import text as sql
         row = db.session.execute(sql("SELECT current_setting('server_version'), pg_database_size(current_database()), "
@@ -97,7 +103,7 @@ def report(ws):
     out.append({"name": "Backups", "ok": age is not None and age < timedelta(days=2),
                 "said": f"the last was {_ago(age)} ago ({last.name})" if last else "none yet",
                 "do": "" if age is not None and age < timedelta(days=2) else
-                      "Backups are made every night while the app runs; make one now under Data & AI, and keep a copy off this computer."})
+                      "Backups are made every night while the app runs; make one now under Settings › Data and backups, and keep a copy off this computer."})
     return out
 
 

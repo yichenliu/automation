@@ -1,0 +1,17 @@
+{% extends "settings/_layout.html" %}
+{% block title %}AI on this computer{% endblock %}
+{% block content %}
+<h1>AI on this computer</h1><p class="muted mt-1">The AI that builds your app, answers questions and does the jobs in your processes runs here. Your records and documents never leave this computer.</p>
+<div class="card mt-3"><div class="card-head">{{ icon('bot') }}<h2>The models</h2></div><div class="card-body stack">
+  <p>It thinks with <b>{{ ai.model }}</b>{% if embed %}, and finds things by meaning with <b>{{ embed }}</b>{% endif %} ({{ ai.url }}).</p>
+  <p class="muted small">To change a model, set OLLAMA_MODEL{% if embed %} or OLLAMA_EMBED_MODEL{% endif %} in the .env file and restart. Whether it's answering now is on the Health page.</p></div></div>
+<div class="card mt-2"><div class="card-head">{{ icon('book-open') }}<h2>What it can look through</h2></div><div class="card-body stack">
+  <p><b>{{ known.records }}</b> records, <b>{{ known.files }}</b> documents and <b>{{ known.emails }}</b> emails ({{ known.passages }} passages{% if known.model %}, found by meaning with {{ known.model }}{% endif %}{% if known.waiting %}; {{ known.waiting }} still to read{% endif %}).
+    Fields kept from some people are never read into it.</p>
+  <p><a class="btn sm" href="{{ url_for('app.knowledge_page', wid=ws.id) }}" target="_top">{{ icon('book-open') }}What the AI knows</a></p></div></div>
+<div class="card mt-2"><div class="card-head">{{ icon('sparkles') }}<h2>The jobs it does</h2></div><div class="card-body stack">
+  <p>{% if helpers %}The AI does <b>{{ helpers }}</b> job{{ 's' if helpers != 1 }} in your processes and fields.{% else %}The AI doesn't do any jobs in your processes yet.{% endif %}
+    Add one, switch one off (a person does it instead), or choose who checks its work.</p>
+  <p class="row wrap"><a class="btn sm" href="{{ url_for('app.ai_page', wid=ws.id) }}" target="_top">{{ icon('bot') }}AI helpers</a>
+    <a class="btn sm ghost" href="{{ url_for('app.studio_workflows', wid=ws.id) }}" target="_top">{{ icon('workflow') }}In your Workflows</a></p></div></div>
+{% endblock %}

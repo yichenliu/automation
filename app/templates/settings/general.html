@@ -1,14 +1,13 @@
 {% extends "settings/_layout.html" %}
-{% block title %}Business settings{% endblock %}
+{% block title %}Business details{% endblock %}
 {% block content %}
-<h1>Business</h1><p class="muted mt-1">Your app's name, and the details printed on invoices, quotes and other documents.</p>
+<h1>Business details</h1><p class="muted mt-1">Your app's name, and the details printed on invoices, quotes and other documents.</p>
 <form method="post" class="stack mt-3">
   <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
   <div class="card card-body form-grid">
     <label class="field"><span>App name</span><input type="text" name="name" value="{{ ws.blueprint.get('name') or ws.name }}" required></label>
     <label class="field"><span>Time zone</span><select name="timezone">{% for tz in timezones %}<option {{ 'selected' if tz == (ws.timezone or config.DEFAULT_TIMEZONE) }}>{{ tz }}</option>{% endfor %}</select></label>
     <label class="field"><span>Currency symbol</span><input type="text" name="currency" value="{{ ws.currency or config.CURRENCY_SYMBOL }}" maxlength="4"></label>
-    <label class="field"><span>Sign people out after</span><select name="idle_minutes">{% for m, said in [(0, 'Never: they stay signed in'), (15, '15 minutes without use'), (30, '30 minutes without use'), (60, 'An hour without use'), (240, 'Four hours without use')] %}<option value="{{ m }}" {{ 'selected' if (ws.settings.get('idle_minutes') or 0) == m }}>{{ said }}</option>{% endfor %}</select><small class="help">For computers several people share, such as on the shop floor.</small></label>
     <label class="field"><span>Document page size</span><select name="page_size"><option {{ 'selected' if ws.settings.get('page_size', 'A4') == 'A4' }}>A4</option><option {{ 'selected' if ws.settings.get('page_size') == 'Letter' }}>Letter</option></select></label>
     <label class="field"><span>Your currency</span><input type="text" name="base_currency" value="{{ (ws.settings.get('money') or {}).get('base', '') }}" maxlength="3" placeholder="AUD"><small class="help">Its code. Amounts in other currencies are converted into it.</small></label>
     <label class="field"><span>Exchange rates</span><textarea name="rates" rows="3" placeholder="USD 1.52&#10;EUR 1.65">{% for code, rate in ((ws.settings.get('money') or {}).get('rates') or {}).items() %}{{ code }} {{ rate }}

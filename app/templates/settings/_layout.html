@@ -4,10 +4,18 @@
   <aside class="settings-nav">
     <a class="back" href="{{ url_for('app.home', wid=ws.id) }}">{{ icon('chevron-left') }}{{ ws.blueprint.get('name') or ws.name }}</a>
     <h2>Settings</h2>
-    {% for key, label, ico in [('general', 'Business', 'building-2'), ('appearance', 'Appearance', 'sparkles'), ('members', 'People', 'users'),
-                               ('connections', 'Connections', 'cloud'), ('printers', 'Printers', 'printer'), ('forms', 'Public forms', 'globe'), ('api_keys', 'API & webhooks', 'code'),
-                               ('data', 'Data & AI', 'hard-drive'), ('health_page', 'Health', 'heart-pulse'), ('audit_log', 'Audit log', 'shield')] %}
-      <a href="{{ url_for('settings.' ~ key, wid=ws.id) }}" class="{{ 'active' if section == key or (section == 'api' and key == 'api_keys') or (section == 'audit' and key == 'audit_log') or (section == 'health' and key == 'health_page') }}">{{ icon(ico) }}{{ label }}</a>{% endfor %}
+    {% set here = section ~ '' %}
+    {% for group, items in [
+         ('Your business', [('general', 'Business details', 'building-2', ['general']), ('appearance', 'Appearance', 'sparkles', ['appearance']),
+                            ('members', 'People and teams', 'users', ['members'])]),
+         ('Connected', [('connections', 'Connections', 'cloud', ['connections']), ('api_keys', 'API and AI assistants', 'code', ['api', 'api_keys']),
+                        ('forms', 'Public forms', 'globe', ['forms']), ('printers', 'Printers', 'printer', ['printers'])]),
+         ('Looking after it', [('ai_settings', 'AI on this computer', 'bot', ['ai_settings']), ('data', 'Data and backups', 'hard-drive', ['data']),
+                               ('security', 'Security', 'lock', ['security']), ('audit_log', 'Audit log', 'shield', ['audit', 'audit_log']),
+                               ('health_page', 'Health', 'heart-pulse', ['health', 'health_page'])])] %}
+      <div class="settings-group">{{ group }}</div>
+      {% for key, label, ico, sections in items %}<a href="{{ url_for('settings.' ~ key, wid=ws.id) }}" class="{{ 'active' if here in sections }}">{{ icon(ico) }}{{ label }}</a>{% endfor %}
+    {% endfor %}
   </aside>
   <main class="settings-main">{{ flashes() }}{% block content %}{% endblock %}</main>
 </div>

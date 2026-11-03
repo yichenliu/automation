@@ -1,7 +1,7 @@
 {% extends "settings/_layout.html" %}
 {% block title %}People{% endblock %}
 {% block content %}
-<h1>People</h1><p class="muted mt-1">Who can use this app, and what each person can do.</p>
+<h1>People and teams</h1><p class="muted mt-1">Who can use this app, and what each person can do.</p>
 <div class="card mt-3">{% for m in people if m.role != 'portal' %}
   <div class="list-row"><span class="avatar">{{ m.user.display[:1]|upper }}</span><span class="grow"><b>{{ m.user.display }}</b> <span class="faint small">{{ m.user.email }}</span></span>
     {% if m.role == 'owner' %}<span class="tag">Owner: can do everything</span>

@@ -136,3 +136,76 @@ def test_nothing_but_its_lists_writes_to_a_combined_list(app, owner):
         "key": "poke", "name": "Poke the outlook", "trigger": {"type": "record_created", "table": "items"},
         "actions": [{"type": "create_record", "table": "outlook", "values": {"kind": "Committed", "item": "{{record.id}}"}}]}}]).problems
     assert any("“Poke the outlook” changes Stock outlook, which is put together from other lists" in p for p in problems)
+
+
+def test_the_ai_in_a_process_is_added_switched_off_handed_a_job_and_checked_from_the_studios(app, client, owner):
+    user, ws = owner
+    _built(ws, APP + [{"op": "add_field", "table": "orders", "field": {"key": "photo", "type": "image"}}, {"op": "add_automation", "automation": {
+        "key": "review", "name": "Review a packed order", "trigger": {"type": "record_updated", "table": "orders", "field": "status", "to": "Packed"},
+        "actions": [{"type": "task", "to": "editor", "message": "Write the packing summary", "fields": ["summary"]}]}}])
+    login(client)
+    drawn = client.get(f"/w/{ws.id}/app/studio/workflows/item?id=rule:review").get_json()
+    assert drawn["steps"][0]["ai_could"] == {"field": "Summary"}  # a job by hand the AI could do
+    _wf(client, ws, "rule:review", {"do": "ai_take_over", "at": "0", "instructions": "Sum up what was packed"})
+    step = next(a for a in ws.blueprint["automations"] if a["key"] == "review")["actions"][0]
+    assert (step["type"], step["field"], step["review"], step["reviewer"]) == ("ai_fill", "summary", "always", "editor")
+    _wf(client, ws, "rule:review", {"do": "set_ai_on", "at": "0", "on": False})  # switched off: a person does it instead
+    assert next(a for a in ws.blueprint["automations"] if a["key"] == "review")["actions"][0]["manual"] is True
+    assert client.get(f"/w/{ws.id}/app/studio/workflows/item?id=rule:review").get_json()["steps"][0]["ai"]["manual"]
+    _wf(client, ws, "rule:review", {"do": "set_ai_on", "at": "0", "on": True})
+    assert "manual" not in next(a for a in ws.blueprint["automations"] if a["key"] == "review")["actions"][0]
+    _wf(client, ws, "rule:review", {"do": "set_review", "at": "0", "mode": "never"})  # trusted: it runs on its own
+    assert "review" not in next(a for a in ws.blueprint["automations"] if a["key"] == "review")["actions"][0]
+    # a field the AI fills in, from the Data model; listed with the AI helpers; stopped again
+    _dm(client, ws, {"do": "update_field", "table": "orders", "key": "notes", "ai": "Note anything fragile"})
+    assert schema.field(schema.table(ws.blueprint, "orders"), "notes")["ai"]["instructions"] == "Note anything fragile"
+    page = client.get(f"/w/{ws.id}/app/ai").get_data(as_text=True)
+    assert "Fields the AI fills in" in page and "Note anything fragile" in page and "See the whole process, in Workflows" in page
+    _dm(client, ws, {"do": "update_field", "table": "orders", "key": "notes", "ai": ""})
+    assert "ai" not in schema.field(schema.table(ws.blueprint, "orders"), "notes")
+    said = client.post(f"/w/{ws.id}/app/studio/data/change", json={"do": "update_field", "table": "orders", "key": "photo", "ai": "Guess"}).get_json()
+    assert "The AI can't fill in Photo" in said["error"]
+
+
+def test_going_back_by_any_way_names_the_records_as_they_were(app, client, owner):
+    user, ws = owner
+    _built(ws, APP)
+    e = Engine(ws)
+    order = e.create("orders", {"number": "SO-1"})
+    login(client)
+    made = _wf(client, ws, "stages:orders", {"do": "rename_stage", "old": "New", "new": "Received"})
+    e.reset()
+    assert e.get(order.id).data["status"] == "Received"
+    client.post(f"/w/{ws.id}/app/design/restore/{made['before']}")  # Versions' Go back, not the studio's own undo
+    e.reset()
+    assert e.get(order.id).data["status"] == "New" and "New" in schema.field(schema.table(ws.blueprint, "orders"), "status")["options"]
+
+
+def test_the_menus_put_each_thing_in_one_place_and_join_them_up(app, client, owner):
+    user, ws = owner
+    _built(ws, APP)
+    login(client)
+    home = client.get(f"/w/{ws.id}/app/").get_data(as_text=True)
+    for label in ("Your app", "Data model", "Workflows", "Versions", "AI helpers", "What the AI knows", "Keep it right", "Checks", "Suggestions"):
+        assert f">{label}<" in home, label
+    assert "How it's set up" not in home and ">Rules<" not in home  # rules live in Workflows now
+    page = client.get(f"/w/{ws.id}/app/design").get_data(as_text=True)
+    assert "<h1>" in page and "Versions" in page and "Your app now" in page
+    listing = client.get(f"/w/{ws.id}/app/t/orders").get_data(as_text=True)
+    assert f"/w/{ws.id}/app/studio/data?open=orders" in listing and f"/w/{ws.id}/app/studio/workflows?table=orders" in listing
+    opened = client.get(f"/w/{ws.id}/app/studio/workflows?table=orders").get_data(as_text=True)
+    assert '"kind": "stages"' in opened and '"table": "orders"' in opened
+    drawn = client.get(f"/w/{ws.id}/app/studio/workflows/item?id=rule:on_ship").get_json()
+    assert drawn["recent"] == [] and drawn["hook"] is None and drawn["can_run"] is False
+    for place in ("Data model", "Workflows", "Versions", "AI helpers", "Settings"):  # ⌘K finds each by name
+        assert place in [i["label"] for i in client.get(f"/w/{ws.id}/app/jump?q={place.lower()}").get_json()["items"]], place
+    settings = client.get(f"/w/{ws.id}/settings/").get_data(as_text=True)
+    for label in ("Your business", "Business details", "People and teams", "Connected", "API and AI assistants", "Looking after it",
+                  "AI on this computer", "Data and backups", "Security", "Audit log", "Health"):
+        assert label in settings, label
+    assert "Sign people out after" not in settings  # it's under Security now
+    assert "Sign people out after" in client.get(f"/w/{ws.id}/settings/security").get_data(as_text=True)
+    assert "PostgreSQL" in client.get(f"/w/{ws.id}/settings/data").get_data(as_text=True)
+    assert "AI helpers" in client.get(f"/w/{ws.id}/settings/ai").get_data(as_text=True)
+    assert "Design" in client.get(f"/w/{ws.id}/settings/health").get_data(as_text=True)
+    assert prompts.looking_at(f"/w/{ws.id}/app/studio/workflows?open=rule:on_ship").endswith("the automation on_ship (\"this\" means it).")

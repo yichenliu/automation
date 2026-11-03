@@ -748,6 +748,8 @@ dd.sensitive { display: flex; align-items: center; gap: 6px; font-family: var(--
 .setup-group summary { display: flex; align-items: center; gap: 9px; padding: 6px 10px; border-radius: 7px; color: var(--muted);
   font-weight: 520; cursor: pointer; list-style: none; user-select: none; }
 .setup-group summary::-webkit-details-marker { display: none; }
+.setup-label { padding: 8px 10px 2px 34px; font-size: 10.5px; font-weight: 650; letter-spacing: .05em; text-transform: uppercase; color: var(--faint); }
+.setup-settings { margin-top: 6px; border-top: 1px solid var(--border); border-radius: 0 0 7px 7px; }
 .setup-group summary:hover { background: var(--sunken); color: var(--text); }
 .setup-group summary .i { color: var(--faint); }
 .setup-group summary .caret { margin-left: auto; width: 14px; height: 14px; transition: transform .15s; }
@@ -1063,3 +1065,6 @@ li.dragging { opacity: .5; background: var(--accent-weak); }
   .wf-rail { display: flex; overflow-x: auto; gap: 6px; } .wf-group { display: contents; } .wf-group-head { display: none; } .wf-item { width: auto; white-space: nowrap; border: 1px solid var(--border); }
   .wf-ways { flex-direction: column; align-items: stretch; } .wf-way { min-width: 0; }
 }
+
+.chips { display: flex; flex-wrap: wrap; gap: 6px; } .chips a.tagchip { text-decoration: none; }
+.settings-group { margin: 14px 10px 4px; font-size: 10.5px; font-weight: 650; letter-spacing: .05em; text-transform: uppercase; color: var(--faint); }

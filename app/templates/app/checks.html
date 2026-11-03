@@ -7,7 +7,7 @@
 
 {% if kept or problems %}
 <div class="notice {{ 'good' if not wrong and not problems else 'bad' }} mb-2">{{ icon('circle-check' if not wrong and not problems else 'circle-x') }}
-  <span>{% if not wrong and not problems %}<b>Everything checked works.</b>{% else %}<b>{{ wrong|length + problems|length }} thing{{ 's' if wrong|length + problems|length != 1 }} not right yet.</b> Ask the builder to fix {{ 'it' if wrong|length + problems|length == 1 else 'them' }}, or undo the last change under How it's set up.{% endif %}
+  <span>{% if not wrong and not problems %}<b>Everything checked works.</b>{% else %}<b>{{ wrong|length + problems|length }} thing{{ 's' if wrong|length + problems|length != 1 }} not right yet.</b> Ask the builder to fix {{ 'it' if wrong|length + problems|length == 1 else 'them' }}, or undo the last change under Versions.{% endif %}
   {% if last_at %}<span class="faint small">Last checked {{ last_at|ago }}, after {{ last.why }}.</span>{% endif %}</span></div>
 {% endif %}
 

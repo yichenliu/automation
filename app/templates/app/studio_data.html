@@ -10,7 +10,7 @@
 <div class="studio" data-studio="data" data-can-edit="{{ 'yes' if can_edit else '' }}"
      data-json="{{ url_for('app.studio_data_json', wid=ws.id) }}" data-change="{{ url_for('app.studio_data_change', wid=ws.id) }}"
      data-place="{{ url_for('app.studio_data_place', wid=ws.id) }}" data-undo="{{ url_for('app.studio_undo', wid=ws.id) }}"
-     data-open-table="{{ url_for('app.table', wid=ws.id, table='__table__') }}">
+     data-open-table="{{ url_for('app.table', wid=ws.id, table='__table__') }}" data-workflows="{{ url_for('app.studio_workflows', wid=ws.id) }}">
   <div class="studio-canvas" tabindex="0" role="application" aria-label="Diagram of your lists and how they link. Use the panel beside it to change them.">
     <svg class="studio-svg" aria-hidden="true"></svg>
     <div class="studio-tools" role="toolbar" aria-label="Diagram">

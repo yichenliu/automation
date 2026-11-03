@@ -1,7 +1,7 @@
 {% extends "settings/_layout.html" %}
-{% block title %}API & webhooks{% endblock %}
+{% block title %}API and AI assistants{% endblock %}
 {% block content %}
-<h1>API &amp; webhooks</h1><p class="muted mt-1">Let other systems (your web shop, bank feed, payroll, a reporting tool) read and add records, or start automations.</p>
+<h1>API and AI assistants</h1><p class="muted mt-1">Let other systems (your web shop, bank feed, payroll, a reporting tool) read and add records, or start automations.</p>
 {% if made %}<div class="notice good mt-3 stack">{{ icon('key') }}<div class="grow"><b>Your new key</b> — copy it now; it won't be shown again.
   <div class="row mt-1"><input class="keybox grow small" type="text" readonly value="{{ made }}" aria-label="API key"><button class="btn sm" type="button" data-copy>{{ icon('copy') }}Copy</button></div></div></div>{% endif %}
 <div class="card mt-3"><div class="card-head">{{ icon('key') }}<h2 class="grow">Keys</h2></div><div class="card-body stack">

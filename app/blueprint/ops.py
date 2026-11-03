@@ -1421,7 +1421,7 @@ def _apply_one(bp, op, raw, result, where):
         if at is None:
             current.append(team)
             changes.append(f"Added the team {team['name']}" + (f" ({team['about']})" if team.get("about") else "")
-                           + ": put people in it under Settings › People")
+                           + ": put people in it under Settings › People and teams")
         elif current[at] != team:
             current[at] = team
             changes.append(f"Changed the team {team['name']}")

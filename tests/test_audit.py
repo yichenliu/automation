@@ -46,7 +46,9 @@ def test_people_are_signed_out_after_the_time_chosen_without_use(app, client, ow
     import time
     user, ws = owner
     login(client)
-    client.post(f"/w/{ws.id}/settings/", data={"name": ws.name, "idle_minutes": "15", "currency": "$"})
+    client.post(f"/w/{ws.id}/settings/security", data={"idle_minutes": "15"})
+    assert ws.settings["idle_minutes"] == 15
+    client.post(f"/w/{ws.id}/settings/", data={"name": ws.name, "currency": "$"})  # saving the business details leaves it be
     assert ws.settings["idle_minutes"] == 15
     assert client.get(f"/w/{ws.id}/app/").status_code == 200
     later = time.time() + 16 * 60
@@ -109,8 +111,8 @@ def test_the_health_page_says_whats_wrong_and_what_to_do(app, client, owner):
     login(client)
     client.get(f"/w/{ws.id}/app/")
     page = client.get(f"/w/{ws.id}/settings/health").get_data(as_text=True)
-    for part in ("The AI", "Background work", "Rules", "Screens", "Database", "Storage", "Backups"):
+    for part in ("The AI", "Background work", "Rules", "Screens", "Design", "Database", "Storage", "Backups"):
         assert part in page, part
     assert "PostgreSQL 18" in page and "with pgvector" in page
-    assert "make one now under Data &amp; AI" in page  # no backup yet
+    assert "make one now under Settings › Data and backups" in page  # no backup yet
     assert health.screens()["count"] >= 1

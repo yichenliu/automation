@@ -854,9 +854,21 @@ def outline(bp, counts, extra=""):
 
 
 def looking_at(page):
-    """What the owner has open, so "add a field here" means something."""
+    """What the owner has open, so "add a field here" means something (a screen, or what's open in a studio)."""
     if not page:
         return ""
+    from urllib.parse import parse_qs, urlsplit
+    split = urlsplit(page)
+    opened = (parse_qs(split.query).get("open") or [""])[0]
+    page = split.path
+    if page.rstrip("/").endswith("/studio/data"):
+        return "The owner is in the Data model studio" + (f", looking at the table {opened} (\"here\" means it)." if opened else ".")
+    if page.rstrip("/").endswith("/studio/workflows"):
+        kind, _, key = opened.partition(":")
+        what = {"rule": f"the automation {key}", "stages": f"the workflow (stages) of the table {key}", "flow": f"the flow {key}"}.get(kind)
+        return "The owner is in the Workflows studio" + (f", looking at {what} (\"this\" means it)." if what else ".")
+    if page.rstrip("/").endswith("/design"):
+        return "The owner is looking at the versions of the design."
     parts = page.strip("/").split("/")
     if "t" in parts and parts.index("t") + 1 < len(parts):
         i = parts.index("t")

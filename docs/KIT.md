@@ -77,7 +77,7 @@ explains itself once ("This is where your requests are kept…"), keeps its filt
 a phone · rules read as sentences ("When a timesheet is moved to Submitted: tell everyone: “Timesheet for [Team member’s
 name]…”") with the details filled in each time shown as chips and a real example from the business's own records;
 formulas read as words ("90% of Budget", "5 working days after Due date") · one vocabulary everywhere: To do, Rules, AI
-helpers, What the AI knows, How it's set up, Suggestions, Change my app, "app" not ERP, "Say no" not reject, access as
+helpers, What the AI knows, Versions, Suggestions, Change my app, "app" not ERP, "Say no" not reject, access as
 "Can only look / Can do the work / Can also change the app" · statuses in words ("Waiting for an answer") · errors that
 say what to do ("We can't find this page" · Go back) · the analyst names buttons and stages in everyday words.
 
@@ -228,7 +228,7 @@ when the AI isn't sure; harmless enrichment isn't checked; decisions of authorit
 
 ## People and security
 
-✅ Owner, admin, editor, viewer and portal roles · teams (from the design; people put in them under Settings › People) ·
+✅ Owner, admin, editor, viewer and portal roles · teams (from the design; people put in them under Settings › People and teams) ·
 invitations · table, record and field permissions everywhere (by role or team)
 (screens, search, exports, the assistant, AI look-ups, the API) · two-step sign-in (authenticator apps) · sign in with
 Microsoft ⚠️ · single sign-on with Google Workspace, Okta, Auth0, Keycloak or any OpenID Connect provider (linked by
@@ -287,7 +287,7 @@ web app (add to the home screen).
 
 ## Ready-made parts
 
-✅ Four parts to start an app from, or add to one (How it's set up › Add ready-made parts), each tried out like anything
+✅ Four parts to start an app from, or add to one (Set up › Versions › Add ready-made parts), each tried out like anything
 the builder makes, and fitting together (one list of products for all; what joins two parts comes when both are there):
 
 - **Inventory & warehouse**: products with what's on hand (every movement kept: received, sold, moved, counted, damaged,
@@ -341,6 +341,24 @@ the builder and the assistant work from it at once (tested end to end in tests/t
 its rules firing; a field renamed or kept from some people is read again by the AI's search (a private one leaves it at
 once); the builder is told of every change made by hand and keeps it; stages added in Workflows are a field in the Data
 model; nothing writes to a combined list but the lists it's made from.
+
+## Where things are
+
+✅ The app's menu has **Set up** (for the team, not portal people) in three parts. **Your app**: Data model (the lists),
+Workflows (stages, rules and step-by-step flows, with each rule's last runs, its address for other systems and Run it
+now), Versions (every change, going back, the test copy, ready-made parts). **AI**: AI helpers (every job the AI does,
+in processes and fields: add one, switch it off so a person does it, let it take over a job done by hand, choose who
+checks it, try it on real records) and What the AI knows. **Keep it right**: Checks and Suggestions. Then Settings, in
+three parts: **Your business** (business details, appearance, people and teams), **Connected** (connections to
+apps and accounts, the API and AI assistants, public forms, printers) and **Looking after it** (the AI on this computer,
+data and backups, security, the audit log, health). Each list's page links to it in both studios; each studio links to
+the other; ⌘K jumps to any of them.
+
+✅ AI in a process, configured by people: in Workflows an AI step is added like any other (fill in a field, check a
+record, read a document, make a record from an email), switched off so a person does it as a task (and back on), given
+a job people did by hand (a task with one field), and set to be checked by a person every time, when it isn't sure, or
+not at all; in the Data model a field can be filled in by the AI, or stop being. The AI helpers page lists them all,
+with how often each was right when checked.
 
 ## Trying changes safely
 

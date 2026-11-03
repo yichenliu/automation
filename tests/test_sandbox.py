@@ -52,3 +52,25 @@ def test_the_changes_are_said_plainly():
                         {"key": "staff", "label": "Staff", "fields": []}],
              "automations": [{"key": "x", "name": "Chase", "trigger": {}, "actions": []}]}
     assert sandbox.changes(before, after) == ["Adds the list Staff", "Jobs: A becomes number (was text)", "Adds the rule “Chase”"]
+
+
+def test_a_choice_renamed_in_the_test_copy_is_renamed_on_the_live_records_when_published(app, client, owner):
+    user, ws = owner
+    _built(ws, SHOP)
+    e = Engine(ws)
+    acme = e.create("customers", {"name": "Acme"})
+    held = e.create("orders", {"customer": acme.id, "status": "Held"})
+    login(client)
+    client.post(f"/w/{ws.id}/app/test-copy")
+    copy = Workspace.query.filter(Workspace.id != ws.id).one()
+    said = client.post(f"/w/{copy.id}/app/studio/data/change", json={"do": "rename_option", "table": "orders", "key": "status",
+                                                                       "old": "Held", "new": "On hold"}).get_json()
+    assert said["ok"]
+    client.post(f"/w/{copy.id}/app/publish")
+    live = Workspace.query.get(ws.id)
+    e = Engine(live)
+    assert e.get(held.id).data["status"] == "On hold"  # the live record follows the renamed choice
+    assert "1 live record named as in the test copy" in Version.query.filter_by(workspace_id=ws.id, source="published").one().changes
+    client.post(f"/w/{ws.id}/app/design/restore/{live.version - 1}")  # going back on the live app names it as it was
+    e.reset()
+    assert e.get(held.id).data["status"] == "Held"

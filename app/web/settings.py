@@ -7,7 +7,7 @@ import zipfile
 import csv
 from zoneinfo import available_timezones
 
-from flask import Blueprint, abort, flash, g, redirect, render_template, request, send_file, url_for
+from flask import Blueprint, abort, current_app, flash, g, redirect, render_template, request, send_file, url_for
 from flask_login import current_user, login_required
 
 from .. import ai, audit, backup
@@ -47,8 +47,6 @@ def general(wid):
         settings = _settings(ws)
         settings["business"] = {k: (request.form.get(f"business_{k}") or "").strip()[:1000] for k in BUSINESS}
         settings["page_size"] = "Letter" if request.form.get("page_size") == "Letter" else "A4"
-        from ..security import IDLE_CHOICES
-        settings["idle_minutes"] = request.form.get("idle_minutes", type=int) if request.form.get("idle_minutes", type=int) in IDLE_CHOICES else 0
         base = (request.form.get("base_currency") or "").strip().upper()[:3]
         rates, bad = {}, []
         for line in (request.form.get("rates") or "").splitlines():
@@ -342,10 +340,47 @@ def forms(wid):
 @bp.route("/data")
 @login_required
 def data(wid):
+    """Data and backups: everything as spreadsheets, the backups, and the database it's all kept in."""
+    from sqlalchemy import text as sql
     ws = workspace(wid, "admin")
-    latest = backup.latest()
+    try:
+        row = db.session.execute(sql("SELECT current_setting('server_version'), pg_size_pretty(pg_database_size(current_database())), "
+                                     "(SELECT extversion FROM pg_extension WHERE extname = 'vector')")).one()
+        database = {"version": row[0].split()[0], "size": row[1], "vector": row[2]}
+    except Exception:  # noqa: BLE001 - the page shows without it
+        database = None
+    return render_template("settings/data.html", ws=ws, latest=backup.latest(), section="data", database=database)
+
+
+@bp.route("/ai")
+@login_required
+def ai_settings(wid):
+    """The AI on this computer: which model answers, which finds things by meaning, and what it can look through."""
     from .. import knowledge
-    return render_template("settings/data.html", ws=ws, latest=latest, section="data", ai=ai.describe(), known=knowledge.status(ws))
+    ws = workspace(wid, "admin")
+    from .erp import ai_count
+    return render_template("settings/ai.html", ws=ws, section="ai_settings", ai=ai.describe(), known=knowledge.status(ws),
+                           embed=current_app.config.get("OLLAMA_EMBED_MODEL") or None, helpers=ai_count(ws))
+
+
+@bp.route("/security", methods=["GET", "POST"])
+@login_required
+def security(wid):
+    """Security: signing people out of shared computers, single sign-on, two-step sign-in, and the audit log."""
+    from ..connectors import oidc
+    from ..security import IDLE_CHOICES
+    ws = workspace(wid, "admin")
+    if request.method == "POST":
+        minutes = request.form.get("idle_minutes", type=int)
+        ws.settings = {**(ws.settings or {}), "idle_minutes": minutes if minutes in IDLE_CHOICES else 0}
+        db.session.commit()
+        audit.log(ws.id, "settings", f"sign people out after {minutes or 0} idle minutes")
+        flash("Saved.", "success")
+        return redirect(url_for(".security", wid=wid))
+    people = [u for m, u in db.session.query(Membership, User).filter(Membership.workspace_id == ws.id, Membership.user_id == User.id,
+                                                                       Membership.role.in_(STAFF_ROLES))]
+    return render_template("settings/security.html", ws=ws, section="security", sso=oidc.configured(), sso_name=oidc.name() if oidc.configured() else None,
+                           people=len(people), two_step=sum(1 for u in people if u.totp_secret), sso_linked=sum(1 for u in people if u.sso_identity))
 
 
 @bp.route("/data/export.zip")

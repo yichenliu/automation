@@ -1,19 +1,17 @@
 {% extends "settings/_layout.html" %}
-{% block title %}Data & AI{% endblock %}
+{% block title %}Data and backups{% endblock %}
 {% block content %}
-<h1>Data &amp; AI</h1>
+<h1>Data and backups</h1><p class="muted mt-1">Everything your app keeps, how to take it with you, and the copies made in case something goes wrong.</p>
 <div class="card mt-3"><div class="card-head">{{ icon('download') }}<h2>Export</h2></div><div class="card-body">
-  <p class="muted">Every table as a spreadsheet (CSV), plus the design, in one zip.</p>
+  <p class="muted">Every list as a spreadsheet (CSV), plus how your app is set up, in one zip.</p>
   <p class="mt-2"><a class="btn" href="{{ url_for('settings.export_all', wid=ws.id) }}">{{ icon('download') }}Download everything</a></p></div></div>
 <div class="card mt-2"><div class="card-head">{{ icon('hard-drive') }}<h2>Backups</h2></div><div class="card-body">
-  <p class="muted">The platform backs everything up once a day (database, files and the key that unlocks stored sign-ins) and keeps the last {{ config.BACKUP_KEEP }}.</p>
+  <p class="muted">The platform backs everything up once a day (the database, files and the key that unlocks stored sign-ins) and keeps the last {{ config.BACKUP_KEEP }}.</p>
   <p class="mt-1">{% if latest %}Latest: <b>{{ latest.name }}</b>{% else %}No backup yet; the first is made within the hour.{% endif %}</p>
-  {% if member and member.can('owner') %}<div class="row mt-2"><form method="post" action="{{ url_for('settings.make_backup', wid=ws.id) }}" data-busy><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn">Back up now</button></form>
+  {% if member and member.can('owner') %}<div class="row mt-2"><form method="post" action="{{ url_for('settings.make_backup', wid=ws.id) }}" data-busy><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn">{{ icon('hard-drive') }}Make a backup now</button></form>
     {% if latest %}<a class="btn ghost" href="{{ url_for('settings.download_backup', wid=ws.id) }}">{{ icon('download') }}Download the latest</a>{% endif %}</div>{% endif %}</div></div>
-<div class="card mt-2"><div class="card-head">{{ icon('bot') }}<h2>AI</h2></div><div class="card-body">
-  <p>Model <b>{{ ai.model }}</b> on this computer ({{ ai.url }}). Your records and documents never leave it.</p>
-  <p class="muted small mt-1">Change the model in the .env file (OLLAMA_MODEL) and restart.</p>
-  <p class="mt-2">{{ icon('book-open') }} The AI can look through <b>{{ known.records }}</b> records, <b>{{ known.files }}</b> documents and <b>{{ known.emails }}</b> emails
-    ({{ known.passages }} passages{% if known.model %}, found by meaning with {{ known.model }}{% endif %}{% if known.waiting %}; {{ known.waiting }} still to read{% endif %}).
-    <a href="{{ url_for('app.knowledge_page', wid=ws.id) }}">Manage what it knows</a></p></div></div>
+<div class="card mt-2"><div class="card-head">{{ icon('layers') }}<h2>The database</h2></div><div class="card-body">
+  {% if database %}<p>PostgreSQL {{ database.version }} on this computer, {{ database.size }}{% if database.vector %}, with pgvector {{ database.vector }} so the AI finds things by meaning{% endif %}.</p>
+  <p class="muted small mt-1">Records, files' details and everything the AI has read are kept here; nothing is sent anywhere else.</p>
+  {% else %}<p class="bad-text">The database couldn't be asked just now: see Health.</p>{% endif %}</div></div>
 {% endblock %}

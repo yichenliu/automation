@@ -102,7 +102,12 @@ def restore(workspace, number, by=None, why=None):
     old = Version.query.filter_by(workspace_id=workspace.id, number=number).first()
     if old is None:
         raise ValueError("That version doesn't exist.")
-    return save_version(workspace, old.blueprint, [why or f"Went back to the design as it was at version {number}"], "restore", by=by)
+    from .. import studio
+    said = [why or f"Went back to the design as it was at version {number}"]
+    renamed = studio.rename_back(workspace, number)  # choices renamed since: the records named as they were then
+    if renamed:
+        said.append(f"{renamed} record{'s' if renamed != 1 else ''} named as {'they were' if renamed != 1 else 'it was'} then")
+    return save_version(workspace, old.blueprint, said, "restore", by=by)
 
 
 def _history(workspace, before_id):

@@ -8,6 +8,8 @@
         <a href="{{ url_for('app.export', wid=ws.id, table=t.key) }}">{{ icon('download') }}Export to CSV</a>
         <a href="{{ url_for('app.export_xlsx', wid=ws.id, table=t.key) }}">{{ icon('file-spreadsheet') }}Export to Excel</a>
         <a href="{{ url_for('app.deleted', wid=ws.id, table=t.key) }}">{{ icon('trash-2') }}Deleted {{ t.label|lc }}</a>
+        {% if member.can('admin') %}<a href="{{ url_for('app.studio_data', wid=ws.id, open=t.key) }}">{{ icon('network') }}Change this list's fields</a>
+        <a href="{{ url_for('app.studio_workflows', wid=ws.id, table=t.key) }}">{{ icon('workflow') }}Its stages and rules</a>{% endif %}
       </div></div>
     <a class="btn" href="{{ url_for('app.intake', wid=ws.id, table=t.key) }}" title="Upload an invoice, receipt, form or email: the AI reads it and fills it in for you to check">{{ icon('wand-sparkles') }}Fill in from a file</a>
     <a class="btn primary" href="{{ url_for('app.new', wid=ws.id, table=t.key) }}" data-new>{{ icon('plus') }}New {{ t.singular|lc }}</a>

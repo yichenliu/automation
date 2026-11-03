@@ -1100,7 +1100,7 @@ def spaces(bp):
 
 def normalize_team(raw):
     """A team of people (Accounts payable, Procurement, the evaluation panel): {"key", "name", "about"}. Who is in each
-    is set under Settings › People; steps, moves, approvals and tables name a team by its key."""
+    is set under Settings › People and teams; steps, moves, approvals and tables name a team by its key."""
     if isinstance(raw, str):
         raw = {"name": raw}
     if not isinstance(raw, dict) or not _first(raw, "name", "label", "key", "title"):

@@ -149,9 +149,10 @@ def open_suggestions(ws):
 
 
 def ai_count(ws):
-    """How many AI steps the business's automations have (the AI at work page)."""
+    """How many jobs the AI does: the AI steps of the business's automations, and the fields it fills in."""
     from ..engine.automations import ai_steps
-    return sum(len(ai_steps(a)) for a in (ws.blueprint or {}).get("automations", []))
+    return (sum(len(ai_steps(a)) for a in (ws.blueprint or {}).get("automations", []))
+            + sum(1 for t in (ws.blueprint or {}).get("tables", []) for f in t["fields"] if f.get("ai")))
 
 
 @bp.app_context_processor

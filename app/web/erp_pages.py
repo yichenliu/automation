@@ -562,7 +562,8 @@ def ai_page(wid):
         if not processes or processes[-1]["a"]["key"] != item["a"]["key"]:
             processes.append({"a": item["a"], "when": item["when"], "items": []})
         processes[-1]["items"].append(item)
-    return render_template("app/ai.html", ws=ws, e=engine, processes=processes, count=len(items), kinds=AI_KINDS,
+    fields = [(t, f) for t in engine.visible_blueprint().get("tables", []) for f in t["fields"] if f.get("ai")]  # fields it fills in
+    return render_template("app/ai.html", ws=ws, e=engine, processes=processes, count=len(items), kinds=AI_KINDS, ai_fields=fields,
                            manual=_manual_tasks(engine), off=sum(1 for i in items if i["step"].get("manual")),
                            waiting=Approval.query.filter_by(workspace_id=ws.id, kind="review", status="pending").count())
 
@@ -1158,7 +1159,7 @@ def publish(wid):
     said = sandbox.changes(live.blueprint or {}, ws.blueprint or {})
     if request.method == "POST":
         number = sandbox.publish(live, ws, current_user)
-        flash(f"Published: the live app is now at version {number}. Undo it from How it's set up there." if number else
+        flash(f"Published: the live app is now at version {number}. Undo it from Versions there." if number else
               "Nothing to publish: the live app already works this way.", "success")
         return redirect(url_for("app.design", wid=live.id) if number else url_for("app.publish", wid=wid))
     moved_on = (ws.settings or {}).get("based_on") != live.version  # the live app changed since this copy was made
@@ -1195,9 +1196,13 @@ def jump(wid):
         items.append({"label": t["label"], "kind": "List", "url": url_for("app.table", wid=wid, table=t["key"])})
         if engine.can(t, "edit"):
             items.append({"label": f"New {schema.lc(t['singular'])}", "kind": "Action", "url": url_for("app.new", wid=wid, table=t["key"])})
-    items += [{"label": label, "kind": "Go to", "url": url_for(endpoint, wid=wid)} for label, endpoint in (
-        ("To do", "app.approvals"), ("Notifications", "app.notifications"), ("Rules", "app.automations"),
-        ("What the AI knows", "app.knowledge_page"), ("How it's set up", "app.design"))]
+    places = [("To do", "app.approvals"), ("Notifications", "app.notifications")]
+    if engine._at_least("editor"):  # the Set up menu's places, for those who have it
+        places += [("Data model", "app.studio_data"), ("Workflows", "app.studio_workflows"), ("Rules: what they did lately", "app.automations"),
+                   ("Versions", "app.design"), ("AI helpers", "app.ai_page"), ("What the AI knows", "app.knowledge_page"), ("Checks", "app.checks")]
+    if engine._at_least("admin"):
+        places += [("Suggestions", "app.improvements"), ("Settings", "settings.general")]
+    items += [{"label": label, "kind": "Go to", "url": url_for(endpoint, wid=wid)} for label, endpoint in places]
     found = [i for i in items if not q or q in i["label"].lower()][:12]
     if len(q) >= 2:
         for t in bp_.get("tables", []):

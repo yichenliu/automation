@@ -71,7 +71,7 @@
       button.disabled = true; input.disabled = true;
       said.hidden = false; said.className = "studio-ask-said small"; said.innerHTML = `<span class="spin"></span> Working on it: the AI is changing your app…`;
       const data = new FormData();
-      data.append("text", text); data.append("page", form.dataset.page || location.pathname);
+      data.append("text", text); data.append("page", location.pathname + location.search);
       let m;
       try {
         const res = await fetch(form.dataset.send, {method: "POST", headers: {"X-CSRFToken": csrf()}, body: data});
@@ -398,6 +398,7 @@
 
     function select(table, field = null) {
       selected = table ? {table, field} : null;
+      history.replaceState(null, "", table ? `?open=${encodeURIComponent(table)}` : location.pathname);
       draw(); showPanel();
       if (window.matchMedia("(max-width: 900px)").matches) panel.scrollIntoView({behavior: "smooth", block: "start"});
     }
@@ -426,7 +427,8 @@
       const sections = model.sections || [];
       const box = html(`<div class="stack">
         <div class="row"><button type="button" class="btn sm ghost" data-back>${icon("chevron-left")}All lists</button>
-          ${t.embedded ? "" : `<a class="btn sm ghost" href="${esc(root.dataset.openTable.replace("__table__", t.key))}">Open the list${icon("external-link")}</a>`}</div>
+          ${t.embedded ? "" : `<a class="btn sm ghost" href="${esc(root.dataset.openTable.replace("__table__", t.key))}">Open the list${icon("external-link")}</a>`}
+          <a class="btn sm ghost" href="${esc(root.dataset.workflows)}?table=${encodeURIComponent(t.key)}">${icon("workflow")}Its stages and rules</a></div>
         <div><h2 class="panel-title">${icon(t.icon)}${esc(t.label)}</h2><p class="small muted">${plural(t.count, "record", "records")}${t.embedded ? " · filled in inside another record" : ""}</p>
           ${t.combines.length ? `<p class="small">${icon("layers")} Put together from ${esc(t.combines.map((k) => (tableOf(k) || {label: k}).label).join(", "))}, and kept up to date as they change: nobody adds to it by hand. Ask the AI to change what goes into it.</p>` : ""}</div>
         ${canEdit ? `<form class="stack" data-form="table">
@@ -514,6 +516,9 @@
           ${f.signs !== null && f.signs !== undefined ? `<label class="field"><span>Colour it</span><select name="signs">${[["", "No colour"], ["normal", "Green above nothing, red below"], ["inverted", "Red above nothing, green below (costs, discounts)"]].map(([v, l]) => `<option value="${v}" ${v === f.signs ? "selected" : ""}>${l}</option>`).join("")}</select></label>` : ""}
           ${f.type === "checkbox" ? `<div class="row"><label class="field grow"><span>Yes shows as</span><input type="text" name="yes_label" value="${esc(f.yes_label)}" maxlength="30" placeholder="Yes"></label>
             <label class="field grow"><span>No shows as</span><input type="text" name="no_label" value="${esc(f.no_label)}" maxlength="30" placeholder="No"></label></div>` : ""}
+          ${f.ai_fillable && !f.calculated ? `<fieldset class="ai-trust stack"><label class="check"><input type="checkbox" name="ai_on" ${f.ai_instructions ? "checked" : ""}> <span class="ai-tag">${icon("sparkles")}AI</span> The AI fills this in</label>
+            <label class="field" data-ai-said ${f.ai_instructions ? "" : "hidden"}><span>What the AI is asked</span><textarea name="ai" rows="3" placeholder="Summarise the notes in one sentence">${esc(f.ai_instructions)}</textarea>
+            <span class="help">It fills it in when a record is added or what it's made from changes; people can still change it.</span></label></fieldset>` : ""}
           ${!f.calculated && !["select", "multi_select", "link", "user", "file", "image", "signature"].includes(f.type) ? `<label class="field"><span>Filled in to start with</span><input type="text" name="default" value="${esc(f.default ?? "")}" maxlength="200"></label>` : ""}
           <button class="btn primary sm">Save</button></form>
         ${["select", "multi_select"].includes(f.type) ? choices(t, f) : ""}
@@ -539,8 +544,10 @@
         if (form.elements.currency) body.currency = fd.get("currency").toUpperCase();
         if (form.elements.default) body.default = fd.get("default");
         for (const k of ["before", "after", "yes_label", "no_label", "signs"]) if (form.elements[k]) body[k] = fd.get(k);
+        if (form.elements.ai_on) body.ai = fd.get("ai_on") ? (fd.get("ai") || "").trim() || "Fill this in from the record" : "";
         change(body);
       });
+      $("[name=ai_on]", box)?.addEventListener("change", (ev) => { $("[data-ai-said]", box).hidden = !ev.target.checked; });
       $("[data-title]", box)?.addEventListener("click", () => change({do: "update_table", table: t.key, title_field: f.key}));
       $("[data-remove]", box)?.addEventListener("click", () => { if (confirm(`Remove ${f.label} from ${t.label}?`)) change({do: "remove_field", table: t.key, key: f.key}); });
       wireChoices(box, t, f);
@@ -575,8 +582,10 @@
       sortable(list, (keys) => change({do: "update_field", table: t.key, key: f.key, options: keys}));
     }
 
-    // first draw
+    // first draw (a list named in the address opened, as from its own page or from Workflows)
     layout(false);
+    const asked = new URLSearchParams(location.search).get("open");
+    selected = asked && tableOf(asked) ? {table: asked, field: null} : null;
     draw();
     showPanel();
     requestAnimationFrame(() => fit(0.6));
@@ -702,6 +711,7 @@
           <div class="wf-kind">${icon(STEP_ICONS[s.type] || "zap")}${esc(s.kind)}${s.ai ? ` <span class="ai-tag">${icon("sparkles")}AI</span>` : ""}</div>
           <div class="wf-text">${esc(s.text)}</div>
           ${s.ai ? `<div class="wf-cond">${icon(s.ai.review === "never" ? "zap" : "user")}${s.ai.manual ? "Switched off: a person does it instead" : esc(s.ai.words[0].toUpperCase() + s.ai.words.slice(1))}${s.ai.checked ? ` · right ${s.ai.right} of ${s.ai.checked}` : ""}</div>` : ""}
+          ${s.ai_could && canEdit ? `<div class="wf-cond">${icon("sparkles")}The AI could do this</div>` : ""}
           ${s.only_if ? `<div class="wf-cond">${icon("filter")}Only if ${esc(s.only_if)}</div>` : ""}
           ${tried && tried.steps[s.at] && tried.steps[s.at].why ? `<div class="wf-why">${esc(tried.steps[s.at].why)}</div>` : ""}
           ${counts(s.counts)}</div>`;
@@ -770,9 +780,27 @@
       panel.appendChild(html(`<div class="stack"><h2 class="panel-title">${icon("zap")}About this rule</h2>
         ${canEdit ? `<form class="stack" data-form="rename"><label class="field"><span>Name</span><input type="text" name="name" value="${esc(r.name)}" required maxlength="80"></label><button class="btn sm">Save</button></form>` : ""}
         <p class="small muted">Click any box to see it in full${canEdit ? " or change it; a + adds a step there" : ""}.${r.runs.total ? " The numbers on a step say how often it ran in the rule's last runs." : ""}</p>
+        ${r.can_run ? `<button type="button" class="btn sm" data-run-now>${icon("play")}Run it now</button>` : ""}
+        ${r.hook ? `<div><div class="label">${icon("webhook")}Its address for other systems</div><p class="small muted">Your web shop or a form tool starts this rule by sending its data here. Keep it private.</p>
+          <div class="row"><input type="text" class="keybox grow small" readonly value="${esc(r.hook)}" aria-label="Webhook address"><button class="btn sm" type="button" data-copy-hook>${icon("copy")}Copy</button></div></div>` : ""}
+        ${r.recent.length ? `<div><div class="label">The last times it ran</div><ul class="timeline-list">${r.recent.map((run) => `<li>
+          <div class="row"><span class="status ${esc(run.status)}">${esc(run.said)}</span><span class="small grow ellipsis">${esc(run.trigger)}</span><span class="faint tiny nowrap">${esc(run.when)}</span></div>
+          ${run.steps.length ? `<ul class="steps">${run.steps.map((x) => `<li class="${x.skipped ? "skipped" : ""}">${esc(x.text)}</li>`).join("")}</ul>` : ""}
+          ${run.error ? `<div class="small bad-text mt-1">${esc(run.error)}</div>` : ""}</li>`).join("")}</ul>
+          <a class="small" href="${esc(root.dataset.allRuns)}#${esc(r.key)}">Every rule's recent runs</a></div>` : ""}
         ${canEdit ? `<details class="danger-zone"><summary class="small">Delete this rule</summary><button type="button" class="btn sm danger" data-delete>${icon("trash-2")}Delete ${esc(r.name)}</button></details>` : ""}</div>`));
       $("[data-form=rename]", panel)?.addEventListener("submit", (ev) => { ev.preventDefault(); change({do: "rename", name: ev.target.elements.name.value}); });
       $("[data-delete]", panel)?.addEventListener("click", () => { if (confirm(`Delete the rule “${r.name}”? What it already did stays done.`)) change({do: "remove_rule"}); });
+      $("[data-copy-hook]", panel)?.addEventListener("click", () => { navigator.clipboard?.writeText(r.hook); statusLine(status, ["Copied the address"], "good"); });
+      $("[data-run-now]", panel)?.addEventListener("click", async () => {
+        statusLine(status, ["Running it…"], "info");
+        try {
+          const res = await fetch(root.dataset.runNow.replace("__key__", encodeURIComponent(r.key)), {method: "POST", headers: {"X-CSRFToken": csrf()}, body: new URLSearchParams()});
+          if (!res.ok) throw new Error();
+          await open(itemId());
+          statusLine(status, ["It ran: its runs are below"], "good");
+        } catch (e) { statusLine(status, ["It couldn't be run now: try again"], "bad"); }
+      });
     }
 
     // Who, values and conditions: the pieces the step forms are made of.
@@ -985,7 +1013,14 @@
         ${s.only_if ? `<p class="small">${icon("filter")} Only if ${esc(s.only_if)}</p>` : ""}
         ${s.ai ? `<div class="ai-trust stack"><div class="small">${s.ai.checked ? `People checked it ${plural(s.ai.checked, "time", "times")}: right ${s.ai.right} (${Math.round((s.ai.share || 0) * 100)}%).` : "Nobody has checked its work yet."}${s.ai.unchecked ? ` ${s.ai.unchecked} done without a check.` : ""}</div>
           ${s.ai.could_trust ? `<p class="small good-text">${icon("circle-check")} It's been right ${s.ai.right} of ${s.ai.checked} times: it could run on its own when it's sure.</p>` : ""}
-          ${canEdit ? `<label class="field"><span>Who checks its work</span><select data-review>${[["always", "A person, every time"], ["when_unsure", "A person, when the AI isn't sure"], ["never", "Nobody: it runs on its own"]].map(([v, l]) => `<option value="${v}" ${v === s.ai.review ? "selected" : ""}>${l}</option>`).join("")}</select></label>` : ""}</div>` : ""}
+          ${canEdit && !s.ai.manual ? `<label class="field"><span>Who checks its work</span><select data-review>${[["always", "A person, every time"], ["when_unsure", "A person, when the AI isn't sure"], ["never", "Nobody: it runs on its own"]].map(([v, l]) => `<option value="${v}" ${v === s.ai.review ? "selected" : ""}>${l}</option>`).join("")}</select></label>` : ""}
+          ${s.ai.manual ? `<p class="small warn-text">${icon("user")} Switched off: a person does this job instead, as a task.</p>` : ""}
+          <div class="row wrap">${canEdit ? `<button type="button" class="btn sm" data-ai-on="${s.ai.manual ? 1 : 0}">${icon("power")}${s.ai.manual ? "Switch the AI back on" : "Switch the AI off: a person does it"}</button>` : ""}
+            <a class="btn sm ghost" href="${esc(root.dataset.aiPage)}?open=${encodeURIComponent(item.key + "-" + s.at)}#ai-${encodeURIComponent(item.key + "-" + s.at)}">${icon("play")}Try it on your records</a></div></div>` : ""}
+        ${s.ai_could && canEdit ? `<details class="ai-trust"><summary class="btn sm">${icon("sparkles")}Let the AI do this</summary><form class="stack mt-1" data-form="take-over">
+          <p class="small muted">The AI fills in ${esc(s.ai_could.field)} instead, and whoever does it now checks every one to begin with.</p>
+          <label class="field"><span>What the AI is asked</span><textarea name="instructions" rows="3" placeholder="What to put in ${esc(s.ai_could.field)}, and how"></textarea></label>
+          <button class="btn primary sm">Let the AI do it</button></form></details>` : ""}
         ${formHtml ? `<form class="stack" data-form="step">${formHtml}<button class="btn primary sm">Save</button></form>` : ""}
         ${canEdit && s.type === "branch" ? `<p class="small muted">Click a way's name in the diagram to change when records go that way, or <b>Another way</b> to add one.</p>` : ""}
         ${canEdit && !formHtml && s.type !== "branch" ? `<p class="small muted">${icon("sparkles")} This kind of step is changed by asking the AI, in the box at the top.</p>` : ""}
@@ -994,6 +1029,8 @@
       panel.appendChild(box);
       $("[data-back]", box).addEventListener("click", rulePanel);
       $("[data-review]", box)?.addEventListener("change", (ev) => change({do: "set_review", at, mode: ev.target.value}));
+      $("[data-ai-on]", box)?.addEventListener("click", (ev) => change({do: "set_ai_on", at, on: ev.currentTarget.dataset.aiOn === "1"}));
+      $("[data-form=take-over]", box)?.addEventListener("submit", (ev) => { ev.preventDefault(); change({do: "ai_take_over", at, instructions: ev.target.elements.instructions.value}); });
       const form = $("[data-form=step]", box);
       if (form) {
         wireStepForm(form, s.type);
@@ -1151,6 +1188,7 @@
       const s = item;
       panel.innerHTML = "";
       const box = html(`<div class="stack"><h2 class="panel-title">${icon("arrow-right")}${esc(s.label)}</h2>
+        <a class="btn sm ghost" href="${esc(root.dataset.dataStudio)}?open=${encodeURIComponent(s.table)}">${icon("network")}Its fields, in the Data model</a>
         <div><div class="label">Stages${canEdit ? ` <span class="faint tiny">· drag to put them in order</span>` : ""}</div>
           <ul class="studio-fields" data-stages>${s.stages.map((st) => `<li ${canEdit ? 'draggable="true"' : ""} data-key="${esc(st.name)}">${canEdit ? icon("grip-vertical", "grip") : ""}
             <button type="button" data-stage="${esc(st.name)}"><span class="grow"><b>${esc(st.name)}</b>${st.start ? ' <span class="tag">start</span>' : ""}<div class="faint tiny">${plural(st.count, s.singular.toLowerCase(), s.plural.toLowerCase())}${st.rules.length ? ` · ${plural(st.rules.length, "rule", "rules")}` : ""}</div></span>${icon("chevron-right")}</button></li>`).join("")}</ul></div>

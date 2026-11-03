@@ -67,7 +67,7 @@ def remember(workspace, walked, results, why, examples_=None, tell=True):
         engine = Engine(workspace, by="checks")
         automations.notify(engine, f"After {why}, {len(broke)} thing{'s' if len(broke) != 1 else ''} your app did right "
                                    f"{'don’t' if len(broke) != 1 else 'doesn’t'} any more: {'; '.join(broke[:3])}. "
-                                   f"Undo the change under How it's set up, or ask the builder to fix it.",
+                                   f"Undo the change under Versions, or ask the builder to fix it.",
                            link=page(workspace), to="admin", kind="error")
     return broke
 
