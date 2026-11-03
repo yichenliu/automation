@@ -473,3 +473,23 @@ def test_one_kind_of_record_the_owner_says_becomes_another_is_made_from_it(app, 
         "conditions": [{"field": "status", "op": "changed_to", "value": "Confirmed"}],
         "actions": [{"type": "create_record", "table": "work_orders", "values": {"order": "{{record.id}}"}}]}}])
     assert chat._made_as_asked(asked, ws.blueprint) == []
+
+
+def test_a_refused_change_to_a_locked_record_is_tried_as_staff_the_owner_may_still_correct_it(app, owner):
+    _, ws = owner
+    _built(ws, [{"op": "create_table", "table": "invoices", "label": "Invoices", "fields": [
+        {"key": "customer", "type": "text", "required": True}, {"key": "amount_paid", "type": "money"},
+        {"key": "status", "type": "select", "options": ["Draft", "Sent", "Paid"], "default": "Draft"}],
+        "lock_if": [{"field": "status", "op": "equals", "value": "Sent"}], "lock_except": ["amount_paid"]}])
+    locked = {"title": "A sent invoice can't be changed, except to record payment", "steps": [
+        {"do": "add", "as": "inv", "table": "invoices", "values": {"customer": "Cafe Uno"}},
+        {"do": "change", "record": "inv", "values": {"status": "Sent"}},
+        {"do": "change", "record": "inv", "values": {"customer": "Someone else"}, "refused": True},
+        {"do": "change", "record": "inv", "values": {"amount_paid": 100}}],
+        "expect": [{"record": "inv", "field": "customer", "equals": "Cafe Uno"}, {"record": "inv", "field": "amount_paid", "equals": 100}]}
+    open_ = {"title": "A draft can't be changed (wrongly expected)", "steps": [
+        {"do": "add", "as": "inv", "table": "invoices", "values": {"customer": "Cafe Uno"}},
+        {"do": "change", "record": "inv", "values": {"customer": "Someone else"}, "refused": True}]}
+    _, (done, wrong) = trial.try_out(ws, [locked, open_], screens=False)
+    assert done["ok"], done  # was "should have been stopped, but wasn't": the owner may correct a sent invoice
+    assert not wrong["ok"] and "should have been stopped" in wrong["plain"]  # nothing locks a draft: still found

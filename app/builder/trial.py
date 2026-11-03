@@ -666,7 +666,13 @@ def _act(trial, engine, step, names):
     record = _record(engine, names, step.get("record"))
     t = engine.tables[record.table]
     if do == "change":
-        engine.update(record, _values(engine, t, step.get("values"), names))
+        values = _values(engine, t, step.get("values"), names)
+        if step.get("refused") and engine.locked(record) is None:  # the owner may change what's locked: it's kept from staff
+            staff = trial.engine(_person(engine, "Staff member", make=True))
+            if staff.locked(staff.get(record.id)):
+                staff.update(staff.get(record.id), values)
+                return
+        engine.update(record, values)
     elif do == "move":
         wanted = str(step.get("to") or "").strip().lower()
         if not t.get("workflow"):  # no buttons: people set its Status themselves

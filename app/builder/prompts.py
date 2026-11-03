@@ -601,6 +601,8 @@ Steps ("do"):
   already run by itself, so running it too would do it twice.
 - "run": run the scheduled automation "rule" (its key) as if its time had come.
 Add "refused": true to a step the app should NOT allow (a move whose condition isn't met, approving your own request).
+A change to a locked record (a sent invoice) is refused for staff; the owner and admins can still correct it, so a
+refused change to a locked record is tried as an ordinary staff member.
 "expect": {{"record": an "as" name, "field": a field key (or a path through links, "event.status"), "equals": the value}}
 or {{"table": a table key, "count": how many records it should then have}}.
 
