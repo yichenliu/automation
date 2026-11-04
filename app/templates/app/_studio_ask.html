@@ -2,6 +2,6 @@
   {{ icon('sparkles') }}<label class="sr-only" for="studio-ask-text">Tell the AI what to change</label>
   <input type="text" id="studio-ask-text" name="text" autocomplete="off" maxlength="2000" placeholder="{{ ask_hint|default('Or say what to change, in your own words: “add a Suppliers list, linked to Products”') }}">
   <button class="btn primary sm">Ask the AI</button>
-  <p class="studio-ask-help">The AI makes the change and tells you what it did. Every change can be taken back.</p>
+  <p class="studio-ask-help">{% if ask_example %}For example: “{{ ask_example }}”. {% endif %}The AI makes the change and tells you what it did. Every change can be taken back.</p>
   <div class="studio-ask-said small" hidden></div>
 </form>

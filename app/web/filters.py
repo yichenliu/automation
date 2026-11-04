@@ -111,7 +111,7 @@ def about_field(e, t, f):
     if f["type"] in ("select", "multi_select"):
         return kind, " · ".join(f["options"])
     if f["type"] == "link":
-        return kind, f"to {'several ' if f.get('multiple') else 'one of '}{other(f['table']).lower()}"
+        return "Picks from another list", f"{'several' if f.get('multiple') else 'one'} of your {other(f['table']).lower()}"
     if f["type"] == "lookup" and "where" in f:
         return kind, f"found in {other(f['table'])}: its {label(f['table'], f['field'].split('.')[-1]) if f['field'] else '…'}"
     if f["type"] == "lookup":

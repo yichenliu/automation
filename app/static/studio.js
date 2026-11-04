@@ -167,7 +167,7 @@
       cards.innerHTML = tables().map((t) => {
         const parent = t.embedded && t.fields.find((f) => f.link);
         return `<article class="data-card ${selected && selected.table === t.key ? "on" : ""}" data-table="${esc(t.key)}" tabindex="0" role="button" aria-label="${esc(t.label)}: what it keeps">
-          <header>${icon(t.icon)}<b class="grow">${esc(t.label)}</b><span class="faint small" title="How many there are">${t.count}</span></header>
+          <header>${icon(t.icon)}<b class="grow">${esc(t.label)}</b><span class="faint small nowrap">${esc(plural(t.count, t.singular.toLowerCase(), t.label.toLowerCase()))}</span></header>
           ${parent ? `<p class="tiny faint">The lines on each ${esc((tableOf(parent.link) || {singular: parent.label}).singular.toLowerCase())}</p>`
             : t.combines.length ? `<p class="tiny faint">Put together from ${esc(t.combines.map((k) => (tableOf(k) || {label: k}).label).join(", "))}</p>` : ""}
           <ul class="data-cols">${t.fields.map((f) => `<li class="${f.link ? "link" : ""}" data-col="${esc(f.key)}" title="${esc(f.kind)}${f.detail ? ` · ${esc(f.detail)}` : ""}">${f.link ? icon("link") : ""}${esc(f.label)}</li>`).join("")}</ul>
@@ -286,9 +286,9 @@
     function fit(least = 0.15) {
       // Everything in view; or, at the start, no smaller than can be read, from the top left (the rest is a drag away).
       const b = bounds(), r = canvas.getBoundingClientRect();
-      const whole = Math.min((r.width - 60) / (b.w + 60), (r.height - 70) / (b.h + 60));
+      const whole = Math.min((r.width - 60) / (b.w + 60), (r.height - 110) / (b.h + 60));
       const k = Math.min(1.1, Math.max(least, whole));
-      view = k > whole ? {k, x: 64 - b.x * k, y: 24 - b.y * k} : {k, x: (r.width - b.w * k) / 2 - b.x * k, y: Math.max(20, (r.height - b.h * k) / 2 - b.y * k)};
+      view = k > whole ? {k, x: 24 - b.x * k, y: 64 - b.y * k} : {k, x: (r.width - b.w * k) / 2 - b.x * k, y: Math.max(60, (r.height - b.h * k) / 2 - b.y * k)};  // (below the tools)
       apply();
     }
     function zoom(by, cx, cy) {
@@ -576,8 +576,8 @@
         <form class="stack" data-form="field">
           <label class="field"><span>Name</span><input type="text" name="label" value="${esc(f.label)}" required maxlength="80"></label>
           ${kinds.length > 1 ? `<label class="field"><span>What goes in it</span><select name="type">${kinds.map((x) => `<option value="${x.type}" ${x.type === f.type ? "selected" : ""}>${esc(x.label)}</option>`).join("")}</select>
-            <span class="help">${f.filled ? `${plural(f.filled, "record has", "records have")} one, so only a kind they already fit.` : "Any kind, while nothing is filled in yet."}</span></label>`
-            : f.filled && !f.calculated ? `<p class="help">${plural(f.filled, "record has", "records have")} one, so it can only stay ${esc(f.kind.toLowerCase())}. To keep something else, add a new column.</p>` : ""}
+            <span class="help">${f.filled ? `${plural(f.filled, `${t.singular.toLowerCase()} has`, `${t.label.toLowerCase()} have`)} something in it, so only a kind that still fits.` : "Any kind, while nothing is filled in yet."}</span></label>`
+            : f.filled && !f.calculated ? `<p class="help">${plural(f.filled, `${esc(t.singular.toLowerCase())} has`, `${esc(t.label.toLowerCase())} have`)} something in it, so it can only stay ${esc(f.kind.toLowerCase())}. To keep something else, add a new column.</p>` : ""}
           ${f.type === "formula" ? `<label class="field"><span>Worked out as</span><input type="text" name="expression" value="${esc(f.expression)}"></label>` : ""}
           <label class="field"><span>Help shown under it</span><input type="text" name="help" value="${esc(f.help)}" maxlength="200" placeholder="What to put here"></label>
           ${f.calculated ? "" : `<label class="check"><input type="checkbox" name="required" ${f.required ? "checked" : ""}> It must be filled in</label>`}
@@ -673,7 +673,7 @@
     draw();
     showPanel();
     let fitted = false;
-    const fitOnce = () => { if (!fitted && canvas.getBoundingClientRect().width) { fitted = true; fit(0.6); if (selected) reveal(selected.table); } };
+    const fitOnce = () => { if (!fitted && canvas.getBoundingClientRect().width) { fitted = true; fit(0.7); if (selected) reveal(selected.table); } };
     requestAnimationFrame(fitOnce);  // (hidden behind the map at first: fitted when it's shown)
     if (selected && new URLSearchParams(location.search).get("add") === "column") setTimeout(() => addColumn(selected.table));  // from the list's own page
     window.matchMedia("(prefers-color-scheme: dark)").addEventListener?.("change", draw);
@@ -928,6 +928,7 @@
           ${stagesHtml(c)}
           ${hand ? `<p class="map-line">${icon("user")}<span>${esc(hand)}</span></p>` : ""}
           ${c.entries.length ? `<p class="map-line">${icon(c.entries[0].icon)}<span>Comes in from ${esc(listSaid(c.entries.map((e) => e.label.charAt(0).toLowerCase() + e.label.slice(1))))}.</span></p>` : ""}
+          ${c.seen_in_portal ? `<p class="map-line">${icon("users")}<span>Customers can see theirs in their portal.</span></p>` : ""}
           ${auto.length ? `<div class="map-autos">${auto.join("")}</div>` : ""}
           ${c.people.length ? `<p class="map-line">${icon("users")}<span>Who's involved: ${esc(listSaid(c.people))}.</span></p>` : ""}
           ${ai.length ? `<p class="map-line ai">${icon("sparkles")}<span>The AI ${esc(listSaid(ai))}.</span></p>` : ""}
@@ -1030,7 +1031,7 @@
       map.processes.forEach((p) => { const sec = html(processHtml(p)); main.appendChild(sec); wireProcess(sec, p); });
       if (map.reference.length) {
         main.appendChild(html(`<section class="map-ref"><h3 class="label">${icon("table")}${map.processes.length ? "Also in your app" : "Your lists"}</h3>
-          ${map.processes.length ? `<p class="small muted">Lists the steps above look things up in, like who a piece of work is for.</p>` : ""}<div class="chips">
+          ${map.processes.length ? `<p class="small muted">Other lists the work above uses, like who it's for.</p>` : ""}<div class="chips">
           ${map.reference.map((r) => `<button type="button" class="tagchip" data-open="list:${esc(r.key)}">${icon(r.icon)}${esc(r.label)}<span class="faint">${r.count}</span>${r.problems.length ? icon("triangle-alert", r.problems.some((x) => x.bad) ? "bad-text" : "warn-text") : ""}</button>`).join("")}</div></section>`));
       }
       if (map.elsewhere.length) {
@@ -1062,7 +1063,7 @@
       const from = p && (p.links.find((l) => l.to === key) || {}).from;
       const ai = aiSaid(t);
       main.appendChild(html(`<div class="wf-head"><div class="grow"><h2>${icon(t.icon)}${esc(t.label)}</h2>
-        <p class="small muted">${esc(cap(howMany(t.count, key)))} now${p && p.cards.length > 1 ? ` · step ${p.lists.indexOf(key) + 1} of ${p.cards.length} in ${esc(p.name)}` : r && r.used_by.length ? ` · looked up by ${esc(listSaid(r.used_by))}` : ""}</p></div>
+        <p class="small muted">${esc(cap(howMany(t.count, key)))} now${p && p.cards.length > 1 ? ` · step ${p.lists.indexOf(key) + 1} of ${p.cards.length} in ${esc(p.name)}` : r && r.used_by.length ? ` · used by ${esc(listSaid(r.used_by.map((x) => x.toLowerCase())))}` : ""}</p></div>
         <div class="row wrap"><a class="btn sm" href="${esc(root.dataset.openTable.replace("__table__", key))}">${icon("external-link")}See the ${esc(many(key))}</a>
           <a class="btn sm" href="${esc(root.dataset.here)}?view=data&amp;open=${encodeURIComponent(`data:${key}`)}" data-to-data="${esc(key)}">${icon("table")}What each ${esc(one(key))} keeps</a></div></div>`));
       const atStage = new Set(t.stages.flatMap((st) => st.rules));
@@ -1079,13 +1080,15 @@
           ${canEdit ? `<button type="button" class="map-add-here" data-add-after="${esc(st.name)}">${icon("plus")}Add a stage after ${esc(st.name)}</button>`
             : `${st.moves.map((m) => `<p class="map-line">${icon("user")}<span><span class="map-tag">By hand</span>${esc(pressSaid(m))}.</span></p>`).join("")}
           ${st.approves ? `<p class="map-line">${icon("user-check")}<span><span class="map-tag">By hand</span>Someone approves ${esc(a(one(key)))} here.</span></p>` : ""}
-          ${st.rules.length ? `<div class="map-autos">${st.rules.map(said).join("")}</div>` : ""}`}</li>`;
+          ${st.rules.length ? `<div class="map-autos">${st.rules.map(said).join("")}</div>
+            ${st.rules.some((k) => hands.some((h) => h.rule === k && h.from === key) || (t.rules.find((x) => x.key === k) || {}).moves_to)
+              ? `<p class="map-line faint">${icon("info")}<span>If ${esc(a(one(key)))} stays at ${esc(st.name)}, this didn't happen: open it to see its last runs and what stopped it.</span></p>` : ""}` : ""}`}</li>`;
       const stages = t.stages.length ? `<ol class="map-stage-list ${canEdit ? "changing" : ""}" data-stage-list>${t.stages.map(stageRow).join("")}</ol>
           ${!canEdit && t.anytime.length ? t.anytime.map((m) => `<p class="map-line">${icon("user")}<span><span class="map-tag">By hand</span>At any stage, ${esc(pressSaid(m).charAt(0).toLowerCase() + pressSaid(m).slice(1))}.</span></p>`).join("") : ""}
           ${!canEdit && !t.workflow ? `<p class="map-line">${icon("user")}<span><span class="map-tag">By hand</span>People move ${esc(a(one(key)))} along by changing its ${esc(t.field_label || "Status")}.</span></p>` : ""}
           ${canEdit ? `<p class="help">Drag a stage to move it, or change its name and press Save: every ${esc(one(key))} at it, and every rule, follows.
             Their colours are set with the ${esc(t.field_label || "Status")} column, under <a href="#" data-to-data="${esc(key)}">What each ${esc(one(key))} keeps</a>.</p>` : ""}`
-        : `<p class="small muted">${esc(cap(many(key)))} don't move along stages: they're kept, and looked up.</p>`;
+        : `<p class="small muted">${esc(cap(many(key)))} don't move along stages: they're kept for the rest of the work to use${r && r.used_by.length ? ` (${esc(listSaid(r.used_by.map((x) => x.toLowerCase())))})` : ""}.</p>`;
       const rest = [...hands.filter((h) => h.from === key && !atStage.has(h.rule)), ...hands.filter((h) => h.how === "updates" && h.to === key)].map((h) => autoHtml(h))
         .concat(t.rules.filter((x) => !hands.some((h) => h.rule === x.key) && !atStage.has(x.key)).map((x) => ruleHtml(x)));
       const box = html(`<div class="map-list-view">
@@ -1335,7 +1338,8 @@
       panel.innerHTML = "";
       panel.appendChild(html(`<div class="stack"><h2 class="panel-title">${icon("zap")}About this rule</h2>
         ${canEdit ? `<form class="stack" data-form="rename"><label class="field"><span>Name</span><input type="text" name="name" value="${esc(r.name)}" required maxlength="80"></label><button class="btn sm">Save</button></form>` : ""}
-        <p class="small muted">It goes from the top down. Click any box to see it in full${canEdit ? " or change it; a + adds a step there" : ""}.${r.runs.total ? " The numbers on a step say how often it ran in the rule's last runs." : ""}</p>
+        <p class="small muted">It goes from the top down.${canEdit ? " Click a box to change it; a + adds a step there." : ""}${r.runs.total ? " The numbers on a step say how often it ran in the rule's last runs." : ""}
+          ${r.table ? ` To see what it would do for one of your ${esc(((tableOf(r.table) || {}).label || "records").toLowerCase())}, press Try it.` : ""}</p>
         ${r.can_run && canEdit ? `<button type="button" class="btn sm" data-run-now title="It does it for real, now">${icon("play")}Run it now</button>` : ""}
         ${r.hook ? `<div><div class="label">${icon("webhook")}Its address for other systems</div><p class="small muted">Your web shop or a form tool starts this rule by sending its data here. Keep it private.</p>
           <div class="row"><input type="text" class="keybox grow small" readonly value="${esc(r.hook)}" aria-label="Webhook address"><button class="btn sm" type="button" data-copy-hook>${icon("copy")}Copy</button></div></div>` : ""}
@@ -1360,11 +1364,12 @@
     }
 
     // Who, values and conditions: the pieces the step forms are made of.
-    const whoSelect = (name, value) => `<select name="${name}">${item.who.map((w) => `<option value="${esc(w.value)}" ${w.value === value ? "selected" : ""}>${esc(w.label)}</option>`).join("")}
+    const WHO_FIRST = ["owner", "admin", "editor", "creator"];
+    const whoSelect = (name, value) => `<select name="${name}">${[...item.who].sort((x, y) => (WHO_FIRST.indexOf(x.value) + 1 || 99) - (WHO_FIRST.indexOf(y.value) + 1 || 99)).map((w) => `<option value="${esc(w.value)}" ${w.value === value ? "selected" : ""}>${esc(w.label)}</option>`).join("")}
       ${value && !item.who.some((w) => w.value === value) ? `<option value="${esc(value)}" selected>${esc(value)}</option>` : ""}</select>`;
     const insertable = (table) => fieldsOf(table).map((f) => `<option value="{{record.${esc(f.key)}}}">${esc(f.label)}</option>`).join("");
-    function textWithInserts(name, label, value, long = false, table = item.table) {
-      return `<label class="field"><span>${label}</span>${long ? `<textarea name="${name}" rows="4">${esc(value || "")}</textarea>` : `<input type="text" name="${name}" value="${esc(value || "")}">`}
+    function textWithInserts(name, label, value, long = false, table = item.table, hint = "") {
+      return `<label class="field"><span>${label}</span>${long ? `<textarea name="${name}" rows="4" placeholder="${esc(hint)}">${esc(value || "")}</textarea>` : `<input type="text" name="${name}" value="${esc(value || "")}" placeholder="${esc(hint)}">`}
         ${table ? `<select class="insert" data-insert="${name}" aria-label="Put in a detail of the record"><option value="">+ Put in a detail of the ${esc(((tableOf(table) || {}).singular || "record").toLowerCase())}…</option>${insertable(table)}</select>` : ""}</label>`;
     }
     function wireInserts(scope) {
@@ -1498,7 +1503,8 @@
       const r = item;
       const tables = data.tables;
       switch (type) {
-        case "notify": return `<label class="field"><span>Who's told</span>${whoSelect("to", s.to || "owner")}<span class="help">They get a message in the app, under Notifications.</span></label>${textWithInserts("message", "What it says", s.message, true)}`;
+        case "notify": return `<label class="field"><span>Who's told</span>${whoSelect("to", s.to || "owner")}<span class="help">They get a message in the app, under Notifications.</span></label>${textWithInserts("message", "What it says", s.message, true, item.table,
+          `Like: ${(tableOf(item.table) || {singular: "It"}).singular} is ready to invoice`)}`;
         case "send_email": return `${textWithInserts("to", "To (an address, or a detail of the record)", s.to)}${textWithInserts("subject", "Subject", s.subject)}${textWithInserts("body", "Message", s.body, true)}`;
         case "task": return `<label class="field"><span>Who does it</span>${whoSelect("to", s.to || "editor")}</label>${textWithInserts("message", "What they're asked to do", s.message, true)}
           <label class="field"><span>How urgent</span><select name="priority">${["low", "normal", "high", "urgent"].map((p) => `<option value="${p}" ${p === (s.priority || "normal") ? "selected" : ""}>${p[0].toUpperCase() + p.slice(1)}</option>`).join("")}</select></label>`;

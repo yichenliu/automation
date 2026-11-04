@@ -199,3 +199,15 @@ def test_a_hand_off_says_what_else_must_be_true_and_where_its_own_record_goes_on
     login(client)
     page = client.get(f"/w/{ws.id}/app/studio").get_data(as_text=True)
     assert 'data-email-on=""' in page and 'data-me="' in page  # not connected: “email me” shown, but not offered
+
+
+def test_a_message_sent_twice_in_a_row_from_before_is_sent_once_after_any_change(app, owner):
+    from app.blueprint import ops
+    _, ws = owner
+    _built(ws, TRADE)
+    bp = dict(ws.blueprint)
+    rule = next(a for a in bp["automations"] if a["key"] == "to_job")
+    tell = {"type": "notify", "to": "everyone", "message": "Job made"}
+    rule["actions"] = rule["actions"] + [tell, dict(tell)]  # saved like this by an older version
+    done = ops.apply(bp, [{"op": "update_table", "table": "customers", "label": "Clients"}])
+    assert [x["type"] for x in next(a for a in done.blueprint["automations"] if a["key"] == "to_job")["actions"]] == ["create_record", "notify"]

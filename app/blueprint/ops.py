@@ -125,6 +125,8 @@ def apply(blueprint, ops, always_check=False, already=()):
         if restating and json.dumps(bp, sort_keys=True, default=str) == before:  # saying again what's so isn't a change
             del changes[said:]
     result.corrected = _resolve(bp, changes, {t["key"] for t in bp["tables"]} - {t["key"] for t in (blueprint or {}).get("tables", [])})
+    for a in bp["automations"]:  # the same message twice in a row, from before that was caught: sent once
+        a["actions"] = [x for n, x in enumerate(a.get("actions") or []) if not (n and x.get("type") in schema.REPEATS_ARE_SLIPS and x == a["actions"][n - 1])]
     for t in bp["tables"]:
         _default_views(t)
         if not t.get("title_field") or not schema.field(t, t["title_field"]):

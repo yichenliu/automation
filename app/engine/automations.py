@@ -1854,6 +1854,9 @@ def expression_words(engine, table, source):
         word = m.group(0)
         if word.startswith("record."):
             word = word[7:]
+        for prefix, whose in (("item.", "each line's"), ("created.", "the new record's"), ("email.", "the email's"), ("file.", "the file's")):
+            if word.startswith(prefix):  # a line's own quantity, inside a sum: never its code name
+                return f"{whose} {word[len(prefix):].replace('_', ' ').replace('.', ' ')}"
         f = schema.field(t, word.split(".")[0]) if t else None
         return _path_label(engine, table, word.split(".")) if f else m.group(0).replace("_", " ")
     text = re.sub(r"(?<![\w.])(?!(?:add_days|add_months|workday|days_between|round|convert|today|now|iif|min|max|sum)\()[A-Za-z_][\w.]*", name, text)
@@ -2014,16 +2017,16 @@ def describe_action(engine, automation, action):
             f = engine.field(table, action["source"]["field"]) or {"label": action["source"]["field"]}
             which = f" where {automations_words(engine, action['where'], f['table'])}" if action.get("where") and f.get("table") else ""
             of = (engine.tables.get(f.get("table")) or {}).get("label", "").lower()
-            text = f"Create {_article(thing)} {thing.lower()} for each of its {schema.lc(f['label'])}" + (f" ({of})" if of and of not in f["label"].lower() else "") + which
+            text = f"Add {_article(thing)} {thing.lower()} for each of its {schema.lc(f['label'])}" + (f" ({of})" if of and of not in f["label"].lower() else "") + which
         elif kind == "create_for_each":
             s = engine.tables.get(action["source"]["table"])
             which = f" where {automations_words(engine, action['where'], action['source']['table'])}" if action.get("where") else ""
             nested = schema.nested_link(s, action["source"]) if s else None
             which = (f" (and its sub-assemblies' own, through {nested['label']})" if nested else "") + which
             text = (f"For each of {_whose(engine, table, action['source'])} {schema.lc(s['label']) if s else action['source']['table']}{which}, "
-                    f"create {_article(thing)} {thing}")
+                    f"add {_article(thing)} {thing.lower()}")
         else:
-            text = f"Create {_article(thing)} {thing.lower()}" + (f" for this {mine}" if back else "")
+            text = f"Add {_article(thing)} {thing.lower()}" + (f" for this {mine}" if back else "")
         text += (": " + " · ".join(parts)) if parts else ""
     elif kind == "notify":
         to = action.get("to", "everyone")

@@ -91,7 +91,8 @@ def test_a_work_order_explodes_its_products_bill_of_materials(app, owner):
     needs = {r.data["material"]: r.data["required"] for r in Engine(ws).rows("needs") if r.data["work_order"] == order.id}
     assert needs == {timber.id: 12, screws.id: 72}
     automation = ws.blueprint["automations"][0]
-    assert automations.describe(e, automation)["then"][0].startswith("For each of its Product's bill of materials, create")
+    said = automations.describe(e, automation)["then"][0]
+    assert said.startswith("For each of its Product's bill of materials, add") and "item." not in said  # a line's own quantity, in words
 
 
 def test_a_cabinets_work_order_takes_in_its_drawer_units_own_materials(app, owner):
