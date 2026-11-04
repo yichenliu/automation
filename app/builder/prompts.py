@@ -766,6 +766,9 @@ Acted out in a copy of their app, it {how}:
 {what}
 
 Before the owner is told their app doesn't do it, look again at whose mistake it is.
+- A step that should have been refused but was allowed, done by the owner (no "by"): when the owner's words say only
+  they may do it (my signature, my OK, I approve), the app is right that the owner may; send the example with "by":
+  "staff" on that step (keeping "refused": true), "verdict": "example".
 - The example's: a number or date worked out wrong (after a "wait", the records' own dates are that many days
   older too), a value that isn't one of a field's choices, a name the app has under another key, a required field
   left out, a record added at a later stage than new ones start at (add it, then move it), a field the step must fill

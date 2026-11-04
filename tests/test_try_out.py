@@ -1125,3 +1125,25 @@ def test_an_example_is_acted_out_as_people_would_press_its_buttons(app, owner):
     with trial_.copy_of(ws) as copy:
         result = trial_.play(copy, allowed)
     assert not result["ok"] and "the owner did it, who may do nearly anything" in result["problem"], result
+
+
+def test_buttons_on_the_way_are_filled_in_with_dates_that_fit(app, owner):
+    """“Move it to Picked up” from Enquiry goes through Confirmed, whose button asks for a deposit; Picked up asks for
+    a pickup date, which mustn't be after the hire starts: filled in as a person would, with a date that fits."""
+    from app.builder import trial as trial_
+    _, ws = owner
+    _built(ws, [{"op": "create_table", "table": "bookings", "label": "Bookings", "fields": [
+        {"key": "customer", "type": "text", "required": True}, {"key": "hire_start", "type": "date", "required": True},
+        {"key": "deposit", "type": "money"}, {"key": "pickup_date", "type": "date"},
+        {"key": "status", "type": "select", "options": ["Enquiry", "Confirmed", "Picked up"]}],
+        "rules": [{"check": "is_empty(pickup_date) or pickup_date <= hire_start", "message": "Pickup can't be after hire start"}],
+        "workflow": {"field": "status", "transitions": [
+            {"from": ["Enquiry"], "to": "Confirmed", "label": "Confirm", "requires": ["deposit"]},
+            {"from": ["Confirmed"], "to": "Picked up", "label": "Check out", "requires": ["pickup_date"]}]}}])
+    example = {"title": "Picked up", "steps": [
+        {"do": "add", "as": "b1", "table": "bookings", "values": {"customer": "Ana", "hire_start": "2026-10-25"}},
+        {"do": "move", "as": "", "record": "b1", "to": "Picked up"}],
+        "expect": [{"record": "b1", "field": "status", "equals": "Picked up"}]}
+    with trial_.copy_of(ws) as copy:
+        result = trial_.play(copy, example)
+    assert result["ok"], result

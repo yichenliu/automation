@@ -878,7 +878,7 @@ def _act(trial, engine, step, names, hold=False):
             _fill_asked(trial, engine, record, t, lambda m: m["to"].lower() == wanted)
             record = engine.get(record.id)
         if not _press_move(engine, record, t, lambda m: m["to"].lower() == wanted):
-            _take_along(engine, record, t, step.get("to"))
+            _take_along(engine, record, t, step.get("to"), None if step.get("refused") else trial)
     elif do == "press":
         wanted = str(step.get("button") or "").strip().lower()
         a = next((a for a in engine.bp.get("automations", []) if a["trigger"]["type"] == "button"
@@ -963,9 +963,9 @@ def _unchanged(engine, t, record, key, value):
     return str(value if value is not None else "") == str((record.data or {}).get(key) if (record.data or {}).get(key) is not None else "")
 
 
-def _take_along(engine, record, t, target):
+def _take_along(engine, record, t, target, trial=None):
     """“Move it to Invoiced” from New: taken along the stages between by their buttons, as the person would (a rule may
-    carry it on by itself). Raises FieldErrors where it can't go on."""
+    carry it on by itself), filling in what each button asks (with `trial`). Raises FieldErrors where it can't go on."""
     field, began = t["workflow"]["field"], None
     for _ in range(len(schema.stages(t)) + 1):
         engine.reset()
@@ -979,6 +979,9 @@ def _take_along(engine, record, t, target):
             open_ = [m["to"] for _, m, _ in engine.moves(record)]
             raise FieldErrors({"_": f"from {at} there's no way to move it to {target} (it can go to: {', '.join(open_) or 'nowhere'})"})
         try:
+            if trial is not None:
+                _fill_asked(trial, engine, record, t, lambda m: m["to"].lower() == way[0].lower())
+                record = engine.get(record.id)
             pressed = _press_move(engine, record, t, lambda m: m["to"].lower() == way[0].lower())
         except FieldErrors as exc:
             raise FieldErrors({"_": f"on its way from {began} to {target} (through {', '.join(way[:-1])}), it couldn't move from "
@@ -994,11 +997,24 @@ def _fill_asked(trial, engine, record, t, pick):
     move = next((m for _, m, _ in engine.moves(record) if pick(m)), None)
     if move is None:
         return
-    needs = {f["key"]: v for f in engine.to_fill(t, record, move) if engine.kind(f) not in schema.FILES
-             for v in [sample_value(engine, t, f, trial.owner_id, {}, 300, 0)] if v is not None}
-    if needs:
-        engine.update(record, needs)
-        engine.reset()
+    asked = [f for f in engine.to_fill(t, record, move) if engine.kind(f) not in schema.FILES]
+    needs = {f["key"]: v for f in asked for v in [sample_value(engine, t, f, trial.owner_id, {}, 300, 0)] if v is not None}
+    dates = [f for f in asked if engine.kind(f) in ("date", "datetime") and f["key"] in needs]
+    own = [v for g in t["fields"] if engine.kind(g) in ("date", "datetime") and g["key"] not in needs
+           for v in [(record.data or {}).get(g["key"])] if v]  # a pickup date like the hire's own dates, not just today
+    for attempt in range(FIELD_TRIES + 1):
+        if not needs:
+            return
+        try:
+            engine.update(record, needs)
+            engine.reset()
+            return
+        except FieldErrors:
+            if not dates or attempt == FIELD_TRIES:
+                return  # left as it is: the move then says what it needs
+            for f in dates:
+                tries = own + _others(engine, f, 0)
+                needs[f["key"]] = tries[attempt % len(tries)] if tries else needs[f["key"]]
 
 
 def _press_move(engine, record, t, pick):
