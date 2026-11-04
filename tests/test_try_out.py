@@ -639,3 +639,19 @@ def test_a_record_added_then_its_lines_has_its_rules_run_once_the_lines_are_in(a
         "expect": [{"table": "stock_movements", "count": 2}]}
     _, (sold,) = trial.try_out(ws, [example], screens=False)
     assert sold["ok"], sold
+
+
+def test_a_formula_that_gives_words_is_shown_as_words_and_compared_as_them(app, owner):
+    """“Low” or “OK”, worked out by a formula marked as a number, showed and compared as no number at all."""
+    _, ws = owner
+    result = ops.apply(ws.blueprint, [{"op": "create_table", "table": "stock_items", "label": "Stock items", "fields": [
+        {"key": "name", "type": "text", "required": True}, {"key": "on_hand", "type": "number"}, {"key": "reorder_level", "type": "number"},
+        {"key": "low_stock", "type": "formula", "format": "number", "expression": "iif(on_hand <= reorder_level, 'Low', 'OK')"},
+        {"key": "value", "type": "formula", "format": "money", "expression": "iif(on_hand > 0, on_hand * 2, 0)"}]}])
+    fields = {f["key"]: f for f in result.blueprint["tables"][0]["fields"]}
+    assert fields["low_stock"]["format"] == "text" and fields["value"]["format"] == "money"
+    assert any("Low stock is shown as words" in c for c in result.changes)
+    chat.save_version(ws, result.blueprint, result.changes, "chat")
+    engine = Engine(ws)
+    as_number = {"type": "formula", "format": "number", "expression": "iif(on_hand <= reorder_level, 'Low', 'OK')"}  # an app saved before
+    assert trial._same(engine, as_number, "Low", "Low", {}) and not trial._same(engine, as_number, "OK", "Low", {})

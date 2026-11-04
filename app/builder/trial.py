@@ -990,6 +990,8 @@ def _same(engine, f, actual, wanted, names):
         wanted = parse_duration(wanted) if parse_duration(wanted) is not None else wanted
     if kind in ("number", "money", "percent", "duration", "rating") or (isinstance(wanted, (int, float)) and not isinstance(wanted, bool)):
         a, w = to_number(actual), to_number(str(wanted).replace("$", "").replace(",", "")) if not isinstance(wanted, (int, float)) else wanted
+        if a is None and w is None and actual not in (None, ""):  # words where a number was meant ("Low"): said as they are
+            return str(actual).strip().lower() == str(wanted).strip().lower()
         return a is not None and w is not None and abs(a - w) <= max(0.011, abs(w) * 0.001)
     if f is not None and (f["type"] == "link" or _shows_a_link(engine, f)):  # a lookup of a link (a note's patient, by its visit) too
         ids = actual if isinstance(actual, list) else [actual]

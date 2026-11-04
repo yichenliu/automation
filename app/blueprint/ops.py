@@ -437,6 +437,9 @@ def _resolve(bp, changes, new=()):
         for f in t["fields"]:
             if f["type"] == "lookup":
                 _resolve_lookup(t, f, tables)
+            if f["type"] == "formula" and f.get("format") in ("number", "money", "percent") and _gives_words(f.get("expression", "")):
+                f["format"] = "text"  # “Low” or “OK” shown as a number is nothing at all
+                changes.append(f"{t['label']} › {f['label']} is shown as words: it gives words, not a number")
         keys = {f["key"] for f in t["fields"]} | {"created_at", "updated_at"}
         if t["fields"]:  # sections and columns only arrange fields: one naming no field (often the lines) is skipped
             if t.get("sections"):
@@ -1318,6 +1321,28 @@ def _as_record(value):
     if not isinstance(value, str) or "created" not in value:
         return value
     return expr.TEMPLATE.sub(lambda m: "{{" + re.sub(r"\bcreated\b", "record", m.group(1)) + "}}", value)
+
+
+def _gives_words(expression):
+    """Whether a formula can only ever give words (“iif(on_hand <= reorder_level, 'Low', 'OK')”), never a number."""
+    import ast
+    try:
+        tree = expr.parse(expression)
+    except expr.ExprError:
+        return False
+
+    def words(node):
+        if isinstance(node, ast.Constant):
+            return isinstance(node.value, str)
+        if isinstance(node, ast.IfExp):
+            return words(node.body) and words(node.orelse)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            name = expr.ALIASES.get(node.func.id.lower(), node.func.id.lower())
+            if name == "iif":
+                return len(node.args) >= 3 and words(node.args[1]) and words(node.args[2])
+            return name in ("concat", "upper", "lower", "text", "format_date", "pad", "lpad")
+        return False
+    return words(tree.body)
 
 
 def _resolve_percents(t):
