@@ -816,7 +816,8 @@ def _act(trial, engine, step, names, hold=False):
         people = [approval.assignee_id, trial.owner_id] + [m.user_id for m in Membership.query.filter_by(workspace_id=trial.ws_id)]
         who = next((uid for uid in people if uid and automations.may_decide(approval, trial.member(uid), uid, record, trial.engine(uid))), None)
         if who is None:
-            raise FieldErrors({"_": f"nobody could answer “{approval.message}”"})
+            why = automations.kept_from(trial.engine(trial.owner_id), approval, record)
+            raise FieldErrors({"_": f"nobody could answer “{approval.message}”" + (f"; not the owner either: {why}" if why else "")})
         decider = trial.engine(who)
         said = step.get("comment") or step.get("reason") or next((v for v in (step.get("values") or {}).values() if isinstance(v, str)), None)
         if approval.kind == "task":

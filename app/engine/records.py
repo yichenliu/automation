@@ -118,6 +118,28 @@ class Conflict(FieldErrors):
         super().__init__({"_": message})
 
 
+class Person(str):
+    """A person field's value as expressions see it: their name, as before (it compares and sets another person field
+    as it did), and `record.physio.email` or `record.physio.first_name` in a message."""
+
+    def __new__(cls, name, uid, engine):
+        person = super().__new__(cls, name)
+        person.uid, person._engine = uid, engine
+        return person
+
+    def field(self, name):
+        if name in ("name", "full_name", "display_name"):
+            return str(self)
+        if name == "first_name":
+            return str(self).split(" ")[0]
+        if name == "email":
+            self._engine.members()
+            return self._engine._emails.get(self.uid)
+        if name == "id":
+            return self.uid
+        raise expr.ExprError(f"“.{name}” isn't something a person has: use .name or .email")
+
+
 class RecordProxy:
     """A record as expressions see it: `client.payment_terms`, `record.name`, or the record itself (its title)."""
 
@@ -671,6 +693,10 @@ class Engine:
                         self._sources[id(x)] = schema.lookup_source(t, x, self.tables)
         return self._sources.get(id(f)) if f is not None else None
 
+    def _person(self, uid):
+        name = self.members().get(int(uid))
+        return Person(name, int(uid), self) if name is not None else None
+
     def _typed(self, f, raw):
         if f["type"] == "lookup":
             source = self.source(f)
@@ -681,9 +707,9 @@ class Engine:
         if kind == "multi_select":
             return list(raw) if isinstance(raw, list) else [raw]
         if kind == "user" and f.get("multiple"):
-            return [self.members().get(int(x)) for x in (raw if isinstance(raw, list) else [raw]) if str(x).isdigit()]
+            return [self._person(x) for x in (raw if isinstance(raw, list) else [raw]) if str(x).isdigit()]
         if kind == "user":
-            return self.members().get(int(raw)) if str(raw).isdigit() else None
+            return self._person(raw) if str(raw).isdigit() else None
         if kind == "location":
             return raw if isinstance(raw, dict) else None
         if kind in ("duration", "rating"):

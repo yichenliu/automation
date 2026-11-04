@@ -21,7 +21,8 @@ CASES = 400  # combinations of values tried for one stage's moves
 def run(engine):
     return (choices(engine) + impossible(engine) + unreachable(engine) + gaps(engine) + asked_on_no(engine) + left_to_others(engine)
             + out_of_reach(engine) + needs_rates(engine) + left_unfilled(engine) + made_only_sometimes(engine) + ai_doing_sums(engine)
-            + approval_without_stages(engine) + skips_approvals(engine) + runs_while_true(engine) + wrong_kind(engine))
+            + approval_without_stages(engine) + skips_approvals(engine) + runs_while_true(engine) + wrong_kind(engine)
+            + nobody_may_answer(engine))
 
 
 STAGE_WORDS = re.compile(r"^(status|stage|state)$", re.I)
@@ -259,6 +260,31 @@ def left_to_others(engine):
                                        f"whatever the amount, with a rule's branch setting the stage, not someone else's button",
                               f"Whoever raises a {schema.lc(t['singular'])} can move it on from “{stage}” only when {when}; otherwise "
                               f"it waits for {theirs}", t["key"]))
+    return out
+
+
+def nobody_may_answer(engine):
+    """An approval or task kept from the only people it's for: the owner's OK, kept from whoever added it (a quote the
+    owner adds would wait for ever: nobody else may answer it), whoever added it kept from their own, a team kept from
+    itself."""
+    out = []
+    for a in engine.bp.get("automations", []):
+        t = engine.tables.get(a["trigger"].get("table") or "")
+        for act in schema.steps_of(a["actions"]) if t else []:
+            if act["type"] not in ("request_approval", "task"):
+                continue
+            who, apart = act.get("approver") or act.get("to"), [str(x) for x in act.get("not_by") or []]
+            if who not in apart and not (who == "owner" and "creator" in apart):
+                continue
+            one = schema.lc(t["singular"])
+            plain = f"{_a(one).capitalize()} the owner adds" if who == "owner" else f"{_a(one).capitalize()}"
+            out.append(_issue("fix", f"A step of the automation {a['key']} asks {who} but keeps it from {', '.join(apart)} (not_by), "
+                                     f"so {'a ' + t['key'] + ' record the owner adds' if who == 'owner' else 'every one'} waits for ever: "
+                                     f"nobody else may answer it. Leave {who if who != 'owner' else 'creator'} out of not_by, or ask "
+                                     f"someone it isn't kept from (a team, or admin)",
+                              f"{plain} could never be {'approved' if act['type'] == 'request_approval' else 'done'} by “{a['name']}”: "
+                              f"the only {'person' if who in ('owner', 'creator') else 'people'} it's for may not answer it",
+                              t["key"]))
     return out
 
 

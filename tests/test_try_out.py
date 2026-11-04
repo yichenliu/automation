@@ -494,6 +494,24 @@ def test_a_rule_that_routes_a_record_to_its_approver_and_straight_past_them_is_f
     assert any("starts when requests records get to “Waiting for team lead” and takes them straight on to “Approved”" in i for i in _issues(ws)), _issues(ws)
 
 
+def test_an_approval_kept_from_the_only_one_it_is_for_is_found(app, owner):
+    """The owner's OK, kept from whoever added the quote: a quote the owner adds would wait for ever. Kept from someone
+    else, or asked of a team, is fine."""
+    _, ws = owner
+    quotes = {"op": "create_table", "table": "quotes", "label": "Quotes", "fields": [
+        {"key": "title", "type": "text"}, {"key": "status", "type": "select", "options": ["Draft", "Needs approval", "Sent"]}],
+        "workflow": {"field": "status", "transitions": [{"from": ["Draft"], "to": "Needs approval", "label": "Ask"},
+                                                        {"from": ["Needs approval"], "to": "Sent", "label": "Send"}]}}
+    rule = {"key": "ok", "name": "Big discounts need the OK", "trigger": {"type": "record_updated", "table": "quotes"},
+            "conditions": [{"field": "status", "op": "changed_to", "value": "Needs approval"}],
+            "actions": [{"type": "request_approval", "approver": "owner", "not_by": ["creator"], "message": "Please approve this."}]}
+    _built(ws, [quotes, {"op": "add_automation", "automation": rule}])
+    plain = [i["plain"] for i in checks.run(Engine(ws))]
+    assert "A quote the owner adds could never be approved by “Big discounts need the OK”: the only person it's for may not answer it" in plain, plain
+    _built(ws, [{"op": "update_automation", "automation": {**rule, "actions": [{**rule["actions"][0], "approver": "admin"}]}}])
+    assert not any("could never be" in i for i in _issues(ws))
+
+
 def test_an_ai_step_that_picks_a_record_answers_with_the_one_the_example_names(app, owner):
     """The AI matches a bank payment to its invoice: in the try-out it answers with what the example expects, inv1, which
     is the invoice the example added under that name, not one called “inv1”."""

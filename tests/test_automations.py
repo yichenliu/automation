@@ -103,3 +103,24 @@ def test_a_person_column_is_never_set_to_a_team_or_role_by_a_rule(app, owner):
     assert any("Approved by holds a person, so it can't be set to “procurement”" in p for p in result.problems)
     rule["automation"]["actions"][0]["values"]["approved_by"] = "{{record.created_by}}"
     assert not any("holds a person" in p for p in ops.apply(ws.blueprint, CONSULTANCY + [reviewer, rule]).problems)
+
+
+def test_a_message_can_name_the_person_a_record_is_for_and_email_them(app, owner):
+    """“Your visit with {{record.physio.name}}”, sent to {{record.physio.email}}: a person field's name and email, while
+    {{record.physio}} itself still sets another person field to that same person."""
+    user, ws = owner
+    lead = {"op": "add_field", "table": "projects", "field": {"key": "lead", "label": "Lead", "type": "user"}}
+    second = {"op": "add_field", "table": "projects", "field": {"key": "backup", "label": "Backup", "type": "user"}}
+    rule = {"op": "add_automation", "automation": {"key": "tell", "name": "Tell the lead", "trigger": {"type": "record_created", "table": "projects"},
+                                                   "actions": [{"type": "notify", "to": "owner", "message": "{{record.lead.name}} ({{record.lead.email}}) leads {{record}}"},
+                                                               {"type": "update_record", "values": {"backup": "{{record.lead}}"}}]}}
+    result = ops.apply(ws.blueprint, CONSULTANCY + [lead, second, rule])
+    assert not result.problems, result.problems
+    chat.save_version(ws, result.blueprint, result.changes, "chat")
+    e = Engine(ws, by="Sam")
+    p = e.create("projects", {"name": "Fit-out", "lead": user.id})
+    run = Run.query.filter_by(workspace_id=ws.id, automation="tell").one()
+    assert run.status == "done", (run.steps, run.error)
+    said = Notification.query.filter_by(workspace_id=ws.id).order_by(Notification.id.desc()).first()
+    assert f"{user.display} ({user.email}) leads" in said.text
+    assert Engine(ws).get(p.id).data["backup"] == user.id

@@ -278,7 +278,8 @@ Automations: a trigger, optional conditions, and steps (actions). Each step can 
                 "mode": any|all (all: each must approve); "remind_after_days"; "escalate_after_days" + "escalate_to"
                 (passed up when nobody answers); "if_rejected": [steps] (set it back, tell whoever asked; the run then
                 stops; "{{{{reason}}}}" is what the approver wrote when saying no: "rejected_reason": "{{{{reason}}}}"); "not_by" (who may never approve it: "creator", a stage name for whoever moved it there, a person
-                field or team) and "step_up": true (confirm their sign-in). A chain is approval steps in turn: the
+                field or team; never the only one it's for: "approver": "owner" with "not_by": ["creator"] leaves what the
+                owner adds waiting for ever) and "step_up": true (confirm their sign-in). A chain is approval steps in turn: the
                 manager, then the owner "only_if" over $10,000.
             task {{"to": who, "message": what to do, "fields": [fields they fill in to finish it], "priority": low |
             normal | high | urgent or a field that says it (an Urgency choice), "flow": a flow done to finish it (a
