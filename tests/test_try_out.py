@@ -65,7 +65,7 @@ def test_mistakes_with_one_sensible_reading_are_put_right_as_the_design_comes_in
     assert any("can always move on" in c for c in result.changes) and any("“Mark as declined”" in c for c in result.changes)
     chat.save_version(ws, result.blueprint, result.changes, "chat")
     assert [i["text"] for i in checks.run(Engine(ws))] == [
-        "the automation “Chase emailed quotes” checks status changed_to “Emailed”, but quotes.status has no such choice (its "
+        "the rule “Chase emailed quotes” checks status changed_to “Emailed”, but quotes.status has no such choice (its "
         "choices: Draft, Awaiting approval, Sent, Declined): use one of them, or add it to the field's options"]
 
 

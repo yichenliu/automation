@@ -129,8 +129,10 @@ def test_stages_are_drawn_and_changed_and_a_stage_in_use_isnt_thrown_away(app, c
     done = _wf(client, ws, "stages:orders", {"do": "add_stage", "name": "Delivered", "after": "Shipped"}).get_json()
     assert done["ok"] and [s["name"] for s in done["item"]["stages"]][-1] == "Delivered"
     assert any(m["from"] == ["Shipped"] and m["to"] == "Delivered" for m in done["item"]["moves"])
-    said = _wf(client, ws, "stages:orders", {"do": "remove_stage", "name": "New"}).get_json()["error"]
-    assert said == "1 order is at New: move it on first"
+    refused = _wf(client, ws, "stages:orders", {"do": "remove_stage", "name": "New"}).get_json()
+    assert refused["error"] == "1 order is still at New. Move it to another stage first (open it and change its Status), then remove the stage"
+    assert refused["show"]["label"] == "Show the order at New" and "f_status=New" in refused["show"]["url"]
+    assert client.get(refused["show"]["url"]).status_code == 200
     done = _wf(client, ws, "stages:orders", {"do": "add_move", "from": [], "to": "New", "label": "Start again", "who": ["admin"], "requires": ["notes"]}).get_json()
     move = done["item"]["moves"][-1]
     assert (move["label"], move["from"], move["who_keys"], move["requires_keys"]) == ("Start again", [], ["admin"], ["notes"])

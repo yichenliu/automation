@@ -75,11 +75,20 @@ def _change(ws, what, make, plain=None):
         changes, before = _save(ws, ops_, what, plain)
     except (SchemaError, Refused) as exc:
         db.session.rollback()
-        return None, (jsonify(error=str(exc)), 400)
+        show = getattr(exc, "show", None)  # the records it's about, to go and see
+        return None, (jsonify(error=str(exc), **({"show": {"label": show["label"], "url": _records_at(ws, show)}} if show else {})), 400)
     except IntegrityError:  # two changes at the same moment (a double click): the first stands
         db.session.rollback()
         return None, (jsonify(error="That arrived twice at once: the first one was saved. Have a look, and change it again if you need to"), 409)
     return {"said": changes, "before": before, "version": ws.version}, None
+
+
+def _records_at(ws, show):
+    """The list's page showing only the records with that value, in a tab that doesn't leave any out."""
+    t = schema.table(ws.blueprint, show["table"]) or {}
+    views = t.get("views") or []
+    whole = next((v["key"] for v in views if not v.get("filters")), "_all" if views else None)
+    return url_for("app.table", wid=ws.id, table=show["table"], **({"view": whole} if whole else {}), **{f"f_{show['field']}": show["value"]})
 
 
 def _body():

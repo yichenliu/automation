@@ -40,11 +40,12 @@
   }
 
   // --- what a change said, and taking it back --------------------------------------------------------------------------
-  function statusLine(box, lines, kind = "good", undo = null) {
+  function statusLine(box, lines, kind = "good", undo = null, show = null) {
     if (!box) return;
     box.innerHTML = "";
     if (!lines || !lines.length) return;
     const el = html(`<div class="studio-said ${kind}">${icon(kind === "bad" ? "triangle-alert" : "circle-check")}<div class="grow">${lines.slice(0, 3).map((l) => `<div>${esc(l)}</div>`).join("")}${lines.length > 3 ? `<div class="faint">and ${lines.length - 3} more</div>` : ""}</div></div>`);
+    if (show) el.appendChild(html(`<a class="btn sm" href="${esc(show.url)}">${icon("table")}${esc(show.label)}</a>`));  // the records it's about
     if (undo) {
       const b = html(`<button type="button" class="btn sm">${icon("undo-2")}Undo</button>`);
       b.addEventListener("click", undo);
@@ -461,7 +462,7 @@
       busy = true;
       statusLine(status, ["Saving…"], "info");
       const done = await post(root.dataset.change, body).finally(() => { busy = false; });
-      if (done.error) { statusLine(status, [done.error], "bad"); return false; }
+      if (done.error) { statusLine(status, [done.error], "bad", null, done.show); return false; }
       undoStack.push(done.before);
       if (undoButton) undoButton.disabled = false;
       model = done.model;
@@ -854,7 +855,7 @@
       statusLine(status, ["Saving…"], "info");
       const was = item;
       const done = await post(root.dataset.change, {id, change: body}).finally(() => { busy = false; });
-      if (done.error) { statusLine(status, [done.error], "bad"); return false; }
+      if (done.error) { statusLine(status, [done.error], "bad", null, done.show); return false; }
       undoStack.push(done.before);
       if (body.do === "add_rule") done.said = [`Made “${body.name}”. It's on now.`];
       if (body.do === "remove_rule") { done.said = [`Deleted the rule “${was.name}”.`]; if (was.table && listOf(was.table)) done.id = `list:${was.table}`; }
@@ -1218,7 +1219,7 @@
       busy = true;
       statusLine(status, ["Saving…"], "info");
       const done = await post(root.dataset.change, {id: `stages:${key}`, change: {...body, table: key}}).finally(() => { busy = false; });
-      if (done.error) { statusLine(status, [done.error], "bad"); return false; }
+      if (done.error) { statusLine(status, [done.error], "bad", null, done.show); return false; }
       undoStack.push(done.before);
       done.said = [{rename_stage: `Renamed the stage “${body.old}” to “${body.new}”.`, remove_stage: `Removed the stage “${body.name}”.`,
                     add_stage: `Added the stage “${body.name}” after “${body.after}”.`, order_stages: "Put the stages in their new order."}[body.do] || done.said[0]];

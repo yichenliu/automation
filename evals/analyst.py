@@ -580,12 +580,15 @@ def report(result):
     return "\n".join(lines)
 
 
-def regrade(folder, only=(), resolve=False):
-    """Try out the designs a run saved (blueprint.json in each scenario's folder) and act out their stories again."""
+def regrade(folder, only=(), resolve=False, ask=False):
+    """Try out the designs a run saved (blueprint.json in each scenario's folder) and act out their stories again. `ask`:
+    the AI is asked for the changes again too, by today's builder (it needs the model); otherwise what it did then is kept."""
     from app import create_app
     results = []
     log = Path(folder) / "results.jsonl"  # what the run said, so its replies are looked at again too
     saved = {r["key"]: r for r in (json.loads(line) for line in log.read_text().splitlines() if line.strip())} if log.exists() else {}
+    kept = Path(folder) / ("regraded_asked.jsonl" if ask else "regraded.jsonl")  # what this regrade found, to look at again
+    kept.write_text("")
     for path in sorted(Path(folder).glob("*/blueprint.json")):
         key = path.parent.name
         if only and key.split("-")[0] not in only:
@@ -594,7 +597,7 @@ def regrade(folder, only=(), resolve=False):
         data = path.parent / "regrade"
         shutil.rmtree(data, ignore_errors=True)
         data.mkdir()
-        app = create_app({"DATA_DIR": data, "SQLALCHEMY_DATABASE_URI": _database(path.parent.parent, f"{key}_regrade"), "WORKER": False,
+        app = create_app({"DATA_DIR": data, "SQLALCHEMY_DATABASE_URI": _database(path.parent.parent, f"{key}_{'asked' if ask else 'regrade'}"), "WORKER": False,
                           "WTF_CSRF_ENABLED": False, "SECRET_KEY": "eval", "TESTING": True})
         with app.app_context():
             from app.extensions import db
@@ -618,11 +621,14 @@ def regrade(folder, only=(), resolve=False):
             if bp.get("tables"):
                 theirs = ux.theirs_of(ws, result)
                 result["map_ux"] = mapux.review(ws, theirs)
-                result["updates"] = updated(ws, owner, scenario, result, theirs, ask=False)
-                asked = [c for c in ((saved.get(key) or {}).get("updates") or {}).get("changes") or [] if c["how"] == "ai"]
-                result["updates"]["changes"] += asked  # (the AI isn't asked again: what it did then)
-                result["updates"]["ux"] = updates.findings(result["updates"]["changes"], theirs)
+                result["updates"] = updated(ws, owner, scenario, result, theirs, ask=ask)
+                if not ask:  # what the AI did then
+                    asked = [c for c in ((saved.get(key) or {}).get("updates") or {}).get("changes") or [] if c["how"] == "ai"]
+                    result["updates"]["changes"] += asked
+                    result["updates"]["ux"] = updates.findings(result["updates"]["changes"], theirs)
         shutil.rmtree(data, ignore_errors=True)
+        with kept.open("a") as out:
+            out.write(json.dumps(result, ensure_ascii=False, default=str) + "\n")
         print(report(result), flush=True)
         results.append(result)
     print(totals(results))
@@ -708,11 +714,12 @@ def main(argv=None):
     parser.add_argument("--fresh", type=int, default=0, help="also build this many businesses never seen before (owners' words written new)")
     parser.add_argument("--seed", type=int, help="with --fresh: which businesses (the same seed picks the same trades)")
     parser.add_argument("--resolve", action="store_true", help="with --regrade: apply today's corrections to the saved designs first")
+    parser.add_argument("--ask", action="store_true", help="with --regrade: ask the AI for the later changes again, with today's builder")
     parser.add_argument("--resume", action="store_true", help="skip what --out already has a result for (a run that stopped part way)")
     parser.add_argument("only", nargs="*")
     args = parser.parse_args(argv)
     if args.regrade:
-        regrade(args.regrade, args.only, args.resolve)
+        regrade(args.regrade, args.only, args.resolve, args.ask)
         return 0
     if not args.out:
         parser.error("--out is needed (or --regrade)")

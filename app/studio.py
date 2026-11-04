@@ -200,8 +200,11 @@ def data_ops(bp, change, filled):
             used = [(o, n) for o, n in used if n]
             if used:
                 o, n = used[0]
-                raise SchemaError(f"{n} {t['label'].lower() if n != 1 else t['singular'].lower()} {'are' if n != 1 else 'is'} “{o}”: "
-                                  f"rename the choice instead, or move {'them' if n != 1 else 'it'} to another first")
+                some = t["label"].lower() if n != 1 else t["singular"].lower()
+                exc = SchemaError(f"{n} {some} {'are' if n != 1 else 'is'} “{o}”: rename the choice instead, or change "
+                                  f"{'them' if n != 1 else 'it'} to another choice first")
+                exc.show = {"table": t["key"], "field": f["key"], "value": o, "label": f"Show the {some} that are “{o}”" if n != 1 else f"Show the {some}"}
+                raise exc
             for o in gone:
                 _not_used(bp, t, f, o, "choice")
             if not updates["options"]:
@@ -688,8 +691,7 @@ def stage_ops(bp, change, filled):
             raise SchemaError("That stage isn't there any more: reload the page")
         n = filled(t["key"], f["key"], name)
         if n:
-            raise SchemaError(f"{n} {t['label'].lower() if n != 1 else t['singular'].lower()} {'are' if n != 1 else 'is'} at {name}: "
-                              f"move {'them' if n != 1 else 'it'} on first")
+            raise _still_at(t, f, name, n)
         _not_used(bp, t, f, name)
         if len(names) <= 2:
             raise SchemaError("Stages need at least two: take the stages off instead")
@@ -736,6 +738,15 @@ def stage_ops(bp, change, filled):
         flow["transitions"].pop(i)
         return [{"op": "update_table", "table": t["key"], "workflow": flow}], []
     raise SchemaError("That can't be changed here")
+
+
+def _still_at(t, f, name, n):
+    """Refuse to take away a stage records are still at, saying how to move them, with the way to the ones it means."""
+    some = t["label"].lower() if n != 1 else t["singular"].lower()
+    exc = SchemaError(f"{n} {some} {'are' if n != 1 else 'is'} still at {name}. Move {'them' if n != 1 else 'it'} to another stage first "
+                      f"(open {'each one' if n != 1 else 'it'} and change its {f['label']}), then remove the stage")
+    exc.show = {"table": t["key"], "field": f["key"], "value": name, "label": f"Show the {some} at {name}"}
+    return exc
 
 
 def _not_used(bp, t, f, value, what="stage"):
@@ -788,8 +799,7 @@ def _plain_stage_ops(bp, t, f, change, filled):
             raise SchemaError("That stage isn't there any more: reload the page")
         n = filled(t["key"], f["key"], name)
         if n:
-            raise SchemaError(f"{n} {t['label'].lower() if n != 1 else t['singular'].lower()} {'are' if n != 1 else 'is'} at {name}: "
-                              f"move {'them' if n != 1 else 'it'} on first")
+            raise _still_at(t, f, name, n)
         _not_used(bp, t, f, name)
         names.remove(name)
     else:

@@ -294,15 +294,15 @@ def _conditions(engine):
             for c in schema.condition_leaves(v.get("filters")):
                 yield t, c, f"the view “{v.get('label') or v['key']}” of {t['label']}"
         for f in t["fields"]:
-            for key in ("show_if", "hide_if", "readonly_if"):
+            for key, when in (("show_if", "when it shows"), ("hide_if", "when it's hidden"), ("readonly_if", "when it can't be changed")):
                 for c in schema.condition_leaves(f.get(key)):
-                    yield t, c, f"{t['label']}’s {f['label']} ({key})"
+                    yield t, c, f"{t['label']}’s {f['label']} ({when})"
     for a in engine.bp.get("automations", []):
         t = engine.tables.get(a["trigger"].get("table") or "")
         if t is None:
             continue
         for c in schema.condition_leaves(a.get("conditions")):
-            yield t, c, f"the automation “{a['name']}”"
+            yield t, c, f"the rule “{a['name']}”"
         for act in schema.steps_of(a["actions"]):
             for c in schema.condition_leaves(act.get("only_if")):
                 yield t, c, f"a step of “{a['name']}”"
