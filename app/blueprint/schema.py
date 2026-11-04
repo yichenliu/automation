@@ -2800,6 +2800,13 @@ def lc(text):
     return re.sub(r"\S+", lambda m: m.group(0) if re.fullmatch(r"[A-Z0-9&/]{2,}s?", m.group(0)) else m.group(0).lower(), str(text or ""))
 
 
+def a_one(label, start=False):
+    """“a quote”, “an adoption”: a label for the middle of a sentence with its article (`start`: “An adoption” to begin one)."""
+    word = lc(label)
+    out = f"{'an' if word[:1].lower() in 'aeiou' else 'a'} {word}"
+    return out[:1].upper() + out[1:] if start else out
+
+
 def says_no(stage):
     """Whether a stage is a "no" or a stop (Rejected, Not awarded, Cancelled) rather than a step onwards."""
     return bool(SAYS_NO.search(str(stage or "")))

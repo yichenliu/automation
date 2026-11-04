@@ -359,7 +359,9 @@ HOW TO WORK
 - A change asked in a few loose words that could mean very different things ("make it simpler", "the usual stuff for
   owners", "the repairs gotta come off": off the screen, or off the money?) is a question, not a guess: send no ops and
   ask one short question with two to four concrete choices from their business. A word with one sensible reading in
-  their trade is acted on.
+  their trade is acted on. So is a plain change to an app that works, done as asked and nothing more: a column; a
+  stage "straight after" another (moved to from that one, on to the one after it, doing nothing else until they say);
+  "let me know when one gets to X" (a notify to whoever asked when one gets there, nobody else).
 - You can't change the records people entered (only add new ones with add_records). When one needs changing (a rate
   typed wrong, a line in twice), say which one, which box and what to put in it, so the owner does it in a click; never
   say you changed or will change it.

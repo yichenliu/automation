@@ -467,10 +467,10 @@ def _money_sense(engine, t, record):
     if off_f and off > subtotal + 0.01:
         out.append(_issue("fix", f"On a sample {t['key']} record ({facts}) {off_f['key']} is more than {sub_f['key']}: a discount "
                                  f"can't be bigger than what it's off (a percentage used as a whole number?)",
-                          f"A {schema.lc(t['singular'])}’s {off_f['label']} came out bigger than its subtotal ({facts})", t["key"]))
+                          f"{schema.a_one(t['singular'], start=True)}’s {off_f['label']} came out bigger than its subtotal ({facts})", t["key"]))
     if tax_f and tax is not None and tax > 0.35 * max(subtotal - off, 0.01):
         out.append(_issue("check", f"On a sample {t['key']} record ({facts}) {tax_f['key']} is more than a third of the price",
-                          f"A {schema.lc(t['singular'])}’s {tax_f['label']} looks too high ({facts})", t["key"]))
+                          f"{schema.a_one(t['singular'], start=True)}’s {tax_f['label']} looks too high ({facts})", t["key"]))
     near = lambda a, b: abs(a - b) <= 0.02  # noqa: E731
     if tax_f and total_f and tax is not None and total is not None and not (near(total, subtotal - off + tax) or near(total, subtotal - off)):
         # the total is neither the price plus its tax nor a price that includes it
@@ -478,7 +478,7 @@ def _money_sense(engine, t, record):
                "counts the tax twice" if near(total, subtotal - off + 2 * tax) else "doesn't add up")
         out.append(_issue("check", f"On a sample {t['key']} record ({facts}) {total_f['key']} {why}: it should be {sub_f['key']}"
                                    f"{' - ' + off_f['key'] if off_f else ''} + {tax_f['key']} (or the price itself, if prices include tax)",
-                          f"A {schema.lc(t['singular'])}’s total {why} ({facts})", t["key"]))
+                          f"{schema.a_one(t['singular'], start=True)}’s total {why} ({facts})", t["key"]))
     return out
 
 
@@ -517,7 +517,7 @@ def _stages(trial, engine, made, crashes):
                            f"rule on that move" if pressed else "")
                 out.append(_issue("fix", f"A {t['key']} record at {at} can't move on to {', '.join(later)}: the workflow has no move from "
                                          f"{at}" + (f" but {', '.join(stops)}" if stops else "") + instead,
-                                  f"A {schema.lc(t['singular'])} at {at} can't go on to {' or '.join(later[:2])}: "
+                                  f"{schema.a_one(t['singular'], start=True)} at {at} can't go on to {' or '.join(later[:2])}: "
                                   + (f"the only way out is {' or '.join(stops)}" if stops else "nothing moves it on")
                                   + (f" (“{pressed['name']}” sets it with a rule, skipping the stage's own checks)" if pressed else ""), t["key"]))
             if not moves:

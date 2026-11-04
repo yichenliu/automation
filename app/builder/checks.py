@@ -44,7 +44,7 @@ def approval_without_stages(engine):
         out.append(_issue("fix", f"{t['key']} records are approved by rule {asks['key']}, but their {stage['key']} is a plain choice "
                                  f"anyone can change, so the approval can be skipped by setting it on: make {stage['key']} the "
                                  f"table's workflow (stages with moves), so the move waits for the OK",
-                          f"A {schema.lc(t['singular'])} can be set on by hand without the approval “{asks['name']}” asks for",
+                          f"{schema.a_one(t['singular'], start=True)} can be set on by hand without the approval “{asks['name']}” asks for",
                           t["key"]))
     return out
 
@@ -276,8 +276,7 @@ def nobody_may_answer(engine):
             who, apart = act.get("approver") or act.get("to"), [str(x) for x in act.get("not_by") or []]
             if who not in apart and not (who == "owner" and "creator" in apart):
                 continue
-            one = schema.lc(t["singular"])
-            plain = f"{_a(one).capitalize()} the owner adds" if who == "owner" else f"{_a(one).capitalize()}"
+            plain = schema.a_one(t["singular"], start=True) + (" the owner adds" if who == "owner" else "")
             out.append(_issue("fix", f"A step of the automation {a['key']} asks {who} but keeps it from {', '.join(apart)} (not_by), "
                                      f"so {'a ' + t['key'] + ' record the owner adds' if who == 'owner' else 'every one'} waits for ever: "
                                      f"nobody else may answer it. Leave {who if who != 'owner' else 'creator'} out of not_by, or ask "
@@ -567,7 +566,7 @@ def gaps(engine):
                     out.append(_issue("fix", f"A {t['key']} record at “{stage}” with {case} has no move it can take ({rules}). Make the "
                                              f"conditions cover every case (at_least/at_most rather than greater_than/less_than on both "
                                              f"sides; give a number a default so empty counts as it)",
-                                      f"A {schema.lc(t['singular'])} at “{stage}” with {words} would be stuck: none of its next steps "
+                                      f"{schema.a_one(t['singular'], start=True)} at “{stage}” with {words} would be stuck: none of its next steps "
                                       f"allow it", t["key"]))
                     break
     return out

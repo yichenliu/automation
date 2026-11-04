@@ -4,6 +4,7 @@ A turn runs in the background (`work`), saving its progress as it goes so the ch
 then each table, field or automation as the AI writes it. Changes that don't fit are sent back to the AI to fix (twice
 at most); the design only changes when everything checks out, and every change is a new version that can be undone.
 """
+import copy
 import json
 import re
 from datetime import datetime, timedelta
@@ -343,7 +344,7 @@ def _data(workspace, items, by=None):
 
 
 def design(workspace, convo, on_progress=None, on_note=None, sheet_cells=None, imported=(), checking=None, answer_schema=None, changing=False,
-           me=None):
+           me=None, theirs=()):
     """Ask the AI for changes and check them; send problems back to it (twice at most). Returns (answer, result).
     The design isn't changed here: the caller saves result.blueprint if it has no problems. `sheet_cells` are the cells
     of spreadsheets attached to the request: their rows come in by import, so the AI typing them out is dropped, as is
@@ -365,7 +366,7 @@ def design(workspace, convo, on_progress=None, on_note=None, sheet_cells=None, i
                 on_note("Left the attached rows to the import, so they aren't added twice")
             answer["ops"] = kept
         if me and isinstance(answer.get("ops"), list):
-            _to_me(answer["ops"], me)
+            _to_me(answer["ops"], me, theirs)
         return answer
 
     try:
@@ -659,9 +660,25 @@ def _fix_request(hard, soft, failing, wrong):
     return "\n\n".join(parts)
 
 
-def _try_out(workspace, message, asked, behaviour, carry_on, progress, note, by):
+def _already_found(workspace, was):
+    """What reading the design found in it as it was before this turn (`was`): a change to a working app puts right what
+    it breaks, never more of the app than was asked (who can see what, to mend something that was there before)."""
+    from . import checks
+    if not (was or {}).get("tables"):
+        return set()
+    engine = Engine(workspace)
+    engine.bp, engine.tables = was, {t["key"]: t for t in was.get("tables", [])}
+    try:
+        return {i["text"] for i in checks.run(engine)}
+    except Exception:  # noqa: BLE001 - reading the old design is a help: without it, everything found is this turn's
+        current_app.logger.exception("Reading workspace %s's design as it was before this turn failed", workspace.id)
+        return set()
+
+
+def _try_out(workspace, message, asked, behaviour, carry_on, progress, note, by, me=None, theirs=(), was=None):
     """Try the app out (trial.py) and have the AI fix what that finds, twice at most; a fix that makes things worse is
-    undone. Returns what to show: {"examples": [...], "issues": [plain], "changes": [...made by the fixes]}."""
+    undone. `was`: the app as it was before this turn, when it's a change to one (only what the change breaks is put
+    right). Returns what to show: {"examples": [...], "issues": [plain], "changes": [...made by the fixes]}."""
     state = dict(workspace.state or {})
     kept = [x for x in state.get("examples") or [] if isinstance(x, dict)]
     new = _write_examples(workspace, asked, first=not kept and message.version_before == 0) if behaviour else []
@@ -671,9 +688,11 @@ def _try_out(workspace, message, asked, behaviour, carry_on, progress, note, by)
         note("Trying your app out")
     titles = {str(x.get("title")) for x in new}  # this turn's (a corrected one comes back as a new copy)
     examples = new + [x for x in kept if str(x.get("title")) not in titles]
+    known = _already_found(workspace, was)
     fixes, changes, before, first = 0, [], None, None
     while True:
         walked, results = trial.try_out(workspace, examples)
+        walked["issues"] = [i for i in walked["issues"] if i["text"] not in known]  # this change's to put right, not the app's before it
         walked["issues"] += _kept_as_asked(asked, workspace.blueprint) + _made_as_asked(asked, workspace.blueprint)
         hard = [i for i in walked["issues"] if i["level"] == "fix"]
         soft = [i for i in walked["issues"] if i["level"] == "check"]
@@ -701,7 +720,7 @@ def _try_out(workspace, message, asked, behaviour, carry_on, progress, note, by)
                   "changes": len(changes)}
         try:
             answer, result = design(workspace, carry_on(_fix_request(hard, soft if fixes == 1 else [], failing, wrong), None),
-                                    progress, note, answer_schema=prompts.FIX_SCHEMA)
+                                    progress, note, answer_schema=prompts.FIX_SCHEMA, changing=bool(was), me=me, theirs=theirs)
         except ai.AIError as exc:
             current_app.logger.info("Builder turn %s: no fix from the AI (%s)", message.id, exc)
             break
@@ -820,17 +839,25 @@ LET_ME_KNOW = re.compile(r"\b(let me know|tell me|notify me|alert me|ping me|rem
                         r"(note|message|notification|alert))\b", re.I)
 
 
-def _to_me(found, me):
-    """Messages to no one in particular in a turn asked to “let me know”: to the person asking, never everyone."""
+EVERYONE = ("everyone", "all", "members", "everybody")
+
+
+def _to_me(found, me, theirs=(), new=False):
+    """Messages in a turn asked to “let me know”: to the person asking. One to no one in particular always; one to
+    everyone too when its rule is made in this turn (not one of `theirs`, the rules there before it), as the owner
+    asked only for themselves."""
     if isinstance(found, list):
         for x in found:
-            _to_me(x, me)
+            _to_me(x, me, theirs, new)
     elif isinstance(found, dict):
-        if found.get("type") == "notify" and not found.get("to"):
+        rule = found.get("automation") if isinstance(found.get("automation"), dict) else None
+        if rule is not None and found.get("op") in ("add_automation", "update_automation"):
+            new = rule.get("key") not in theirs
+        if found.get("type") == "notify" and (not found.get("to") or (new and str(found["to"]).lower() in EVERYONE)):
             found["to"] = me
         for v in found.values():
             if isinstance(v, (list, dict)):
-                _to_me(v, me)
+                _to_me(v, me, theirs, new)
 
 
 def _said_before(message):
@@ -923,6 +950,8 @@ def _work(message_id):
     if question is not None and LET_ME_KNOW.search(question.text or ""):
         member = Membership.query.filter_by(workspace_id=workspace.id, user_id=question.user_id).first()
         me = "owner" if member is None or member.role == "owner" else "admin"
+    theirs = {a["key"] for a in (workspace.blueprint or {}).get("automations", [])}  # the rules there before this turn
+    was = copy.deepcopy(workspace.blueprint or {})  # the design as it was: what was wrong in it then isn't this turn's to mend
     db.session.commit()
     tried_fix, fixing, fixing_plan, plan = False, None, None, None
     imported, asked_import, reviewed, reviewing = set(), False, False, False
@@ -934,7 +963,8 @@ def _work(message_id):
                         f"plan now ({plan or 'the rest'}), with \"more\": true and \"plan\": what's still to build after them.", plan)
     for part in range(1, PARTS + 3):
         try:
-            answer, result = design(workspace, convo, progress, note, sheet_cells, imported, asked if reviewing else None, changing=changing, me=me)
+            answer, result = design(workspace, convo, progress, note, sheet_cells, imported, asked if reviewing else None, changing=changing, me=me,
+                                    theirs=theirs)
         except ai.AIUnavailable as exc:
             if replies:  # what's built so far is saved; finish with that rather than wait
                 problems.append(f"the AI stopped answering before the rest was built ({exc})")
@@ -1071,7 +1101,8 @@ def _work(message_id):
     if TRY_OUT and changes and message.version_after:
         sent_kinds = {str(o.get("op")) for o in all_ops if isinstance(o, dict)}
         try:
-            tried = _try_out(workspace, message, asked, bool(sent_kinds & BEHAVIOUR), carry_on, progress, note, by)
+            tried = _try_out(workspace, message, asked, bool(sent_kinds & BEHAVIOUR), carry_on, progress, note, by, me=me, theirs=theirs,
+                             was=was if changing else None)
         except ai.AIUnavailable:
             tried = None
         except Exception:  # trying it out must never cost the owner what was built

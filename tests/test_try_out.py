@@ -722,3 +722,18 @@ def test_a_rule_that_never_ran_on_the_record_is_said_with_why(app, owner):
                "expect": [{"record": "q1", "field": "status", "equals": "Sent"}]}
     _, (result,) = trial.try_out(ws, [example], screens=False)
     assert not result["ok"] and any("“Mark it sent” sets it, but never ran on q1: it starts when a quote is changed" in d for d in result["detail"]), result
+
+
+def test_a_stage_added_by_its_move_goes_after_the_one_it_comes_from(app, owner):
+    """“On hold, straight after Applied”, written as moves only: it's put after Applied, so the journey reads Applied → On
+    hold → Approved, and nothing thinks Adopted comes before it. A stop (Withdrawn) still goes last."""
+    _, ws = owner
+    result = ops.apply(ws.blueprint, [{"op": "create_table", "table": "adoptions", "label": "Adoptions", "fields": [
+        {"key": "animal", "type": "text", "required": True}, {"key": "status", "type": "select", "options": ["Applied", "Approved", "Adopted"]}],
+        "workflow": {"field": "status", "transitions": [
+            {"from": ["Applied"], "to": "On hold", "label": "Put on hold"}, {"from": ["Applied", "On hold"], "to": "Approved", "label": "Approve"},
+            {"from": ["Approved"], "to": "Adopted", "label": "Adopt"}, {"from": ["Applied"], "to": "Withdrawn", "label": "Withdraw"}]}}])
+    assert not result.problems, result.problems
+    status = result.blueprint["tables"][0]["fields"][1]
+    assert status["options"] == ["Applied", "On hold", "Approved", "Adopted", "Withdrawn"]
+    assert schema.a_one("Adoption", start=True) == "An adoption" and schema.a_one("GST invoice") == "a GST invoice"

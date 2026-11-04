@@ -957,7 +957,7 @@ def _resolve_workflow(t, changes):
     for m in flow["transitions"]:
         m["from"] = [spelled.get(x.lower(), x) for x in m["from"]]
         if m["to"].lower() not in spelled and len(f.get("options", [])) < 40:
-            f["options"] = list(f.get("options", [])) + [m["to"]]
+            f["options"] = _placed(list(f.get("options", [])), m["to"], m["from"])
             spelled[m["to"].lower()] = m["to"]
             added.append(m["to"])
         m["to"] = spelled.get(m["to"].lower(), m["to"])
@@ -965,6 +965,15 @@ def _resolve_workflow(t, changes):
         flow["start"] = spelled.get(flow["start"].lower(), flow["start"])
     if added:
         changes.append(f"Added {_and_words(added)} to the stages of {t['label']} ({f['label']})")
+
+
+def _placed(stages, stage, sources):
+    """The stages with a new one where its moves put it: straight after the stage it's reached from (On hold after
+    Applied, not after Adopted). One that stops or says no (Withdrawn, Rejected), or that's reached from anywhere, goes last."""
+    at = [stages.index(x) for x in sources if x in stages]
+    if schema.says_no(stage) or schema.STOPS.search(stage) or not at or len(at) > 1:
+        return stages + [stage]
+    return stages[:at[0] + 1] + [stage] + stages[at[0] + 1:]
 
 
 SEEN_BY = {"viewer": "everyone in the app", "editor": "everyone who can do the work", "admin": "only people who can change the app",

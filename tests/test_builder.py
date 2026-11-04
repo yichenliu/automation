@@ -1,4 +1,6 @@
 """The builder chat: a turn's changes are checked, fixed by the AI when they don't fit, applied, and can be undone."""
+import copy
+
 from app import ai
 from app.blueprint import schema
 from app.builder import chat
@@ -94,6 +96,30 @@ def test_let_me_know_tells_the_person_asking_not_everyone(app, owner):
     _turn(ws, "When an invoice is paid, let me know.")
     made = next(a for a in ws.blueprint["automations"] if a["key"] == "paid")
     assert made["actions"][0]["to"] == "owner"
+    # a rule made in the turn told everyone (by the AI or its own fix) is the owner's; one there before is left as it is
+    ops_ = [{"op": "add_automation", "automation": {"key": "new", "actions": [{"type": "notify", "to": "everyone"}]}},
+            {"op": "update_automation", "automation": {"key": "paid", "actions": [{"type": "notify", "to": "everyone"}]}}]
+    chat._to_me(ops_, "owner", {"paid"})
+    assert ops_[0]["automation"]["actions"][0]["to"] == "owner" and ops_[1]["automation"]["actions"][0]["to"] == "everyone"
+
+
+def test_a_change_puts_right_what_it_breaks_not_what_was_wrong_before(app, owner):
+    """The app already had something the design checks find: a small change after it isn't sent back to mend it (that
+    would change more than was asked); something this change gets wrong still is."""
+    from app.builder import checks
+    _, ws = owner
+    stuck = {"op": "add_automation", "automation": {"key": "ok", "name": "Owner's OK", "trigger": {"type": "record_created", "table": "projects"},
+                                                    "actions": [{"type": "request_approval", "approver": "owner", "not_by": ["creator"]}]}}
+    ai.set_backend(ScriptedAI({"ops": CONSULTANCY + [stuck], "reply": "Built."}))
+    _turn(ws, "build it")
+    was = copy.deepcopy(ws.blueprint)
+    found = chat._already_found(ws, was)
+    assert any("waits for ever" in text for text in found) and found == {i["text"] for i in checks.run(Engine(ws))}
+    ai.set_backend(ScriptedAI({"ops": [{"op": "add_field", "table": "projects", "field": {"key": "note", "label": "Team note", "type": "long_text"}}],
+                               "reply": "Added a Team note."}))
+    _turn(ws, "Can you add a Team note to projects?")
+    assert any("waits for ever" in text for text in {i["text"] for i in checks.run(Engine(ws))})  # still there: said, not this turn's
+    assert chat._already_found(ws, {}) == set()  # a first build: everything found is its own
 
 
 def test_a_big_request_is_built_in_parts_in_one_turn_and_undone_as_one(app, owner):
