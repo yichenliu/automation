@@ -202,6 +202,8 @@ def data_ops(bp, change, filled):
                 o, n = used[0]
                 raise SchemaError(f"{n} {t['label'].lower() if n != 1 else t['singular'].lower()} {'are' if n != 1 else 'is'} “{o}”: "
                                   f"rename the choice instead, or move {'them' if n != 1 else 'it'} to another first")
+            for o in gone:
+                _not_used(bp, t, f, o, "choice")
             if not updates["options"]:
                 raise SchemaError("Keep at least one choice")
         new_type = schema.field_type(change["type"]) if change.get("type") else f["type"]
@@ -640,7 +642,7 @@ def stage_ops(bp, change, filled):
         plain = schema.field(t, slug(change.get("field") or ""))
         if plain is None or plain["type"] != "select" or do not in ("add_stage", "rename_stage", "remove_stage", "order_stages"):
             raise SchemaError(f"{t['label']} has no stages yet")
-        return _plain_stage_ops(t, plain, change, filled), []
+        return _plain_stage_ops(bp, t, plain, change, filled), []
     f = _field(t, flow["field"])
     names = list(f["options"])
     if do == "remove_stages":
@@ -673,6 +675,7 @@ def stage_ops(bp, change, filled):
         if n:
             raise SchemaError(f"{n} {t['label'].lower() if n != 1 else t['singular'].lower()} {'are' if n != 1 else 'is'} at {name}: "
                               f"move {'them' if n != 1 else 'it'} on first")
+        _not_used(bp, t, f, name)
         if len(names) <= 2:
             raise SchemaError("Stages need at least two: take the stages off instead")
         names.remove(name)
@@ -720,7 +723,35 @@ def stage_ops(bp, change, filled):
     raise SchemaError("That can't be changed here")
 
 
-def _plain_stage_ops(t, f, change, filled):
+def _not_used(bp, t, f, value, what="stage"):
+    """Refuse to take away a stage (or choice) a rule waits for, checks or sets: taking it away would quietly stop the
+    rule (a job's invoice never made). The rule is named, to change or delete first."""
+    def conds(cs, table):
+        return any(isinstance(c, dict) and table == t["key"] and c.get("field") == f["key"]
+                   and (c.get("value") == value or (isinstance(c.get("value"), list) and value in c["value"])) for c in cs or [])
+
+    def steps(actions, table):
+        for s in actions or []:
+            if not isinstance(s, dict):
+                continue
+            to = s.get("table") if s.get("type") in ("create_record", "create_for_each", "update_each") else table
+            if s.get("type") == "update_record" and s.get("target"):
+                link = schema.field(next((x for x in bp.get("tables", []) if x["key"] == table), {"fields": []}), s["target"])
+                to = (link or {}).get("table")
+            if (to == t["key"] and (s.get("values") or {}).get(f["key"]) == value) or conds(s.get("only_if"), table):
+                return True
+            if steps(s.get("otherwise"), table) or steps(s.get("if_rejected"), table) or any(
+                    conds(p.get("when"), table) or steps(p.get("steps"), table) for p in s.get("paths") or [] if isinstance(p, dict)):
+                return True
+        return False
+    for a in bp.get("automations", []):
+        table = a["trigger"].get("table")
+        if conds(a.get("conditions"), table) or steps(a.get("actions"), table):
+            raise SchemaError(f"The rule “{a['name']}” uses the {what} {value}: change or delete that rule first, so nothing stops working "
+                              f"without you knowing")
+
+
+def _plain_stage_ops(bp, t, f, change, filled):
     """The stages of a list whose Status is a plain choice (anyone picks any): changed as its choices, in order."""
     do, names = change.get("do"), list(f["options"])
     if do == "add_stage":
@@ -744,6 +775,7 @@ def _plain_stage_ops(t, f, change, filled):
         if n:
             raise SchemaError(f"{n} {t['label'].lower() if n != 1 else t['singular'].lower()} {'are' if n != 1 else 'is'} at {name}: "
                               f"move {'them' if n != 1 else 'it'} on first")
+        _not_used(bp, t, f, name)
         names.remove(name)
     else:
         order = [str(x) for x in change.get("names") or []]
@@ -781,6 +813,10 @@ def rule_ops(bp, change):
         key = _fresh_key({a["key"] for a in bp.get("automations", [])}, name, "rule")
         trigger = change.get("trigger") or {}
         step = change.get("step") or {"type": "notify", "message": f"{name}: {{{{record}}}}", "to": "admin"}
+        made = schema.normalize_automation({"key": key, "name": name, "trigger": trigger, "conditions": change.get("conditions") or [], "actions": [_step(step)]})
+        same = next((a for a in bp.get("automations", []) if (a["trigger"], a["conditions"], a["actions"]) == (made["trigger"], made["conditions"], made["actions"])), None)
+        if same:  # pressed twice, or made before: one is enough
+            raise SchemaError(f"There's a rule that does exactly this already: “{same['name']}”")
         return [{"op": "add_automation", "automation": {"key": key, "name": name, "trigger": trigger,
                                                          "conditions": change.get("conditions") or [], "actions": [_step(step)]}}], key
     a = copy.deepcopy(next((x for x in bp.get("automations", []) if x["key"] == change.get("key")), None))
@@ -793,7 +829,13 @@ def rule_ops(bp, change):
     elif do == "set_enabled":
         a["enabled"] = _yes(change.get("on"))
     elif do == "set_trigger":
-        a["trigger"] = schema.normalize_trigger(change.get("trigger") or {})
+        raw = dict(change.get("trigger") or {})
+        field, to = raw.pop("field", None), raw.pop("to", None)
+        a["trigger"] = schema.normalize_trigger(raw)
+        if field or a["trigger"]["type"] not in ("record_updated", "record_created_or_updated"):  # what it waits for, said again
+            a["conditions"] = [c for c in a["conditions"] if c.get("op") not in ("changed", "changed_to")]
+        if field and to:
+            a["conditions"].insert(0, schema.normalize_condition({"field": field, "op": "changed_to", "value": to}))
     elif do == "set_conditions":
         a["conditions"] = [schema.normalize_condition(c) for c in change.get("conditions") or []]
     elif do == "add_step":

@@ -227,3 +227,29 @@ def test_versions_undo_a_change_back_to_just_before_it_and_count_stages_as_the_m
     from app.extensions import db
     db.session.refresh(ws)
     assert not any(f["key"] == "paid_by_card" for t in ws.blueprint["tables"] if t["key"] == "payments" for f in t["fields"])
+
+
+def test_a_stage_a_rule_uses_cant_be_removed_unseen_and_a_rule_made_twice_is_made_once(app, client, owner):
+    """Removing Signed off would quietly stop invoicing: refused, the rule named. The same rule sent twice (a double
+    click) is made once. A rule's start changed to a stage waits for that stage."""
+    _, ws = owner
+    _built(ws, TRADE)
+    login(client)
+    url = f"/w/{ws.id}/app/studio/workflows/change"
+    gone = client.post(url, json={"id": "stages:jobs", "change": {"do": "remove_stage", "name": "Signed off"}})
+    assert gone.status_code == 400 and "Signed-off jobs are invoiced" in gone.get_json()["error"]
+    plain = client.post(url, json={"id": "stages:invoices", "change": {"do": "remove_stage", "field": "status", "name": "Paid"}})  # a plain Status
+    assert plain.status_code == 400 and "A payment marks its invoice paid" in plain.get_json()["error"]
+    choice = client.post(f"/w/{ws.id}/app/studio/data/change", json={"do": "update_field", "table": "invoices", "key": "status", "options": ["Draft", "Sent"]})
+    assert choice.status_code == 400 and "A payment marks its invoice paid" in choice.get_json()["error"]
+    rule = {"id": "", "change": {"do": "add_rule", "name": "Tell me", "trigger": {"type": "record_updated", "table": "quotes", "field": "status", "to": "Accepted"},
+                                 "step": {"type": "notify", "to": "owner", "message": "{{record}} is now Accepted"}}}
+    made = client.post(url, json=rule).get_json()
+    assert made["ok"] and client.post(url, json=rule).status_code == 400  # the second press
+    key = made["id"].split(":")[1]
+    moved = client.post(url, json={"id": made["id"], "change": {"do": "set_trigger", "trigger": {"type": "record_updated", "table": "quotes", "field": "status", "to": "Sent"}}})
+    assert moved.get_json()["ok"]
+    from app.extensions import db
+    db.session.refresh(ws)
+    a = next(x for x in ws.blueprint["automations"] if x["key"] == key)
+    assert [c for c in a["conditions"] if c["op"] == "changed_to"] == [{"field": "status", "op": "changed_to", "value": "Sent"}]

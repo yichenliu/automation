@@ -1180,3 +1180,5 @@ input.unsaved { border-color: var(--warn); box-shadow: 0 0 0 2px var(--warn-weak
 
 .rename-list summary { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); cursor: pointer; } .rename-list summary .i { width: 13px; height: 13px; }
 .studio-panel .studio-said { box-shadow: none; }
+.danger-zone .btn { white-space: normal; text-align: left; height: auto; min-height: 30px; max-width: 100%; }
+.map-stage-name { color: var(--text); font-weight: 650; text-align: left; } .map-stage-name:hover { color: var(--accent-text); }

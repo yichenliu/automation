@@ -422,9 +422,12 @@
     }
 
     // --- changing it -----------------------------------------------------------------------------------------------
+    let busy = false;  // one change at a time: a second press while the first is saving does nothing
     async function change(body) {
+      if (busy) return false;
+      busy = true;
       statusLine(status, ["Saving…"], "info");
-      const done = await post(root.dataset.change, body);
+      const done = await post(root.dataset.change, body).finally(() => { busy = false; });
       if (done.error) { statusLine(status, [done.error], "bad"); return false; }
       undoStack.push(done.before);
       if (undoButton) undoButton.disabled = false;
@@ -807,17 +810,23 @@
       draw();
     }
 
+    let busy = false;  // one change at a time: a second press while the first is saving does nothing
     async function change(body, id = itemId()) {
+      if (busy) return false;
+      busy = true;
       statusLine(status, ["Saving…"], "info");
-      const done = await post(root.dataset.change, {id, change: body});
+      const was = item;
+      const done = await post(root.dataset.change, {id, change: body}).finally(() => { busy = false; });
       if (done.error) { statusLine(status, [done.error], "bad"); return false; }
       undoStack.push(done.before);
       if (body.do === "add_rule") done.said = [`Made “${body.name}”. It's on now.`];
+      if (body.do === "remove_rule") { done.said = [`Deleted the rule “${was.name}”.`]; if (was.table && listOf(was.table)) done.id = `list:${was.table}`; }
       data.items = done.items; data.tables = done.tables;
       item = done.item || {kind: "map"}; tried = null;
       remember(done.id || itemId());
       const fresh = await get(root.dataset.mapJson);  // the map follows: a new stage, a rule handing work on
       if (fresh) { map = fresh.map; data = fresh.data; }
+      if (!done.item && done.id && mapItem(done.id)) item = mapItem(done.id);  // back to the list it was about
       draw();
       statusLine(status, done.said, "good", takeBack);
       return true;
@@ -904,7 +913,7 @@
       const only = (r.only_if || []).length ? ` if ${esc(r.only_if.map((x) => x.charAt(0).toLowerCase() + x.slice(1)).join(" and "))}` : "";
       const said = r.event === "button" ? `<span class="map-tag">By hand</span>Someone presses “${esc(r.press || r.name)}”<span class="muted">, then the app does the rest: ${esc(r.name)}</span>`
         : r.event === "schedule" ? `${here ? `<span class="map-tag auto">Automatic</span>` : ""}${esc(cap(every))}: ${esc(r.name)}<span class="muted">${here ? `, for the ones here${only}` : r.at ? `, for ones at ${esc(r.at)}${only}` : only}${on}</span>`
-        : `${here ? `<span class="map-tag auto">Automatic</span>When one gets here: ` : ""}${esc(r.name)}<span class="muted">${!here && r.at && !r.name.toLowerCase().includes(r.at.toLowerCase()) ? ` · when one reaches ${esc(r.at)}` : ""}${only}${on}</span>`;
+        : `${here ? `<span class="map-tag auto">Automatic</span>${/^when\b/i.test(r.name) ? "" : "When one gets here: "}` : ""}${esc(r.name)}<span class="muted">${!here && r.at && !r.name.toLowerCase().includes(r.at.toLowerCase()) ? ` · when one reaches ${esc(r.at)}` : ""}${only}${on}</span>`;
       return `<button type="button" class="map-auto ${r.on ? "" : "off"}" data-open="rule:${esc(r.key)}" title="See or change this rule">
         ${icon(r.event === "button" ? "user" : "zap")}<span>${said}${r.on ? "" : ` <span class="tag">switched off</span>`}${stoppedSaid(r.stopped)}</span></button>`;
     }
@@ -1095,8 +1104,10 @@
           <div class="row">${canEdit ? `${icon("grip-vertical", "grip")}<input type="text" class="grow" value="${esc(st.name)}" data-rename-stage="${esc(st.name)}" maxlength="60" aria-label="Name of the stage ${esc(st.name)}">
             <button type="button" class="btn sm primary" data-save-stage hidden>Save</button>
             <button type="button" class="btn sm ghost icon" data-remove-stage="${esc(st.name)}" title="Remove this stage" aria-label="Remove ${esc(st.name)}">${icon("trash-2")}</button>`
-            : `<b class="grow">${esc(st.name)}</b><span class="faint small nowrap">${st.count ? `${esc(howMany(st.count, key))} here now` : "none here now"}</span>`}</div>
-          ${canEdit ? `<button type="button" class="map-add-here" data-add-after="${esc(st.name)}">${icon("plus")}Add a stage after ${esc(st.name)}</button>`
+            : `<b class="grow">${allowed ? `<button type="button" class="link map-stage-name" data-change-stage="${esc(st.name)}" title="Rename it, or add a stage after it">${esc(st.name)}</button>` : esc(st.name)}</b>
+              <span class="muted small nowrap">${st.count ? `${esc(howMany(st.count, key))} here now` : "none here now"}</span>`}</div>
+          ${canEdit ? `${st.rules.length ? `<div class="map-autos">${st.rules.map(said).join("")}</div>` : ""}
+            <button type="button" class="map-add-here" data-add-after="${esc(st.name)}">${icon("plus")}Add a stage after ${esc(st.name)}</button>`
             : `${st.moves.map((m) => `<p class="map-line">${icon("user")}<span><span class="map-tag">By hand</span>${esc(pressSaid(m))}.</span></p>`).join("")}
           ${st.approves ? `<p class="map-line">${icon("user-check")}<span><span class="map-tag">By hand</span>Someone approves ${esc(a(one(key)))} here.</span></p>` : ""}
           ${st.rules.length ? `<div class="map-autos">${st.rules.map(said).join("")}</div>
@@ -1133,6 +1144,11 @@
       $("[data-add-stages]", box)?.addEventListener("click", () => newStages(key));
       $("[data-new-rule]", box)?.addEventListener("click", () => newRule(key));
       $("[data-edit-stages]", box)?.addEventListener("click", () => hooks.edit?.(true));
+      $$("[data-change-stage]", box).forEach((b) => b.addEventListener("click", () => {
+        hooks.edit?.(true);
+        const input = $(`[data-rename-stage="${CSS.escape(b.dataset.changeStage)}"]`, main);
+        if (input) { input.focus(); input.select(); }
+      }));
       const list = $("[data-stage-list]", box);
       if (canEdit && list) {
         const field = t.field;
@@ -1160,10 +1176,14 @@
     }
     // A list's stages changed where they're shown: the list stays open, drawn again from the design as it is now.
     async function stageChange(key, body) {
+      if (busy) return false;
+      busy = true;
       statusLine(status, ["Saving…"], "info");
-      const done = await post(root.dataset.change, {id: `stages:${key}`, change: {...body, table: key}});
+      const done = await post(root.dataset.change, {id: `stages:${key}`, change: {...body, table: key}}).finally(() => { busy = false; });
       if (done.error) { statusLine(status, [done.error], "bad"); return false; }
       undoStack.push(done.before);
+      done.said = [{rename_stage: `Renamed the stage “${body.old}” to “${body.new}”.`, remove_stage: `Removed the stage “${body.name}”.`,
+                    add_stage: `Added the stage “${body.name}” after “${body.after}”.`, order_stages: "Put the stages in their new order."}[body.do] || done.said[0]];
       const fresh = await get(root.dataset.mapJson);
       if (fresh) { map = fresh.map; data = fresh.data; }
       draw();
@@ -1332,6 +1352,7 @@
       $("[data-try-it]", main)?.addEventListener("click", () => { tryPanel(); intoView(); });
       $("[data-untry]", main)?.addEventListener("click", () => { tried = null; draw(); });
       $$(".wf-step", chart).forEach((n) => activate(n, () => { stepPanel(n.dataset.at); intoView(); }));
+      chart.addEventListener("click", (ev) => { if (ev.target === chart) { $$(".wf-node.selected", main).forEach((x) => x.classList.remove("selected")); rulePanel(); } });
       activate($("[data-edit=when]", chart), whenPanel);
       const cond = $("[data-edit=if]", chart);
       if (cond) activate(cond, conditionsPanel);
@@ -1470,14 +1491,16 @@
     function whenPanel() {
       const r = item, tr = r.trigger;
       const tables = data.tables;
+      const waitsFor = tr.type === "record_updated" && r.conditions.find((c) => c.op === "changed_to" && listOf(tr.table) && c.field === listOf(tr.table).field);
       panel.innerHTML = "";
       const box = html(`<div class="stack"><h2 class="panel-title">${icon("zap")}When it starts</h2><p class="small muted">${esc(r.when)}</p>
         ${canEdit ? `<form class="stack" data-form="when">
           <label class="field"><span>It starts when</span><select name="type">
-            ${[["record_created", "a record is added"], ["record_updated", "a record is changed"], ["record_created_or_updated", "a record is added or changed"],
-               ["record_deleted", "a record is deleted"], ["button", "someone presses its button"], ["schedule", "on a schedule"]].map(([v, l]) => `<option value="${v}" ${v === tr.type ? "selected" : ""}>${l}</option>`).join("")}
+            ${[["stage", "one reaches a stage"], ["record_created", "one is added"], ["record_updated", "one is changed"], ["record_created_or_updated", "one is added or changed"],
+               ["record_deleted", "one is deleted"], ["button", "someone presses its button"], ["schedule", "on a schedule"]].map(([v, l]) => `<option value="${v}" ${v === (waitsFor ? "stage" : tr.type) ? "selected" : ""}>${l}</option>`).join("")}
             ${["email_received", "file_added", "webhook_received"].includes(tr.type) ? `<option value="${tr.type}" selected>${esc(r.when)}</option>` : ""}</select></label>
           <label class="field" data-for="record"><span>In the list</span><select name="table">${tables.map((t) => `<option value="${esc(t.key)}" ${t.key === tr.table ? "selected" : ""}>${esc(t.label)}</option>`).join("")}</select></label>
+          <label class="field" data-for="stage"><span>The stage</span><select name="stage"></select></label>
           <label class="field" data-for="button"><span>The button says</span><input type="text" name="label" value="${esc(tr.label || "Run")}" maxlength="40"></label>
           <div class="row" data-for="schedule"><label class="field grow"><span>Every</span><select name="every">${["hour", "day", "week", "month"].map((e) => `<option ${e === tr.every ? "selected" : ""}>${e}</option>`).join("")}</select></label>
             <label class="field grow"><span>At</span><input name="at" type="time" value="${esc(tr.at || "08:00")}"></label></div>
@@ -1488,13 +1511,22 @@
       const show = () => {
         const t = form.elements.type.value;
         $$("[data-for]", form).forEach((el) => {
-          el.hidden = !(el.dataset.for === "record" ? ["record_created", "record_updated", "record_created_or_updated", "record_deleted", "button"].includes(t) : el.dataset.for === t);
+          el.hidden = !(el.dataset.for === "record" ? ["stage", "record_created", "record_updated", "record_created_or_updated", "record_deleted", "button"].includes(t) : el.dataset.for === t);
         });
+        const names = (listOf(form.elements.table.value) || {stages: []}).stages.map((st) => st.name);
+        const was = form.elements.stage.value || (waitsFor || {}).value;
+        form.elements.stage.innerHTML = names.map((n) => `<option ${n === was ? "selected" : ""}>${esc(n)}</option>`).join("");
+        $("[value=stage]", form.elements.type).disabled = !names.length;
       };
-      form.elements.type.addEventListener("change", show); show();
+      form.elements.type.addEventListener("change", show); form.elements.table.addEventListener("change", show); show();
       form.addEventListener("submit", (ev) => {
         ev.preventDefault();
         const t = form.elements.type.value;
+        if (t === "stage") {
+          const table = form.elements.table.value;
+          change({do: "set_trigger", trigger: {type: "record_updated", table, field: (listOf(table) || {}).field, to: form.elements.stage.value}});
+          return;
+        }
         const trigger = {...(["email_received", "file_added", "webhook_received"].includes(t) ? tr : {}), type: t};
         if (t !== "schedule" && !["email_received", "file_added", "webhook_received"].includes(t)) trigger.table = form.elements.table.value;
         if (t === "button") trigger.label = form.elements.label.value;
@@ -1908,6 +1940,11 @@
     }
 
     draw();
+    addEventListener("keydown", (ev) => {  // Escape: back from a box to the rule (or the stages) it's part of
+      if (ev.key !== "Escape" || root.closest("[hidden]") || ["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName)) return;
+      if (item?.kind === "rule") { $$(".wf-node.selected", main).forEach((x) => x.classList.remove("selected")); rulePanel(); }
+      else if (item?.kind === "stages") stagesPanel();
+    });
     root.addEventListener("click", (ev) => {  // a "What each one keeps" link anywhere in a panel drawn by the older code
       const a = ev.target.closest("[data-to-data]");
       if (a && !a.dataset.wired) { ev.preventDefault(); hooks.toData?.(a.dataset.toData); }
@@ -1931,6 +1968,10 @@
     // they're changing it until they're done.
     const bar = $("[data-editing-bar]");
     function edit(on) {
+      const typed = $$("input.unsaved", page);
+      if (!on && typed.length) {
+        if (confirm(`You typed “${typed[0].value}” but haven't saved it. Save it now?`)) { typed[0].parentElement.querySelector("[data-save-stage], [data-save-choice]")?.click(); return; }
+      }
       const was = bar && !bar.hidden;
       if (bar) bar.hidden = !on;
       mapApi.setEditing(on);

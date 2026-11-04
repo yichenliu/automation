@@ -322,8 +322,11 @@ stages it went through. A key at the top says what the marks mean; the browser's
 on, what happens automatically when one gets there), where they come from, what happens automatically, where the AI
 helps, its step-by-step screens. **Looking is safe**: nothing on the page changes the app until someone presses a Change
 button (Change the stages, Change this rule, Change what it keeps) and save; then a bar says they're changing it until
-they press Done. A name is only saved when they press Save (or Enter), never by clicking away; switching a rule off and
-removing a stage or a choice ask first. Stages are changed where they're shown: renamed in place, dragged into order,
+they press Done. A name is only saved when they press Save (or Enter), never by clicking away (Done asks first if one's typed
+and not saved); switching a rule off and removing a stage or a choice ask first, and a stage or choice a rule waits for,
+checks or sets can't be removed until that rule is changed (it says which). One change at a time: a second press while
+one is saving does nothing, and a rule exactly like one already there isn't made again. After each change, a note at
+the foot of the screen says what changed, with Undo; Versions offers Undo this (and later) on every change. Stages are changed where they're shown: renamed in place, dragged into order,
 removed, or a new one added after any other ("Add a stage after On site"; put between two, it leads on to the next), on a list with stages of its own or one whose Status is a plain
 choice (its choices, never a second Status). **Make something happen automatically** starts a rule in plain words:
 when a job reaches a stage, is added or changed, or has a button pressed, tell the owner, the admins or everyone in the

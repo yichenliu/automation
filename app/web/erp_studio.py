@@ -8,6 +8,7 @@ import copy
 
 from flask import abort, current_app, g, jsonify, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
+from sqlalchemy.exc import IntegrityError
 
 from .. import appmap, studio
 from ..blueprint import ops, schema
@@ -74,6 +75,9 @@ def _change(ws, what, make):
     except (SchemaError, Refused) as exc:
         db.session.rollback()
         return None, (jsonify(error=str(exc)), 400)
+    except IntegrityError:  # two changes at the same moment (a double click): the first stands
+        db.session.rollback()
+        return None, (jsonify(error="That arrived twice at once: the first one was saved. Have a look, and change it again if you need to"), 409)
     return {"said": changes, "before": before, "version": ws.version}, None
 
 

@@ -498,4 +498,8 @@
     $("#assistant-text").addEventListener("keydown", (ev) => { if (ev.key === "Enter" && !ev.shiftKey) { ev.preventDefault(); ask(ev.target.value); } });
   }
   window.openAssistant = openAssistant;
+  // "Something not right here?" opened at the foot of a page: brought into view, not left below the fold
+  document.addEventListener("toggle", (ev) => {
+    if (ev.target.matches?.("details.not-right") && ev.target.open) ev.target.scrollIntoView({behavior: "smooth", block: "nearest"});
+  }, true);
 })();
