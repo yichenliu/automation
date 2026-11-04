@@ -1824,12 +1824,12 @@ def _apply_one(bp, op, raw, result, where):
                 table = schema.table(bp, was.get("table") or "")
                 changes.append(f"“{a['name']}” still starts when a new {(table or {}).get('singular', 'record').lower()} is added, as it did")
             bp["automations"][bp["automations"].index(existing)] = a
-            changes.append(f"Changed the automation “{a['name']}” ({_automation_said(bp, a)})")
+            changes.append(f"Changed the rule “{a['name']}” ({_automation_said(bp, a)})")
         elif op == "update_automation":
             raise SchemaError(f"there's no automation “{a['key']}”")
         else:
             bp["automations"].append(a)
-            changes.append(f"Added the automation “{a['name']}” ({_automation_said(bp, a)})")
+            changes.append(f"Added the rule “{a['name']}” ({_automation_said(bp, a)})")
         result.navigate = result.navigate or "automations"
     elif op == "remove_automation":
         key = slug(_first(raw, "key", "automation", "name", default=""))
@@ -1837,7 +1837,7 @@ def _apply_one(bp, op, raw, result, where):
         if not a:
             raise SchemaError(f"there's no automation “{key}”")
         bp["automations"].remove(a)
-        changes.append(f"Removed the automation “{a['name']}”")
+        changes.append(f"Removed the rule “{a['name']}”")
     elif op == "add_records":
         t = _table(bp, _first(raw, "table"), problems, where)
         if not t:

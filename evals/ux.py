@@ -117,16 +117,7 @@ def _page(engine, who, path, html, theirs):
     out = []
     nodes = _text(html)
     for node in nodes:
-        if CODE.search(node):
-            out.append(_finding("blocker", "code on screen", who, where, f"shows code: “{node[:80]}”"))
-        elif node in EMPTYISH and node not in theirs:  # "None" as the app's own choice (no shortage) is a word, not code
-            out.append(_finding("confusing", "code on screen", who, where, f"shows “{node}” where a value or a blank belongs"))
-        for token in SNAKE.findall(node):
-            out.append(_finding("confusing", "code name on screen", who, where, f"shows the code name “{token}” instead of words"))
-        for date in ISO.findall(node):
-            out.append(_finding("confusing", "date written as code", who, where, f"shows the date “{date}” the way computers write it"))
-        for word in {m.group(0).lower() for m in JARGON.finditer(node)} - theirs:
-            out.append(_finding("confusing", "word they won't know", who, where, f"says “{word}”: “{node[:90]}”"))
+        out += words_found(node, theirs, who, where)
     if path.endswith("/new"):  # editing shows what's filled in: it's theirs
         upfront = re.sub(r'(?is)<details class="more-fields".*?</details>', " ", html)  # what waits under "More details" isn't asked up front
         asked = [a for _, a in INPUT.findall(upfront) if not re.search(r'type="(hidden|submit|button|search)"|name="(csrf_token|q)"', a)]
@@ -140,6 +131,30 @@ def _page(engine, who, path, html, theirs):
     if table and columns > COLUMNS and "as-cards" not in table.group(0)[:200]:  # a list that turns into cards on a phone reads fine
         out.append(_finding("idea", "wide list", who, where, f"the list has {columns} columns: hard to read on a phone"))
     return out
+
+
+def words_found(text, theirs, who, where):
+    """What a beginner would trip over in one piece of text they're shown: code, a value that's code ("None"), a code
+    name, a date the way computers write it, a word they won't use (unless it's theirs)."""
+    out = []
+    if CODE.search(text):
+        out.append(_finding("blocker", "code on screen", who, where, f"shows code: “{text[:80]}”"))
+    elif text in EMPTYISH and text not in theirs:  # "None" as the app's own choice (no shortage) is a word, not code
+        out.append(_finding("confusing", "code on screen", who, where, f"shows “{text}” where a value or a blank belongs"))
+    for token in SNAKE.findall(text):
+        out.append(_finding("confusing", "code name on screen", who, where, f"shows the code name “{token}” instead of words"))
+    for date in ISO.findall(text):
+        out.append(_finding("confusing", "date written as code", who, where, f"shows the date “{date}” the way computers write it"))
+    for word in {m.group(0).lower() for m in JARGON.finditer(text)} - theirs:
+        out.append(_finding("confusing", "word they won't know", who, where, f"says “{word}”: “{text[:90]}”"))
+    return out
+
+
+def theirs_of(workspace, result):
+    """The owner's own words (what they said, and their lists' choices): not jargon to them."""
+    said = " ".join(t.get("say") or "" for t in result.get("turns") or []).lower()
+    said += " " + " ".join(str(o) for t in (workspace.blueprint or {}).get("tables", []) for f in t["fields"] for o in f.get("options") or []).lower()
+    return {w for m in JARGON.finditer(said) for w in (m.group(0).lower(), m.group(0).lower().rstrip("s"), m.group(0).lower() + "s")}
 
 
 def _replies(result, theirs):

@@ -25,7 +25,7 @@ from collections import Counter
 from datetime import datetime
 from pathlib import Path
 
-from . import fresh, stories, ux
+from . import fresh, mapux, stories, updates, ux
 from .scenarios import SCENARIOS
 
 
@@ -387,8 +387,36 @@ def run(scenario, out):
         result["ux"] = ux.review(ws, result) if bp.get("tables") else []  # what a beginner would trip over
         if scenario.get("fresh") and bp.get("tables"):
             result["owner_checks"] = owner_checks(ws, scenario, data / "training")
-        (data / "blueprint.json").write_text(json.dumps(bp, indent=1, ensure_ascii=False))
+        (data / "blueprint.json").write_text(json.dumps(bp, indent=1, ensure_ascii=False))  # as handed over
+        if bp.get("tables"):
+            theirs = ux.theirs_of(ws, result)
+            result["map_ux"] = mapux.review(ws, theirs)  # the App map as the owner sees it, in a browser
+            result["updates"] = updated(ws, owner, scenario, result, theirs)
+            ws = db.session.get(Workspace, ws.id)
+            (data / "blueprint_updated.json").write_text(json.dumps(ws.blueprint, indent=1, ensure_ascii=False))
     return result
+
+
+def updated(ws, owner, scenario, result, theirs, ask=True):
+    """The finished app changed the two ways an owner can (evals/updates.py): by hand on the App map, in a copy, then by
+    asking the AI, on the app itself. Each change must work and keep what worked; what each says is looked at too."""
+    key = scenario["key"].split("-")[0]
+    before = {st["story"]: st["result"] for st in result.get("stories") or []}
+    try:
+        changes, after = updates.by_hand(ws, key)
+    except Exception as exc:  # noqa: BLE001 - a fault of ours: said, and the AI's turn is still tried
+        traceback.print_exc()
+        changes, after = [{"how": "map", "change": "changing it on the App map", "ok": False, "why": f"it failed: {type(exc).__name__}: {exc}"[:200]}], {}
+    broke = sorted(name for name, r in before.items() if r == "pass" and after and after.get(name) != "pass")
+    if broke:
+        changes.append({"how": "map", "change": "everything that worked still works", "ok": False, "why": f"broke: {', '.join(broke)}"})
+    if ask:
+        try:
+            changes += updates.by_asking(ws, owner, key, before)
+        except Exception as exc:  # noqa: BLE001 - a fault of ours: said, and the run goes on
+            traceback.print_exc()
+            changes.append({"how": "ai", "change": "asking the AI for changes", "ok": False, "why": f"it failed: {type(exc).__name__}: {exc}"[:200]})
+    return {"changes": changes, "ux": updates.findings(changes, theirs)}
 
 
 def owner_checks(ws, scenario, folder):
@@ -442,6 +470,7 @@ def handed_over(result):
     why += [f"story {st['result']}: {st['story']}" for st in result.get("stories") or [] if st["result"] != "pass"]
     why += [f"owner's check failed: {c['check'][:80]}" for c in result.get("owner_checks") or [] if c["result"] == "fail"]
     why += [f"a beginner would be stuck: {f['what'][:80]} ({f['who']}, {f['where']})" for f in result.get("ux") or [] if f["level"] == "blocker"]
+    why += [f"a beginner would be stuck on the App map: {f['what'][:80]} ({f['where']})" for f in result.get("map_ux") or [] if f["level"] == "blocker"]
     return why
 
 
@@ -517,6 +546,22 @@ def report(result):
                                for f in sorted(found, key=lambda f: ("blocker", "confusing", "idea").index(f["level"]))[:10]))
     for name, n in kept_working(result)[1].items():
         lines.append(f"  BROKEN BY A LATER CHANGE: {name} (worked before turn {n})")
+    found = result.get("map_ux")
+    if found is not None:
+        lines.append(f"  App map, beginner's eyes: {sum(f['level'] == 'blocker' for f in found)} stuck, {sum(f['level'] == 'confusing' for f in found)} "
+                     f"confusing, {sum(f['level'] == 'idea' for f in found)} ideas"
+                     + "".join(f"\n    {f['level'].upper()}: {f['what'][:170]} ({f['who']}, {f['where']})"
+                               for f in sorted(found, key=lambda f: ("blocker", "confusing", "idea").index(f["level"]))[:10]))
+    up = result.get("updates")
+    if up:
+        for how, said in (("map", "changed by hand on the App map"), ("ai", "changed by asking the AI")):
+            done = [c for c in up["changes"] if c["how"] == how and c["ok"] is not None]
+            if done:
+                lines.append(f"  {said}: {sum(1 for c in done if c['ok'])}/{len(done)} worked"
+                             + (f" ({round(sum(c.get('seconds', 0) for c in done) / len(done))}s each)" if how == "ai" else "")
+                             + "".join(f"\n    x {c['change']}: {c['why'][:200]}" for c in done if not c["ok"]))
+        if up["ux"]:
+            lines.append(f"  what the changes said, beginner's eyes: " + "; ".join(f"{f['level']}: {f['what'][:120]} ({f['where'][:60]})" for f in up["ux"][:6]))
     for c in result.get("owner_checks") or []:
         lines.append(f"  owner's check [{c['result']}] {c['check'][:200]}" + (f": {c['why'][:200]}" if c.get("why") and c["result"] == "fail" else ""))
     why = handed_over(result)
@@ -570,6 +615,13 @@ def regrade(folder, only=(), resolve=False):
             result = {"key": key, "title": scenario["title"], "turns": _replayed(ws, saved.get(key, {}).get("turns") or []), "design": {},
                       "tryout": tried(ws) if bp.get("tables") else None, "stories": stories.run(ws, scenario["key"]) if bp.get("tables") else []}
             result["ux"] = ux.review(ws, result) if bp.get("tables") else []
+            if bp.get("tables"):
+                theirs = ux.theirs_of(ws, result)
+                result["map_ux"] = mapux.review(ws, theirs)
+                result["updates"] = updated(ws, owner, scenario, result, theirs, ask=False)
+                asked = [c for c in ((saved.get(key) or {}).get("updates") or {}).get("changes") or [] if c["how"] == "ai"]
+                result["updates"]["changes"] += asked  # (the AI isn't asked again: what it did then)
+                result["updates"]["ux"] = updates.findings(result["updates"]["changes"], theirs)
         shutil.rmtree(data, ignore_errors=True)
         print(report(result), flush=True)
         results.append(result)
@@ -612,6 +664,10 @@ def totals(results):
                      and t["tried"]["first"]["examples"][0] == t["tried"]["first"]["examples"][1])
     delivered = sum(1 for t in tried_turns if not t["tried"].get("issues") and all(e["ok"] for e in t["tried"].get("examples") or []))
     steady = consistency(results)
+    changes = [c for r in results for c in (r.get("updates") or {}).get("changes") or [] if c["ok"] is not None]
+    ways = {how: [c for c in changes if c["how"] == how] for how in ("map", "ai")}
+    eyes = [f for r in results for f in r.get("map_ux") or []] + [f for r in results for f in (r.get("updates") or {}).get("ux") or []]
+    map_kinds = {level: Counter(f["kind"] for f in eyes if f["level"] == level) for level in ("blocker", "confusing", "idea")}
     return (f"\n== TOTALS over {len(results)} run(s)\n"
             + (f"  CONSISTENT: {len(steady['always']) + len(steady['never'])}/{steady['businesses']} businesses came out the same every "
                f"run (right every time: {len(steady['always'])}, wrong every time: {len(steady['never'])}); sometimes right: "
@@ -625,6 +681,15 @@ def totals(results):
                f"{sum(kinds['idea'].values())} ideas"
                + "".join(f"\n    {level}: " + ", ".join(f"{k} {n}" for k, n in kinds[level].most_common(6)) for level in kinds if kinds[level])
                + "\n" if any(r.get("ux") is not None for r in results) else "")
+            + (f"  CHANGED AFTER HANDOVER: by hand on the App map {sum(1 for c in ways['map'] if c['ok'])}/{len(ways['map'])} worked; "
+               f"by asking the AI {sum(1 for c in ways['ai'] if c['ok'])}/{len(ways['ai'])} worked"
+               + (f" ({round(sum(c.get('seconds', 0) for c in ways['ai']) / len(ways['ai']))}s a change)" if ways["ai"] else "")
+               + "".join(f"\n    {how} didn't: " + ", ".join(f"{k} {n}" for k, n in Counter(re.sub(r"“[^”]*”|\b[A-Z][\w ]*$", "…", c["change"]) for c in ways[how] if not c["ok"]).most_common(5))
+                         for how in ("map", "ai") if any(not c["ok"] for c in ways[how])) + "\n" if changes else "")
+            + (f"  APP MAP AND CHANGES, BEGINNER'S EYES: {sum(map_kinds['blocker'].values())} places they'd be stuck, "
+               f"{sum(map_kinds['confusing'].values())} confusing, {sum(map_kinds['idea'].values())} ideas"
+               + "".join(f"\n    {level}: " + ", ".join(f"{k} {n}" for k, n in map_kinds[level].most_common(6)) for level in map_kinds if map_kinds[level])
+               + "\n" if any(r.get("map_ux") is not None for r in results) else "")
             + (f"  design checks {checks[0]}/{checks[1]}\n" if checks[1] else "")
             + f"  stories: {by['pass']} pass, {by['fail']} fail, {by['missing']} missing, {by['error']} error (of {len(told)})\n"
             + f"  tried out: {wrong} things wrong across the designs; {clean}/{sum(1 for r in results if r.get('tryout'))} designs with none; "

@@ -65,7 +65,7 @@ def copy_of(workspace):
     from .. import create_app
     people = [(m.user_id, m.role, list(m.teams or []), u.name, u.email) for m, u in
               db.session.query(Membership, User).filter(Membership.workspace_id == workspace.id, Membership.user_id == User.id,
-                                                        Membership.role != "portal")]
+                                                        Membership.role != "portal", User.email != "stand-in@example.com")]  # (a copy of a copy has one already)
     named = _looked_up_by_name(workspace.blueprint or {})
     kept = [(r.id, r.table, copy.deepcopy(r.data)) for r in Record.query.filter(Record.workspace_id == workspace.id, Record.deleted_at.is_(None),
                                                                                   Record.table.in_(named)).limit(2000)] if named else []
