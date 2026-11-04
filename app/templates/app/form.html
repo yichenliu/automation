@@ -20,13 +20,12 @@
   <div class="card mb-2" data-step="{{ s.label or 'Details' }}" {% if s.show_if %}data-show-if='{{ s.show_if|json }}'{% endif %}>{% if s.label %}<div class="card-head"><h2>{{ s.label }}</h2></div>{% endif %}
     {% set asked = editable|rejectattr('key', 'equalto', stage_lock.key if (not r and stage_lock) else '')|list %}
     {# a long form shows what must be filled in, what already is, and the first few; the rest wait under "More details" #}
-    {% set more = [] if (t.wizard and not r) or asked|length <= MORE_AFTER + 2 else
-       asked[MORE_AFTER:]|rejectattr('required')|select('blank_in', values, errors)|list %}
-    <div class="card-body form-grid">
+    {% set more = asked|selectattr('key', 'in', waiting or [])|list %}
+    {% if asked|length > more|length %}<div class="card-body form-grid">
       {% for f in asked if f not in more %}{{ input(e, f, values.get(f.key), options, errors.get(f.key), members, unsure=(intake and f.label in intake.unsure),
                                   stage=stage_lock if stage_lock and f.key == stage_lock.key else none) }}{% endfor %}
-    </div>
-    {% if more %}<details class="more-fields"><summary>{{ icon('chevron-down') }}More details (optional): {{ more|length }} more</summary>
+    </div>{% endif %}
+    {% if more %}<details class="more-fields"><summary>{{ icon('chevron-down') }}More details (optional): {{ more|map(attribute='label')|join(', ') if more|length <= 3 else more|length ~ ' more' }}</summary>
       <div class="card-body form-grid">{% for f in more %}{{ input(e, f, values.get(f.key), options, errors.get(f.key), members,
                                   unsure=(intake and f.label in intake.unsure)) }}{% endfor %}</div></details>{% endif %}
     {% if auto %}<div class="card-foot faint small">{{ icon('calculator') }} Worked out for you: {{ auto|map(attribute='label')|join(', ') }}.</div>{% endif %}

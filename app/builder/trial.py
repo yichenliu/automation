@@ -212,6 +212,18 @@ def _others(engine, f, n):
     return []
 
 
+def _read_by_rule(t, exc):
+    """The fields a table's rule that refused a sample reads, in its check and its "when": the ones a sample may set."""
+    table, check, _ = getattr(exc, "rule", None) or (None, None, None)
+    rule = next((r for r in t.get("rules", []) if r.get("check") == check), None) if table == t["key"] else None
+    if rule is None:
+        return []
+    keys = list(expr.names_in(check)) + [c.get("field") for c in rule.get("when") or [] if isinstance(c, dict)]
+    stage = (t.get("workflow") or {}).get("field")  # a new one starts at the first stage, whatever the rule says
+    return [f for f in (schema.field(t, k) for k in dict.fromkeys(k for k in keys if k))
+            if f is not None and f["type"] in schema.STORED and f["type"] != "autonumber" and not f.get("readonly") and f["key"] != stage]
+
+
 def in_order(engine):
     """The tables, each after the ones it links to (so a quote's customer exists first)."""
     tables, order, placed = list(engine.tables.values()), [], set()
@@ -248,7 +260,15 @@ def _add(engine, t, values):
             changed = False
             for key in exc.errors:
                 f = schema.field(t, key)
-                if f is None:  # a rule across fields ("_"): later dates a little later
+                if f is None:  # a rule across fields ("_"): other values for what it reads (an Active coach needs a
+                    # signed waiver: one On leave), and later dates a little later
+                    for g in _read_by_rule(t, exc):
+                        others = _others(engine, g, attempt)
+                        if attempt < len(others) and values.get(g["key"]) != others[attempt]:
+                            values[g["key"]] = others[attempt]
+                            changed = True
+                        elif not g.get("required") and values.pop(g["key"], None) is not None:
+                            changed = True
                     for g in t["fields"]:
                         if engine.kind(g) in ("date", "datetime") and values.get(g["key"]):
                             values[g["key"]] = (engine.today + timedelta(days=7 * (attempt + 1) + t["fields"].index(g))).isoformat()
@@ -1054,13 +1074,15 @@ def _expect(engine, c, names):
     shown = engine.display(f, actual) if actual not in (None, "", []) else "empty"
     as_kept = schema.as_fraction(wanted) if engine.kind(f) == "percent" else \
         parse_duration(wanted) if engine.kind(f) == "duration" and isinstance(wanted, str) and parse_duration(wanted) is not None else wanted
-    expected = engine.display(f, as_kept) \
+    expected = "filled in" if isinstance(wanted, str) and FILLED.match(wanted) else engine.display(f, as_kept) \
         if wanted not in (None, "") and f["type"] not in ("link", "user") and not _shows_a_link(engine, f) else str(wanted or "empty")
     plain = f"{t['singular']}’s {label}: {shown}" if ok else f"{t['singular']}’s {label} came out {shown}, expected {expected}"
     said = f"{c.get('record')} ({t['key']}).{key} is {actual!r}; expected {wanted!r}"
     if not ok and f.get("expression") and len(path) == 1:  # how it was worked out, to tell a wrong sum from a wrong expectation
         read = _formula_reads(engine, record, f["expression"], names)
         said += f" (worked out as `{f['expression']}`" + (f" from {read}" if read else "") + ")"
+    elif not ok and f["type"] == "rollup" and len(path) == 1:
+        said += f" (worked out as {_rollup_reads(engine, record, f, names)})"
     outside = _filled_from_outside(engine, record.table, key) if not ok and actual in (None, "", []) and len(path) == 1 else []
     if outside:
         said += (f" (only {', '.join(f'“{a}”' for a in outside)} fills it in, and that starts when something comes in from outside (an "
@@ -1081,7 +1103,7 @@ def _expect(engine, c, names):
     return ok, plain, said
 
 
-def _formula_reads(engine, record, expression, names):
+def _formula_reads(engine, record, expression, names, deeper=True):
     """The values a formula read on this record, as the example's calendar shows them: “issue_date = '2026-10-01',
     customer.payment_terms = 30”."""
     plain = re.sub(r"'[^']*'|\"[^\"]*\"", "", expression)
@@ -1095,8 +1117,35 @@ def _formula_reads(engine, record, expression, names):
             continue
         if g is not None and engine.kind(g) in ("date", "datetime") and names.get("_waited"):
             value = _shifted(engine, g, value, names["_waited"])
-        out.append(f"{name} = {value!r}")
+        how = ""  # what's itself worked out says how: total = 770.0 (`subtotal + gst`)
+        if deeper and g is not None and "." not in name:
+            if g.get("expression"):
+                how = f" (`{g['expression']}`)"
+            elif g["type"] == "rollup":
+                how = f" ({_rollup_reads(engine, record, g, names, deeper=False)})"
+        out.append(f"{name} = {value!r}{how}")
     return ", ".join(out[:8])
+
+
+def _rollup_reads(engine, record, f, names, deeper=True):
+    """What a total was added up from, line by line: “the sum of quote_lines.amount over its 2 quote_lines: 1500.0 (from
+    quantity = 10, unit_price = 150.0), 1000.0 (…)”, to tell a wrong sum in the example from a wrong total."""
+    try:
+        rows = engine.related(record, f["table"], f["via"]) if f.get("via") else []
+        if f.get("filters"):
+            rows = [r for r in rows if engine.matches(r, f["filters"], about=record)]
+    except Exception:  # noqa: BLE001 - a path it can't follow: said without the lines
+        rows = []
+    g = engine.field(f["table"], f["field"]) if f.get("field") and f["table"] in engine.tables else None
+    what = f"the {f.get('aggregate', 'sum')} of {f['table']}" + (f".{f['field']}" if f.get("field") else "")
+    if not rows:
+        return what + f": no {f['table']} records count towards it"
+    parts = []
+    for r in rows[:6]:
+        value = engine.value(r, g["key"]) if g is not None else None
+        read = _formula_reads(engine, r, g["expression"], names, deeper=False) if deeper and g is not None and g.get("expression") else ""
+        parts.append(f"{value!r}" + (f" (from {read})" if read else ""))
+    return what + f" over its {len(rows)} {f['table']}: " + ", ".join(parts) + (", …" if len(rows) > 6 else "")
 
 
 def _never_ran(engine, record, key):
@@ -1200,15 +1249,24 @@ def _ai_answers(trial, engine, example, names):
     return answer
 
 
-def _rule_saw(exc):
+STOPPED = re.compile(r"\b(block|stop|refus|prevent|can'?t|cannot|not allowed|isn'?t allowed|disallow|reject|must(n'?t| not)? |"
+                     r"needs? (a|an|the|to)|without|requires?|kept from|held)", re.I)
+
+
+def _rule_saw(exc, title="", n=None):
     """What the rule that refused a record saw, for the builder: a check written backwards (“is_empty(asset_tag)” for “capital
-    items need an asset tag”) refuses records that have just what it asks for."""
+    items need an asset tag”) refuses records that have just what it asks for. An example about the refusal itself (“A coach
+    without a waiver is blocked”) is told to expect it, so a rule that's right isn't turned round to let it through."""
     if not getattr(exc, "rule", None):
         return ""
     table, check, values = exc.rule
     saw = ", ".join(f"{k} = {'empty' if v in (None, '', []) else json.dumps(v, default=str)}" for k, v in values.items())
-    return (f" (the rule on {table} checks `{check}`, which must come out true for a record to be saved; it came out false"
-            + (f" with {saw}" if saw else "") + ". If those values should be allowed, the check is written backwards: fix the rule)")
+    refused = (f"If this example is meant to show it being stopped, the rule is right: mark step {n} \"refused\": true "
+               f"(nothing is saved by it) and expect only what's there after it")
+    said = f" (the rule on {table} checks `{check}`, which must come out true for a record to be saved; it came out false" + (f" with {saw}" if saw else "")
+    if STOPPED.search(title or ""):
+        return said + f". {refused}; only if those values should be allowed is the check written backwards)"
+    return said + f". If those values should be allowed, the check is written backwards: fix the rule. {refused})"
 
 
 def _line_of(engine, step, alias):
@@ -1274,7 +1332,7 @@ def _play(trial, engine, example, names, out):
             shapes = {f.get("pattern_message") for x in engine.tables.values() for f in x["fields"] if f.get("pattern_message")}
             left_out = all(OMITTED.match(str(e)) or BAD_VALUE.search(str(e)) or str(e) in shapes for e in exc.errors.values())
             out.update(problem=f"step {n} ({said}) was refused: {reason}" + (" (correct the example's values)" if left_out else "")
-                       + _rule_saw(exc),
+                       + _rule_saw(exc, example.get("title") or "", n),
                        kind="example" if left_out else "app", plain=f"{_plain_step(engine, step, names)} wasn't allowed: {reason}")
             return out
         except Exception as exc:  # noqa: BLE001 - a fault of ours: not the app's design, not the example's

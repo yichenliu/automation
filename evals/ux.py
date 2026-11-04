@@ -119,8 +119,10 @@ def _page(engine, who, path, html, theirs):
     for node in nodes:
         out += words_found(node, theirs, who, where)
     if path.endswith("/new"):  # editing shows what's filled in: it's theirs
-        upfront = re.sub(r'(?is)<details class="more-fields".*?</details>', " ", html)  # what waits under "More details" isn't asked up front
-        asked = [a for _, a in INPUT.findall(upfront) if not re.search(r'type="(hidden|submit|button|search)"|name="(csrf_token|q)"', a)]
+        form = re.search(r'(?is)<form\b[^>]*id="record-form".*?</form>', html)  # the form's own: not the search or Ask box around it
+        upfront = re.sub(r'(?is)<details class="more-fields".*?</details>', " ", form.group(0) if form else html)  # what waits under "More details" isn't asked up front
+        asked = [a for _, a in INPUT.findall(upfront)
+                 if not re.search(r'type="(hidden|submit|button|search)"|name="(csrf_token|q)"|data-remove-line', a)]
         required = upfront.count('class="req"')
         if len(asked) > FORM_INPUTS:
             out.append(_finding("idea", "long form", who, where, f"the form asks for {len(asked)} things"))

@@ -594,6 +594,7 @@ def _resolve_sense(bp, tables, changes):
         t = tables.get(a["trigger"].get("table") or "")
         _item_outside_a_loop(a, changes)
         _then_the_same(a, changes)
+        _said_twice(a, a["actions"], changes)
         if t is not None:
             _set_when_added(a, t, changes)
         if t is not None and t.get("workflow") and schema.stages(t):
@@ -683,6 +684,31 @@ def _then_the_same(a, changes):
             label = next((p.get("label") for p in act.get("paths") or [] if (p.get("steps") or []) is w), None)
             changes.append(f"“{a['name']}” now carries on once it's approved{' (' + label + ')' if label else ''}, doing what the "
                            f"other way does (it stopped at the approval)")
+
+
+def _said_twice(a, steps, changes):
+    """A step done at the end of one way of a branch and again, word for word, straight after the branch (“on hold: they
+    owe $X” told for a customer who owes, then again for every job): it was meant for that way only, and the copy after
+    did it for every record, twice on that way. The copy after goes."""
+    i = 0
+    while i < len(steps or []):
+        act = steps[i]
+        for path in act.get("paths") or []:
+            _said_twice(a, path.get("steps") or [], changes)
+        for key in ("otherwise", "if_rejected"):
+            if isinstance(act.get(key), list):
+                _said_twice(a, act[key], changes)
+        ways = [(p.get("label"), p.get("steps")) for p in act.get("paths") or []] + [("otherwise", act.get("otherwise"))]
+        ends = [(label, way[-1]) for label, way in ways if isinstance(way, list) and way]
+        if act.get("type") == "branch" and i + 1 < len(steps) and any(last == steps[i + 1] for _, last in ends):
+            what = steps.pop(i + 1)
+            said = str(what.get("message") or what.get("subject") or what.get("type")).strip()
+            label = next(label for label, last in ends if last == what)
+            changes.append(f"“{a['name']}” now does “{said[:60]}{'…' if len(said) > 60 else ''}” only "
+                           f"{'otherwise' if label == 'otherwise' else 'when ' + str(label or 'its way applies')}: it was done again "
+                           f"straight after, so for every record, and twice then")
+            continue
+        i += 1
 
 
 def _one_way_to_do_it(a, t, changes):

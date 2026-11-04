@@ -17,7 +17,7 @@ from ..engine.records import Conflict, FieldErrors
 from ..extensions import db
 from ..models import Approval, Comment, File, Membership, Record, RecordChange, Run, User, utcnow  # noqa: F401
 from ..storage import FileRejected, path_of, save
-from .filters import status_words
+from .filters import MORE_AFTER, blank_in, status_words
 from .erp import bp, confirm_step_up, ctx, my_approvals
 
 PAGE_SIZE = 50
@@ -916,6 +916,22 @@ def _save_files(ws, t, record_id):
     db.session.commit()
 
 
+WORKED_OUT = ("formula", "rollup", "lookup", "autonumber", "created_time", "modified_time", "created_by", "modified_by", "button")
+
+
+def _waiting(t, sections, kids, values, errors, stage_key, new):
+    """The details that wait under "More details (optional)": on a long form, counted over the whole of it (every section,
+    and a row of its lines: an order and what's on it), the optional ones still empty past the first few, so a beginner
+    sees what matters first. A step-by-step form asks one step at a time instead."""
+    if t.get("wizard") and new:
+        return set()
+    asked = [f for s in sections for f in s["fields"] if f["type"] not in WORKED_OUT and f["key"] != stage_key]
+    lines = sum(1 for c in kids for f in c["fields"] if f["type"] not in WORKED_OUT)
+    if len(asked) + lines <= MORE_AFTER + 2:
+        return set()
+    return {f["key"] for f in asked[max(MORE_AFTER - lines, 4):] if not f.get("required") and blank_in(f, values or {}, errors or {})}
+
+
 def _render_form(ws, engine, t, r, values, errors, line_rows=None, status=200, **extra):
     back = extra.get("back") or ""
     extra["back"] = back if back.startswith("/") and not back.startswith("//") else None  # only ever back into this site
@@ -942,8 +958,9 @@ def _render_form(ws, engine, t, r, values, errors, line_rows=None, status=200, *
     hidden = {k: v for k, v in (errors or {}).items() if k != "_" and (k not in shown_keys or (stage_lock and k == stage_lock["key"] and r is None))}
     if hidden:  # a problem with something the form doesn't show (the stage, a rule on two fields): said at the top
         errors = {**{k: v for k, v in errors.items() if k not in hidden}, "_": "; ".join(([errors["_"]] if errors.get("_") else []) + list(hidden.values()))}
-    return render_template("app/form.html", ws=ws, e=engine, t=t, r=r, values=values, errors=errors, sections=_sections(t), stage_lock=stage_lock,
-                           first_move=first_move,
+    sections = _sections(t)
+    return render_template("app/form.html", ws=ws, e=engine, t=t, r=r, values=values, errors=errors, sections=sections, stage_lock=stage_lock,
+                           first_move=first_move, waiting=_waiting(t, sections, kids, values, errors, stage_lock and r is None and stage_lock["key"], r is None),
                            options=_options(engine, t, [c["table"] for c in kids]), children=kids, line_rows=line_rows,
                            members=engine.members(), locked=engine.locked(r) if r is not None else None, **extra), status
 

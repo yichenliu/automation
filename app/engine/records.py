@@ -33,6 +33,7 @@ log = logging.getLogger("engine")
 STEP_UP = "Confirm it's you first: enter the code from your authenticator app (or your password)"
 APPROVED = re.compile(r"\bapproved\b|\bauthori[sz]ed\b|\bsigned off\b", re.I)  # a stage where it's been approved (not one waiting for it)
 WAITING = re.compile(r"wait|pending|awaiting|for approval|to approve|needs", re.I)
+DONE_WORDS = {"done", "sent", "paid", "won", "lost", "shot", "built", "made", "given", "taken", "chosen", "set", "put", "met", "held"}  # a stage word that says it's happened
 AMOUNT = re.compile(r"total|amount|value|cost|price|\bsum\b|budget|spend", re.I)  # the money an approval is given for
 DOING = re.compile(r"(send|submit|approve|reject|start|mark|close|cancel|complete|accept|decline|assign|pay|issue|deliver|ship|book|"
                    r"confirm|schedule|raise|post|review|finish|open|reopen|return|move|put|record|log|request|invite|order|receive|"
@@ -1703,16 +1704,18 @@ class Engine:
 
     def _stamps(self, record, stage):
         """What a stage's own fields say that nobody has filled in: who moved it there ("Approved by") and when
-        ("Approved on"), so a button press records them as the person would have."""
-        t, word = self.tables[record.table], re.sub(r"\W+", "_", str(stage).strip().lower()).strip("_")
+        ("Approved on"), so a button press records them as the person would have. The stage's last words count too when
+        they say it's done: a move to "Owner approved" fills in "Approved by" (never "Waiting for payment" a payment date)."""
+        t, parts = self.tables[record.table], [p for p in re.split(r"\W+", str(stage).strip().lower()) if p]
+        words = {"_".join(parts[i:]) for i in range(len(parts)) if i == 0 or parts[i].endswith("ed") or parts[i] in DONE_WORDS}
         out = {}
-        for f in t["fields"] if word else []:
+        for f in t["fields"] if words else []:
             if f["type"] not in schema.STORED or (record.data or {}).get(f["key"]) not in (None, "", []):
                 continue
             names = {f["key"].lower(), re.sub(r"\W+", "_", f["label"].strip().lower()).strip("_")}
-            if f["type"] == "user" and f"{word}_by" in names and self.user_id:
+            if f["type"] == "user" and names & {f"{w}_by" for w in words} and self.user_id:
                 out[f["key"]] = [self.user_id] if f.get("multiple") else self.user_id
-            elif self.kind(f) in ("date", "datetime") and names & {f"{word}_on", f"{word}_at", f"{word}_date", f"date_{word}"}:
+            elif self.kind(f) in ("date", "datetime") and names & {x for w in words for x in (f"{w}_on", f"{w}_at", f"{w}_date", f"date_{w}")}:
                 out[f["key"]] = self.today.isoformat() if self.kind(f) == "date" else self.now.isoformat(sep=" ", timespec="minutes")
         return out
 

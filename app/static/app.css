@@ -891,6 +891,7 @@ a.row-link { color: inherit; font-weight: 600; } a.row-link:hover { color: var(-
 .scroll-hint { display: flex; justify-content: flex-end; gap: 4px; padding: 4px 10px 0; color: var(--muted); font-size: 12.5px; }
 .scroll-hint[hidden] { display: none; }
 details.more-fields { border-top: 1px solid var(--border); }
+.card-head + details.more-fields { border-top: 0; }  /* a card whose details all wait: no line twice */
 details.more-fields > summary { display: flex; align-items: center; gap: 6px; padding: 12px 18px; cursor: pointer; color: var(--accent, var(--text)); font-weight: 600; list-style: none; }
 details.more-fields > summary::-webkit-details-marker { display: none; }
 details.more-fields > summary svg { width: 15px; height: 15px; transition: transform .15s; }

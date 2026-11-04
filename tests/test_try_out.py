@@ -738,3 +738,163 @@ def test_a_stage_added_by_its_move_goes_after_the_one_it_comes_from(app, owner):
     status = result.blueprint["tables"][0]["fields"][1]
     assert status["options"] == ["Applied", "On hold", "Approved", "Adopted", "Withdrawn"]
     assert schema.a_one("Adoption", start=True) == "An adoption" and schema.a_one("GST invoice") == "a GST invoice"
+
+
+def _me(ws, user):
+    from app.models import Membership
+    return Engine(ws, by=user.name, member=Membership.query.filter_by(workspace_id=ws.id, user_id=user.id).first())
+
+
+def test_a_move_to_a_done_stage_fills_in_its_last_words_fields(app, owner):
+    """Moving an agreement to “Owner approved” fills in Approved by and Owner approved date as the person would have; a
+    move to “Waiting for payment” never fills in a payment date (it's not paid yet)."""
+    user, ws = owner
+    _built(ws, [{"op": "create_table", "table": "agreements", "label": "Agreements", "fields": [
+        {"key": "title", "type": "text", "required": True}, {"key": "approved_by", "label": "Approved by", "type": "user"},
+        {"key": "owner_approved_date", "label": "Owner approved date", "type": "date"},
+        {"key": "payment_date", "label": "Payment date", "type": "date"},
+        {"key": "status", "type": "select", "options": ["Draft", "Owner approved", "Waiting for payment"]}],
+        "workflow": {"field": "status", "transitions": [{"from": ["Draft"], "to": "Owner approved", "label": "Approve"},
+                                                        {"from": ["Owner approved"], "to": "Waiting for payment", "label": "Bill it"}]}}])
+    me = _me(ws, user)
+    a = me.create("agreements", {"title": "Jane's plan"})
+    me.move(me.get(a.id), next(i for i, m, _ in me.moves(me.get(a.id)) if m["to"] == "Owner approved"))
+    data = me.get(a.id).data
+    assert data["approved_by"] == user.id and data["owner_approved_date"] == me.today.isoformat()
+    me.move(me.get(a.id), next(i for i, m, _ in me.moves(me.get(a.id)) if m["to"] == "Waiting for payment"))
+    assert me.get(a.id).data.get("payment_date") in (None, "")
+
+
+def test_the_approver_named_where_nobody_was_asked_is_found(app, owner):
+    """An order approved on its own within its credit limit, “Approved by” set to {{approver}} there: nobody was asked, so
+    it's always empty. After the owner's OK on the other way it's who said yes, and isn't found."""
+    _, ws = owner
+    orders = {"op": "create_table", "table": "orders", "label": "Orders", "fields": [
+        {"key": "title", "type": "text", "required": True}, {"key": "total", "type": "money"},
+        {"key": "approved_by", "label": "Approved by", "type": "user"},
+        {"key": "status", "type": "select", "options": ["Draft", "Pending approval", "Approved", "Rejected"]}]}
+    rule = {"key": "credit", "name": "Order approval and credit check", "trigger": {"type": "record_updated", "table": "orders"},
+            "conditions": [{"field": "status", "op": "changed_to", "value": "Pending approval"}],
+            "actions": [{"type": "branch", "paths": [
+                {"label": "Within credit limit", "when": [{"field": "total", "op": "at_most", "value": 5000}],
+                 "steps": [{"type": "update_record", "values": {"status": "Approved", "approved_by": "{{approver}}"}}]},
+                {"label": "Over credit limit", "when": [{"field": "total", "op": "greater_than", "value": 5000}],
+                 "steps": [{"type": "request_approval", "approver": "owner", "message": "Please approve this."},
+                           {"type": "update_record", "values": {"status": "Approved", "approved_by": "{{approver}}"}}]}]}]}
+    _built(ws, [orders, {"op": "add_automation", "automation": rule}])
+    found = checks.nobody_asked(Engine(ws))
+    assert [i["plain"] for i in found] == [
+        "In “Order approval and credit check” on the path “Within credit limit”, approved by is always left empty: nobody is "
+        "asked for their OK there"], found
+    assert "no request_approval comes before it" in found[0]["text"]
+
+
+def test_a_sample_refused_by_a_rule_on_two_fields_is_tried_with_other_values_of_them(app, owner):
+    """“An Active coach must have signed the waiver”: the sample coach (Active, no waiver) is refused, then tried On leave,
+    which is fine, so the rule isn't reported as one an ordinary coach can't get past."""
+    _, ws = owner
+    _built(ws, [{"op": "create_table", "table": "coaches", "label": "Coaches", "fields": [
+        {"key": "name", "type": "text", "required": True}, {"key": "waiver", "type": "file"},
+        {"key": "status", "type": "select", "options": ["Active", "On leave", "Inactive"]}],
+        "rules": [{"check": "not is_empty(waiver)", "message": "A coach must sign the waiver before being Active",
+                   "when": [{"field": "status", "op": "equals", "value": "Active"}]}]}])
+    with trial.copy_of(ws) as copy:
+        found = trial.walk(copy, screens=False)
+    assert not [i for i in found["issues"] if "couldn't be saved" in i["plain"]], found["issues"]
+    assert "coaches" in found["made"]
+
+
+def test_an_example_about_something_being_stopped_is_told_to_expect_the_refusal(app, owner):
+    """The rule stopped what the example is about (“A coach without a waiver is blocked”): the builder is told to mark that
+    step refused, the rule being right, not to turn the rule round."""
+    _, ws = owner
+    _built(ws, [{"op": "create_table", "table": "coaches", "label": "Coaches", "fields": [
+        {"key": "name", "type": "text", "required": True}, {"key": "waiver", "type": "file"},
+        {"key": "status", "type": "select", "options": ["Active", "On leave"]}],
+        "rules": [{"check": "not is_empty(waiver)", "message": "A coach must sign the waiver before being Active",
+                   "when": [{"field": "status", "op": "equals", "value": "Active"}]}]}])
+    example = {"title": "A coach without a waiver is blocked from being Active", "steps": [
+        {"do": "add", "table": "coaches", "as": "c1", "values": {"name": "Alex", "status": "Active"}}],
+        "expect": [{"record": "c1", "field": "waiver", "equals": "non-empty"}]}
+    _, (result,) = trial.try_out(ws, [example], screens=False)
+    assert 'mark step 1 "refused": true' in result["problem"] and "the rule is right" in result["problem"]
+    assert result["problem"].index('"refused": true') < result["problem"].index("written backwards"), result["problem"]
+    example["steps"][0]["refused"] = True
+    example["expect"] = [{"table": "coaches", "count": 0}]
+    _, (result,) = trial.try_out(ws, [example], screens=False)
+    assert result["ok"], result
+
+
+def test_a_wrong_total_says_what_it_added_up(app, owner):
+    """10 × $150 and 20 × $50 is $2,500, not $2,000: the builder sees each line's sum and what made it, and a total built on
+    another total says how that was worked out, to tell a wrong sum in the example from a wrong total."""
+    _, ws = owner
+    _built(ws, QUOTES)
+    example = {"title": "A big quote", "steps": [
+        {"do": "add", "table": "quotes", "as": "q1", "values": {"title": "Frame"}},
+        {"do": "add", "table": "quote_lines", "as": "l1", "values": {"quote": "q1", "item": "Beams", "quantity": 10, "unit_price": 150}},
+        {"do": "add", "table": "quote_lines", "as": "l2", "values": {"quote": "q1", "item": "Welding", "quantity": 20, "unit_price": 50}}],
+        "expect": [{"record": "q1", "field": "subtotal", "equals": 2000}, {"record": "q1", "field": "total", "equals": 2200}]}
+    _, (result,) = trial.try_out(ws, [example], screens=False)
+    said = " ".join(result["detail"])
+    assert "the sum of quote_lines.amount over its 2 quote_lines: 1500.0 (from quantity = 10, unit_price = 150.0)" in said, said
+    assert "subtotal = 2500.0 (the sum of quote_lines.amount over its 2 quote_lines: 1500.0, 1000.0)" in said, said
+    assert "gst = 250.0 (`round((subtotal - discount) * 0.1, 2)`)" in said, said
+
+
+def test_a_rule_that_adds_a_record_without_the_person_it_must_have_is_found(app, owner):
+    """A weekly family update must name its nurse, and the rule that adds one each week doesn't: it stops every time."""
+    _, ws = owner
+    _built(ws, [{"op": "create_table", "table": "residents", "label": "Residents", "fields": [{"key": "name", "type": "text", "required": True}]},
+                {"op": "create_table", "table": "updates", "label": "Family updates", "fields": [
+                    {"key": "resident", "type": "link", "table": "residents", "required": True},
+                    {"key": "nurse", "type": "user", "required": True}, {"key": "summary", "type": "long_text"}]},
+                {"op": "add_automation", "automation": {
+                    "key": "weekly", "name": "Weekly family update", "trigger": {"type": "schedule", "table": "residents", "every": "week"},
+                    "actions": [{"type": "create_record", "table": "updates", "values": {"resident": "{{record}}"}}]}}])
+    plain = [i["plain"] for i in checks.left_unfilled(Engine(ws))]
+    assert plain == ["“Weekly family update” can't add a family update: it doesn't fill in nurse, which must be filled in"], plain
+
+
+def test_a_step_said_again_straight_after_a_branch_is_done_only_on_its_way(app, owner):
+    """“On hold: they owe $X” told for a customer who owes, then again straight after the branch, for every job: the copy
+    after goes, so it's said once, and only when they owe."""
+    _, ws = owner
+    told = {"type": "notify", "to": "everyone", "message": "Job {{record.title}} is on hold: the customer owes money"}
+    result = ops.apply(ws.blueprint, [
+        {"op": "create_table", "table": "jobs", "label": "Jobs", "fields": [
+            {"key": "title", "type": "text", "required": True}, {"key": "owed", "type": "money"}]},
+        {"op": "add_automation", "automation": {
+            "key": "hold", "name": "Block new jobs for unpaid customers", "trigger": {"type": "record_created", "table": "jobs"},
+            "actions": [{"type": "branch", "paths": [{"label": "Customer owes", "when": [{"field": "owed", "op": "greater_than", "value": 0}],
+                                                       "steps": [dict(told)]}]}, dict(told)]}}])
+    assert not result.problems, result.problems
+    actions = result.blueprint["automations"][0]["actions"]
+    assert len(actions) == 1 and actions[0]["paths"][0]["steps"] == [told]
+    assert any("only when Customer owes: it was done again straight after" in c for c in result.changes), result.changes
+
+
+def test_a_long_form_asks_what_matters_first_counting_its_lines(app, owner, client):
+    """A hire order (eight details over three sections) and its lines: the optional details still empty past the first
+    few wait under “More details”, named when they're few, and a section with none left up front shows no empty box."""
+    from .conftest import login
+    _, ws = owner
+    _built(ws, [{"op": "create_table", "table": "orders", "label": "Hire orders", "singular": "Hire order", "fields": [
+        {"key": "customer", "type": "text", "required": True}, {"key": "site", "type": "address"},
+        {"key": "starts", "type": "date", "required": True}, {"key": "ends", "type": "date"},
+        {"key": "delivery", "label": "Delivery date", "type": "date"}, {"key": "collection", "label": "Collection date", "type": "date"},
+        {"key": "deposit", "type": "money"}, {"key": "notes", "type": "long_text"}],
+        "sections": [{"label": "Hire details", "fields": ["customer", "site", "starts", "ends", "delivery", "collection"]},
+                     {"label": "Money", "fields": ["deposit"]}, {"label": "Notes", "fields": ["notes"]}]},
+        {"op": "create_table", "table": "lines", "label": "Hire lines", "embedded": True, "fields": [
+            {"key": "order", "type": "link", "table": "orders", "required": True}, {"key": "item", "type": "text"},
+            {"key": "quantity", "type": "number"}, {"key": "days", "type": "number"}, {"key": "rate", "type": "money"}]}])
+    login(client)
+    html = client.get(f"/w/{ws.id}/app/t/orders/new").get_data(as_text=True)
+    start = html.index('id="record-form"')
+    form = html[start:html.index("</form>", start)]
+    upfront = __import__("re").sub(r'(?is)<details class="more-fields".*?</details>', " ", form)
+    assert 'name="customer"' in upfront and 'name="starts"' in upfront and 'name="lines-lines-0-item"' in upfront
+    assert 'name="delivery"' not in upfront and 'name="deposit"' not in upfront and 'name="notes"' not in upfront
+    assert "More details (optional): Delivery date, Collection date" in form and "More details (optional): Deposit" in form
+    assert form.count('<div class="card-body form-grid">') == 1 + 3  # what's up front once, and inside each More details

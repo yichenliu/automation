@@ -22,7 +22,7 @@ def run(engine):
     return (choices(engine) + impossible(engine) + unreachable(engine) + gaps(engine) + asked_on_no(engine) + left_to_others(engine)
             + out_of_reach(engine) + needs_rates(engine) + left_unfilled(engine) + made_only_sometimes(engine) + ai_doing_sums(engine)
             + approval_without_stages(engine) + skips_approvals(engine) + runs_while_true(engine) + wrong_kind(engine)
-            + nobody_may_answer(engine))
+            + nobody_may_answer(engine) + nobody_asked(engine))
 
 
 STAGE_WORDS = re.compile(r"^(status|stage|state)$", re.I)
@@ -143,7 +143,7 @@ def left_unfilled(engine):
             stage = (t.get("workflow") or {}).get("field")
             near = [x for x in (item, source) if x] + [x for x in made if x is not t]
             for f in t["fields"]:
-                if not f.get("required") or f["type"] not in schema.STORED or f["type"] in ("autonumber", "user") \
+                if not f.get("required") or f["type"] not in schema.STORED or f["type"] == "autonumber" \
                         or f.get("default") not in (None, "") or f["key"] == stage:
                     continue
                 said = values.get(f["key"])
@@ -151,7 +151,9 @@ def left_unfilled(engine):
                 if said is None and not copies:  # what copy_matching fills: the same field, or a link back to the record itself
                     out.append(_issue("fix", f"Rule {a['key']} adds {t['key']} records without {f['key']}, which must be filled in, "
                                              f"so it stops every time: set \"{f['key']}\" in its values (from the record that "
-                                             f"starts it, or a fixed value), or make {f['key']} optional",
+                                             + ("starts it: a field there that holds a person, or {{approver}} after an approval), "
+                                                if f["type"] == "user" else "starts it, or a fixed value), ")
+                                             + f"or make {f['key']} optional",
                                       f"“{a['name']}” can't add {_a(schema.lc(t['singular']))}: it doesn't fill in "
                                       f"{schema.lc(f['label'])}, which must be filled in", t["key"]))
                     continue
@@ -284,6 +286,46 @@ def nobody_may_answer(engine):
                               f"{plain} could never be {'approved' if act['type'] == 'request_approval' else 'done'} by “{a['name']}”: "
                               f"the only {'person' if who in ('owner', 'creator') else 'people'} it's for may not answer it",
                               t["key"]))
+    return out
+
+
+APPROVER = re.compile(r"\{\{\s*approver\b")
+NESTED = ("paths", "otherwise", "if_rejected", "steps")
+
+
+def nobody_asked(engine):
+    """{{approver}} (who approved it) in a step that no approval comes before: nobody was asked, so it's always left empty
+    (an order approved on its own within its credit limit, "Approved by" set to {{approver}} there)."""
+    out = []
+    for a in engine.bp.get("automations", []):
+        t = engine.tables.get(a["trigger"].get("table") or "")
+
+        def walk(steps, asked, path):
+            for s in steps or []:
+                if not isinstance(s, dict):
+                    continue
+                own = {k: v for k, v in s.items() if k not in NESTED}
+                if not asked and APPROVER.search(str(own)):
+                    keys = [k for k, v in (s.get("values") or {}).items() if APPROVER.search(str(v))]
+                    named = [((schema.field(t, k) or {}).get("label") if t and s.get("target") in (None, "", "record") else None) or k
+                             for k in keys]
+                    on = f" on the path “{path}”" if path else ""
+                    out.append(_issue("fix", f"In the automation {a['key']}, a {s.get('type')} step{on} uses {{{{approver}}}}"
+                                             f"{' for ' + ', '.join(keys) if keys else ''}, but no request_approval comes before it, so "
+                                             f"nobody was asked and it's always left empty: leave it out there (nobody approved it), or "
+                                             f"ask for the OK first",
+                                      f"In “{a['name']}”{on}, " + (f"{schema.lc(' and '.join(named))} is always left empty"
+                                                                    if named else "the approver is never named")
+                                      + ": nobody is asked for their OK there", a["trigger"].get("table") or ""))
+                maybe = False
+                for p in s.get("paths") or []:
+                    maybe |= walk(p.get("steps"), asked, p.get("label") or path)
+                if isinstance(s.get("otherwise"), list):
+                    maybe |= walk(s["otherwise"], asked, "otherwise" if not path else path)
+                walk(s.get("if_rejected"), asked, path)  # a no doesn't say who approved
+                asked = asked or maybe or s.get("type") == "request_approval"
+            return asked
+        walk(a.get("actions"), False, "")
     return out
 
 
