@@ -108,9 +108,10 @@ def test_a_change_puts_right_what_it_breaks_not_what_was_wrong_before(app, owner
     would change more than was asked); something this change gets wrong still is."""
     from app.builder import checks
     _, ws = owner
-    stuck = {"op": "add_automation", "automation": {"key": "ok", "name": "Owner's OK", "trigger": {"type": "record_created", "table": "projects"},
-                                                    "actions": [{"type": "request_approval", "approver": "owner", "not_by": ["creator"]}]}}
-    ai.set_backend(ScriptedAI({"ops": CONSULTANCY + [stuck], "reply": "Built."}))
+    team = {"op": "set_team", "team": {"key": "finance", "name": "Finance"}}
+    stuck = {"op": "add_automation", "automation": {"key": "ok", "name": "Finance's OK", "trigger": {"type": "record_created", "table": "projects"},
+                                                    "actions": [{"type": "request_approval", "approver": "finance", "not_by": ["finance"]}]}}
+    ai.set_backend(ScriptedAI({"ops": CONSULTANCY + [team, stuck], "reply": "Built."}))
     _turn(ws, "build it")
     was = copy.deepcopy(ws.blueprint)
     found = chat._already_found(ws, was)
