@@ -93,3 +93,19 @@ def test_a_regrade_acts_the_last_turns_own_examples_out_again_with_todays_code(a
     assert again[0]["tried"]["examples"][0]["ok"] and again[0]["tried"]["examples"][0]["problem"] == ""
     old = turn(examples=[{"title": "A job's hours", "ok": False, "lines": [], "problem": "a fault since fixed"}])
     assert _replayed(ws, [old]) == [old]
+
+
+def test_a_small_change_that_does_more_than_asked_is_caught():
+    from evals.updates import more_than_asked
+    before = {"tables": [{"key": "orders", "label": "Orders", "singular": "Order", "fields": [{"key": "status", "label": "Status", "type": "select",
+                                                                                              "options": ["New", "Done"]}]}],
+              "automations": []}
+    rule = {"key": "tell", "name": "Tell me", "trigger": {"type": "record_updated", "table": "orders"}, "conditions": [],
+            "actions": [{"type": "notify", "to": "everyone", "message": "Done"}]}
+    after = {"tables": before["tables"] + [{"key": "invoices", "label": "Invoices", "singular": "Invoice", "fields": []}],
+             "automations": [rule, {**rule, "key": "remind", "name": "Remind on unpaid"}]}
+    harm, extra = more_than_asked(before, after, 1, told="orders")
+    assert harm == ["it also made new lists nobody asked for: Invoices"]
+    assert any("2 new rules where 1 was needed" in x for x in extra) and any("tells everyone, not the owner" in x for x in extra)
+    assert more_than_asked(before, {**before, "automations": [{**rule, "actions": [{"type": "notify", "to": "owner", "message": "Done"}]}]},
+                           1, told="orders") == ([], [])

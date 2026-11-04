@@ -21,6 +21,17 @@ AI_RETRY_SECONDS = 20
 HISTORY = 8
 REPAIRS = 2
 PARTS = 5  # a big request is built in at most this many parts in one turn
+CUT_OFF = ("Your answer was too long and got cut off. Send only the first part now (about four tables, or a few pages and "
+           "automations), with \"more\": true and \"plan\": the parts still to build of what the owner asked for. Keep field "
+           "lists to what matters.")
+# an app built already, changed: a small change cut off is asked again as it is, never as the first part of a bigger plan
+CUT_OFF_CHANGING = ("Your answer was too long and got cut off. The app is built already: send only the changes the owner's last "
+                    "message asks for, in as few ops as do it, and nothing else (no lists, pages, rules or permissions they didn't "
+                    "ask for). Set \"more\" to false unless that message itself asks for more than fits in one answer.")
+STUCK_CHANGING = ("Your answer got stuck repeating itself and was lost. Start again, shorter: only the changes the owner's last "
+                  "message asks for, in as few ops as do it, and nothing else. Set \"more\" to false.")
+ONLY_ASKED = (" Build only what the owner's last message asks for: leave out anything in the plan they didn't ask for (send no "
+              "ops for it, and set \"more\" to false).")
 REVIEW_AFTER = 8  # a turn making at least this many changes is checked against the request before it's done
 REVIEW = ("The ERP above is built and saved. Before you finish, check it against what the owner asked for: one check for "
           "each thing they said they need (each kind of record, permission, who sees which records, lock, rule, automation, "
@@ -331,13 +342,16 @@ def _data(workspace, items, by=None):
     return said, shown
 
 
-def design(workspace, convo, on_progress=None, on_note=None, sheet_cells=None, imported=(), checking=None, answer_schema=None):
+def design(workspace, convo, on_progress=None, on_note=None, sheet_cells=None, imported=(), checking=None, answer_schema=None, changing=False,
+           me=None):
     """Ask the AI for changes and check them; send problems back to it (twice at most). Returns (answer, result).
     The design isn't changed here: the caller saves result.blueprint if it has no problems. `sheet_cells` are the cells
     of spreadsheets attached to the request: their rows come in by import, so the AI typing them out is dropped, as is
     importing again a file already `imported`. `checking` is the owner's request when the AI is checking the build
     against it (REVIEW): its answer is a check per thing asked, and only what's missing of what they said is built.
-    `answer_schema`: another shape of answer (FIX_SCHEMA, fixing what trying the app out found)."""
+    `answer_schema`: another shape of answer (FIX_SCHEMA, fixing what trying the app out found). `changing`: the app was
+    built before this turn, so an answer cut off is asked again for just what was asked, never the first part of more.
+    `me`: who “let me know” is (owner or admin) when the request says it: a message sent to no one in particular goes to them."""
     kind = "review" if checking else "fix" if answer_schema else "design"
     answer_schema = answer_schema or (prompts.REVIEW_SCHEMA if checking else prompts.ANSWER_SCHEMA)
 
@@ -350,6 +364,8 @@ def design(workspace, convo, on_progress=None, on_note=None, sheet_cells=None, i
             if len(kept) < len(answer["ops"]) and on_note:
                 on_note("Left the attached rows to the import, so they aren't added twice")
             answer["ops"] = kept
+        if me and isinstance(answer.get("ops"), list):
+            _to_me(answer["ops"], me)
         return answer
 
     try:
@@ -363,9 +379,7 @@ def design(workspace, convo, on_progress=None, on_note=None, sheet_cells=None, i
             ai.again.set(ai.again.get() + 1)  # went round in a loop: the next go a little less fixed
         if on_note:
             on_note("That was a lot at once: building it in smaller parts")
-        convo = convo + [{"role": "user", "content": "Your answer was too long and got cut off. Send only the first part now "
-                                                     "(about four tables, or a few pages and automations), with \"more\": true and "
-                                                     "\"plan\": the parts still to build. Keep field lists to what matters."}]
+        convo = convo + [{"role": "user", "content": CUT_OFF_CHANGING if changing else CUT_OFF}]
         content, _ = ai.chat(convo, schema=answer_schema, on_progress=on_progress, think=current_app.config["AI_THINK_BUILDER"])
         answer = parse(content)
     result = ops.apply(workspace.blueprint, answer.get("ops") or [], always_check=True)
@@ -802,6 +816,23 @@ def _not_yet(wrong, issues):
             "happen, and I'll fix it.")
 
 
+LET_ME_KNOW = re.compile(r"\b(let me know|tell me|notify me|alert me|ping me|remind me|message me|let us know|send me an? "
+                        r"(note|message|notification|alert))\b", re.I)
+
+
+def _to_me(found, me):
+    """Messages to no one in particular in a turn asked to “let me know”: to the person asking, never everyone."""
+    if isinstance(found, list):
+        for x in found:
+            _to_me(x, me)
+    elif isinstance(found, dict):
+        if found.get("type") == "notify" and not found.get("to"):
+            found["to"] = me
+        for v in found.values():
+            if isinstance(v, (list, dict)):
+                _to_me(v, me)
+
+
 def _said_before(message):
     """Whether this reply is (nearly) the one before it in the conversation: a small model may answer by repeating its
     last reply, which then tells the owner about the last change as if it were this one."""
@@ -887,6 +918,11 @@ def _work(message_id):
     by = question.user_id if question else None
     changes, replies, all_ops, navigate, problems, cut, unbuilt = [], [], [], None, [], [], []
     message.version_before = workspace.version or 0
+    changing = bool((workspace.blueprint or {}).get("tables"))  # an app being changed, not built: only what this message asks
+    me = None
+    if question is not None and LET_ME_KNOW.search(question.text or ""):
+        member = Membership.query.filter_by(workspace_id=workspace.id, user_id=question.user_id).first()
+        me = "owner" if member is None or member.role == "owner" else "admin"
     db.session.commit()
     tried_fix, fixing, fixing_plan, plan = False, None, None, None
     imported, asked_import, reviewed, reviewing = set(), False, False, False
@@ -898,7 +934,7 @@ def _work(message_id):
                         f"plan now ({plan or 'the rest'}), with \"more\": true and \"plan\": what's still to build after them.", plan)
     for part in range(1, PARTS + 3):
         try:
-            answer, result = design(workspace, convo, progress, note, sheet_cells, imported, asked if reviewing else None)
+            answer, result = design(workspace, convo, progress, note, sheet_cells, imported, asked if reviewing else None, changing=changing, me=me)
         except ai.AIUnavailable as exc:
             if replies:  # what's built so far is saved; finish with that rather than wait
                 problems.append(f"the AI stopped answering before the rest was built ({exc})")
@@ -914,7 +950,7 @@ def _work(message_id):
                 if isinstance(exc, ai.Stuck):
                     ai.again.set(ai.again.get() + 1)
                 note("That was too much in one go; building it in smaller pieces")
-                convo = smaller() if replies else convo + [{"role": "user", "content": (
+                convo = smaller() if replies else convo + [{"role": "user", "content": STUCK_CHANGING if changing else (
                     "Your answer got stuck repeating itself and was lost. Start again with only the first part: the main "
                     "tables and their links (about four), with \"more\": true and \"plan\": the rest still to build.")}]
                 continue
@@ -1009,7 +1045,8 @@ def _work(message_id):
             fixing_plan = None
             note(f"Part {part} is ready (have a look on the right); now: {plan[:160]}")
             ask_next = (f"Part {part} is built and saved (the ERP above shows it). Carry on with the next part of your plan: {plan}. "
-                        f"Send only new changes; don't repeat earlier ones. Set \"more\" to false once everything asked for is built.")
+                        f"Send only new changes; don't repeat earlier ones. Set \"more\" to false once everything asked for is built."
+                        + (ONLY_ASKED if changing else ""))
         elif not asked_import and _unimported(question, imported, workspace.id):
             # the tables exist now, so the spreadsheet's columns can be matched to them
             waiting = _unimported(question, imported, workspace.id)

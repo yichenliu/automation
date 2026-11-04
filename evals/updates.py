@@ -13,6 +13,7 @@ that passed before still pass.
 Each change is {"how": "map" | "ai", "change", "ok", "why", "said", "seconds"?}. What it says (the App map's notes, the
 builder's replies) is looked at as a beginner would by ux.words_found.
 """
+import copy
 import re
 import time
 
@@ -195,16 +196,17 @@ def by_asking(ws, owner, scenario_key, before):
     if aim is None:
         return []
     one = aim["singular"].lower()
-    asks = [
+    asks = [  # (the change, in the owner's words, done?, how many new rules it takes)
         (f"add a column “{aim['column']}”", f"Can you add a “{aim['column']}” to {aim['label'].lower()}, so we can leave each other a note?",
-         lambda bp: any(f["label"].lower() == aim["column"].lower() for f in _table(bp, aim["table"])["fields"])),
+         lambda bp: any(f["label"].lower() == aim["column"].lower() for f in _table(bp, aim["table"])["fields"]), 0),
         (f"tell me when {a(one)} reaches {aim['told']}", f"When {a(one)} gets to {aim['told']}, let me know.",
-         lambda bp: _tells(bp, aim)),
+         lambda bp: _tells(bp, aim), 1),
         (f"add a stage “{aim['held']}” after {aim['after']}", f"We need a stage “{aim['held']}” for {aim['label'].lower()}, straight after {aim['after']}.",
-         lambda bp: _placed(bp, aim)),
+         lambda bp: _placed(bp, aim), 0),
     ]
     out, worked = [], {k for k, v in before.items() if v == "pass"}
-    for change, say, done in asks:
+    for change, say, done, rules in asks:
+        was = copy.deepcopy(db.session.get(Workspace, ws.id).blueprint)
         reply = chat.ask(ws, say, user=owner)
         started = time.time()
         try:
@@ -221,9 +223,35 @@ def by_asking(ws, owner, scenario_key, before):
         broke = sorted(name for name in worked if now.get(name) != "pass")
         why = [] if made else [f"it didn't make the change ({reply.status}{': ' + (reply.error or '')[:120] if reply.error else ''})"]
         why += [f"it broke the story “{name}”" for name in broke]
-        out.append({"how": "ai", "change": change, "asked": say, "ok": made and not broke, "why": "; ".join(why), "said": [reply.text or ""],
-                    "seconds": round(time.time() - started), "questions": (reply.text or "").count("?")})
+        harm, extra = more_than_asked(was, ws.blueprint, rules, told=aim["table"] if rules else None)
+        why += harm
+        out.append({"how": "ai", "change": change, "asked": say, "ok": made and not broke and not harm, "why": "; ".join(why), "said": [reply.text or ""],
+                    "seconds": round(time.time() - started), "questions": (reply.text or "").count("?"), "extra": extra})
     return out
+
+
+def more_than_asked(before, after, rules, told=None):
+    """What a small change did that wasn't asked for: (harm, extra). Harm makes it wrong: a list nobody asked for, a
+    change to who can see what. Extra is said: more new rules than it takes, or everyone told when the owner said "let me
+    know" (`told`: the list whose rule that is)."""
+    from app.blueprint import ops, schema
+    harm, extra = [], []
+    new_lists = [t["label"] for t in after.get("tables", []) if not schema.table(before, t["key"])]
+    if new_lists:
+        harm.append(f"it also made new lists nobody asked for: {', '.join(new_lists[:4])}")
+    seen = ops.access_changes(before, after)
+    if seen:
+        harm.append(f"it also changed who can see what: {'; '.join(seen[:2])}"[:200])
+    was = {x["key"] for x in before.get("automations", [])}
+    made = [x for x in after.get("automations", []) if x["key"] not in was]
+    if len(made) > rules:
+        extra.append(f"it made {len(made)} new rules where {rules or 'none'} {'was' if rules == 1 else 'were'} needed: "
+                     + ", ".join(f"“{x['name']}”" for x in made[:4]))
+    if told:
+        to = {str(st.get("to")) for x in made if x["trigger"].get("table") == told for st in schema.steps_of(x["actions"]) if st.get("type") == "notify"}
+        if to and "owner" not in to:
+            extra.append(f"“let me know” tells {', '.join(sorted(to))}, not the owner who asked")
+    return harm, extra
 
 
 def _engine(ws):
@@ -265,6 +293,8 @@ def findings(changes, theirs):
             out.append(ux._finding("blocker", "change didn't work", "the owner", where, c["why"][:180] or "it didn't happen"))
         for text in c.get("said") or []:
             out += ux.words_found(str(text), theirs, "the owner", where)
+        for what in c.get("extra") or []:
+            out.append(ux._finding("confusing", "did more than asked", "the owner", where, what[:180]))
         if c["how"] == "ai" and c.get("questions", 0) > 2:
             out.append(ux._finding("confusing", "too many questions", "the owner", where, f"asked {c['questions']} questions for a small change"))
     return ux._unique(out)

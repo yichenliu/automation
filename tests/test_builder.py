@@ -84,6 +84,18 @@ def test_a_reply_that_repeats_the_last_one_is_written_again_from_what_this_turn_
     assert m.text == "I've added a Phone column to clients." and "Phone" in again.asked[-1][-1]["content"]  # told from what was done
 
 
+def test_let_me_know_tells_the_person_asking_not_everyone(app, owner):
+    _, ws = owner
+    ai.set_backend(ScriptedAI({"ops": CONSULTANCY, "reply": "Built."}))
+    _turn(ws, "build it")
+    rule = {"op": "add_automation", "automation": {"key": "paid", "name": "Tell when paid", "trigger": {"type": "record_updated", "table": "invoices"},
+                                                   "conditions": [], "actions": [{"type": "notify", "message": "{{record.number}} is paid"}]}}
+    ai.set_backend(ScriptedAI({"ops": [rule], "reply": "I'll tell you when an invoice is paid."}))
+    _turn(ws, "When an invoice is paid, let me know.")
+    made = next(a for a in ws.blueprint["automations"] if a["key"] == "paid")
+    assert made["actions"][0]["to"] == "owner"
+
+
 def test_a_big_request_is_built_in_parts_in_one_turn_and_undone_as_one(app, owner):
     _, ws = owner
     first = {"ops": CONSULTANCY[:3], "reply": "Clients and projects are set up.", "more": True, "plan": "invoices, then payroll"}

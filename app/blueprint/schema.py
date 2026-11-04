@@ -2408,6 +2408,9 @@ def _check_values(values, target, where, problems, context_fields):
             problems.append(f"{where}: “{k}” is worked out automatically and can't be set")
         elif f["type"] in FILES:
             problems.append(f"{where}: “{k}” holds files; files are added by generate_document, ai_create_record or by people")
+        elif f["type"] == "user" and isinstance(v, str) and "{{" not in v and (v in WHO_WORDS or re.fullmatch(r"[a-z][a-z0-9_]*", v)):
+            problems.append(f"{where}: {f['label']} holds a person, so it can't be set to “{v}” (a team or role isn't one person): "
+                            f"use {{{{approver}}}} (who approved it) or a field that holds a person, or leave it out")
         if isinstance(v, str) and "{{" in v:
             _check_template(v, where, problems, context_fields)
 

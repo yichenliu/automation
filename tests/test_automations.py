@@ -92,3 +92,14 @@ def test_an_ai_step_waits_for_the_ai_and_carries_on(app, owner):
     assert run.status == "done" and Notification.query.count() == 1  # the notify step wasn't repeated
     assert Engine(ws).get(client.id).data["industry"] == "Mining"
     assert run.steps[1]["result"] == "The AI set Industry to “Mining”"
+
+
+def test_a_person_column_is_never_set_to_a_team_or_role_by_a_rule(app, owner):
+    _, ws = owner
+    reviewer = {"op": "add_field", "table": "projects", "field": {"key": "approved_by", "label": "Approved by", "type": "user"}}
+    rule = {"op": "add_automation", "automation": {"key": "ok", "name": "Mark approved", "trigger": {"type": "record_created", "table": "projects"},
+                                                   "actions": [{"type": "update_record", "values": {"approved_by": "procurement"}}]}}
+    result = ops.apply(ws.blueprint, CONSULTANCY + [reviewer, rule])
+    assert any("Approved by holds a person, so it can't be set to “procurement”" in p for p in result.problems)
+    rule["automation"]["actions"][0]["values"]["approved_by"] = "{{record.created_by}}"
+    assert not any("holds a person" in p for p in ops.apply(ws.blueprint, CONSULTANCY + [reviewer, rule]).problems)
