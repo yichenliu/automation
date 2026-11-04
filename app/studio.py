@@ -526,7 +526,7 @@ def rule_diagram(engine, a, runs):
         for i, step in enumerate(actions or []):
             at = f"{prefix}{i}"
             plain = {k: v for k, v in step.items() if k not in ("if_rejected", "review", "reviewer")}
-            node = {"at": at, "type": step["type"], "kind": STEP_WORDS.get(step["type"], step["type"].replace("_", " ").capitalize()),
+            node = {"at": at, "type": step["type"], "kind": _step_kind(engine, step, table),
                     "text": automations.describe_action(engine, a, plain) if step["type"] != "branch" else "Go one of these ways",
                     "counts": counts.get(at, {}), "editable": step["type"] in STEP_TYPES, "step": step,
                     "only_if": automations.automations_words(engine, step["only_if"], table) if step.get("only_if") else ""}
@@ -555,6 +555,24 @@ def rule_diagram(engine, a, runs):
                                                        "last": last.created_at.isoformat() if last else None},
             "who": who_choices(engine, t), "tables": [{"key": x["key"], "label": x["label"], "singular": x["singular"]} for x in engine.bp["tables"]],
             "documents": [{"key": d["key"], "label": d["label"]} for d in (t or {}).get("documents", [])]}
+
+
+def _step_kind(engine, step, table):
+    """What a step does, named for what it makes or changes (“Add a job”, “Change its enquiry”), else its kind."""
+    from .engine.automations import _article
+    made, here = engine.tables.get(step.get("table") or ""), engine.tables.get(table or "")
+    if step["type"] in ("create_record", "ai_create_record", "copy_record") and made:
+        return f"{'Have the AI add' if step['type'] == 'ai_create_record' else 'Add'} {_article(made['singular'])} {made['singular'].lower()}"
+    if step["type"] == "create_for_each" and made:
+        return f"Add {made['label'].lower()}, one for each"
+    if step["type"] == "update_record" and here:
+        link = schema.field(here, step["target"]) if step.get("target") else None
+        return f"Change its {link['label'].lower()}" if link else f"Change the {here['singular'].lower()}"
+    return STEP_WORDS.get(step["type"]) or MORE_STEP_WORDS.get(step["type"]) or step["type"].replace("_", " ").capitalize()
+
+
+MORE_STEP_WORDS = {"update_each": "Change each of them", "delete_record": "Delete it", "run_automation": "Run another rule",
+                   "payment_link": "Make a payment link", "create_for_each": "Add one for each", "copy_record": "Copy it"}
 
 
 def step_counts(runs):

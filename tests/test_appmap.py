@@ -177,3 +177,25 @@ def test_the_same_message_twice_in_a_row_is_sent_once(app, owner):
     a = schema.normalize_automation({"key": "x", "name": "X", "trigger": {"type": "record_created", "table": "quotes"},
                                      "actions": [tell, dict(tell), {"type": "notify", "to": "admin", "message": "Quote accepted: job made"}, dict(tell)]})
     assert [s["to"] for s in a["actions"]] == ["everyone", "admin", "everyone"]  # only the repeat straight after itself goes
+
+
+def test_a_hand_off_says_what_else_must_be_true_and_where_its_own_record_goes_on_to(app, client, owner):
+    """“When a job reaches Signed off, an invoice is made and the job moves on to Invoiced”; “a payment …, if its balance
+    is nothing”; a rule's steps named for what they make and change; email offered only when it can be sent."""
+    _, ws = owner
+    design = [dict(op) for op in TRADE]
+    design[-3] = {"op": "add_automation", "automation": {**TRADE[-3]["automation"], "actions": TRADE[-3]["automation"]["actions"] + [
+        {"type": "update_record", "values": {"status": "Done"}}]}}
+    design[-2] = {"op": "add_automation", "automation": {**TRADE[-2]["automation"], "conditions": [{"field": "amount", "op": "greater_than", "value": 0}]}}
+    _built(ws, design)
+    drawn = appmap.build(Engine(ws))
+    hands = {h["rule"]: h for h in drawn["processes"][0]["handoffs"]}
+    assert hands["to_invoice"]["moves_to"] == "Done" and hands["to_job"]["moves_to"] is None
+    assert hands["paid"]["only_if"] and "Amount" in hands["paid"]["only_if"][0]
+    from app import studio
+    rule = next(a for a in ws.blueprint["automations"] if a["key"] == "to_invoice")
+    kinds = [n["kind"] for n in studio.rule_diagram(Engine(ws), rule, [])["steps"]]
+    assert kinds == ["Add an invoice", "Add a stock movement", "Change the job"]
+    login(client)
+    page = client.get(f"/w/{ws.id}/app/studio").get_data(as_text=True)
+    assert 'data-email-on=""' in page and 'data-me="' in page  # not connected: “email me” shown, but not offered

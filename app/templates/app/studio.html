@@ -3,7 +3,7 @@
 {% block content %}
 <div class="page-head"><div class="titles"><h1>{{ icon('map') }}App map</h1>
   <p class="sub">How your app works: where work comes in, the steps it goes through, who does what, and what happens automatically.
-    Click anything to see more.{% if can_edit %} Looking is safe: nothing changes until you press a Change button.{% endif %}</p></div>
+    Click anything to see more.{% if can_edit %} Looking is safe: nothing changes until you press Change and save, and every change can be taken back.{% endif %}</p></div>
   <div class="actions">
     <div class="segmented" role="tablist" aria-label="What to show">
       <button type="button" role="tab" data-show-view="map" aria-selected="{{ 'true' if view == 'map' else 'false' }}">{{ icon('route') }}How work flows</button>
@@ -21,14 +21,15 @@
          data-ai-page="{{ url_for('app.ai_page', wid=ws.id) }}" data-map-json="{{ url_for('app.studio_map_json', wid=ws.id) }}"
          data-name="{{ url_for('app.studio_map_name', wid=ws.id) }}" data-play="{{ url_for('app.studio_map_play', wid=ws.id) }}"
          data-open-table="{{ url_for('app.table', wid=ws.id, table='__table__') }}" data-checks="{{ url_for('app.checks', wid=ws.id) }}"
-         data-run-now="{{ url_for('app.run_now', wid=ws.id, key='__key__') }}" data-all-runs="{{ url_for('app.automations', wid=ws.id) }}">
+         data-run-now="{{ url_for('app.run_now', wid=ws.id, key='__key__') }}" data-all-runs="{{ url_for('app.automations', wid=ws.id) }}"
+         data-me="{{ current_user.email if can_edit else '' }}" data-email-on="{{ 'yes' if email_on else '' }}">
       <section class="wf-main" aria-live="polite"></section>
       <aside class="studio-panel"></aside>
       <div class="studio-status" role="status" aria-live="polite"></div>
     </div>
   </section>
   <section data-view-pane="data" {{ 'hidden' if view != 'data' }}>
-    <div class="map-data-head"><p class="small muted grow">Every list in your app, and the columns each one keeps. Click a list to see it in full{% if can_edit %} or change it{% endif %}.</p>
+    <div class="map-data-head"><p class="small muted grow">Every list in your app, and the columns each one keeps ({{ icon('link') }} picks one from another list). Click a list or a column to see it in full{% if can_edit %} or change it{% endif %}.</p>
       <div class="segmented sm" role="group" aria-label="Show them as">
         <button type="button" data-data-mode="cards" aria-pressed="true">{{ icon('layout-grid') }}Lists</button>
         <button type="button" data-data-mode="diagram" aria-pressed="false" title="A diagram of how the lists link to each other">{{ icon('network') }}Diagram</button></div>

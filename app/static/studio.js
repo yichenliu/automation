@@ -170,11 +170,13 @@
           <header>${icon(t.icon)}<b class="grow">${esc(t.label)}</b><span class="faint small" title="How many there are">${t.count}</span></header>
           ${parent ? `<p class="tiny faint">The lines on each ${esc((tableOf(parent.link) || {singular: parent.label}).singular.toLowerCase())}</p>`
             : t.combines.length ? `<p class="tiny faint">Put together from ${esc(t.combines.map((k) => (tableOf(k) || {label: k}).label).join(", "))}</p>` : ""}
-          <ul class="data-cols">${t.fields.map((f) => `<li class="${f.link ? "link" : ""}" title="${esc(f.kind)}${f.detail ? ` · ${esc(f.detail)}` : ""}">${f.link ? icon("link") : ""}${esc(f.label)}</li>`).join("")}</ul>
+          <ul class="data-cols">${t.fields.map((f) => `<li class="${f.link ? "link" : ""}" data-col="${esc(f.key)}" title="${esc(f.kind)}${f.detail ? ` · ${esc(f.detail)}` : ""}">${f.link ? icon("link") : ""}${esc(f.label)}</li>`).join("")}</ul>
+          ${(() => { const from = [...new Set(model.links.filter((l) => l.to === t.key && l.from !== t.key && tableOf(l.from) && !tableOf(l.from).embedded).map((l) => tableOf(l.from).label.toLowerCase()))];
+            return from.length ? `<p class="tiny muted">Kept with each ${esc(t.singular.toLowerCase())} too: their ${esc(from.join(", "))}.</p>` : ""; })()}
           ${allowed && !t.combines.length ? `<button type="button" class="btn sm ghost" data-add-col="${esc(t.key)}">${icon("plus")}Add a column</button>` : ""}</article>`;
       }).join("") || `<p class="muted">No lists yet.</p>`;
       $$(".data-card", cards).forEach((c) => {
-        c.addEventListener("click", (ev) => { if (!ev.target.closest("[data-add-col]")) select(c.dataset.table); });
+        c.addEventListener("click", (ev) => { if (!ev.target.closest("[data-add-col]")) select(c.dataset.table, ev.target.closest("[data-col]")?.dataset.col || null); });
         c.addEventListener("keydown", (ev) => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); select(c.dataset.table); } });
       });
       $$("[data-add-col]", cards).forEach((b) => b.addEventListener("click", () => addColumn(b.dataset.addCol)));
@@ -183,7 +185,7 @@
       hooks.edit?.(true);
       select(table);
       const add = $("details.add-field", panel);
-      if (add) { add.open = true; $("input[name=label]", add)?.focus(); add.scrollIntoView({block: "nearest"}); }
+      if (add) { add.open = true; panel.scrollTop = 0; $("input[name=label]", add)?.focus({preventScroll: true}); }
     }
     function showMode() {
       root.classList.toggle("as-cards", mode === "cards");
@@ -217,7 +219,9 @@
       const title = node("text", {x: 12, y: 18, "font-size": 13.5, "font-weight": 650, fill: colours.text}, g);
       title.textContent = clip(t.label, 26);
       const sub = node("text", {x: 12, y: 32, "font-size": 11, fill: colours.faint}, g);
-      sub.textContent = (t.combines.length ? `Put together from ${plural(t.combines.length, "list", "lists")} · ` : t.embedded ? "Lines inside another list · " : "") + plural(t.count, "record", "records");
+      const parent = t.embedded && t.fields.find((f) => f.link);
+      sub.textContent = (t.combines.length ? `Put together from ${plural(t.combines.length, "list", "lists")} · ` : parent ? `The lines on each ${((tableOf(parent.link) || {}).singular || "one").toLowerCase()} · ` : "")
+        + plural(t.count, t.singular.toLowerCase(), t.label.toLowerCase());
       if (canEdit) {
         const plus = node("g", {class: "link-handle", transform: `translate(${W - 22},${HEAD / 2})`, "data-handle": t.key}, g);
         node("circle", {r: 9, fill: colours.panel, stroke: colours.accent}, plus);
@@ -499,11 +503,11 @@
           ${sections.length ? `<label class="field"><span>In the menu under</span><select name="section">${sections.map((s) => `<option value="${esc(s.key)}" ${s.key === t.module ? "selected" : ""}>${esc(s.label)}</option>`).join("")}</select></label>` : ""}
           <button class="btn sm">Save</button></form>` : ""}
         ${allowed && !canEdit ? `<button type="button" class="btn sm" data-change-it>${icon("pencil")}Change what it keeps</button>` : ""}
-        <div><div class="label">What each ${esc(t.singular.toLowerCase())} keeps${canEdit ? ` <span class="faint tiny">· drag to put them in order</span>` : ""}</div>
-          <ul class="studio-fields" data-fields>${t.fields.map((f) => `<li ${canEdit ? 'draggable="true"' : ""} data-key="${esc(f.key)}">
-            ${canEdit ? icon("grip-vertical", "grip") : ""}<button type="button" data-field="${esc(f.key)}"><span class="grow"><b>${esc(f.label)}</b>${f.required ? ' <span class="req">*</span>' : ""}${f.title ? ' <span class="tag" title="Each one is called by this">its name</span>' : ""}${f.stage ? ' <span class="tag">stages</span>' : ""}
-            <div class="faint tiny">${esc(f.kind)}${f.detail ? " · " + esc(f.detail) : ""}</div></span>${icon("chevron-right")}</button></li>`).join("")}</ul></div>
         ${canEdit ? addFieldForm(t) : ""}
+        <div><div class="label">What each ${esc(t.singular.toLowerCase())} keeps${canEdit ? ` <span class="faint tiny">· drag to put them in order</span>` : ""}${t.fields.some((f) => f.required) ? ` <span class="faint tiny">· <span class="req">*</span> must be filled in</span>` : ""}</div>
+          <ul class="studio-fields" data-fields>${t.fields.map((f) => `<li ${canEdit ? 'draggable="true"' : ""} data-key="${esc(f.key)}">
+            ${canEdit ? icon("grip-vertical", "grip") : ""}<button type="button" data-field="${esc(f.key)}"><span class="grow"><b>${esc(f.label)}</b>${f.required ? ' <span class="req">*</span>' : ""}${f.title ? ' <span class="tag" title="Each one is called by this">used as its name</span>' : ""}${stageField(t, f) ? ' <span class="tag">its stages</span>' : ""}
+            <div class="faint tiny">${esc([f.kind !== f.label ? f.kind : "", f.detail].filter(Boolean).join(" · "))}</div></span>${icon("chevron-right")}</button></li>`).join("")}</ul></div>
         ${canEdit ? `<details class="danger-zone"><summary class="small">Delete this list</summary>
           <p class="small muted">${t.count ? `Its ${plural(t.count, "record goes", "records go")} to the bin with it, and come${t.count === 1 ? "s" : ""} back if you take it back.` : "It has no records."}</p>
           <button type="button" class="btn sm danger" data-delete-table>${icon("trash-2")}Delete ${esc(t.label)}</button></details>` : ""}
@@ -524,6 +528,10 @@
       return box;
     }
 
+    // the column a list's stages are kept in: its stages, or a plain Status with a few choices (as the map draws it)
+    const stageField = (t, f) => f.stage || (f.type === "select" && /status|stage|state/.test(f.key) && f.options.length >= 3
+      && !t.fields.some((g) => g.stage) && t.fields.find((g) => g.type === "select" && /status|stage|state/.test(g.key) && g.options.length >= 3) === f);
+
     function addFieldForm(t) {
       return `<details class="add-field" ${t.fields.length < 2 ? "open" : ""}><summary class="btn sm">${icon("plus")}Add a column</summary>
         <form class="stack card card-body" data-form="add-field">
@@ -532,7 +540,9 @@
           <label class="field" data-when="select multi_select" hidden><span>The choices, one on each line</span><textarea name="options" rows="4" placeholder="New&#10;In progress&#10;Done"></textarea></label>
           <label class="field" data-when="link" hidden><span>Which list</span><select name="link_to">${tables().map((x) => `<option value="${esc(x.key)}">${esc(x.label)}</option>`).join("")}</select></label>
           <label class="check" data-when="link" hidden><input type="checkbox" name="multiple"> Several of them, not just one</label>
-          <label class="field" data-when="formula" hidden><span>Worked out as</span><input type="text" name="expression" placeholder="quantity * price"><span class="help">Use the other columns' names: ${esc(t.fields.filter((f) => ["number", "money", "percent", "formula", "rollup"].includes(f.type)).map((f) => f.key).slice(0, 6).join(", ") || "quantity, price")}</span></label>
+          <label class="field" data-when="formula" hidden><span>Worked out as</span><input type="text" name="expression" placeholder="quantity * price"><span class="help">${t.fields.some((f) => ["number", "money", "percent", "formula", "rollup"].includes(f.type))
+            ? `Use this list's number columns, written like this: ${esc(t.fields.filter((f) => ["number", "money", "percent", "formula", "rollup"].includes(f.type)).map((f) => f.key).slice(0, 6).join(", "))}`
+            : `${esc(t.label)} has no number columns yet to work it out from: add those first.`}</span></label>
           <label class="check"><input type="checkbox" name="required"> It must be filled in</label>
           <button class="btn primary sm">Add it</button></form></details>`;
     }
@@ -559,13 +569,15 @@
       const box = html(`<div class="stack">
         <div class="row"><button type="button" class="btn sm ghost" data-back>${icon("chevron-left")}${esc(t.label)}</button></div>
         <div><h2 class="panel-title">${esc(f.label)}</h2><p class="small muted">${esc(f.kind)}${f.detail ? " · " + esc(f.detail) : ""}</p>
-          ${f.ai ? `<p class="small"><span class="ai-tag">${icon("sparkles")}AI</span> The AI fills this in.</p>` : ""}</div>
+          ${f.ai ? `<p class="small"><span class="ai-tag">${icon("sparkles")}AI</span> The AI fills this in.</p>` : ""}
+          ${stageField(t, f) && integrated ? `<p class="small">${icon("arrow-right")} These are each ${esc(t.singular.toLowerCase())}'s stages. Add one between two, put them in order or rename them where you can see how ${esc(a(t.singular.toLowerCase()))} moves along:
+            <a href="${esc(root.dataset.here)}?open=${encodeURIComponent(`list:${t.key}`)}" data-go-map="list:${esc(t.key)}">how ${esc(a(t.singular.toLowerCase()))} moves along</a>.</p>` : ""}</div>
         ${!canEdit ? `<dl class="small">${f.help ? `<dt>Help</dt><dd>${esc(f.help)}</dd>` : ""}<dt>Must be filled in</dt><dd>${f.required ? "Yes" : "No"}</dd></dl>` : `
         <form class="stack" data-form="field">
           <label class="field"><span>Name</span><input type="text" name="label" value="${esc(f.label)}" required maxlength="80"></label>
           ${kinds.length > 1 ? `<label class="field"><span>What goes in it</span><select name="type">${kinds.map((x) => `<option value="${x.type}" ${x.type === f.type ? "selected" : ""}>${esc(x.label)}</option>`).join("")}</select>
             <span class="help">${f.filled ? `${plural(f.filled, "record has", "records have")} one, so only a kind they already fit.` : "Any kind, while nothing is filled in yet."}</span></label>`
-            : f.filled && !f.calculated ? `<p class="help">${plural(f.filled, "record has", "records have")} one, so it stays ${esc(f.kind.toLowerCase())}: add a new column for another kind.</p>` : ""}
+            : f.filled && !f.calculated ? `<p class="help">${plural(f.filled, "record has", "records have")} one, so it can only stay ${esc(f.kind.toLowerCase())}. To keep something else, add a new column.</p>` : ""}
           ${f.type === "formula" ? `<label class="field"><span>Worked out as</span><input type="text" name="expression" value="${esc(f.expression)}"></label>` : ""}
           <label class="field"><span>Help shown under it</span><input type="text" name="help" value="${esc(f.help)}" maxlength="200" placeholder="What to put here"></label>
           ${f.calculated ? "" : `<label class="check"><input type="checkbox" name="required" ${f.required ? "checked" : ""}> It must be filled in</label>`}
@@ -586,7 +598,7 @@
           ${!f.calculated && !["select", "multi_select", "link", "user", "file", "image", "signature"].includes(f.type) ? `<label class="field"><span>Filled in to start with</span><input type="text" name="default" value="${esc(f.default ?? "")}" maxlength="200"></label>` : ""}
           <button class="btn primary sm">Save</button></form>
         ${["select", "multi_select"].includes(f.type) ? choices(t, f) : ""}
-        ${f.title ? "" : `<button type="button" class="btn sm ghost" data-title>${icon("tag")}Name each ${esc(t.singular.toLowerCase())} by this</button>`}
+        ${f.title ? "" : `<button type="button" class="btn sm ghost" data-title>${icon("tag")}Use this as each ${esc(t.singular.toLowerCase())}'s name</button>`}
         <details class="danger-zone"><summary class="small">Remove this column</summary>
           <p class="small muted">What's filled in is kept, and comes back if you take it back.</p>
           <button type="button" class="btn sm danger" data-remove>${icon("trash-2")}Remove ${esc(f.label)}</button></details>`}
@@ -623,7 +635,7 @@
     function choices(t, f) {
       return `<div class="stack"><div class="label">Choices <span class="faint tiny">· drag to put them in order</span></div>
         <ul class="studio-choices" data-choices>${f.options.map((o) => `<li draggable="true" data-key="${esc(o)}">${icon("grip-vertical", "grip")}
-          <input type="text" value="${esc(o)}" data-old="${esc(o)}" aria-label="Choice ${esc(o)}" maxlength="80">
+          <input type="text" value="${esc(o)}" data-old="${esc(o)}" aria-label="Choice ${esc(o)}" maxlength="80"><button type="button" class="btn sm primary" data-save-choice hidden>Save</button>
           <label class="choice-colour pill ${esc((f.colours || {})[o] || "slate")}" title="Its colour"><span class="sr-only">Colour of ${esc(o)}</span>
             <select data-colour="${esc(o)}">${model.colours.map((c) => `<option value="${c}" ${c === (f.colours || {})[o] ? "selected" : ""}>${c === "slate" ? "Grey" : c[0].toUpperCase() + c.slice(1)}</option>`).join("")}</select></label>
           <button type="button" class="btn sm ghost icon" data-drop="${esc(o)}" aria-label="Remove ${esc(o)}" title="Remove">${icon("x")}</button></li>`).join("")}</ul>
@@ -633,11 +645,16 @@
     function wireChoices(box, t, f) {
       const list = $("[data-choices]", box);
       if (!list) return;
-      $$("input[data-old]", list).forEach((input) => input.addEventListener("change", () => {
-        const now = input.value.trim();
-        if (now && now !== input.dataset.old) change({do: "rename_option", table: t.key, key: f.key, old: input.dataset.old, new: now});
+      $$("input[data-old]", list).forEach((input) => {  // saved when they press Save (or Enter), never just by leaving it
+        const save = input.nextElementSibling;
+        const go = () => { const now = input.value.trim(); if (now && now !== input.dataset.old) change({do: "rename_option", table: t.key, key: f.key, old: input.dataset.old, new: now}); };
+        input.addEventListener("input", () => { save.hidden = input.value.trim() === input.dataset.old; input.classList.toggle("unsaved", !save.hidden); });
+        input.addEventListener("keydown", (ev) => { if (ev.key === "Enter") { ev.preventDefault(); go(); } });
+        save.addEventListener("click", go);
+      });
+      $$("[data-drop]", list).forEach((b) => b.addEventListener("click", () => {
+        if (confirm(`Remove the choice “${b.dataset.drop}”?`)) change({do: "update_field", table: t.key, key: f.key, options: f.options.filter((o) => o !== b.dataset.drop)});
       }));
-      $$("[data-drop]", list).forEach((b) => b.addEventListener("click", () => change({do: "update_field", table: t.key, key: f.key, options: f.options.filter((o) => o !== b.dataset.drop)})));
       $$("[data-colour]", list).forEach((sel) => sel.addEventListener("change", () => change({do: "update_field", table: t.key, key: f.key,
         option_colors: {...(f.option_colors || {}), [sel.dataset.colour]: sel.value}})));
       $("[data-form=choice]", box).addEventListener("submit", (ev) => {
@@ -742,21 +759,25 @@
 
     const itemId = () => !item ? "" : item.kind === "map" ? "map" : ["process", "list"].includes(item.kind) ? `${item.kind}:${item.key}`
       : `${item.kind}:${item.kind === "stages" ? item.table : item.key}`;
-    const remember = (id = itemId()) => history.replaceState(null, "", `${root.dataset.here}${id && id !== "map" ? `?open=${encodeURIComponent(id)}` : ""}`);
+    const remember = (id = itemId(), push = false) => history[push ? "pushState" : "replaceState"](null, "", `${root.dataset.here}${id && id !== "map" ? `?open=${encodeURIComponent(id)}` : ""}`);
 
-    async function open(id) {
+    async function open(id, push = true) {  // (the browser's Back comes back here, one view at a time)
       if (!id) id = "map";
       if (id === "data" || id.startsWith("data:")) { hooks.toData?.(id.slice(5)); return; }
       const local = mapItem(id);
       if (id === "map" && item && ["list", "process"].includes(item.kind)) cameFrom = item.kind === "list" ? item.key : null;
-      if (local) { const back = !!cameFrom; item = local; tried = null; remember(id); draw(); if (!back) toTop(); return; }
+      if (local) { const back = !!cameFrom, moved = id !== itemId(); item = local; tried = null; remember(id, push && moved); draw(); if (!back) toTop(); return; }
       const got = await get(`${root.dataset.item}?id=${encodeURIComponent(id)}`);
       if (!got) { statusLine(status, ["That isn't there any more"], "bad"); return; }
       item = got; tried = null;
-      remember(id);
+      remember(id, push);
       draw();
       toTop();
     }
+    addEventListener("popstate", () => {
+      const q = new URLSearchParams(location.search);
+      if (q.get("view") !== "data" && !root.closest("[hidden]")) open(q.get("open") || "map", false);
+    });
     function toTop() {  // a new view starts at its top (back on the map, it's where the list left is)
       const top = root.getBoundingClientRect().top + scrollY - 70;
       if (scrollY > top) scrollTo({top: Math.max(0, top)});
@@ -794,14 +815,14 @@
     function draw() {
       if (!item) item = {kind: "map"};
       main.innerHTML = ""; panel.innerHTML = "";
-      root.classList.toggle("wide", ["map", "process", "list"].includes(item.kind));  // read down the page; no panel beside them
+      root.classList.toggle("wide", ["map", "process", "list", "new"].includes(item.kind));  // read down the page; no panel beside them
       if (item.kind !== "map") main.appendChild(crumbs());
       if (item.kind === "map") drawMap();
       else if (item.kind === "process") drawProcess(procOf(item.key));
       else if (item.kind === "list") drawList(item.key);
       else if (item.kind === "rule") drawRule();
       else if (item.kind === "stages") drawStages();
-      else if (item.kind === "new") main.appendChild(html(`<div class="card empty"><h3>${icon("plus", "big")}<br>${esc(item.label)}</h3><p class="muted">Fill in the form ${matchMedia("(max-width: 1250px)").matches ? "below" : "beside"} this to make it.</p></div>`));
+      else if (item.kind === "new") (item.make === "stages" ? drawNewStages : drawNewRule)();
       else drawFlow();
       wire(main);  // the trail at the top, whatever's drawn below it
     }
@@ -826,7 +847,7 @@
 
     // Where you are, each name a way back: the whole app › a list › its stages or a rule.
     function crumbs() {
-      const table = ["stages", "rule", "flow"].includes(item.kind) ? item.table : null;
+      const table = ["stages", "rule", "flow", "new"].includes(item.kind) ? item.table : null;
       const trail = [["map", "Your whole app"]];
       if (table && listOf(table)) trail.push([`list:${table}`, listOf(table).label]);
       const here = item.kind === "process" ? procOf(item.key).name : item.kind === "list" ? listOf(item.key).label
@@ -834,11 +855,7 @@
       return html(`<nav class="map-crumbs" aria-label="Where you are">${icon("chevron-left")}${trail.map(([id, label]) => `<button type="button" class="link" data-open="${esc(id)}">${esc(label)}</button><span class="faint">›</span>`).join("")}
         <span aria-current="page">${esc(here)}</span></nav>`);
     }
-    const litAt = (table, stage) => {
-      if (!played) return "";
-      const n = played.went.findIndex((w) => w.table === table && w.stage === stage);
-      return n >= 0 ? `lit" data-step="${n + 1}` : "";
-    };
+    const stepAt = (table, stage) => played ? played.went.findIndex((w) => w.table === table && w.stage === stage) + 1 : 0;
 
     // A hand-off said as people would: “When a quote reaches Accepted, a job is made automatically.”
     function whenSaid(h) {
@@ -856,16 +873,19 @@
       const did = h.how === "makes" ? `${a(one(h.to))} is made automatically`
         : h.sets.length ? `its ${one(h.to)}'s ${listSaid(h.sets.map(([f, v]) => `${f} is set to “${v}”`))} automatically`
         : `its ${one(h.to)} is updated automatically`;
-      return `${whenSaid(h)}, ${did}${h.asks ? ", once someone approves it" : ""}${h.ai ? ", with the AI's help" : ""}.`;
+      const only = (h.only_if || []).length ? `, if ${h.only_if.map((x) => x.charAt(0).toLowerCase() + x.slice(1)).join(" and ")}` : "";
+      const on = h.moves_to && h.how === "makes" ? ` and the ${one(h.from)} moves on to ${h.moves_to}` : "";
+      return `${whenSaid(h)}${only}, ${did}${on}${h.asks ? ", once someone approves it" : ""}${h.ai ? ", with the AI's help" : ""}.`;
     }
-    const autoHtml = (h) => `<button type="button" class="map-auto ${h.on ? "" : "off"}" data-open="rule:${esc(h.rule)}" title="See or change the rule that does this: “${esc(h.label)}”">
-      ${icon("zap")}<span>${esc(handSaid(h))}${h.on ? "" : ` <span class="tag">switched off</span>`}${stoppedSaid(stoppedOf(h.rule))}</span></button>`;
+    const autoHtml = (h, tag = false) => `<button type="button" class="map-auto ${h.on ? "" : "off"}" data-open="rule:${esc(h.rule)}" title="See or change the rule that does this: “${esc(h.label)}”">
+      ${icon("zap")}<span>${tag ? `<span class="map-tag auto">Automatic</span>` : ""}${esc(handSaid(h))}${h.on ? "" : ` <span class="tag">switched off</span>`}${stoppedSaid(stoppedOf(h.rule))}</span></button>`;
     // a rule said by what starts it: a button people press is by hand, the rest happen by themselves
     function ruleHtml(r, here = false) {
       const every = (EVERY[r.every] || "Every so often").toLowerCase();
+      const on = r.moves_to ? ` and moves ${here ? "it" : "them"} on to ${esc(r.moves_to)}` : "";
       const said = r.event === "button" ? `<span class="map-tag">By hand</span>Someone presses “${esc(r.press || r.name)}”<span class="faint"> · then the app does the rest: ${esc(r.name)}</span>`
-        : r.event === "schedule" ? `${here ? `<span class="map-tag auto">Automatic</span>${esc(cap(every))}, for the ones here: ` : ""}${esc(r.name)}${here ? "" : `<span class="faint"> · ${esc(every)}${r.at ? `, for ones at ${esc(r.at)}` : ""}</span>`}`
-        : `${here ? `<span class="map-tag auto">Automatic</span>When one gets here: ` : ""}${esc(r.name)}${!here && r.at ? `<span class="faint"> · when one reaches ${esc(r.at)}</span>` : ""}`;
+        : r.event === "schedule" ? `${here ? `<span class="map-tag auto">Automatic</span>${esc(cap(every))}, for the ones here: ` : ""}${esc(r.name)}${here ? `<span class="faint">${on}</span>` : `<span class="faint"> · ${esc(every)}${r.at ? `, for ones at ${esc(r.at)}` : ""}${on}</span>`}`
+        : `${here ? `<span class="map-tag auto">Automatic</span>When one gets here: ` : ""}${esc(r.name)}${!here && r.at ? `<span class="faint"> · when one reaches ${esc(r.at)}${on}</span>` : `<span class="faint">${on}</span>`}`;
       return `<button type="button" class="map-auto ${r.on ? "" : "off"}" data-open="rule:${esc(r.key)}" title="See or change this rule">
         ${icon(r.event === "button" ? "user" : "zap")}<span>${said}${r.on ? "" : ` <span class="tag">switched off</span>`}${stoppedSaid(r.stopped)}</span></button>`;
     }
@@ -875,33 +895,38 @@
     // earlier step (a payment marking its invoice paid). The ones said on the line into a step aren't said again on it.
     function intoStep(p, i) {
       const cur = p.cards[i].key, earlier = p.cards.slice(0, i).map((c) => c.key);
-      return p.handoffs.filter((h) => (h.how === "makes" && h.to === cur && earlier.includes(h.from))
-                                    || (h.how === "updates" && h.from === cur && earlier.includes(h.to)));
+      return p.handoffs.filter((h) => h.how === "makes" && h.to === cur && earlier.includes(h.from));
     }
     function linkHtml(p, i) {
       const c = p.cards[i], hs = intoStep(p, i);
       const from = p.cards.slice(0, i).map((x) => x.key).reverse()
-        .find((k) => p.links.some((l) => l.from === k && l.to === c.key) || hs.some((h) => h.how === "updates" && h.to === k));
+        .find((k) => p.links.some((l) => l.from === k && l.to === c.key) || p.handoffs.some((h) => h.how === "updates" && h.from === c.key && h.to === k));
       const byHand = hs.some((h) => h.how === "makes") || c.entries.length ? ""
         : `<p class="map-line">${icon("user")}<span>People add ${a(one(c.key))}${from ? ` for ${a(one(from))}` : ""} themselves.</span></p>`;
       return `<div class="map-link">${byHand}${hs.map(autoHtml).join("")}</div>`;
     }
+    // a list with stages of its own goes through them in order (›); a plain Status is only a choice of where one is
     function stagesHtml(c) {
       if (!c.stages.length) return "";
-      return `<div class="map-stages-row"><span class="map-cap">Stages</span><ol class="map-stages" aria-label="The stages ${esc(many(c.key))} go through, in order">${c.stages.map((st) => `<li class="map-stage ${litAt(c.key, st.name)}"
-        title="${esc(cap(howMany(st.count, c.key)))} at ${esc(st.name)} now${st.approves ? " · someone approves at this stage" : ""}${st.rules.length ? " · something happens automatically here" : ""}">
-        <span>${esc(st.name)}</span>${st.count ? `<b>${st.count}</b>` : ""}${st.approves ? icon("user-check") : ""}${st.rules.length ? icon("zap") : ""}</li>`).join("")}</ol></div>`;
+      return `<div class="map-stages-row"><span class="map-cap">${c.workflow ? "Stages" : esc(c.field_label || "Status")}</span><ol class="map-stages ${c.workflow ? "" : "plain"}" aria-label="${c.workflow ? `The stages ${esc(many(c.key))} go through, in order` : `What its ${esc(c.field_label || "Status")} can be`}">${c.stages.map((st) => {
+        const n = stepAt(c.key, st.name);
+        return `<li class="map-stage ${n ? "lit" : ""}" title="${esc(cap(howMany(st.count, c.key)))} at ${esc(st.name)} now${st.approves ? " · someone approves at this stage" : ""}${st.rules.length ? " · something happens automatically here" : ""}">
+          ${n ? `<i class="map-n" title="Step ${n} of the example">${n}</i>` : ""}<span>${esc(st.name)}</span>${st.count && !played ? `<b>${st.count}</b>` : ""}${st.approves ? icon("user-check") : ""}${st.rules.length ? icon("zap") : ""}</li>`;
+      }).join("")}</ol></div>`;
     }
+    const byHandSaid = (c) => c.workflow ? (c.anytime.length || c.stages.some((st) => st.moves.length) ? `People move them on with buttons: ${listSaid([...new Set(c.stages.flatMap((st) => st.moves.map((m) => `“${m.label}”`)).concat(c.anytime.map((m) => `“${m.label}”`)))].slice(0, 4))}.` : "")
+      : `People move them along by changing their ${c.field_label || "Status"}.`;
     function stepHtml(p, c, i, said) {
       const auto = [...p.handoffs.filter((h) => h.from === c.key && !said.has(`${h.rule}>${h.to}`)).map(autoHtml),
                     ...c.rules.filter((r) => !p.handoffs.some((h) => h.rule === r.key)).map(ruleHtml)];
-      const ai = aiSaid(c);
+      const ai = aiSaid(c), hand = c.stages.length ? byHandSaid(c) : "";
       return `<article class="map-step ${c.problems.some((x) => x.bad) ? "has-bad" : ""}" data-open="list:${esc(c.key)}" id="step-${esc(c.key)}">
         ${p.cards.length > 1 ? `<span class="map-step-n" aria-hidden="true">${i + 1}</span>` : ""}
         <div class="map-step-body">
           <header class="map-step-head"><button type="button" class="map-step-name" data-open="list:${esc(c.key)}">${icon(c.icon)}<b>${esc(c.label)}</b></button>
-            <span class="faint small">${esc(howMany(c.count, c.key))} now</span><span class="map-step-more">See all of it${icon("chevron-right")}</span></header>
+            <span class="faint small">${esc(howMany(c.count, c.key))} now</span><span class="map-step-more">Details${icon("chevron-right")}</span></header>
           ${stagesHtml(c)}
+          ${hand ? `<p class="map-line">${icon("user")}<span>${esc(hand)}</span></p>` : ""}
           ${c.entries.length ? `<p class="map-line">${icon(c.entries[0].icon)}<span>Comes in from ${esc(listSaid(c.entries.map((e) => e.label.charAt(0).toLowerCase() + e.label.slice(1))))}.</span></p>` : ""}
           ${auto.length ? `<div class="map-autos">${auto.join("")}</div>` : ""}
           ${c.people.length ? `<p class="map-line">${icon("users")}<span>Who's involved: ${esc(listSaid(c.people))}.</span></p>` : ""}
@@ -922,7 +947,7 @@
           ${p.cards.length > 1 ? `<p class="small muted">${p.cards.length} steps, from top to bottom: ${esc(p.cards.map((c) => c.label).join(" → "))}</p>` : ""}</div>
           ${examples.length ? `<form class="map-play" data-form="play">${examples.length > 1 ? `<select name="example" aria-label="Which example">${examples.map((x) => `<option value="${x.n}">${esc(x.title)}</option>`).join("")}</select>`
             : `<input type="hidden" name="example" value="${examples[0].n}">`}
-            <button class="btn sm" title="Act out ${examples.length === 1 ? `“${esc(examples[0].title)}”` : "an example"} in a practice copy of your app, and see where it goes">${icon("play")}Watch an example</button></form>` : ""}</header>
+            <button class="btn sm" title="Act out ${examples.length === 1 ? `“${esc(examples[0].title)}”` : "an example"} in a practice copy of your app, and see where it goes">${icon("play")}Try an example</button></form>` : ""}</header>
         ${played && played.process === p.key ? playedHtml() : ""}
         <div class="map-journey">${steps}</div></section>`;
     }
@@ -932,9 +957,9 @@
       $("[data-form=play]", sec)?.addEventListener("submit", async (ev) => {
         ev.preventDefault();
         const b = $("button", ev.target);
-        b.disabled = true; b.innerHTML = `<span class="spin"></span> Acting it out…`;
+        b.disabled = true; b.innerHTML = `<span class="spin"></span> Trying it…`;
         const got = await post(root.dataset.play, {example: Number(ev.target.elements.example.value)});
-        b.disabled = false; b.innerHTML = `${icon("play")}Watch an example`;
+        b.disabled = false; b.innerHTML = `${icon("play")}Try an example`;
         if (got.error) { statusLine(status, [got.error], "bad"); return; }
         played = {process: p.key, ...got};
         draw();
@@ -967,10 +992,11 @@
                      : `The ${what} was moved to ${w.stage}${w.by === "a rule" ? " automatically" : ""}.`;
       });
       return `<div class="wf-tried map-played ${r.ok ? "good" : "bad"}">${icon(r.ok ? "circle-check" : "circle-x")}<div class="grow">
-        <b>${esc(r.title)}</b>: ${r.ok ? "it worked as expected." : `it didn't come out right${r.problem ? `: ${esc(r.problem)}` : "."}`}
+        <b>${esc(r.title)}</b><div class="small muted">Acted out in a practice copy of your app, so nothing real changed. Here's what happened:</div>
         ${story.length ? `<ol class="map-went">${story.map((s) => `<li>${esc(s)}</li>`).join("")}</ol>` : ""}
-        ${r.lines.length ? `<div class="small">What it should end with: ${r.lines.map(([ok, line]) => `<span class="${ok ? "good-text" : "bad-text"}">${icon(ok ? "check" : "x")}${esc(line)}</span>`).join(" ")}</div>` : ""}
-        <div class="small muted">The numbers on the stages below show where it went. It was acted out in a practice copy: nothing in your app changed.</div></div>
+        ${r.ok ? `<div class="small">It ended as it should. The numbers on the stages below show where it went.</div>`
+          : `<div class="small bad-text">It didn't end as it should${r.problem ? `: ${esc(r.problem)}` : "."}</div>
+            ${r.lines.filter(([ok]) => !ok).map(([, line]) => `<div class="small bad-text">${icon("x")}${esc(line)}</div>`).join("")}`}</div>
         <button type="button" class="btn sm ghost" data-unplay>Clear</button></div>`;
     }
 
@@ -994,6 +1020,8 @@
     function drawMap() {
       const fix = toLookAt();
       if (fix) main.appendChild(fix);
+      if (map.processes.length) main.appendChild(html(`<p class="map-key">${icon("user")}done by hand <span class="faint">·</span> ${icon("zap")}happens automatically
+        <span class="faint">·</span> <span class="map-stage mini">Booked <b>3</b></span> how many are at that stage now</p>`));
       if (!map.processes.length && !map.reference.length) {
         main.appendChild(html(`<div class="card empty"><h3>${icon("map", "big")}<br>Nothing to show yet</h3><p class="muted">${canEdit ? "Say what your business needs in the box above: this fills in as your app is built." : "Once your app has lists, they show here."}</p></div>`));
       } else if (!map.processes.length) {
@@ -1031,29 +1059,35 @@
       const stagesItem = items.find((i) => i.kind === "stages"), flows = items.filter((i) => i.kind === "flow");
       const hands = map.processes.flatMap((x) => x.handoffs);
       const comes = hands.filter((h) => h.how === "makes" && h.to === key && h.from !== key);
-      const auto = [...hands.filter((h) => h.from === key), ...hands.filter((h) => h.how === "updates" && h.to === key)].map(autoHtml)
-        .concat(t.rules.filter((x) => !hands.some((h) => h.rule === x.key)).map(ruleHtml));
       const from = p && (p.links.find((l) => l.to === key) || {}).from;
       const ai = aiSaid(t);
       main.appendChild(html(`<div class="wf-head"><div class="grow"><h2>${icon(t.icon)}${esc(t.label)}</h2>
         <p class="small muted">${esc(cap(howMany(t.count, key)))} now${p && p.cards.length > 1 ? ` · step ${p.lists.indexOf(key) + 1} of ${p.cards.length} in ${esc(p.name)}` : r && r.used_by.length ? ` · looked up by ${esc(listSaid(r.used_by))}` : ""}</p></div>
-        <div class="row wrap"><a class="btn sm" href="${esc(root.dataset.openTable.replace("__table__", key))}">${icon("external-link")}Open the list</a>
+        <div class="row wrap"><a class="btn sm" href="${esc(root.dataset.openTable.replace("__table__", key))}">${icon("external-link")}See the ${esc(many(key))}</a>
           <a class="btn sm" href="${esc(root.dataset.here)}?view=data&amp;open=${encodeURIComponent(`data:${key}`)}" data-to-data="${esc(key)}">${icon("table")}What each ${esc(one(key))} keeps</a></div></div>`));
-      const stageRow = (st, i) => `<li data-key="${esc(st.name)}" class="${litAt(key, st.name)}" ${canEdit ? 'draggable="true"' : ""}><span class="map-step-n">${i + 1}</span>
+      const atStage = new Set(t.stages.flatMap((st) => st.rules));
+      const said = (k) => {  // a rule at a stage, said as what it does there
+        const hs = hands.filter((h) => h.rule === k && h.from === key);
+        const x = t.rules.find((y) => y.key === k);
+        return hs.length ? hs.map((h) => autoHtml(h, true)).join("") : x ? ruleHtml(x, true) : "";
+      };
+      const stageRow = (st, i) => `<li data-key="${esc(st.name)}" ${canEdit ? 'draggable="true"' : ""}><span class="map-step-n ${t.workflow ? "" : "dot"}">${t.workflow ? i + 1 : ""}</span>
           <div class="row">${canEdit ? `${icon("grip-vertical", "grip")}<input type="text" class="grow" value="${esc(st.name)}" data-rename-stage="${esc(st.name)}" maxlength="60" aria-label="Name of the stage ${esc(st.name)}">
+            <button type="button" class="btn sm primary" data-save-stage hidden>Save</button>
             <button type="button" class="btn sm ghost icon" data-remove-stage="${esc(st.name)}" title="Remove this stage" aria-label="Remove ${esc(st.name)}">${icon("trash-2")}</button>`
             : `<b class="grow">${esc(st.name)}</b><span class="faint small nowrap">${st.count ? `${esc(howMany(st.count, key))} here now` : "none here now"}</span>`}</div>
-          ${canEdit ? "" : `${st.moves.map((m) => `<p class="map-line">${icon("user")}<span><span class="map-tag">By hand</span>${esc(pressSaid(m))}.</span></p>`).join("")}
+          ${canEdit ? `<button type="button" class="map-add-here" data-add-after="${esc(st.name)}">${icon("plus")}Add a stage after ${esc(st.name)}</button>`
+            : `${st.moves.map((m) => `<p class="map-line">${icon("user")}<span><span class="map-tag">By hand</span>${esc(pressSaid(m))}.</span></p>`).join("")}
           ${st.approves ? `<p class="map-line">${icon("user-check")}<span><span class="map-tag">By hand</span>Someone approves ${esc(a(one(key)))} here.</span></p>` : ""}
-          ${st.rules.length ? `<div class="map-autos">${st.rules.map((k) => t.rules.find((x) => x.key === k)).filter(Boolean).map((x) => ruleHtml(x, true)).join("")}</div>` : ""}`}</li>`;
+          ${st.rules.length ? `<div class="map-autos">${st.rules.map(said).join("")}</div>` : ""}`}</li>`;
       const stages = t.stages.length ? `<ol class="map-stage-list ${canEdit ? "changing" : ""}" data-stage-list>${t.stages.map(stageRow).join("")}</ol>
           ${!canEdit && t.anytime.length ? t.anytime.map((m) => `<p class="map-line">${icon("user")}<span><span class="map-tag">By hand</span>At any stage, ${esc(pressSaid(m).charAt(0).toLowerCase() + pressSaid(m).slice(1))}.</span></p>`).join("") : ""}
           ${!canEdit && !t.workflow ? `<p class="map-line">${icon("user")}<span><span class="map-tag">By hand</span>People move ${esc(a(one(key)))} along by changing its ${esc(t.field_label || "Status")}.</span></p>` : ""}
-          ${canEdit ? `<form class="map-add-stage" data-form="add-stage"><label class="small" for="new-stage">Add a stage</label><input type="text" id="new-stage" name="name" required maxlength="60" placeholder="Waiting on parts">
-            <label class="small" for="new-stage-after">after</label><select id="new-stage-after" name="after">${t.stages.map((st, i) => `<option ${i === t.stages.length - 1 ? "selected" : ""}>${esc(st.name)}</option>`).join("")}</select>
-            <button class="btn sm primary">${icon("plus")}Add it</button></form>
-            <p class="help">Drag a stage to move it, or change its name where it is: every ${esc(one(key))} at it, and every rule, follows.</p>` : ""}`
+          ${canEdit ? `<p class="help">Drag a stage to move it, or change its name and press Save: every ${esc(one(key))} at it, and every rule, follows.
+            Their colours are set with the ${esc(t.field_label || "Status")} column, under <a href="#" data-to-data="${esc(key)}">What each ${esc(one(key))} keeps</a>.</p>` : ""}`
         : `<p class="small muted">${esc(cap(many(key)))} don't move along stages: they're kept, and looked up.</p>`;
+      const rest = [...hands.filter((h) => h.from === key && !atStage.has(h.rule)), ...hands.filter((h) => h.how === "updates" && h.to === key)].map((h) => autoHtml(h))
+        .concat(t.rules.filter((x) => !hands.some((h) => h.rule === x.key) && !atStage.has(x.key)).map((x) => ruleHtml(x)));
       const box = html(`<div class="map-list-view">
         <section><h3>${icon("arrow-right")}How ${esc(a(one(key)))} moves along</h3>${stages}
           ${t.people.length ? `<p class="map-line">${icon("users")}<span>Who's involved: ${esc(listSaid(t.people))}.</span></p>` : ""}
@@ -1065,7 +1099,8 @@
             ${t.entries.map((e) => `<p class="map-line">${icon(e.icon)}<span>${esc(e.label)}.</span></p>`).join("")}${comes.map(autoHtml).join("")}
             ${t.seen_in_portal ? `<p class="map-line">${icon("users")}<span>Customers can see theirs in their portal.</span></p>` : ""}
             ${comes.length ? "" : `<p class="map-line">${icon("user")}<span>People add them themselves${from ? `, for ${esc(a(one(from)))}` : ""}.</span></p>`}</section>
-          <section><h3>${icon("zap")}What happens automatically</h3>${auto.length ? `<div class="map-autos">${auto.join("")}</div>` : `<p class="small muted">Nothing yet.</p>`}
+          <section><h3>${icon("zap")}${atStage.size ? "Also happens automatically" : "What happens automatically"}</h3>${rest.length ? `<div class="map-autos">${rest.join("")}</div>`
+            : `<p class="small muted">${atStage.size ? "Nothing else: what happens at each stage is beside it." : "Nothing yet."}</p>`}
             ${allowed ? `<div><button type="button" class="btn sm" data-new-rule>${icon("plus")}Make something happen automatically</button></div>` : ""}</section>
           ${ai.length ? `<section><h3>${icon("sparkles")}Where the AI helps</h3><p class="map-line ai">${icon("sparkles")}<span>The AI ${esc(listSaid(ai))}.</span></p>
             <a class="small" href="${esc(root.dataset.aiPage)}">Change what the AI does</a></section>` : ""}
@@ -1079,18 +1114,25 @@
       const list = $("[data-stage-list]", box);
       if (canEdit && list) {
         const field = t.field;
-        $$("[data-rename-stage]", list).forEach((input) => input.addEventListener("change", () => {
-          const now = input.value.trim();
-          if (now && now !== input.dataset.renameStage) stageChange(key, {do: "rename_stage", field, old: input.dataset.renameStage, new: now});
+        $$("[data-rename-stage]", list).forEach((input) => {  // saved when they press Save (or Enter), never just by leaving it
+          const save = input.parentElement.querySelector("[data-save-stage]");
+          const go = () => { const now = input.value.trim(); if (now && now !== input.dataset.renameStage) stageChange(key, {do: "rename_stage", field, old: input.dataset.renameStage, new: now}); };
+          input.addEventListener("input", () => { save.hidden = input.value.trim() === input.dataset.renameStage; input.classList.toggle("unsaved", !save.hidden); });
+          input.addEventListener("keydown", (ev) => { if (ev.key === "Enter") { ev.preventDefault(); go(); } });
+          save.addEventListener("click", go);
+        });
+        $$("[data-add-after]", list).forEach((b) => b.addEventListener("click", () => {
+          const form = html(`<form class="map-add-stage"><input type="text" name="name" required maxlength="60" placeholder="Name of the new stage" aria-label="Name of the new stage after ${esc(b.dataset.addAfter)}">
+            <button class="btn sm primary">Add it</button><button type="button" class="btn sm ghost" data-cancel>Cancel</button></form>`);
+          b.replaceWith(form);
+          form.elements.name.focus();
+          $("[data-cancel]", form).addEventListener("click", draw);
+          form.addEventListener("submit", (ev) => { ev.preventDefault(); stageChange(key, {do: "add_stage", field, name: form.elements.name.value, after: b.dataset.addAfter}); });
         }));
         $$("[data-remove-stage]", list).forEach((b) => b.addEventListener("click", () => {
           if (confirm(`Remove the stage “${b.dataset.removeStage}”?`)) stageChange(key, {do: "remove_stage", field, name: b.dataset.removeStage});
         }));
         sortable(list, (names) => stageChange(key, {do: "order_stages", field, names}));
-        $("[data-form=add-stage]", box).addEventListener("submit", (ev) => {
-          ev.preventDefault();
-          stageChange(key, {do: "add_stage", field, name: ev.target.elements.name.value, after: ev.target.elements.after.value});
-        });
       }
       wire(main);
     }
@@ -1110,54 +1152,70 @@
     // --- starting something new: something that happens automatically, or stages for a list ------------------------
     function newRule(table) {
       hooks.edit?.(true);
-      item = {kind: "new", label: "Make something happen automatically", table}; draw();
+      item = {kind: "new", make: "rule", label: "Make something happen automatically", table}; history.pushState(null, "", location.href); draw(); toTop();
+    }
+    function newStages(table) {
+      hooks.edit?.(true);
+      item = {kind: "new", make: "stages", label: "Give a list stages", table}; history.pushState(null, "", location.href); draw(); toTop();
+    }
+    function drawNewRule() {
       const lists = data.tables.filter((t) => listOf(t.key));
       const stagesOf = (key) => (listOf(key) || {stages: []}).stages.map((st) => st.name);
-      const box = html(`<div class="stack"><h2 class="panel-title">${icon("zap")}Make something happen automatically</h2>
+      const me = root.dataset.me, mail = !!root.dataset.emailOn;
+      const tell = [["owner", "the owner"], ["admin", "the admins"], ["editor", "everyone on the team"], ["creator", "whoever added it"]];
+      const box = html(`<section class="map-new"><h2>${icon("zap")}Make something happen automatically</h2>
         <form class="stack" data-form="new-rule">
-          <label class="field"><span>When</span><select name="table">${lists.map((t) => `<option value="${esc(t.key)}" ${t.key === table ? "selected" : ""}>${esc(cap(a(t.singular.toLowerCase())))}</option>`).join("")}</select></label>
-          <label class="field"><span class="sr-only">What happens to it</span><select name="type"><option value="stage">reaches a stage…</option><option value="record_created">is added</option>
-            <option value="record_updated">is changed</option><option value="button">has a button pressed on it</option></select></label>
-          <label class="field" data-for="stage"><span>The stage</span><select name="stage"></select></label>
-          <label class="field"><span>Then tell</span><select name="to">${[["owner", "The owner"], ["admin", "The admins"], ["editor", "Everyone on the team"], ["creator", "Whoever added it"]].map(([v, l]) => `<option value="${v}">${l}</option>`).join("")}</select>
-            <span class="help">They get a message in the app, under Notifications.</span></label>
-          <label class="field"><span>Call it</span><input type="text" name="name" maxlength="80" placeholder="Tell the owner when a job is signed off"></label>
-          <button class="btn primary sm">Make it</button>
-          <p class="help">Once it's made, you can add more to it: an email, a task for someone, a change to another list.</p></form></div>`);
-      panel.innerHTML = "";
-      panel.appendChild(box);
+          <div class="map-sentence"><span>When</span><select name="table" aria-label="Which list">${lists.map((t) => `<option value="${esc(t.key)}" ${t.key === item.table ? "selected" : ""}>${esc(a(t.singular.toLowerCase()))}</option>`).join("")}</select>
+            <select name="type" aria-label="What happens to it"><option value="stage">reaches</option><option value="record_created">is added</option>
+              <option value="record_updated">is changed</option><option value="button">has its button pressed</option></select>
+            <select name="stage" aria-label="Which stage"></select></div>
+          <div class="map-sentence"><span>then</span><select name="to" aria-label="Who's told">${tell.map(([v, l]) => `<option value="${v}">tell ${l} in the app</option>`).join("")}
+            ${me ? `<option value="email" ${mail ? "" : "disabled"}>email me at ${esc(me)}${mail ? "" : " (connect your email in Settings first)"}</option>` : ""}</select></div>
+          <p class="map-summary" data-summary></p>
+          <label class="field"><span>Call it <span class="faint">(you can leave this)</span></span><input type="text" name="name" maxlength="80"></label>
+          <div class="row wrap"><button class="btn primary">Make it</button><button type="button" class="btn ghost" data-cancel>Cancel</button></div>
+          <p class="help">Once it's made you can add more to it: an email, a task for someone, a change to another list. And it can be switched off or taken back.</p></form></section>`);
+      main.appendChild(box);
       const form = $("[data-form=new-rule]", box), fm = form.elements;
+      const said = () => {
+        const it = (tableOf(fm.table.value) || {singular: "record"}).singular.toLowerCase();
+        const when = {stage: `reaches ${fm.stage.value}`, record_created: "is added", record_updated: "is changed", button: "has its button pressed"}[fm.type.value];
+        const who = fm.to.value === "email" ? `you get an email at ${me}` : `${(tell.find(([v]) => v === fm.to.value) || [, "they"])[1]} ${fm.to.value === "editor" || fm.to.value === "admin" ? "get" : "gets"} a message in the app (under Notifications)`;
+        return {name: `When ${a(it)} ${when}, ${fm.to.value === "email" ? "email me" : `tell ${(tell.find(([v]) => v === fm.to.value) || [, ""])[1]}`}`, text: `When ${a(it)} ${when}, ${who}.`};
+      };
       const fill = () => {
         const names = stagesOf(fm.table.value);
         $("[value=stage]", fm.type).disabled = !names.length;
         if (!names.length && fm.type.value === "stage") fm.type.value = "record_created";
-        fm.stage.innerHTML = names.map((n) => `<option>${esc(n)}</option>`).join("");
-        $("[data-for=stage]", form).hidden = fm.type.value !== "stage";
+        const was = fm.stage.value;
+        fm.stage.innerHTML = names.map((n) => `<option ${n === was ? "selected" : ""}>${esc(n)}</option>`).join("");
+        fm.stage.hidden = fm.type.value !== "stage";
+        const s = said();
+        $("[data-summary]", form).innerHTML = `${icon("circle-check")}<span>${esc(s.text)}</span>`;
+        fm.name.placeholder = s.name;
       };
-      fm.table.addEventListener("change", fill); fm.type.addEventListener("change", fill); fill();
+      [fm.table, fm.type, fm.stage, fm.to].forEach((el) => el.addEventListener("change", fill)); fill();
+      $("[data-cancel]", form).addEventListener("click", () => open(item.table ? `list:${item.table}` : "map"));
       form.addEventListener("submit", (ev) => {
         ev.preventDefault();
-        const key = fm.table.value, t = tableOf(key), it = t.singular.toLowerCase(), c = listOf(key);
-        const said = {stage: `reaches ${fm.stage.value}`, record_created: "is added", record_updated: "is changed", button: "has its button pressed"}[fm.type.value];
-        const name = fm.name.value.trim() || `When ${a(it)} ${said}`;
-        const trigger = fm.type.value === "stage" ? {type: "record_updated", table: key, field: c.field, to: fm.stage.value}
+        const key = fm.table.value, c = listOf(key), stage = fm.stage.value;
+        const name = fm.name.value.trim() || said().name;
+        const trigger = fm.type.value === "stage" ? {type: "record_updated", table: key, field: c.field, to: stage}
           : {type: fm.type.value, table: key, label: fm.type.value === "button" ? name.slice(0, 40) : undefined};
-        const message = fm.type.value === "stage" ? `{{record}} is now ${fm.stage.value}` : fm.type.value === "record_created" ? `New ${it}: {{record}}` : `${name}: {{record}}`;
-        change({do: "add_rule", name, trigger, step: {type: "notify", to: fm.to.value, message}}, "");
+        const what = fm.type.value === "stage" ? `{{record}} is now ${stage}` : fm.type.value === "record_created" ? `New ${tableOf(key).singular.toLowerCase()}: {{record}}` : `${name}: {{record}}`;
+        const step = fm.to.value === "email" ? {type: "send_email", to: me, subject: what, body: `${what}.`} : {type: "notify", to: fm.to.value, message: what};
+        change({do: "add_rule", name, trigger, step}, "");
       });
     }
-    function newStages(table) {
-      hooks.edit?.(true);
-      item = {kind: "new", label: "Stages for a list", table}; draw();
+    function drawNewStages() {
       const without = data.tables.filter((t) => !t.stages);
-      const box = html(`<div class="stack"><h2 class="panel-title">${icon("arrow-right")}Stages for a list</h2>
-        <p class="small muted">Each one then moves from one stage to the next, by a button people press, and things can happen automatically at each.</p>
-        ${without.length ? `<form class="stack" data-form="new-stages"><label class="field"><span>The list</span><select name="table">${without.map((t) => `<option value="${esc(t.key)}" ${t.key === table ? "selected" : ""}>${esc(t.label)}</option>`).join("")}</select></label>
+      const box = html(`<section class="map-new"><h2>${icon("arrow-right")}Give a list stages</h2>
+        <p class="small muted">Each one then moves from one stage to the next by a button people press, and things can happen automatically at each.</p>
+        ${without.length ? `<form class="stack" data-form="new-stages"><label class="field"><span>The list</span><select name="table">${without.map((t) => `<option value="${esc(t.key)}" ${t.key === item.table ? "selected" : ""}>${esc(t.label)}</option>`).join("")}</select></label>
           <label class="field"><span>Use the choices of</span><select name="field"><option value="">A new Status column</option></select></label>
           <label class="field" data-new><span>The stages, one on each line</span><textarea name="stages" rows="4">New\nIn progress\nDone</textarea></label>
-          <button class="btn primary sm">Add the stages</button></form>` : `<p class="small">Every list has stages already.</p>`}</div>`);
-      panel.innerHTML = "";
-      panel.appendChild(box);
+          <div class="row wrap"><button class="btn primary">Add the stages</button><button type="button" class="btn ghost" data-cancel>Cancel</button></div></form>` : `<p class="small">Every list has stages already.</p>`}</section>`);
+      main.appendChild(box);
       const form = $("[data-form=new-stages]", box);
       if (!form) return;
       const fill = () => {
@@ -1168,6 +1226,7 @@
       form.elements.table.addEventListener("change", fill);
       form.elements.field.addEventListener("change", () => { $("[data-new]", form).hidden = !!form.elements.field.value; });
       fill();
+      $("[data-cancel]", form).addEventListener("click", () => open(item.table ? `list:${item.table}` : "map"));
       form.addEventListener("submit", (ev) => {
         ev.preventDefault();
         change({do: "add_stages", table: form.elements.table.value, field: form.elements.field.value, stages: form.elements.stages.value}, `stages:${form.elements.table.value}`);
@@ -1230,7 +1289,7 @@
         <div class="grow"><h2>${icon("zap")}${esc(r.name)}</h2>
           <p class="small muted">${r.on ? "" : `<b>Switched off:</b> it doesn't run. `}${r.runs.total ? `Ran ${plural(r.runs.total, "time", "times")} lately${r.runs.failed ? `, <span class="bad-text">${r.runs.failed} stopped with a problem</span>` : ""}.`
             : `It hasn't run yet: it runs ${esc(r.when.charAt(0).toLowerCase() + r.when.slice(1))}.`}</p></div>
-        <div class="row wrap">${r.table ? `<button type="button" class="btn sm" data-try-it title="See what it would do for one of your records: nothing is changed">${icon("play")}Try it on a record</button>` : ""}
+        <div class="row wrap">${r.table ? `<button type="button" class="btn sm" data-try-it title="See what it would do for one of yours: nothing is changed">${icon("play")}Try it on ${esc(a(((tableOf(r.table) || {}).singular || "record").toLowerCase()))}</button>` : ""}
           ${canEdit ? `<label class="switch-row small"><button type="button" class="switch ${r.on ? "on" : ""}" data-toggle aria-label="${r.on ? "Switch it off" : "Switch it on"}"></button>${r.on ? "On" : "Off"}</label>`
             : allowed ? `<button type="button" class="btn sm" data-change-it>${icon("pencil")}Change this rule</button>` : ""}</div></div>`));
       if (tried) {
@@ -1245,7 +1304,7 @@
           <div class="wf-text">${r.only_if.length ? esc(r.only_if.join(", and ")) : "Every time (click to add a condition)"}</div></div>` : ""}
         ${stepsHtml(r.steps, "")}${addHere("", r.steps.length, true)}<div class="wf-end">That's all it does</div></div>`);
       main.appendChild(chart);
-      $("[data-toggle]", main)?.addEventListener("click", () => change({do: "set_enabled", on: !r.on}));
+      $("[data-toggle]", main)?.addEventListener("click", () => { if (r.on && !confirm(`Switch “${r.name}” off? It stops running until it's switched back on.`)) return; change({do: "set_enabled", on: !r.on}); });
       $("[data-change-it]", main)?.addEventListener("click", () => hooks.edit?.(true));
       $("[data-try-it]", main)?.addEventListener("click", () => tryPanel());
       $("[data-untry]", main)?.addEventListener("click", () => { tried = null; draw(); });
@@ -1281,7 +1340,7 @@
         ${r.hook ? `<div><div class="label">${icon("webhook")}Its address for other systems</div><p class="small muted">Your web shop or a form tool starts this rule by sending its data here. Keep it private.</p>
           <div class="row"><input type="text" class="keybox grow small" readonly value="${esc(r.hook)}" aria-label="Webhook address"><button class="btn sm" type="button" data-copy-hook>${icon("copy")}Copy</button></div></div>` : ""}
         ${r.recent.length ? `<div><div class="label">The last times it ran</div><ul class="timeline-list">${r.recent.map((run) => `<li>
-          <div class="row"><span class="status ${esc(run.status)}">${esc(run.said)}</span><span class="small grow ellipsis">${esc(run.trigger)}</span><span class="faint tiny nowrap">${esc(run.when)}</span></div>
+          <div class="row"><span class="status ${esc(run.status)}">${esc(run.said)}</span><span class="small grow">${esc(run.trigger)}</span><span class="faint tiny nowrap">${esc(run.when)}</span></div>
           ${run.steps.length ? `<ul class="steps">${run.steps.map((x) => `<li class="${x.skipped ? "skipped" : ""}">${esc(x.text)}</li>`).join("")}</ul>` : ""}
           ${run.error ? `<div class="small bad-text mt-1">${esc(run.error)}</div>` : ""}</li>`).join("")}</ul>
           <a class="small" href="${esc(root.dataset.allRuns)}#${esc(r.key)}">Every rule's recent runs</a></div>` : ""}
@@ -1306,7 +1365,7 @@
     const insertable = (table) => fieldsOf(table).map((f) => `<option value="{{record.${esc(f.key)}}}">${esc(f.label)}</option>`).join("");
     function textWithInserts(name, label, value, long = false, table = item.table) {
       return `<label class="field"><span>${label}</span>${long ? `<textarea name="${name}" rows="4">${esc(value || "")}</textarea>` : `<input type="text" name="${name}" value="${esc(value || "")}">`}
-        ${table ? `<select class="insert" data-insert="${name}" aria-label="Put in a detail of the record"><option value="">+ Put in a detail…</option>${insertable(table)}</select>` : ""}</label>`;
+        ${table ? `<select class="insert" data-insert="${name}" aria-label="Put in a detail of the record"><option value="">+ Put in a detail of the ${esc(((tableOf(table) || {}).singular || "record").toLowerCase())}…</option>${insertable(table)}</select>` : ""}</label>`;
     }
     function wireInserts(scope) {
       $$("[data-insert]", scope).forEach((sel) => sel.addEventListener("change", () => {
@@ -1439,7 +1498,7 @@
       const r = item;
       const tables = data.tables;
       switch (type) {
-        case "notify": return `<label class="field"><span>Who's told</span>${whoSelect("to", s.to || "admin")}<span class="help">They get a message in the app, under Notifications.</span></label>${textWithInserts("message", "What it says", s.message, true)}`;
+        case "notify": return `<label class="field"><span>Who's told</span>${whoSelect("to", s.to || "owner")}<span class="help">They get a message in the app, under Notifications.</span></label>${textWithInserts("message", "What it says", s.message, true)}`;
         case "send_email": return `${textWithInserts("to", "To (an address, or a detail of the record)", s.to)}${textWithInserts("subject", "Subject", s.subject)}${textWithInserts("body", "Message", s.body, true)}`;
         case "task": return `<label class="field"><span>Who does it</span>${whoSelect("to", s.to || "editor")}</label>${textWithInserts("message", "What they're asked to do", s.message, true)}
           <label class="field"><span>How urgent</span><select name="priority">${["low", "normal", "high", "urgent"].map((p) => `<option value="${p}" ${p === (s.priority || "normal") ? "selected" : ""}>${p[0].toUpperCase() + p.slice(1)}</option>`).join("")}</select></label>`;

@@ -66,8 +66,18 @@ def handoffs(bp, tables):
                 out.append({"from": src["key"], "at": at, "to": to, "how": how, "rule": a["key"], "label": a["name"],
                             "on": a.get("enabled", True), "button": a["trigger"]["type"] == "button", "ai": ai, "asks": asks,
                             "event": a["trigger"]["type"], "press": a["trigger"].get("label") or "", "every": a["trigger"].get("every") or "",
-                            "sets": _sets(tables[to], s) if how == "updates" else []})
+                            "sets": _sets(tables[to], s) if how == "updates" else [], "moves_to": _moves_to(a, src)})
     return out
+
+
+def _moves_to(a, t):
+    """The stage a rule moves its own record on to (a job invoiced: “Invoiced”), or None."""
+    f = _status(t)
+    for s in schema.steps_of(a["actions"]) if f else []:
+        v = (s.get("values") or {}).get(f["key"]) if s.get("type") == "update_record" and not s.get("target") else None
+        if isinstance(v, str) and "{{" not in v:
+            return v
+    return None
 
 
 def _sets(t, step):
@@ -180,6 +190,7 @@ def build(engine, problems=(), names=None):
         wrong.setdefault(p.get("where") or "", []).append({"text": p["plain"], "bad": p.get("level") == "fix"})
     comes = entries(bp, seen)
     stopped = _stopped(engine)
+    only_if = {a["key"]: _only_if(engine, a) for a in rules}  # what else must be true: “its balance is at most $0.00”
 
     def card(key):
         t = seen[key]
@@ -211,7 +222,8 @@ def build(engine, problems=(), names=None):
                             "moves": [by_hand(m) for m in moves if n in (m.get("from") or [])]} for n in names_],
                 "anytime": [by_hand(m) for m in moves if not m.get("from")],
                 "rules": [{"key": a["key"], "name": a["name"], "on": a.get("enabled", True), "at": _at_stage(a, t), "ai": bool(_ai(a)),
-                           "asks": _asks(a), "stopped": stopped.get(a["key"], 0), **_started(a)} for a in mine],
+                           "asks": _asks(a), "stopped": stopped.get(a["key"], 0), "moves_to": _moves_to(a, t), "only_if": only_if.get(a["key"], []),
+                           **_started(a)} for a in mine],
                 "seen_in_portal": bool(t.get("portal")) and not (t.get("portal") or {}).get("can_add"),
                 "flows": [{"key": fl["key"], "label": fl["label"]} for fl in bp.get("flows") or [] if fl["table"] == key],
                 "people": people, "ai": {"fields": ai_fields, "steps": ai_steps}, "waiting": waiting.get(key, 0),
@@ -222,7 +234,8 @@ def build(engine, problems=(), names=None):
         lists = [card(k) for k in p["lists"]]
         shown.append({**p, "cards": lists, "count": sum(c["count"] for c in lists), "problems": sum(len(c["problems"]) for c in lists),
                       "ai": sum(len(c["ai"]["steps"]) + len(c["ai"]["fields"]) for c in lists),
-                      "handoffs": [{**h, "from_label": seen[h["from"]]["label"], "to_label": seen[h["to"]]["label"]} for h in p["handoffs"]]})
+                      "handoffs": [{**h, "from_label": seen[h["from"]]["label"], "to_label": seen[h["to"]]["label"], "only_if": only_if.get(h["rule"], [])}
+                                   for h in p["handoffs"]]})
     return {"processes": shown,
             "reference": [{**card(k), "used_by": sorted({t["label"] for t in seen.values() if t["key"] != k and not t.get("embedded")
                                                          and any(f["type"] == "link" and f.get("table") == k for f in t["fields"])})}
@@ -230,6 +243,14 @@ def build(engine, problems=(), names=None):
             "elsewhere": [{"key": a["key"], "name": a["name"], "on": a.get("enabled", True), "at": None, "stopped": stopped.get(a["key"], 0),
                            **_started(a)} for a in rules if not a["trigger"].get("table")],
             "problems": wrong.get("", [])}
+
+
+def _only_if(engine, a):
+    from .engine import automations
+    try:
+        return automations.describe(engine, a)["only_if"]
+    except Exception:  # noqa: BLE001 - said without it rather than not drawn
+        return []
 
 
 def _started(a):

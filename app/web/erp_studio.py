@@ -256,7 +256,14 @@ def studio_map(wid):
     drawn = _map(ws, engine)
     return render_template("app/studio.html", ws=ws, e=engine, data=data, opened=item, open_id=opened, map=drawn,
                            model=_model(ws, engine), view="data" if request.args.get("view") == "data" or opened.startswith("data") else "map",
-                           can_edit=g.member.can("admin"), ask_example=_ask_example(drawn), quiet_ask=True)
+                           can_edit=g.member.can("admin"), ask_example=_ask_example(drawn), quiet_ask=True, email_on=_email_on(ws))
+
+
+def _email_on(ws):
+    """Whether the app can send email (Microsoft 365 connected): “email me” is offered only then."""
+    from ..connectors import microsoft
+    conn = microsoft.connection(ws)
+    return bool(conn is not None and conn.secret and conn.status != "not connected")
 
 
 def _ask_example(drawn):
