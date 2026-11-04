@@ -263,7 +263,7 @@ class Shop:
                 continue
             if f["type"] in schema.FILES:  # attached, as a person would
                 from app.storage import save
-                save(self.trial.ws_id, b"%PDF-1.4 sample", f"{key}.pdf", record_id=record.id, field=key, by="Someone")
+                save(self.trial.ws_id, b"%PDF-1.4 sample", f"{f['label']}.pdf", record_id=record.id, field=key, by="Someone")
             elif f["type"] == "link":
                 linked = self.made.get(f["table"]) or self.add(self.engine.tables[f["table"]]).id
                 values[key] = [linked] if f.get("multiple") else linked

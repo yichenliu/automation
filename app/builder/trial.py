@@ -946,10 +946,11 @@ def _attach(engine, record, t, keys):
     for key in keys:
         f = schema.field(t, key)
         if f is not None and f["type"] in schema.FILES and not engine.files(record, key):
+            name = f["label"]  # named as people would see it (“Supplier's quote.pdf”), never by its key
             if f["type"] in ("image", "signature"):  # a picture, as a signature pad or a camera gives
-                save(engine.ws.id, _PIXEL, f"{key}.png", record_id=record.id, field=key, by=engine.by, mime="image/png")
+                save(engine.ws.id, _PIXEL, f"{name}.png", record_id=record.id, field=key, by=engine.by, mime="image/png")
             else:
-                save(engine.ws.id, b"%PDF-1.4 sample", f"{key}.pdf", record_id=record.id, field=key, by=engine.by)
+                save(engine.ws.id, b"%PDF-1.4 sample", f"{name}.pdf", record_id=record.id, field=key, by=engine.by)
     engine.reset()
 
 
