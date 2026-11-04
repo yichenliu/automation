@@ -121,7 +121,7 @@ def _run_other(engine, automation, action, record, run, ctx):
     if action.get("target") == "created":
         target = ctx.names["created"].record if ctx.names.get("created") else None
     elif action.get("target") and record is not None:
-        target = engine.get(engine.value(record, action["target"]))
+        target = _linked(engine, record, action["target"])
     if action.get("target") and target is None:
         return {"result": f"“{other['name']}” didn't run: there was no record to run it for"}
     sub = start(engine, other, target, f"Started by “{automation['name']}”", depth=(run.depth or 0) + 1)
@@ -237,6 +237,19 @@ def _reached(engine, record, path):
     value = value[0] if isinstance(value, list) and value else value
     nxt = engine.get(int(value)) if str(value).isdigit() else None
     return _reached(engine, nxt, rest) if nxt is not None else None
+
+
+def _linked(engine, record, path):
+    """The record a step's "target" names: through one link field, or a path of them (a payment's "invoice.couple")."""
+    value = _reached(engine, record, path) if record is not None else None
+    value = value[0] if isinstance(value, list) and value else value
+    return engine.get(int(value)) if str(value).isdigit() else None
+
+
+def _target_words(engine, table, path):
+    """A step's "target" in words: “Invoice”, or “Invoice’s Couple” for a path."""
+    links = schema.link_path(engine.tables.get(table), path, engine.tables)
+    return "’s ".join(f["label"] for f in links) if links else path
 
 
 def _lines(engine, source, parent):
@@ -946,9 +959,9 @@ def _do(engine, automation, action, record, run):
             if target is None:
                 return {"result": "Nothing to update: no record was created earlier in this run"}
         elif action.get("target"):
-            target = engine.get(engine.value(record, action["target"]))
+            target = _linked(engine, record, action["target"])
             if target is None:
-                return {"result": f"Nothing to update: {engine.field(record.table, action['target'])['label']} is empty"}
+                return {"result": f"Nothing to update: {_target_words(engine, record.table, action['target'])} is empty"}
         diff = engine.update(target, _render_values(action["values"], ctx), by=_by(automation), depth=depth)
         t = engine.tables[target.table]
         target = engine.get(target.id)
@@ -1007,7 +1020,7 @@ def _do(engine, automation, action, record, run):
         if action.get("target") == "created":
             target = ctx.names["created"].record if ctx.names.get("created") else None
         elif action.get("target"):
-            target = engine.get(engine.value(record, action["target"]))
+            target = _linked(engine, record, action["target"])
         if target is None:
             return {"result": "Nothing to delete"}
         name, t = engine.title(target), engine.tables[target.table]
@@ -1078,7 +1091,7 @@ def _do(engine, automation, action, record, run):
         if action.get("target") == "created":
             target = ctx.names["created"].record if ctx.names.get("created") else None
         elif action.get("target"):
-            target = engine.get(engine.value(record, action["target"]))
+            target = _linked(engine, record, action["target"])
         if target is None:
             return {"result": "No document produced: there was no record to produce it for"}
         file = produce(engine, target, action["document"], field=action.get("field", ""), by=_by(automation))
@@ -2005,9 +2018,9 @@ def describe_action(engine, automation, action):
             prefix = "On the new record, set"
             target_table = next((a["table"] for a in schema.steps_of(automation["actions"]) if a.get("table") and a["type"] in ("create_record", "ai_create_record")), table)
         elif action.get("target"):
-            link = engine.field(table, action["target"])
-            target_table = link["table"] if link else table
-            prefix = f"On its {link['label'] if link else action['target']}, set"
+            links = schema.link_path(engine.tables.get(table), action["target"], engine.tables)
+            target_table = links[-1]["table"] if links else table
+            prefix = f"On its {_target_words(engine, table, action['target'])}, set"
         parts = [f"{(engine.field(target_table, k) or {'label': k})['label']} to {humanize(engine, v, table)}" for k, v in action["values"].items()]
         text = f"{prefix} " + ", ".join(parts)
     elif kind in ("create_record", "create_for_each"):
@@ -2050,9 +2063,9 @@ def describe_action(engine, automation, action):
             of = next((a["table"] for a in schema.steps_of(automation["actions"]) if a.get("table") and a["type"] in ("create_record", "ai_create_record")), table)
             suffix = f" of the new {(engine.tables.get(of) or {'singular': 'record'})['singular'].lower()}"
         elif action.get("target"):
-            link = engine.field(table, action["target"])
-            of = link["table"] if link and link["type"] == "link" else table
-            suffix = f" of its {link['label'] if link else action['target']}"
+            links = schema.link_path(engine.tables.get(table), action["target"], engine.tables)
+            of = links[-1]["table"] if links else table
+            suffix = f" of its {_target_words(engine, table, action['target'])}"
         t = engine.tables.get(of) or {}
         doc = next((d for d in t.get("documents", []) if d["key"] == action["document"]), {"label": action["document"]})
         into = f" into {(engine.field(of, action['field']) or {'label': action['field']})['label']}" if action.get("field") else ""
@@ -2091,7 +2104,7 @@ def describe_action(engine, automation, action):
         if action.get("target") == "created":
             target = " for the record made above"
         elif action.get("target"):
-            target = f" for its {(engine.field(table, action['target']) or {'label': action['target']})['label']}"
+            target = f" for its {_target_words(engine, table, action['target'])}"
         text = f"Run “{name}”{target}"
     elif kind == "webhook":
         text = f"Send the details to {action['url']}"

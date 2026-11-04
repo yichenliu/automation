@@ -17,7 +17,7 @@
       <textarea name="said" rows="2" required placeholder="A quote for $1,000 with 10% off comes to $990 including GST"></textarea></label>
     <div class="row"><button class="btn primary">{{ icon('check') }}Add this check</button><span class="faint small">The AI turns it into a check and tries it on your app straight away.</span></div></form>
   {% for j in adding %}<div class="card-foot small">{{ icon('clock') }} Writing “{{ j.payload.said[:120] }}”…</div>{% endfor %}
-  {% for x in refused %}<div class="card-foot small row">{{ icon('circle-x') }}<span class="grow">Couldn't turn “{{ x.said[:160] }}” into a check: {{ x.why }}. Try it again with the names and numbers you see on the screen.</span>
+  {% for x in refused %}<div class="card-foot small row">{{ icon('circle-x') }}<span class="grow">{% if x.missing %}Your app doesn't do “{{ x.said[:160] }}” yet: {{ x.why }}. Ask the builder to add it, then add this check again.{% else %}Couldn't turn “{{ x.said[:160] }}” into a check: {{ x.why }}. Try it again with the names and numbers you see on the screen.{% endif %}</span>
     <form method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="do" value="put_aside"><input type="hidden" name="said" value="{{ x.said }}"><button class="btn sm ghost">{{ icon('x') }}Put aside</button></form></div>{% endfor %}
 </div>
 

@@ -103,6 +103,22 @@ def test_let_me_know_tells_the_person_asking_not_everyone(app, owner):
     assert ops_[0]["automation"]["actions"][0]["to"] == "owner" and ops_[1]["automation"]["actions"][0]["to"] == "everyone"
 
 
+def test_let_me_know_is_made_not_asked_how(app, owner):
+    """“When an invoice gets to Paid, let me know” answered with “text, email or a pop-up?”: it has one plain reading (a
+    note in the app, to them), so the builder is told to make it, and does."""
+    _, ws = owner
+    ai.set_backend(ScriptedAI({"ops": CONSULTANCY, "reply": "Built."}))
+    _turn(ws, "build it")
+    rule = {"op": "add_automation", "automation": {"key": "paid", "name": "Tell when paid", "trigger": {"type": "record_updated", "table": "invoices"},
+                                                   "conditions": [], "actions": [{"type": "notify", "message": "{{record.number}} is paid"}]}}
+    scripted = ScriptedAI({"ops": [], "reply": "How would you like to hear? 1) A text 2) An email 3) A pop-up in the app"},
+                          {"ops": [rule], "reply": "You'll get a note in the app when an invoice is paid."})
+    ai.set_backend(scripted)
+    m = _turn(ws, "When an invoice gets to Paid, let me know.")
+    assert any(a["key"] == "paid" for a in ws.blueprint["automations"]) and "note in the app" in m.text
+    assert "without asking" in scripted.asked[1][-1]["content"]
+
+
 def test_a_change_puts_right_what_it_breaks_not_what_was_wrong_before(app, owner):
     """The app already had something the design checks find: a small change after it isn't sent back to mend it (that
     would change more than was asked); something this change gets wrong still is."""

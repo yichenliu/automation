@@ -261,17 +261,25 @@ def _add(engine, t, values):
             for key in exc.errors:
                 f = schema.field(t, key)
                 if f is None:  # a rule across fields ("_"): other values for what it reads (an Active coach needs a
-                    # signed waiver: one On leave), and later dates a little later
+                    # signed waiver: one On leave); its dates first left empty where they may be (no pickup date yet),
+                    # then each a little later than the one before, in the order of the form, then the other way round
+                    dated = lambda g: engine.kind(g) in ("date", "datetime")  # noqa: E731
                     for g in _read_by_rule(t, exc):
+                        if dated(g) and attempt:
+                            continue
+                        if dated(g) and not g.get("required"):
+                            changed |= values.pop(g["key"], None) is not None
+                            continue
                         others = _others(engine, g, attempt)
                         if attempt < len(others) and values.get(g["key"]) != others[attempt]:
                             values[g["key"]] = others[attempt]
                             changed = True
                         elif not g.get("required") and values.pop(g["key"], None) is not None:
                             changed = True
-                    for g in t["fields"]:
-                        if engine.kind(g) in ("date", "datetime") and values.get(g["key"]):
-                            values[g["key"]] = (engine.today + timedelta(days=7 * (attempt + 1) + t["fields"].index(g))).isoformat()
+                    dates = [g for g in t["fields"] if dated(g) and values.get(g["key"])]
+                    for i, g in enumerate(dates if attempt < 2 else dates[::-1]):
+                        if attempt:
+                            values[g["key"]] = (engine.today + timedelta(days=7 + i)).isoformat()
                             changed = True
                     continue
                 others = _others(engine, f, attempt)
@@ -768,9 +776,38 @@ def _values(engine, t, values, names):
     return out
 
 
+STAFF = re.compile(r"^(an? )?((ordinary|regular) )?(staff( member)?|member of staff|employee|worker|team member|someone else)$", re.I)
+ROLES_BY = {"admin": "admin", "an admin": "admin", "editor": "editor", "viewer": "viewer"}
+
+
+def _doer(trial, engine, by):
+    """Who does a step done "by" someone other than the owner: an ordinary staff member, someone in a team (its key or
+    name), an admin, or a person by name (a stand-in joins, as the owner would invite them). None: the owner."""
+    text = str(by or "").strip()
+    if not text or text.lower() in ("me", "owner", "the owner", "i", "admin@example.com"):
+        return None
+    key = schema.slug(text)
+    team = next((tm for tm in schema.teams(engine.bp) if key in (tm["key"], schema.slug(tm.get("label") or ""))), None)
+    if team is not None:
+        uid = _person(engine, f"{team.get('label') or team['key']} member", make=True)
+        member = trial.member(uid)
+        member.teams = sorted(set(member.teams or []) | {team["key"]})
+        db.session.commit()
+    elif text.lower() in ROLES_BY:
+        uid = _person(engine, ROLES_BY[text.lower()].capitalize(), make=True)
+        trial.member(uid).role = ROLES_BY[text.lower()]
+        db.session.commit()
+    else:
+        uid = _person(engine, "Staff member" if STAFF.match(text) else text, make=True)
+    return None if uid == engine.user_id else trial.engine(uid)
+
+
 def _act(trial, engine, step, names, hold=False):
     """Do one step of an example as whoever would. Raises ExampleWrong or FieldErrors (the app refused)."""
     do = step.get("do")
+    doer = _doer(trial, engine, step.get("by")) if do not in ("wait", "run") else None
+    if doer is not None and do == "add":
+        engine = doer
     if do == "add":
         t = _table(engine, step.get("table"))
         names["_adding"] = step.get("as")
@@ -804,6 +841,11 @@ def _act(trial, engine, step, names, hold=False):
             alias, names["_this"] = "_this", found
     record = _record(engine, names, alias)
     t = engine.tables[record.table]
+    if doer is not None:  # done by someone else, as they'd see it
+        theirs = doer.get(record.id)
+        if theirs is None:
+            raise FieldErrors({"_": f"{doer.by} can't see this {schema.lc(t['singular'])}"})
+        engine, record = doer, theirs
     if do == "change":
         values = _values(engine, t, step.get("values"), names)
         if step.get("refused") and values and all(_unchanged(engine, t, record, k, v) for k, v in values.items()):
@@ -827,15 +869,29 @@ def _act(trial, engine, step, names, hold=False):
             return
         if wanted not in [s.lower() for s in schema.stages(t)]:
             raise ExampleWrong(f"{t['key']} has no stage “{step.get('to')}” (stages: {', '.join(schema.stages(t))})")
+        if step.get("values"):  # filled in on the button's form
+            engine.update(record, _values(engine, t, step["values"], names))
+            engine.reset()
+            record = engine.get(record.id)
+        if not step.get("refused"):  # what its button asks for, filled in as the person would (a stop for it left empty is
+            # shown with "refused")
+            _fill_asked(trial, engine, record, t, lambda m: m["to"].lower() == wanted)
+            record = engine.get(record.id)
         if not _press_move(engine, record, t, lambda m: m["to"].lower() == wanted):
             _take_along(engine, record, t, step.get("to"))
     elif do == "press":
         wanted = str(step.get("button") or "").strip().lower()
         a = next((a for a in engine.bp.get("automations", []) if a["trigger"]["type"] == "button"
                   and wanted in (a["key"].lower(), a["name"].lower(), str(a["trigger"].get("label") or "").lower())), None)
+        doc = next((d for d in t.get("documents", []) if wanted in (d["key"].lower(), str(d.get("label") or "").lower())), None)
+        if a is None and doc is not None:  # its document's button (Make the invoice PDF), as the person would press it
+            from ..documents import produce
+            produce(engine, record, doc["key"], by=engine.by)
+            return
         if a is None:
             buttons = [a["key"] for a in engine.bp.get("automations", []) if a["trigger"]["type"] == "button"]
-            raise ExampleWrong(f"there's no button “{step.get('button')}” (buttons: {', '.join(buttons) or 'none'})")
+            raise ExampleWrong(f"there's no button “{step.get('button')}” (buttons: {', '.join(buttons) or 'none'}"
+                               + (f"; documents: {', '.join(d['key'] for d in t.get('documents', []))}" if t.get("documents") else "") + ")")
         automations.press(engine, a, record, engine.by)
     elif do in ("approve", "reject"):
         waiting = Approval.query.filter(Approval.workspace_id == trial.ws_id, Approval.record_id == record.id,
@@ -859,6 +915,10 @@ def _act(trial, engine, step, names, hold=False):
             raise FieldErrors({"_": f"nothing was waiting for someone's OK on this {schema.lc(t['singular'])}"})
         approval = waiting[0]
         people = [approval.assignee_id, trial.owner_id] + [m.user_id for m in Membership.query.filter_by(workspace_id=trial.ws_id)]
+        if doer is not None:  # they answer it, or the app says they can't
+            if not automations.may_decide(approval, trial.member(doer.user_id), doer.user_id, record, doer):
+                raise FieldErrors({"_": f"{doer.by} can't answer “{approval.message}”"})
+            people = [doer.user_id]
         who = next((uid for uid in people if uid and automations.may_decide(approval, trial.member(uid), uid, record, trial.engine(uid))), None)
         if who is None:
             why = automations.kept_from(trial.engine(trial.owner_id), approval, record)
@@ -928,6 +988,19 @@ def _take_along(engine, record, t, target):
     raise FieldErrors({"_": f"it went round its stages without reaching {target}"})
 
 
+def _fill_asked(trial, engine, record, t, pick):
+    """Fill in what the button of the first move `pick` likes asks for (the Check out button's Checked out by), as the
+    person pressing it would, with ordinary values."""
+    move = next((m for _, m, _ in engine.moves(record) if pick(m)), None)
+    if move is None:
+        return
+    needs = {f["key"]: v for f in engine.to_fill(t, record, move) if engine.kind(f) not in schema.FILES
+             for v in [sample_value(engine, t, f, trial.owner_id, {}, 300, 0)] if v is not None}
+    if needs:
+        engine.update(record, needs)
+        engine.reset()
+
+
 def _press_move(engine, record, t, pick):
     """Press the record's button for the first move `pick` likes, as its person would (a file it needs attached first).
     False when there's no such button now; raises FieldErrors when the app says not yet."""
@@ -936,9 +1009,10 @@ def _press_move(engine, record, t, pick):
             _attach(engine, record, t, m.get("requires") or [])
     engine.reset()
     record = engine.get(record.id)
-    move = next(((i, m, problem) for i, m, problem in engine.moves(record) if pick(m)), None)
-    if move is None:
+    found = [(i, m, problem) for i, m, problem in engine.moves(record) if pick(m)]
+    if not found:
         return False
+    move = next((x for x in found if not x[2]), found[0])  # two buttons to one stage (the owner's, and short ones'): the open one
     if move[2]:
         raise FieldErrors({"_": move[2]})
     engine.move(record, move[0])
@@ -1149,7 +1223,10 @@ def _formula_reads(engine, record, expression, names, deeper=True):
             elif g["type"] == "rollup":
                 how = f" ({_rollup_reads(engine, record, g, names, deeper=False)})"
         out.append(f"{name} = {value!r}{how}")
-    return ", ".join(out[:8])
+    if re.search(r"\b(today|now)\s*\(", plain):  # after a wait, today is that many days on in the example's calendar
+        out.append(f"today = '{(engine.today + timedelta(days=names.get('_waited') or 0)).isoformat()}'"
+                   + (f" (after waiting {names['_waited']} days)" if names.get("_waited") else ""))
+    return ", ".join(out[:9])
 
 
 def _rollup_reads(engine, record, f, names, deeper=True):
@@ -1316,6 +1393,20 @@ def _both(example):
     return None
 
 
+def _meant_refused(engine, example, step, names):
+    """Someone else tries a move (“by”: "staff") and the example expects the record to stay at the stage it's at: it
+    shows them being stopped, though it doesn't say "refused"."""
+    if step.get("do") != "move" or not step.get("by") or not step.get("record") or step["record"] not in names:
+        return False
+    record = engine.get(names[step["record"]])
+    flow = (engine.tables.get(record.table) or {}).get("workflow") if record is not None else None
+    if not flow:
+        return False
+    now = str((record.data or {}).get(flow["field"]) or "").strip().lower()
+    return any(isinstance(c, dict) and c.get("record") == step["record"] and c.get("field") == flow["field"]
+               and str(c.get("equals") or "").strip().lower() == now for c in example.get("expect") or [])
+
+
 def _play(trial, engine, example, names, out):
     both = _both(example)
     if both:
@@ -1350,7 +1441,7 @@ def _play(trial, engine, example, names, out):
             out.update(problem=f"step {n} ({said}): {exc}", kind="example")
             return out
         except FieldErrors as exc:
-            if step.get("refused"):
+            if step.get("refused") or _meant_refused(engine, example, step, names):
                 engine.reset()
                 continue
             reason = "; ".join(exc.errors.values())
@@ -1367,7 +1458,9 @@ def _play(trial, engine, example, names, out):
             return out
         engine.reset()
         if step.get("refused"):
-            out.update(problem=f"step {n} ({said}) should have been refused, but the app allowed it", kind="app",
+            owner = "" if step.get("by") else (" (the owner did it, who may do nearly anything: if only some people should, such as "
+                                                "the owner, have \"by\": \"staff\" try it)")
+            out.update(problem=f"step {n} ({said}) should have been refused, but the app allowed it{owner}", kind="app",
                        plain=f"{_plain_step(engine, step, names)} should have been stopped, but wasn't")
             return out
     flush()

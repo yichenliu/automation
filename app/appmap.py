@@ -59,8 +59,8 @@ def handoffs(bp, tables):
             if s.get("type") in MAKES and s.get("table") in tables and s["table"] != src["key"] and not tables[s["table"]].get("embedded"):
                 to, how = s["table"], "makes"
             elif s.get("type") == "update_record" and s.get("target"):
-                link = schema.field(src, s["target"])
-                if link and link["type"] == "link" and link.get("table") in tables and link["table"] != src["key"]:
+                link = (schema.link_path(src, s["target"], tables) or [None])[-1]
+                if link and link.get("table") in tables and link["table"] != src["key"]:
                     to, how = link["table"], "updates"
             if to and not any(h["rule"] == a["key"] and h["to"] == to for h in out):
                 out.append({"from": src["key"], "at": at, "to": to, "how": how, "rule": a["key"], "label": a["name"],

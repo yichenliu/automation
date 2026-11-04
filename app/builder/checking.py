@@ -9,6 +9,7 @@ update of the platform itself), whoever runs the app is told what and why, with 
     .venv/bin/python -m app.builder.checking        check every app now (after updating the platform)
 """
 import hashlib
+import json
 import sys
 from pathlib import Path
 
@@ -110,7 +111,10 @@ def add(workspace, said, by=None):
     example = {**found[0], "title": said.strip()[:160], "by": by or "owner"}
     with trial.copy_of(workspace) as copy:
         result = trial.play(copy, example)
-    if result["kind"] == "example":  # it names what isn't in the app: not kept, so it can't fail for ever
+    if not result["ok"] and result["kind"] in ("app", "example"):  # the example's slip, or the app's? Looked at once more
+        example, result = _again(workspace, engine, convo, said, example, result)
+    result = {**result, "example": example}  # what was acted out, to look into
+    if result["kind"] in ("example", "missing"):  # it names what isn't in the app: not kept, so it can't fail for ever
         return result
     state = dict(workspace.state or {})
     state["examples"] = ([example] + [x for x in examples(workspace) if x.get("title") != example["title"]])[:KEEP]
@@ -120,6 +124,34 @@ def add(workspace, said, by=None):
     return result
 
 
+def _again(workspace, engine, convo, said, example, result):
+    """Before the owner hears their app doesn't do what they asked: the AI looks at what happened and either corrects
+    its own example (a sum worked out wrong, a step the owner may do tried as the owner), which is then acted out
+    instead, or says what the app doesn't do yet. Returns (example, result)."""
+    lines = "\n".join(f"- {'as expected' if ok else 'NOT as expected'}: {line}" for ok, line in result.get("lines") or [])
+    what = "\n".join(x for x in (result.get("problem") or "", lines) if x)
+    how = "couldn't be acted out" if result["kind"] == "example" else "didn't come out as expected"
+    ask = convo + [{"role": "user", "content": prompts.CHECK_AGAIN.format(
+        said=said[:1500], how=how, what=what[:3000], example=json.dumps({k: v for k, v in example.items() if k != "by"}, ensure_ascii=False)[:6000])}]
+    steady = ai.building.set(True)
+    try:
+        content, _ = ai.chat(ask, schema=prompts.CHECK_AGAIN_SCHEMA, think=current_app.config.get("AI_THINK_BUILDER", False))
+        answer = ai.parse_json(content)
+    except ai.AIError:
+        return example, result
+    finally:
+        ai.building.reset(steady)
+    fixed = [x for x in answer.get("examples") or [] if isinstance(x, dict) and x.get("steps")][:1]
+    if answer.get("verdict") == "example" and fixed:
+        corrected = {**fixed[0], "title": example["title"], "by": example["by"]}
+        with trial.copy_of(workspace) as copy:
+            return corrected, {**trial.play(copy, corrected), "looked_again": "example"}
+    missing = str(answer.get("missing") or "").strip().rstrip(".")
+    if answer.get("verdict") == "app" and result["kind"] == "example" and missing:  # it isn't in the app at all: it doesn't do it
+        return example, {**result, "kind": "missing", "plain": f"your app doesn't do this yet: {missing}", "looked_again": "app"}
+    return example, {**result, "looked_again": answer.get("verdict") or ""}
+
+
 @jobs.handler("check_add")
 def _add_job(job):
     workspace = db.session.get(Workspace, job.workspace_id)
@@ -127,7 +159,11 @@ def _add_job(job):
     engine = Engine(workspace, by="checks")
     said = job.payload["said"][:120]
     refused = [x for x in (workspace.state or {}).get("refused_checks") or [] if x.get("said") != job.payload["said"]]
-    if result is None or result["kind"] == "example":
+    if result is not None and result["kind"] == "missing":  # it isn't in the app yet: said so, and kept in view
+        missing = result["plain"].split(": ", 1)[-1]
+        text = f"Your app doesn't do “{said}” yet: {missing}. Ask the builder to add it."
+        refused = [{"said": job.payload["said"], "why": missing[:300], "missing": True, "at": utcnow().isoformat()}] + refused
+    elif result is None or result["kind"] == "example":
         text = f"I couldn't turn “{said}” into a check: try saying it with the names and numbers you see on the screen."
         why = (result or {}).get("plain") or (result or {}).get("problem") or "it couldn't be written as steps in your app"
         refused = [{"said": job.payload["said"], "why": why[:300], "at": utcnow().isoformat()}] + refused

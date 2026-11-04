@@ -9,6 +9,7 @@ except to fields of records, no imports, no calls except the functions below. Sp
 IF(...), AND/OR, {field}, a single = for comparison, <> for "not equal".
 """
 import ast
+import keyword
 import math
 import re
 from datetime import date, datetime, time, timedelta
@@ -242,6 +243,17 @@ def normalise(source):
 
 
 _cache = {}
+# words Python keeps for itself that a business may well name a field (a class's "class", an email's "from", a "pass"
+# mark): read as names. The ones formulas use as words (and, or, not, in, is, x if y else z) stay words.
+RESERVED = frozenset(keyword.kwlist) - {"and", "or", "not", "in", "is", "if", "else", "True", "False", "None"}
+_RESERVED = re.compile(r"\b(" + "|".join(sorted(RESERVED)) + r")\b")
+_QUOTED = re.compile(r"(\"(?:[^\"\\]|\\.)*\"|'(?:[^'\\]|\\.)*')")
+
+
+def _as_names(text):
+    """`class.capacity` read as the field it is, not Python's `class`: such words, outside quotes, get a mark taken off again
+    once the formula is read."""
+    return "".join(part if i % 2 else _RESERVED.sub(r"\1__kw", part) for i, part in enumerate(_QUOTED.split(text)))
 
 
 def parse(source):
@@ -249,9 +261,14 @@ def parse(source):
     if text in _cache:
         return _cache[text]
     try:
-        tree = ast.parse(text, mode="eval")
+        tree = ast.parse(_as_names(text), mode="eval")
     except SyntaxError as exc:
         raise ExprError(f"can't read “{source}”: {exc.msg}") from exc
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and node.id.endswith("__kw"):
+            node.id = node.id[:-4]
+        elif isinstance(node, ast.Attribute) and node.attr.endswith("__kw"):
+            node.attr = node.attr[:-4]
     _check(tree)
     _cache[text] = tree
     return tree

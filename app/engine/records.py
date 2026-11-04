@@ -222,6 +222,19 @@ def automations_words(engine, conditions, table):
     return " and ".join(describe_condition(engine, c, table).replace("“", "").replace("”", "") for c in conditions)
 
 
+def _overlap(a, b):
+    """Whether two spans of dates or times overlap; one with no end is that one day or moment. The day one ends, the
+    next can start (a checkout and a check-in)."""
+    (s1, e1), (s2, e2) = a, b
+    if e1 <= s1 and e2 <= s2:
+        return s1 == s2
+    if e1 <= s1:
+        return s2 <= s1 < e2
+    if e2 <= s2:
+        return s1 <= s2 < e1
+    return s1 < e2 and s2 < e1
+
+
 class Engine:
     def __init__(self, workspace, by=None, member=None):
         self.ws = workspace
@@ -1514,11 +1527,46 @@ class Engine:
             if clash is not None:
                 labels = [self.field(t["key"], k)["label"] for k in group if self.field(t["key"], k)]
                 errors[group[-1]] = f"{t['singular']} “{self.title(clash)}” already has this {' and '.join(labels).lower()}"
+        for limit in t.get("limits", []):  # five jobs a day; a room booked once at a time
+            touched = set(limit["per"]) | set((limit.get("overlap") or {}).values()) | {c["field"].split(".")[0] for c in schema.condition_leaves(limit.get("where"))}
+            if (creating or touched & set(values)) and "_" not in errors:
+                over = self._over_limit(t, record, draft, merged, limit)
+                if over:
+                    errors["_"] = over
         if flow and flow["field"] in values and flow["field"] not in errors and (self.role is not None or self.portal_contact is not None):
             self._check_move(t, record, draft, values[flow["field"]], creating, errors)
         if errors:
             raise FieldErrors(errors)
         return values
+
+    def _over_limit(self, t, record, draft, merged, limit):
+        """What's wrong when saving this record would go past one of its table's limits, or None."""
+        if limit.get("where") and not self.matches(draft, limit["where"]):
+            return None  # a cancelled booking takes no place
+        if any(merged.get(k) in (None, "", []) for k in limit["per"]):
+            return None
+        same = lambda a, b: str(a if a is not None else "").strip().lower() == str(b if b is not None else "").strip().lower()  # noqa: E731
+        others = [r for r in self.rows(t["key"]) if (record is None or r.id != record.id)
+                  and all(same((r.data or {}).get(k), merged.get(k)) for k in limit["per"])
+                  and (not limit.get("where") or self.matches(r, limit["where"]))]
+        labels = " and ".join(self.field(t["key"], k)["label"].lower() for k in limit["per"] if self.field(t["key"], k))
+        if limit.get("overlap"):
+            def span(data):
+                start = str(data.get(limit["overlap"]["start"]) or "").replace(" ", "T")
+                end = str(data.get(limit["overlap"].get("end") or "") or "").replace(" ", "T") or start
+                return start, max(end, start)
+            mine = span(merged)
+            if not mine[0]:
+                return None
+            clash = next((r for r in others if span(r.data or {})[0] and _overlap(mine, span(r.data or {}))), None)
+            if clash is None:
+                return None
+            return limit.get("message") or f"{t['singular']} “{self.title(clash)}” already has {('this ' + labels) if labels else 'that time'} then"
+        most = limit["max"] if not isinstance(limit["max"], str) else to_number(self._at_path(draft, limit["max"])[1])
+        if most is None or len(others) < most:
+            return None
+        return limit.get("message") or (f"There can't be more than {most:g} {schema.lc(t['label'])}"
+                                         + (f" for the same {labels}" if labels else "") + f": there are {len(others)} already")
 
     # --- conditional fields and stage workflows --------------------------------------------------------------------
     def shown(self, t, f, record):
@@ -1637,8 +1685,16 @@ class Engine:
         return f"It's waiting for {who} to approve it" + (" (you asked for it, so someone else has to)" if mine else "")
 
     def to_fill(self, t, record, move):
-        """The fields a move needs filled in before it's made (its button asks for them): [field]."""
-        return [f for f in (self.field(t["key"], k) for k in move.get("requires", []))  # a file field's files aren't in the data
+        """The fields a move needs filled in before it's made (its button asks for them): those it requires, and those its
+        stage makes required (a Pickup date once it's Picked up), so the button asks rather than the save refusing: [field]."""
+        keys = list(move.get("requires", []))
+        stage = (t.get("workflow") or {}).get("field")
+        if stage and any(f.get("required_if") for f in t["fields"]):
+            after = Record(workspace_id=self.ws.id, table=t["key"], data={**(record.data or {}), stage: move["to"]})
+            after.id = record.id
+            keys += [f["key"] for f in t["fields"] if f.get("required_if") and f["key"] not in keys and f["type"] in schema.STORED
+                     and f["key"] != stage and self.matches(after, f["required_if"]) and self.shown(t, f, after)]
+        return [f for f in (self.field(t["key"], k) for k in keys)  # a file field's files aren't in the data
                 if f and self.value(record, f["key"]) in (None, "", [])]
 
     def move_problem(self, t, record, move, filled=False):

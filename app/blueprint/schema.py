@@ -914,6 +914,9 @@ def normalize_table(raw):
         clean = [g for g in clean if len(g) >= 1]
         if clean:
             table["unique_together"] = clean[:4]
+    limits = _first(raw, "limits", "capacity", "capacities", "no_overlap", "max_per", "booking_limits")
+    if limits:
+        table["limits"] = [normalize_limit(x, label) for x in _list(limits)][:6]
     held = _first(raw, "approve_changes", "changes_need_approval", "change_approval", "maker_checker", "four_eyes_changes")
     if held:
         table["approve_changes"] = normalize_change_approval(held, label)
@@ -1193,6 +1196,47 @@ def normalize_rule(raw, table_label=""):
     if where:
         rule["field"] = slug(where)
     return rule
+
+
+def normalize_limit(raw, table_label=""):
+    """How many records may share something, or that their times may not overlap: {"per": ["event_date"], "max": 5}
+    (five jobs a day; "max" can be a number field through links: "session.class.capacity"), or {"per": ["room"],
+    "overlap": {"start": "check_in", "end": "check_out"}} (a room booked once at a time), each with "where": the records
+    it counts (not cancelled ones) and "message"."""
+    if not isinstance(raw, dict):
+        raise SchemaError(f"a limit on {table_label} looks like {{\"per\": [\"event_date\"], \"max\": 5}} or "
+                          f"{{\"per\": [\"room\"], \"overlap\": {{\"start\": \"check_in\", \"end\": \"check_out\"}}}}")
+    limit = {"per": [slug(x) for x in _names(_first(raw, "per", "for_each", "same", "group_by", "by", default=[]))]}
+    most = _first(raw, "max", "at_most", "most", "limit", "capacity", "max_count")
+    overlap = _first(raw, "overlap", "no_overlap", "between", "range", "times")
+    if isinstance(overlap, (list, tuple)) and overlap:
+        overlap = {"start": overlap[0], "end": overlap[1] if len(overlap) > 1 else None}
+    if isinstance(overlap, dict) and _first(overlap, "start", "from", "begins"):
+        end = _first(overlap, "end", "to", "until", "ends")
+        limit["overlap"] = {"start": slug(_first(overlap, "start", "from", "begins")), **({"end": slug(end)} if end else {})}
+    elif most is not None and to_number_or_path(most) is not None:
+        limit["max"] = to_number_or_path(most)
+    else:
+        raise SchemaError(f"a limit on {table_label} needs \"max\": how many may share {', '.join(limit['per']) or 'it'} (a number, "
+                          f"or a number field like \"session.class.capacity\"), or \"overlap\": {{\"start\", \"end\"}}")
+    where = _first(raw, "where", "only_if", "when", "counting", "if")
+    if where:
+        limit["where"] = [normalize_condition(c) for c in _list(where)]
+    message = _first(raw, "message", "error", "text")
+    if message:
+        limit["message"] = str(message)[:300]
+    return limit
+
+
+def to_number_or_path(raw):
+    """A limit's most: 5, "5", or a field ("capacity", "session.class.capacity")."""
+    number = expr.to_number(raw)
+    if number is not None:
+        return number if number > 0 else None
+    text = re.sub(r"^\{\{\s*|\s*\}\}$", "", str(raw).strip())
+    text = re.sub(r"^record\.", "", text)
+    parts = [slug(x) for x in text.split(".") if slug(x)]
+    return ".".join(parts) or None
 
 
 def normalize_section(raw):
@@ -1834,7 +1878,7 @@ def normalize_action(raw):
     if atype == "delete_record":
         target = _first(raw, "target", "record", "of")
         if isinstance(target, str) and slug(target) not in ("record", "this", "self", "trigger", "current", "this_record"):
-            action["target"] = slug(target)
+            action["target"] = target_of(target)
         return action
     if atype == "wait":
         until = _first(raw, "until", "until_field", "date_field")
@@ -1922,7 +1966,7 @@ def normalize_action(raw):
         else:
             target = _first(raw, "target", "record", "on", "of")
             if isinstance(target, str) and slug(target) not in ("record", "this", "self", "trigger", "current", "this_record"):
-                action["target"] = slug(target)  # a link field: update the linked record instead
+                action["target"] = target_of(target)  # a link field: update the linked record instead
     elif atype == "notify":
         message = _first(raw, "message", "text", "body", "content", "title")
         if not message:
@@ -1955,7 +1999,7 @@ def normalize_action(raw):
             action["field"] = slug(save_to)
         target = _first(raw, "target", "record", "of", "for")  # "created": the record an earlier step made; or a link field
         if isinstance(target, str) and slug(target) not in ("record", "this", "self", "trigger", "current", "this_record"):
-            action["target"] = slug(target)
+            action["target"] = target_of(target)
     elif atype == "request_approval":
         several = [_person(a) for a in _names(_first(raw, "approvers", "approved_by", "chain", default=[]))][:10]
         action["approver"] = several[0] if several else _person(_first(raw, "approver", "from", "who", "role", "assignee", default="admin"))
@@ -2002,7 +2046,7 @@ def normalize_action(raw):
         action["automation"] = slug(key)
         target = _first(raw, "target", "record", "for", "on")
         if isinstance(target, str) and slug(target) not in ("record", "this", "self", "trigger", "current", "this_record"):
-            action["target"] = slug(target)
+            action["target"] = target_of(target)
     elif atype == "webhook":
         url = str(_first(raw, "url", "endpoint", "address", "path", default="")).strip()
         app = slug(str(_first(raw, "app", "connector", "service", "to_app", default="")))
@@ -2328,6 +2372,26 @@ def person_path(t, who, tables):
     return False
 
 
+def link_path(t, path, tables):
+    """The links a step's "target" goes through from t: one link field, or a path of them (a payment's
+    "invoice.couple": its invoice's couple). None when a part isn't a link."""
+    out, current = [], t
+    for part in str(path or "").split(".") if path else []:
+        f = field(current, part) if current else None
+        if not f or f["type"] != "link" or f["table"] not in tables:
+            return None
+        out.append(f)
+        current = tables[f["table"]]
+    return out or None
+
+
+def target_of(raw):
+    """A step's "target" as written: a link field's key, a path of them ("invoice.couple"), or "created"."""
+    text = re.sub(r"^\{\{\s*|\s*\}\}$", "", str(raw).strip())
+    parts = [slug(x) for x in re.sub(r"^(record|this|trigger)\.", "", text, flags=re.I).split(".") if slug(x)]
+    return ".".join(parts)
+
+
 def _path_field(t, path, tables):
     """The field at the end of a dotted path from t through single links (a bid's "tender.closes_at"), or None."""
     current, parts = t, path.split(".")
@@ -2650,6 +2714,20 @@ def _check_table(t, tables, modules, problems):
         missing = [k for k in group if k not in keys]
         if missing:
             problems.append(f"{t['label']} can't have two records alike in {', '.join(missing)}: not fields of {t['label']}")
+    for limit in t.get("limits", []):
+        where = f"the limit on {t['label']}"
+        for k in limit["per"]:
+            if k not in keys:
+                problems.append(f"{where} counts records with the same “{k}”, which isn't a field of {t['label']}")
+        if isinstance(limit.get("max"), str):
+            f = _path_field(t, limit["max"], tables)
+            if f is None or f["type"] not in NUMERIC | {"formula", "rollup", "lookup"}:
+                problems.append(f"{where}: its most, “{limit['max']}”, isn't a number field of {t['label']} (or through its links)")
+        for end in ("start", "end"):
+            k = (limit.get("overlap") or {}).get(end)
+            if k and (k not in keys or keys[k]["type"] not in ("date", "datetime", "time") and keys[k].get("format") not in ("date", "datetime", "time")):
+                problems.append(f"{where}: its {end}, “{k}”, isn't a date or time field of {t['label']}")
+        _check_conditions(limit.get("where"), t, where, problems, tables)
     held = t.get("approve_changes")
     if held:
         where = f"the change approval on {t['label']}"
@@ -2956,11 +3034,12 @@ def _check_automation(a, tables, problems, documents, bp_pages=(), automations=N
                         problems.append(f"{where} updates the record it created, but no earlier step creates one")
                         continue
                 elif act.get("target"):
-                    link = field(t, act["target"])
-                    if not link or link["type"] != "link":
-                        problems.append(f"{where} updates “{act['target']}”, which isn't a link field of {t['label']}")
+                    links = link_path(t, act["target"], tables)
+                    if not links:
+                        problems.append(f"{where} updates “{act['target']}”, which isn't a link field of {t['label']}"
+                                        + (" (or a path of them, as “invoice.couple”)" if "." in act["target"] else ""))
                         continue
-                    target = tables.get(link["table"])
+                    target = tables.get(links[-1]["table"])
                 _check_values(act["values"], target, where, problems, context_fields)
             elif kind in ("create_record", "create_for_each", "ai_create_record"):
                 target = tables.get(act["table"])
@@ -3047,11 +3126,11 @@ def _check_automation(a, tables, problems, documents, bp_pages=(), automations=N
                         problems.append(f"{where} produces a document for the record it created, but no earlier step creates one")
                         continue
                 elif act.get("target"):
-                    link = field(t, act["target"])
-                    if not link or link["type"] != "link":
+                    links = link_path(t, act["target"], tables)
+                    if not links:
                         problems.append(f"{where} produces a document for “{act['target']}”, which isn't a link field of {t['label']}")
                         continue
-                    of = tables.get(link["table"]) or t
+                    of = tables.get(links[-1]["table"]) or t
                 if act["document"] not in documents.get(of["key"], {}):
                     problems.append(f"{where} produces “{act['document']}”, which isn't a document template of {of['label']}"
                                     + (f" ({', '.join(documents.get(of['key'], {}))})" if documents.get(of["key"]) else "; add one with add_document"))
@@ -3174,7 +3253,7 @@ def _check_automation(a, tables, problems, documents, bp_pages=(), automations=N
                 if act.get("target") == "created":
                     if not created_table:
                         problems.append(f"{where} runs “{act['automation']}” for the record it created, but no earlier step creates one")
-                elif act.get("target") and (not t or (field(t, act["target"]) or {}).get("type") != "link"):
+                elif act.get("target") and not link_path(t, act["target"], tables):
                     problems.append(f"{where} runs “{act['automation']}” for “{act['target']}”, which isn't a link field of the record")
         return created_table, made
 

@@ -436,7 +436,8 @@ def owner_checks(ws, scenario, folder):
             out.append({"check": text, "result": f"crash: {type(exc).__name__}"})
             continue
         out.append({"check": text, "result": "couldn't check" if r is None or r["kind"] in ("example", "crash") else "pass" if r["ok"] else "fail",
-                    "why": (r or {}).get("plain") or (r or {}).get("problem") or ""})
+                    "why": (r or {}).get("plain") or (r or {}).get("problem") or "", "looked_again": (r or {}).get("looked_again") or "",
+                    "problem": (r or {}).get("problem") or "", "example": (r or {}).get("example")})
     tried = [c for c in out if c["result"] in ("pass", "fail")]
     if tried:
         failed = [c for c in tried if c["result"] == "fail"]
@@ -563,7 +564,8 @@ def report(result):
         if up["ux"]:
             lines.append(f"  what the changes said, beginner's eyes: " + "; ".join(f"{f['level']}: {f['what'][:120]} ({f['where'][:60]})" for f in up["ux"][:6]))
     for c in result.get("owner_checks") or []:
-        lines.append(f"  owner's check [{c['result']}] {c['check'][:200]}" + (f": {c['why'][:200]}" if c.get("why") and c["result"] == "fail" else ""))
+        lines.append(f"  owner's check [{c['result']}] {c['check'][:200]}" + (f": {c['why'][:200]}" if c.get("why") and c["result"] != "pass" else "")
+                     + (" (its example corrected on a second look)" if c.get("looked_again") == "example" else ""))
     why = handed_over(result)
     if why is not None:
         lines.append(f"  HANDED OVER: {'RIGHT' if not why else 'not right: ' + '; '.join(why[:6])}")
@@ -683,6 +685,10 @@ def totals(results):
             + (f"  RIGHT WHEN HANDED OVER: {sum(1 for w in built if not w)}/{len(built)} apps (did what was asked, nothing wrong "
                f"when tried out, no errors, nothing left out)\n" if built else "")
             + (f"  KEPT WORKING through later changes: {worked - broke}/{worked} stories that worked before a later change\n" if worked else "")
+            + (lambda oc: f"  OWNER'S CHECKS: {sum(1 for c in oc if c['result'] == 'pass')} pass, {sum(1 for c in oc if c['result'] == 'fail')} "
+                          f"fail, {sum(1 for c in oc if c['result'] not in ('pass', 'fail'))} couldn't check (of {len(oc)}); "
+                          f"{sum(1 for c in oc if c.get('looked_again') == 'example')} examples corrected on a second look\n" if oc else "")(
+                [c for r in results for c in r.get("owner_checks") or []])
             + (f"  BEGINNER'S EYES: {sum(kinds['blocker'].values())} places they'd be stuck, {sum(kinds['confusing'].values())} confusing, "
                f"{sum(kinds['idea'].values())} ideas"
                + "".join(f"\n    {level}: " + ", ".join(f"{k} {n}" for k, n in kinds[level].most_common(6)) for level in kinds if kinds[level])

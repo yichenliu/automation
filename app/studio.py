@@ -571,8 +571,8 @@ def _step_kind(engine, step, table):
     if step["type"] == "create_for_each" and made:
         return f"Add {made['label'].lower()}, one for each"
     if step["type"] == "update_record" and here:
-        link = schema.field(here, step["target"]) if step.get("target") else None
-        return f"Change its {link['label'].lower()}" if link else f"Change the {here['singular'].lower()}"
+        links = schema.link_path(here, step["target"], engine.tables) if step.get("target") not in (None, "", "created") else None
+        return f"Change its {'’s '.join(f['label'].lower() for f in links)}" if links else f"Change the {here['singular'].lower()}"
     return STEP_WORDS.get(step["type"]) or MORE_STEP_WORDS.get(step["type"]) or step["type"].replace("_", " ").capitalize()
 
 
@@ -762,8 +762,9 @@ def _not_used(bp, t, f, value, what="stage"):
                 continue
             to = s.get("table") if s.get("type") in ("create_record", "create_for_each", "update_each") else table
             if s.get("type") == "update_record" and s.get("target"):
-                link = schema.field(next((x for x in bp.get("tables", []) if x["key"] == table), {"fields": []}), s["target"])
-                to = (link or {}).get("table")
+                links = schema.link_path(next((x for x in bp.get("tables", []) if x["key"] == table), None), s["target"],
+                                         {x["key"]: x for x in bp.get("tables", [])})
+                to = links[-1]["table"] if links else None
             if (to == t["key"] and (s.get("values") or {}).get(f["key"]) == value) or conds(s.get("only_if"), table):
                 return True
             if steps(s.get("otherwise"), table) or steps(s.get("if_rejected"), table) or any(

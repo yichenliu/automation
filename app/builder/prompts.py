@@ -129,6 +129,12 @@ Table options (on create_table, or update_table changes), written after the tabl
       contract in force). Its stages are the select's options. An automation on "status changed_to Submitted" then asks
       for approval and moves it on.
   "unique": [["supplier", "invoice_number"]] no two records alike in those fields together (duplicate invoices refused).
+  "limits": how many records may share a day, a slot or a thing, kept when they're saved (never a rule with count()):
+      {{"per": ["event_date"], "max": 5, "where": [not cancelled]}} (five jobs a day; a formula "weekday" with "where"
+      Saturday for Saturdays only); "max" can be a number field, through links: class bookings {{"per": ["session"],
+      "max": "session.class.capacity"}}; {{"per": ["room"], "overlap": {{"start": "check_in", "end": "check_out"}}}} (a
+      room, bay, van or item booked once at a time: date or time fields, with "per": ["bay", "date"] for times in a
+      day); "message" says why in the owner's words.
   "approve_changes": {{"fields": [...], "approver": who, "wait_days": a cooling-off period, "tell": an email field told of
       the change with a link to cancel it, "step_up": true}}: a person's change to those fields (a supplier's bank
       account, an approved price) isn't saved until someone else approves it (never the person who made it).
@@ -245,8 +251,9 @@ Automations: a trigger, optional conditions, and steps (actions). Each step can 
             file_added {{"folder": "Invoices/Incoming"}} (a OneDrive folder; needs Microsoft 365);
             webhook_received (another system sends data: a web shop order, a form tool, a bank feed; steps use
                 {{{{payload.field}}}}, or ai_create_record turns whatever was sent into a record with its lines).
-  actions:  update_record {{"values"}} (the triggering record; "target": a link field to update the linked record, or
-                "created" for the record made earlier in the run)
+  actions:  update_record {{"values"}} (the triggering record; "target": a link field to update the linked record, a path
+                of them for one further on ("invoice.couple": a payment's invoice's couple), or "created" for the record
+                made earlier in the run)
             create_record {{"table", "values"}}
             (a link in "values" can name its record by what it's for, as fields it holds: {{"stock_level": {{"product":
                 "{{{{item.product}}}}", "warehouse": "{{{{record.warehouse}}}}"}}}} is that product's stock at that
@@ -563,6 +570,9 @@ _POLICY = {"access": {"type": "object", "properties": {"view": _ROLE, "edit": _R
                                                       "profile": _STRINGS, "sign_up": {"type": "object", "properties": {"fields": _STRINGS}},
                                                       "enabled": {"type": "boolean"}}},
            "unique": {"type": "array", "items": _STRINGS},
+           "limits": {"type": "array", "items": {"type": "object", "required": ["per"], "properties": {
+               "per": _STRINGS, "max": {"type": ["number", "string"]}, "overlap": {"type": "object", "required": ["start"], "properties": {
+                   "start": _STRING, "end": _STRING}}, "where": _CONDITIONS, "message": _STRING}}},
            "approve_changes": {"type": "object", "properties": {"fields": _STRINGS, "approver": _STRING, "wait_days": {"type": "number"},
                                                                "tell": _STRING, "step_up": {"type": "boolean"}}},
            "sealed": {"type": "object", "required": ["until"], "properties": {"until": _STRING, "keep_open": _STRINGS}},
@@ -691,12 +701,15 @@ _EXAMPLE = {"type": "object", "required": ["title", "steps", "expect"], "propert
     "steps": {"type": "array", "items": {"type": "object", "required": ["do", "as"], "properties": {  # "as" always: the model skips it otherwise
         "do": {"type": "string", "enum": ["add", "change", "move", "press", "approve", "reject", "wait", "run"]},
         "as": _STRING, "table": _STRING, "record": _STRING, "values": {"type": "object"}, "to": _STRING, "button": _STRING,
-        "rule": _STRING, "days": {"type": "integer"}, "refused": {"type": "boolean"}, "comment": _STRING}}},
+        "rule": _STRING, "days": {"type": "integer"}, "refused": {"type": "boolean"}, "comment": _STRING, "by": _STRING}}},
     "expect": {"type": "array", "items": {"type": "object", "properties": {
         "record": _STRING, "field": _STRING, "equals": {}, "table": _STRING, "count": {"type": "integer"}}}}}}
 EXAMPLES_SCHEMA = {"type": "object", "required": ["examples"], "properties": {"examples": {"type": "array", "items": _EXAMPLE}}}
 ONE_EXAMPLE_SCHEMA = {"type": "object", "required": ["examples"], "properties": {"examples": {"type": "array", "items": _EXAMPLE,
                                                                                               "minItems": 1, "maxItems": 1}}}
+CHECK_AGAIN_SCHEMA = {"type": "object", "required": ["verdict", "missing", "examples"], "properties": {
+    "verdict": {"type": "string", "enum": ["example", "app"]}, "missing": _STRING,
+    "examples": {"type": "array", "items": _EXAMPLE, "maxItems": 1}}}
 FIX_SCHEMA = {"$defs": DEFS, "type": "object", "required": ["ops", "reply", "more"], "properties": {
     "ops": {"type": "array", "items": _OP}, "examples": {"type": "array", "items": _EXAMPLE}, "reply": _STRING, "more": {"type": "boolean"}}}
 EXAMPLES = """You check business apps before they're handed over. The owner asked for something and the app below is what
@@ -725,6 +738,9 @@ Steps ("do"):
 Add "refused": true to a step the app should NOT allow (a move whose condition isn't met, approving your own request).
 A change to a locked record (a sent invoice) is refused for staff; the owner and admins can still correct it, so a
 refused change to a locked record is tried as an ordinary staff member.
+Steps are done by the owner, who may do nearly anything. "by" has someone else do one: "staff" (an ordinary staff
+member), a team's key, "admin", or a person's name. What only some may do (only the owner approves hires over six
+months, only the kitchen sees orders) is shown by having someone else try it: "by": "staff" with "refused": true.
 "expect": {{"record": an "as" name, "field": a field key (or a path through links, "event.status"), "equals": the value}}
 or {{"table": a table key, "count": how many records it should then have}}. What it expects is looked at once, after the
 last step: one value for each field, where it ends up (where it is part way is its own example that stops there).
@@ -745,6 +761,23 @@ Rules:
 - {count}
 {when_none}"""
 NONE_IF_LOOKS = 'If this change only touched looks, wording or layout, send "examples": [].'
+CHECK_AGAIN = """You wrote the worked example below for a check the owner asked for, in their words: “{said}”.
+Acted out in a copy of their app, it {how}:
+{what}
+
+Before the owner is told their app doesn't do it, look again at whose mistake it is.
+- The example's: a number or date worked out wrong (after a "wait", the records' own dates are that many days
+  older too), a value that isn't one of a field's choices, a name the app has under another key, a required field
+  left out, a record added at a later stage than new ones start at (add it, then move it), a field the step must fill
+  first, or a step the owner is allowed to do when it was meant to be refused (the owner may do nearly anything: have
+  "by": "staff" try it). Then send "verdict": "example" and the example corrected in "examples", with what the owner
+  asked for still what it expects.
+- The app's: it has no such list, field, rule, limit or step, or does something other than what the owner asked. Then
+  send "verdict": "app", "examples": [] and, in "missing", what the app doesn't do yet, in the owner's words, one
+  short sentence ("nothing stops a sixth booking on a Saturday").
+
+The example:
+{example}"""
 ALWAYS_ONE = ("Always write it, even when the app below doesn't do it yet: the example then shows that it doesn't, and the "
               "builder is asked to make it do it.")
 
@@ -860,7 +893,7 @@ def outline(bp, counts, extra=""):
             lines.append("  sections: " + "; ".join(f"{s['label']}: {', '.join(s['fields'])}" + (" (conditional)" if s.get("show_if") else "")
                                                    for s in t["sections"]))
         policy = {k: t[k] for k in ("access", "row_access", "rules", "lock_if", "lock_except", "colors", "wizard", "portal", "workflow",
-                                    "unique_together", "approve_changes", "sealed", "journey") if t.get(k)}
+                                    "unique_together", "limits", "approve_changes", "sealed", "journey") if t.get(k)}
         if policy:
             lines.append("  " + json.dumps(policy, ensure_ascii=False))
         for d in t.get("documents", []):

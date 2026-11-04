@@ -412,10 +412,11 @@ def choices(engine):
     for a in engine.bp.get("automations", []):
         trigger = engine.tables.get(a["trigger"].get("table") or "")
         for act in schema.steps_of(a["actions"]):
-            linked = schema.field(trigger, act.get("target") or "") if trigger and act["type"] == "update_record" else None
+            linked = schema.link_path(trigger, act.get("target"), engine.tables) if trigger and act["type"] == "update_record" \
+                and act.get("target") != "created" else None
             target = engine.tables.get(act.get("table") or "") if act["type"] in ("create_record", "create_for_each") else \
                 trigger if act["type"] == "update_record" and not act.get("target") else \
-                engine.tables.get(linked["table"]) if linked and linked["type"] == "link" else None  # the linked record it updates
+                engine.tables.get(linked[-1]["table"]) if linked else None  # the linked record it updates
             for key, value in (act.get("values") or {}).items() if target else []:
                 f = schema.field(target, key)
                 if f is not None and f["type"] == "select":
@@ -424,6 +425,19 @@ def choices(engine):
                         out.append(_issue("fix", f"A step of the automation {a['key']} sets {target['key']}.{key} to “{wrong}”, which isn't "
                                                  f"one of its choices ({', '.join(f['options'])}){worked}: the step would fail every time",
                                           f"The rule “{a['name']}” sets {f['label']} to “{wrong}”, which isn't one of its choices",
+                                          target["key"]))
+                    copied = re.fullmatch(r"\{\{\s*record\.([\w.]+)\s*\}\}", value.strip()) if isinstance(value, str) and trigger else None
+                    source = schema._path_field(trigger, copied.group(1), engine.tables) if copied else None
+                    left = [o for o in (source or {}).get("options") or [] if o.strip().lower() not in {x.strip().lower() for x in f.get("options") or []}] \
+                        if source is not None and source is not f and source["type"] in ("select", "multi_select") else []
+                    if left:  # a return's condition “Good” copied into a costume's, which has Ready instead
+                        words = " and ".join(f"“{o}”" for o in left[:4])
+                        out.append(_issue("fix", f"A step of the automation {a['key']} copies {trigger['key']}.{copied.group(1)} into "
+                                                 f"{target['key']}.{key}, but its choices {words} aren't among {key}'s ({', '.join(f['options'])}): "
+                                                 f"the step fails whenever it's one of those. Give both the same choices, or set {key} with a "
+                                                 f"branch for each",
+                                          f"The rule “{a['name']}” copies {source['label']} into {f['label']}, but {words} "
+                                          f"{'isn' if len(left) == 1 else 'aren'}'t one of {f['label']}'s choices, so it stops then",
                                           target["key"]))
     return out
 

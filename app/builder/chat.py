@@ -698,6 +698,7 @@ def _try_out(workspace, message, asked, behaviour, carry_on, progress, note, by,
     titles = {str(x.get("title")) for x in new}  # this turn's (a corrected one comes back as a new copy)
     examples = new + [x for x in kept if str(x.get("title")) not in titles]
     known = _already_found(workspace, was)
+    failed_before = {str(x["title"]) for x in (state.get("checks") or {}).get("examples", []) if not x["ok"]} - titles if was else set()
     fixes, changes, before, first = 0, [], None, None
     while True:
         walked, results = trial.try_out(workspace, examples)
@@ -705,9 +706,10 @@ def _try_out(workspace, message, asked, behaviour, carry_on, progress, note, by,
         walked["issues"] += _kept_as_asked(asked, workspace.blueprint) + _made_as_asked(asked, workspace.blueprint)
         hard = [i for i in walked["issues"] if i["level"] == "fix"]
         soft = [i for i in walked["issues"] if i["level"] == "check"]
-        failing = [(x, r) for x, r in zip(examples, results) if r["kind"] == "app"]
+        failing = [(x, r) for x, r in zip(examples, results) if r["kind"] == "app"
+                   and str(x.get("title")) not in failed_before]  # a check that failed before this change is the owner's to raise
         wrong = [(x, r) for x, r in zip(examples, results) if r["kind"] == "example"]
-        score = len(hard) + len(failing)
+        score = len(hard) + len(failing) + len(wrong)  # one that couldn't be acted out counts too: a fix that lets it be isn't worse
         if first is None:  # how the build came out before anything was fixed: right first time, or not
             playable_now = [r for r in results if r["kind"] not in ("example", "crash")]
             first = {"wrong": len(hard), "examples": [sum(1 for r in playable_now if r["ok"]), len(playable_now)],
@@ -973,6 +975,7 @@ def _work(message_id):
     imported, asked_import, reviewed, reviewing = set(), False, False, False
     sheet_cells = _sheet_cells(question, workspace.id)
     shrunk = False  # a later part that didn't fit gets one more go, asked for smaller
+    asked_back = False  # “let me know when…” answered with a question how: made, as it has one plain reading
 
     def smaller():
         return carry_on(f"That part was too big to fit and nothing of it was saved. Send just the first one or two items of your "
@@ -1019,6 +1022,14 @@ def _work(message_id):
             message.error = f"Something went wrong on our side ({type(exc).__name__}). It's been logged; try again, or ask in different words."
             db.session.commit()
             return
+        if changing and not replies and not asked_back and not answer.get("ops") and "?" in str(answer.get("reply") or "") \
+                and LET_ME_KNOW.search(asked or "") and len((asked or "").split()) <= 30:
+            asked_back = True  # how they'd like to hear isn't a question: a note in the app, to them
+            convo = convo + [{"role": "assistant", "content": json.dumps({"ops": [], "reply": answer.get("reply")}, ensure_ascii=False)},
+                             {"role": "user", "content": "Make it now, without asking: “let me know” is a notify step in the app to the "
+                                                         "person asking, when what they named happens. Say in the reply that they'll get "
+                                                         "a note in the app."}]
+            continue
         if result.problems:
             if reviewing:  # what the check would add didn't fit: the build stands as it was, and nothing more is claimed
                 current_app.logger.info("Builder turn %s: the check's additions didn't fit: %s", message.id, result.problems)

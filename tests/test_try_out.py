@@ -911,6 +911,8 @@ def test_an_owners_check_is_always_written_and_a_step_acts_on_the_one_in_front_o
 
     def backend(messages, schema_, on_progress):
         asked.append((messages, schema_))
+        if schema_ is prompts.CHECK_AGAIN_SCHEMA:  # looked at again: the app's, not the example's
+            return json.dumps({"verdict": "app", "missing": "nothing waits for your sign-off", "examples": []}), ""
         return json.dumps({"examples": [{"title": "x", "steps": [
             {"do": "add", "table": "quotes", "as": "q1", "values": {"title": "Big job", "discount_percent": 5}},
             {"do": "add", "table": "quote_lines", "as": "l1", "values": {"quote": "q1", "item": "Marquee", "quantity": 1, "unit_price": 6000}},
@@ -918,8 +920,208 @@ def test_an_owners_check_is_always_written_and_a_step_acts_on_the_one_in_front_o
             "expect": [{"record": "q1", "field": "status", "equals": "Draft"}]}]}), ""
     ai.set_backend(backend)
     result = checking.add(ws, "A $6,000 quote waits for my sign-off before it goes out", by="owner")
-    (messages, schema_), = asked
+    (messages, schema_), (again, _) = asked
     assert prompts.ALWAYS_ONE in messages[0]["content"] and prompts.NONE_IF_LOOKS not in messages[0]["content"]
     assert schema_["properties"]["examples"]["minItems"] == 1
-    assert result["kind"] == "app" and not result["ok"], result
+    assert "should have been refused, but the app allowed it" in again[-1]["content"]  # shown what happened
+    assert result["kind"] == "app" and not result["ok"] and result["looked_again"] == "app", result
     assert result["plain"] == "Moving the quote to Sent should have been stopped, but wasn't", result
+
+
+def test_a_failing_owners_check_is_looked_at_again_before_the_owner_hears_it(app, owner):
+    """“A quote over 10% off waits for my OK” on an app that does it: the first example has the owner, who may approve,
+    try the approval and expects it refused. Looked at again, it's corrected to a staff member trying it, refused as it
+    should be, so the check passes. One about restock orders the app hasn't got says what the app doesn't do yet, and
+    isn't kept as a check that could never be acted out."""
+    from app.builder import checking, prompts
+    _, ws = owner
+    _built(ws, QUOTES)
+    steps = [{"do": "add", "table": "quotes", "as": "q1", "values": {"title": "Big job", "discount_percent": 15}},
+             {"do": "move", "as": "", "record": "q1", "to": "Awaiting approval"},
+             {"do": "move", "as": "", "record": "q1", "to": "Sent", "refused": True}]
+    corrected = steps[:2] + [dict(steps[2], by="staff")]
+    seen = []
+
+    def backend(messages, schema_, on_progress):
+        seen.append(messages[-1]["content"])
+        if schema_ is prompts.CHECK_AGAIN_SCHEMA:
+            return json.dumps({"verdict": "example", "missing": "", "examples": [
+                {"title": "x", "steps": corrected, "expect": [{"record": "q1", "field": "status", "equals": "Awaiting approval"}]}]}), ""
+        return json.dumps({"examples": [{"title": "x", "steps": steps,
+                                         "expect": [{"record": "q1", "field": "status", "equals": "Awaiting approval"}]}]}), ""
+    ai.set_backend(backend)
+    result = checking.add(ws, "A quote over 10% off waits for my OK before it goes out", by="owner")
+    assert result["ok"] and result["looked_again"] == "example", result
+    assert result["example"]["steps"][2]["by"] == "staff"
+    assert [x["title"] for x in checking.examples(ws)] == ["A quote over 10% off waits for my OK before it goes out"]
+
+    def backend2(messages, schema_, on_progress):
+        if schema_ is prompts.CHECK_AGAIN_SCHEMA:
+            assert "there's no table" in messages[-1]["content"]
+            return json.dumps({"verdict": "app", "missing": "there are no restock orders in it", "examples": []}), ""
+        return json.dumps({"examples": [{"title": "y", "steps": [
+            {"do": "add", "table": "purchase_orders", "as": "po1", "values": {"total": 620}}],
+            "expect": [{"record": "po1", "field": "status", "equals": "Pending"}]}]}), ""
+    ai.set_backend(backend2)
+    result = checking.add(ws, "A restock order over $500 waits for my OK", by="owner")
+    assert result["kind"] == "missing" and not result["ok"], result
+    assert result["plain"] == "your app doesn't do this yet: there are no restock orders in it"
+    assert len(checking.examples(ws)) == 1  # not kept: it could never be acted out
+
+
+def test_a_step_can_change_a_record_two_links_away(app, owner):
+    """A payment's rule sets “Deposit paid” on its invoice, whose Status has no such choice: its invoice's couple's has,
+    so the step is put right to go there (“invoice.couple”), says so in words, and does it."""
+    user, ws = owner
+    _built(ws, [
+        {"op": "create_table", "table": "couples", "label": "Couples", "fields": [
+            {"key": "name", "type": "text", "required": True}, {"key": "status", "type": "select", "options": ["Enquiry", "Deposit paid"]}]},
+        {"op": "create_table", "table": "contracts", "label": "Contracts", "fields": [
+            {"key": "couple", "type": "link", "table": "couples", "required": True},
+            {"key": "status", "type": "select", "options": ["Draft", "Signed"]}]},
+        {"op": "create_table", "table": "invoices", "label": "Invoices", "fields": [
+            {"key": "couple", "type": "link", "table": "couples", "required": True}, {"key": "contract", "type": "link", "table": "contracts"},
+            {"key": "status", "type": "select", "options": ["Draft", "Sent", "Paid"]}]},
+        {"op": "create_table", "table": "payments", "label": "Payments", "fields": [
+            {"key": "invoice", "type": "link", "table": "invoices", "required": True}, {"key": "amount", "type": "money"}]},
+        {"op": "add_automation", "automation": {"key": "locks", "name": "Deposit locks the date", "trigger": {"type": "record_created", "table": "payments"},
+                                                "actions": [{"type": "update_record", "target": "invoice", "values": {"status": "Paid"}},
+                                                            {"type": "update_record", "target": "invoice", "values": {"status": "Deposit paid"}},
+                                                            {"type": "update_record", "target": "invoice", "values": {"status": "Signed"}}]}}])
+    steps = ws.blueprint["automations"][0]["actions"]
+    assert [x["target"] for x in steps] == ["invoice", "invoice.couple", "invoice.contract"]
+    from app.engine import automations
+    me = _me(ws, user)
+    assert automations.describe_action(me, ws.blueprint["automations"][0], steps[1]) == "On its Invoice’s Couple, set Status to “Deposit paid”"
+    couple = me.create("couples", {"name": "Ana & Ben", "status": "Enquiry"})
+    contract = me.create("contracts", {"couple": couple.id, "status": "Draft"})
+    invoice = me.create("invoices", {"couple": couple.id, "contract": contract.id, "status": "Sent"})
+    me.create("payments", {"invoice": invoice.id, "amount": 500})
+    db.session.expire_all()
+    assert [Record.query.get(x.id).data["status"] for x in (invoice, couple, contract)] == ["Paid", "Deposit paid", "Signed"]
+    assert not _issues(ws) or not any("isn't one of its choices" in i for i in _issues(ws))
+
+
+def test_a_field_named_after_a_word_python_keeps_can_be_read_in_a_formula(app, owner):
+    """A class's capacity, an email's from, a pass mark: fields a business may well name so are read in formulas."""
+    user, ws = owner
+    _built(ws, [
+        {"op": "create_table", "table": "classes", "label": "Classes", "fields": [
+            {"key": "name", "type": "text", "required": True}, {"key": "capacity", "type": "number"}]},
+        {"op": "create_table", "table": "sessions", "label": "Sessions", "fields": [
+            {"key": "class", "type": "link", "table": "classes", "required": True}, {"key": "booked", "type": "number"},
+            {"key": "pass", "type": "number"},
+            {"key": "fill_rate", "type": "formula", "format": "percent",
+             "expression": "iif(class.capacity > 0, round(booked / class.capacity * 100, 0), 0)"},
+            {"key": "note", "type": "formula", "expression": "iif(pass >= 50, 'Pass from ' + class.name, 'Fail')"}]}])
+    me = _me(ws, user)
+    yoga = me.create("classes", {"name": "Yoga", "capacity": 20})
+    s = me.create("sessions", {"class": yoga.id, "booked": 5, "pass": 60})
+    assert me.value(s, "fill_rate") == 0.25 and me.value(s, "note") == "Pass from Yoga"  # a percentage is kept a fraction
+    assert expr.names_in("iif(pass >= 50, 'class from ' + class.name, 'x')") == {"pass", "class"}
+
+
+def test_limits_keep_how_many_share_a_day_and_that_bookings_dont_overlap(app, owner):
+    """Five jobs a Saturday (cancelled ones take no place), a class's capacity through its session, and a room booked
+    once at a time, the day one stay ends free for the next: refused when they're saved, said in words, and checked."""
+    from app.engine.records import FieldErrors
+    user, ws = owner
+    _built(ws, [
+        {"op": "create_table", "table": "jobs", "label": "Jobs", "fields": [
+            {"key": "client", "type": "text", "required": True}, {"key": "event_date", "type": "date", "required": True},
+            {"key": "status", "type": "select", "options": ["Booked", "Cancelled"], "default": "Booked"}],
+         "limits": [{"per": ["event_date"], "max": 2, "where": [{"field": "status", "op": "not_equals", "value": "Cancelled"}],
+                     "message": "We've only got the vans for two jobs that day"}]},
+        {"op": "create_table", "table": "classes", "label": "Classes", "fields": [
+            {"key": "name", "type": "text", "required": True}, {"key": "capacity", "type": "number"}]},
+        {"op": "create_table", "table": "sessions", "label": "Sessions", "fields": [
+            {"key": "class", "type": "link", "table": "classes", "required": True}, {"key": "on", "type": "date"}]},
+        {"op": "create_table", "table": "class_bookings", "label": "Class bookings", "fields": [
+            {"key": "session", "type": "link", "table": "sessions", "required": True}, {"key": "member", "type": "text", "required": True}],
+         "capacity": {"per": "session", "max": "{{record.session.class.capacity}}"}},
+        {"op": "create_table", "table": "stays", "label": "Stays", "fields": [
+            {"key": "guest", "type": "text", "required": True}, {"key": "room", "type": "select", "options": ["1", "2"], "required": True},
+            {"key": "check_in", "type": "date", "required": True}, {"key": "check_out", "type": "date"}],
+         "limits": [{"per": ["room"], "overlap": ["check_in", "check_out"]}]}])
+    t = schema.table(ws.blueprint, "class_bookings")
+    assert t["limits"] == [{"per": ["session"], "max": "session.class.capacity"}]
+    me = _me(ws, user)
+    me.create("jobs", {"client": "A", "event_date": "2026-11-07"})
+    third = me.create("jobs", {"client": "B", "event_date": "2026-11-07", "status": "Cancelled"})
+    me.create("jobs", {"client": "C", "event_date": "2026-11-07"})
+    try:
+        me.create("jobs", {"client": "D", "event_date": "2026-11-07"})
+        raise AssertionError("a third job that day was let in")
+    except FieldErrors as exc:
+        assert exc.errors["_"] == "We've only got the vans for two jobs that day"
+    me.create("jobs", {"client": "D", "event_date": "2026-11-08"})
+    try:
+        me.update(third, {"status": "Booked"})  # brought back: it takes a place again
+        raise AssertionError("an un-cancelled job went past the limit")
+    except FieldErrors:
+        pass
+    yoga = me.create("classes", {"name": "Yoga", "capacity": 1})
+    monday = me.create("sessions", {"class": yoga.id, "on": "2026-11-09"})
+    me.create("class_bookings", {"session": monday.id, "member": "Ana"})
+    try:
+        me.create("class_bookings", {"session": monday.id, "member": "Ben"})
+        raise AssertionError("the class went past its capacity")
+    except FieldErrors as exc:
+        assert exc.errors["_"] == "There can't be more than 1 class bookings for the same session: there are 1 already"
+    me.create("stays", {"guest": "Ana", "room": "1", "check_in": "2026-11-05", "check_out": "2026-11-07"})
+    me.create("stays", {"guest": "Ben", "room": "1", "check_in": "2026-11-07", "check_out": "2026-11-09"})  # the day Ana leaves
+    me.create("stays", {"guest": "Cy", "room": "2", "check_in": "2026-11-06", "check_out": "2026-11-08"})
+    try:
+        me.create("stays", {"guest": "Di", "room": "1", "check_in": "2026-11-08"})
+        raise AssertionError("a room was booked twice")
+    except FieldErrors as exc:
+        assert "already has this room then" in exc.errors["_"]
+    from app.blueprint.ops import _policies_said
+    assert _policies_said(schema.table(ws.blueprint, "stays")) == ["no two at overlapping times for the same room"]
+    assert _policies_said(schema.table(ws.blueprint, "class_bookings")) == ["at most its session’s class’s capacity for the same session"]
+    bad = ops.apply(ws.blueprint, [{"op": "update_table", "table": "stays", "changes": {"limits": [{"per": ["bed"], "max": "guest"}]}}])
+    assert any("“bed”, which isn't a field" in x for x in bad.problems) and any("isn't a number field" in x for x in bad.problems), bad.problems
+
+
+def test_an_example_is_acted_out_as_people_would_press_its_buttons(app, owner):
+    """A Check out button asks for Checked out by, and Pickup date too (once it's Picked up it must be filled in), so
+    the example's move fills them in as the person would rather than being refused; a document is pressed as its
+    button; a staff member trying a move only the owner may make, expected to leave it where it was, shows it stopped.
+    A formula given as a number field's value without {{ }} is worked out, not saved as its words."""
+    from app.builder import trial as trial_
+    from app.models import File
+    user, ws = owner
+    _built(ws, [
+        {"op": "create_table", "table": "bookings", "label": "Bookings", "fields": [
+            {"key": "customer", "type": "text", "required": True}, {"key": "rate", "type": "money"}, {"key": "fee", "type": "money"},
+            {"key": "checked_out_by", "type": "user"},
+            {"key": "pickup_date", "type": "date", "required_if": [{"field": "status", "op": "one_of", "value": ["Picked up"]}]},
+            {"key": "status", "type": "select", "options": ["Confirmed", "Picked up", "Approved"]}],
+         "workflow": {"field": "status", "transitions": [
+             {"from": ["Confirmed"], "to": "Picked up", "label": "Check out", "requires": ["checked_out_by"]},
+             {"from": ["Picked up"], "to": "Approved", "label": "Approve", "who": ["owner"]}]},
+         "documents": [{"key": "docket", "label": "Hire docket"}]},
+        {"op": "add_automation", "automation": {"key": "fee", "name": "Work out the fee", "trigger": {"type": "record_created", "table": "bookings"},
+                                                "actions": [{"type": "update_record", "values": {"fee": "round(rate * 1.1, 2)"}}]}}])
+    assert ws.blueprint["automations"][0]["actions"][0]["values"]["fee"] == "{{round(rate * 1.1, 2)}}"
+    t = schema.table(ws.blueprint, "bookings")
+    me = _me(ws, user)
+    b = me.create("bookings", {"customer": "Ana", "rate": 100, "status": "Confirmed"})
+    move = t["workflow"]["transitions"][0]
+    assert [f["key"] for f in me.to_fill(t, me.get(b.id), move)] == ["checked_out_by", "pickup_date"]  # the button asks for both
+    assert me.value(me.get(b.id), "fee") == 110
+    example = {"title": "Checked out, its docket made, approved only by the owner", "steps": [
+        {"do": "add", "as": "b1", "table": "bookings", "values": {"customer": "Ben", "rate": 50, "status": "Confirmed"}},
+        {"do": "move", "as": "", "record": "b1", "to": "Picked up"},
+        {"do": "press", "as": "", "record": "b1", "button": "docket"},
+        {"do": "move", "as": "", "record": "b1", "to": "Approved", "by": "staff"}],
+        "expect": [{"record": "b1", "field": "status", "equals": "Picked up"}, {"record": "b1", "field": "fee", "equals": 55}]}
+    with trial_.copy_of(ws) as copy:
+        result = trial_.play(copy, example)
+        made = File.query.filter_by(workspace_id=copy.ws_id).count()
+    assert result["ok"], result
+    assert made == 1
+    allowed = dict(example, steps=example["steps"][:3] + [dict(example["steps"][3], by="", refused=True)])
+    with trial_.copy_of(ws) as copy:
+        result = trial_.play(copy, allowed)
+    assert not result["ok"] and "the owner did it, who may do nearly anything" in result["problem"], result

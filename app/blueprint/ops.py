@@ -154,7 +154,7 @@ def apply(blueprint, ops, always_check=False, already=()):
 POLICIES = ("access", "permissions", "row_access", "own_records", "only_own", "rules", "validations", "constraints", "checks",
             "lock_if", "locked_when", "lock_when", "lock_except", "still_editable", "portal", "workflow", "stages", "status_flow",
             "transitions", "stage_flow", "unique_together", "unique", "approve_changes", "changes_need_approval", "sealed", "sealed_until",
-            "audit_views", "journey")
+            "audit_views", "journey", "limits", "capacity", "no_overlap")
 
 
 POLICY_PARTS = [(("access", "permissions"), "who may see or change {}"),
@@ -164,6 +164,7 @@ POLICY_PARTS = [(("access", "permissions"), "who may see or change {}"),
                 (("portal",), "what the portal shows of {}"),
                 (("workflow", "stages", "status_flow", "transitions", "stage_flow"), "how {} move between stages"),
                 (("unique_together", "unique"), "what no two {} may share"),
+                (("limits", "capacity", "no_overlap"), "how many {} may share a day or a time"),
                 (("approve_changes", "changes_need_approval"), "which changes to {} need approval"),
                 (("sealed", "sealed_until"), "when {} open"), (("journey",), "the journey shown on {}")]
 
@@ -554,20 +555,61 @@ def _resolve(bp, changes, new=()):
                 lines = [x["key"] for x in bp["tables"] if x.get("embedded") and any(f["type"] == "link" and f["table"] == made for f in x["fields"])]
                 if len(lines) == 1:
                     act["table"] = lines[0]
-            if act["type"] == "update_record" and not act.get("target") and trigger_table and _not_choices(trigger_table, act["values"]):
+            if act["type"] == "update_record" and act.get("target") != "created" and trigger_table and act.get("values"):
                 # "set status Paid" on a payment: Paid is the choice of the record made just before, or of the one record
-                # it links to whose field has it (its invoice), not its own
-                fit = lambda t: t is not None and set(act["values"]) <= {f["key"] for f in t["fields"]} and not _not_choices(t, act["values"])  # noqa: E731
-                places = (["created"] if made and fit(tables.get(made)) else []) or \
-                    [f["key"] for f in trigger_table["fields"] if f["type"] == "link" and not f.get("multiple") and fit(tables.get(f["table"]))]
-                if len(places) == 1:
-                    act["target"] = places[0]
+                # it links to whose field has it (its invoice), not its own; "Deposit paid" on its invoice: its invoice's couple's
+                links = schema.link_path(trigger_table, act["target"], tables) if act.get("target") else []
+                here = tables.get(links[-1]["table"]) if links else None if act.get("target") else trigger_table
+                if here is not None and _not_choices(here, act["values"]):
+                    fit = lambda t: t is not None and set(act["values"]) <= {f["key"] for f in t["fields"]} and not _not_choices(t, act["values"])  # noqa: E731
+                    places = ["created"] if made and not act.get("target") and fit(tables.get(made)) else []
+                    for longest in (1, 2):
+                        if places:
+                            break
+                        places = [path for path, t in _link_paths(trigger_table, tables, longest) if path.count(".") == longest - 1
+                                  and (not act.get("target") or path.startswith(act["target"] + ".")) and fit(t)]
+                    if len(places) == 1:
+                        act["target"] = places[0]
+            if act["type"] in ("update_record", "create_record", "create_for_each") and isinstance(act.get("values"), dict):
+                into = trigger_table if act["type"] == "update_record" and not act.get("target") else \
+                    tables.get(made) if act.get("target") == "created" else \
+                    (lambda ls: tables.get(ls[-1]["table"]) if ls else None)(schema.link_path(trigger_table, act["target"], tables)) \
+                    if act["type"] == "update_record" else tables.get(act.get("table"))
+                for key, value in act["values"].items():
+                    if _worked_out_bare(schema.field(into, key) if into else None, value):
+                        act["values"][key] = "{{" + value.strip() + "}}"  # “round(hire_cost * rate, 2)” is worked out, not saved as words
             if act["type"] in ("create_record", "ai_create_record"):
                 made = act.get("table")
     corrected = []
     _resolve_sense(bp, tables, corrected)
     changes.extend(corrected)
     return corrected
+
+
+def _worked_out_bare(f, value):
+    """A value for a number or date field written as a formula without {{ }} (“round(hire_cost * bin.penalty_rate, 2)”,
+    “add_days(record.start, 14)”): one that would be saved as its words and refused."""
+    if f is None or not isinstance(value, str) or "{{" in value or f["type"] not in schema.NUMERIC | {"duration", "date", "datetime"}:
+        return False
+    if expr.to_number(value) is not None or re.fullmatch(r"\s*(today|now|tomorrow|yesterday|\d{4}-\d\d-\d\d.*)\s*", value, re.I):
+        return False
+    import ast
+    try:
+        tree = expr.parse(value)
+    except expr.ExprError:
+        return False
+    return any(isinstance(n, (ast.BinOp, ast.Call, ast.Attribute)) for n in ast.walk(tree))
+
+
+def _link_paths(t, tables, longest=2):
+    """Every path of single links from t, `longest` links long at most, shortest first (a payment's “invoice”, then
+    “invoice.couple”), with the table each reaches; never back to t."""
+    out, level = [], [("", t)]
+    for _ in range(longest):
+        level = [(f"{path}.{f['key']}" if path else f["key"], tables[f["table"]]) for path, here in level for f in here["fields"]
+                 if f["type"] == "link" and not f.get("multiple") and f["table"] in tables and f["table"] != t["key"]]
+        out += level
+    return out
 
 
 def _not_choices(t, values):
@@ -1317,6 +1359,13 @@ def _policies_said(t):
                 said.append(f"“{m.get('label') or m['to']}” after confirming their sign-in")
     for group in t.get("unique_together", []):
         said.append(f"no two alike in {_and_words([(schema.field(t, k) or {'label': k})['label'] for k in group])}")
+    for limit in t.get("limits", []):
+        per = _and_words([(schema.field(t, k) or {"label": k})["label"].lower() for k in limit["per"]])
+        if limit.get("overlap"):
+            said.append(f"no two at overlapping times" + (f" for the same {per}" if per else ""))
+        else:
+            most = f"{limit['max']:g}" if not isinstance(limit["max"], str) else f"its {limit['max'].replace('_', ' ').replace('.', '’s ')}"
+            said.append(f"at most {most}" + (f" for the same {per}" if per else ""))
     held = t.get("approve_changes")
     if held:
         what = _and_words([(schema.field(t, k) or {"label": k})["label"] for k in held["fields"]]) or "any change"
@@ -1624,7 +1673,7 @@ def _apply_one(bp, op, raw, result, where):
             if added:
                 changes.append(f"Added {len(added)} column{'s' if len(added) != 1 else ''} to {existing['label']}: {', '.join(f['label'] for f in added)}")
             for key in ("access", "row_access", "rules", "lock_if", "lock_except", "colors", "wizard", "portal", "workflow",
-                        "unique_together", "approve_changes", "sealed", "audit_views", "journey"):
+                        "unique_together", "limits", "approve_changes", "sealed", "audit_views", "journey"):
                 if t.get(key) and t[key] != existing.get(key):
                     existing[key] = t[key]
                     changes.append(f"Set {existing['label']}'s {key.replace('_', ' ')}")
@@ -1690,6 +1739,7 @@ def _apply_one(bp, op, raw, result, where):
                     "workflow": ("workflow", "stages", "status_flow", "transitions", "stage_flow"),
                     "wizard": ("wizard", "steps", "step_by_step"), "portal": ("portal", "portal_access"), "layout": ("layout",),
                     "unique_together": ("unique_together", "unique", "no_duplicates"),
+                    "limits": ("limits", "capacity", "no_overlap", "max_per"),
                     "approve_changes": ("approve_changes", "changes_need_approval", "change_approval"),
                     "sealed": ("sealed", "sealed_until"), "audit_views": ("audit_views", "log_views"),
                     "journey": ("journey", "timeline", "progress")}
@@ -1713,10 +1763,11 @@ def _apply_one(bp, op, raw, result, where):
                      "wizard": f"the step-by-step form for {label}", "portal": f"what the portal shows of {label}",
                      "layout": f"the layout of {label}", "workflow": f"how {label.lower()} move between stages",
                      "unique_together": f"what no two {label.lower()} may share", "approve_changes": f"which changes to {label.lower()} need approval",
+                     "limits": f"how many {label.lower()} may share a day or a time",
                      "sealed": f"when {label.lower()} open", "audit_views": f"who opened {label.lower()} (kept in their history)",
                      "journey": f"the journey shown on {label.lower()}"}
             said = _policies_said(t) if given.keys() & {"access", "row_access", "rules", "lock_if", "lock_except", "workflow", "unique_together",
-                                                        "approve_changes", "sealed"} else []
+                                                        "limits", "approve_changes", "sealed"} else []
             changes.append("Set " + "; ".join(words[k] for k in given) + (f" ({'; '.join(said)})" if said else ""))
         title = slug(_first(updates, "title_field", "display_field", default=""))
         if title and title != t.get("title_field"):
