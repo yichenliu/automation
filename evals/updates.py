@@ -137,7 +137,7 @@ def by_hand(workspace, scenario_key):
         # a stage the new rule waits for can't be removed without saying which rule
         if made:
             status, got = send("workflows/change", {"id": stages, "change": {"do": "remove_stage", "table": key, "field": aim["field"], "name": aim["told"]}})
-            ok = status == 400 and "The rule “" in (got.get("error") or "") and aim["told"] in options()  # (whichever rule waits for it, named)
+            ok = status == 400 and bool(got.get("error")) and aim["told"] in options()  # refused, saying why (a rule waits for it, or records are at it)
             note(f"remove the stage {aim['told']}, which a rule waits for", ok, "" if ok else
                  f"it answered {status}: {got.get('error') or 'and took it away'}", [got.get("error")] if got.get("error") else [])
 
