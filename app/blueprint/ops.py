@@ -98,6 +98,14 @@ def _merge_field(old, changes):
     return schema.normalize_field(merged)
 
 
+def wrong_already(blueprint):
+    """What's wrong in a design already, so a change isn't blamed for it: what it fails now, and what saving it as it is
+    would (an app made before a newer way of saying something, brought up to date on any save)."""
+    if not (blueprint or {}).get("tables"):
+        return []
+    return schema.check(blueprint) + apply(blueprint, [], always_check=True).problems
+
+
 def apply(blueprint, ops, always_check=False, already=()):
     """`already`: problems the design had before these changes (an old app checked by newer rules). They don't stop a
     change that leaves them as they were; only a problem the changes bring does."""

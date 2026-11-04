@@ -619,11 +619,30 @@ _ACTION = {"type": "object", "required": ["type"], "properties": {  # "target" b
     "mode": {"type": "string", "enum": schema.APPROVAL_MODES}, "remind_after_days": {"type": "number"},
     "escalate_after_days": {"type": "number"}, "escalate_to": _STRING, "not_by": _STRINGS, "step_up": {"type": "boolean"},
     "link_back": _STRING, "lines": {"type": "boolean"}, "automation": _STRING}}
-_ACTION["properties"].update({"if_rejected": _STEPS, "otherwise": _STEPS, "paths": {"type": "array", "items": {
-    "type": "object", "required": ["when", "steps"], "properties": {"label": _STRING, "when": _CONDITIONS, "steps": _STEPS}}}})
+
+
+def _kinds(*kinds, **more):
+    return {**_ACTION, "properties": {**_ACTION["properties"], "type": {"type": "string", "enum": list(kinds)}, **more}}
+
+
+def _holding(inner):
+    """A step, holding others only where its kind does (a branch its paths and otherwise, an approval what its no does)
+    as `inner` steps: a notify can't be given paths to wander into. Each level down is a different kind, the last
+    holding none: steps three deep at most (a branch, an approval in it, what its no does), so a model writing to the
+    format can't go round nesting "if_rejected" in "if_rejected" for ever."""
+    steps = {"type": "array", "items": {"$ref": f"#/$defs/{inner}"}}
+    return {"anyOf": [
+        {"type": "object", "required": ["type", "paths"], "properties": {
+            "type": {"type": "string", "enum": ["branch"]}, "paths": {"type": "array", "items": {"type": "object", "required": ["when", "steps"],
+                                                                                                 "properties": {"label": _STRING, "when": _CONDITIONS, "steps": steps}}},
+            "otherwise": steps}},
+        _kinds("request_approval", if_rejected=steps),
+        _kinds(*[k for k in schema.ACTIONS if k not in ("branch", "request_approval")])]}
+
+
 DEFS = {"condition": {"type": "object", "properties": {  # a plain condition, or "any"/"all" of others
             "field": _STRING, "op": {"type": "string", "enum": schema.CONDITION_OPS}, "value": {}, "any": _CONDITIONS, "all": _CONDITIONS}},
-        "step": _ACTION}
+        "step": _holding("inner"), "inner": _holding("leaf"), "leaf": _kinds(*[k for k in schema.ACTIONS if k != "branch"])}
 _AUTOMATION = {"type": "object", "required": ["key", "name", "trigger", "actions"], "properties": {
     "key": _STRING, "name": _STRING, "trigger": _TRIGGER, "conditions": _CONDITIONS, "actions": _STEPS}}
 _FLOW_STEP = {"type": "object", "required": ["kind"], "properties": {

@@ -495,8 +495,8 @@ def test_a_rule_that_routes_a_record_to_its_approver_and_straight_past_them_is_f
 
 
 def test_an_approval_kept_from_the_only_one_it_is_for_is_found(app, owner):
-    """The owner's OK, kept from whoever added the quote: a quote the owner adds would wait for ever. Kept from someone
-    else, or asked of a team, is fine."""
+    """The owner's OK, kept from whoever added the quote, would leave what the owner adds waiting for ever: it's saved as
+    the owner's OK alone (staff can't give it anyway). A team kept from its own approval is found, said plainly."""
     _, ws = owner
     quotes = {"op": "create_table", "table": "quotes", "label": "Quotes", "fields": [
         {"key": "title", "type": "text"}, {"key": "status", "type": "select", "options": ["Draft", "Needs approval", "Sent"]}],
@@ -505,11 +505,12 @@ def test_an_approval_kept_from_the_only_one_it_is_for_is_found(app, owner):
     rule = {"key": "ok", "name": "Big discounts need the OK", "trigger": {"type": "record_updated", "table": "quotes"},
             "conditions": [{"field": "status", "op": "changed_to", "value": "Needs approval"}],
             "actions": [{"type": "request_approval", "approver": "owner", "not_by": ["creator"], "message": "Please approve this."}]}
-    _built(ws, [quotes, {"op": "add_automation", "automation": rule}])
-    plain = [i["plain"] for i in checks.run(Engine(ws))]
-    assert "A quote the owner adds could never be approved by “Big discounts need the OK”: the only person it's for may not answer it" in plain, plain
-    _built(ws, [{"op": "update_automation", "automation": {**rule, "actions": [{**rule["actions"][0], "approver": "admin"}]}}])
+    _built(ws, [quotes, {"op": "add_automation", "automation": rule}, {"op": "set_team", "team": {"key": "sales", "name": "Sales"}}])
+    assert "not_by" not in ws.blueprint["automations"][0]["actions"][0]
     assert not any("could never be" in i for i in _issues(ws))
+    _built(ws, [{"op": "update_automation", "automation": {**rule, "actions": [{**rule["actions"][0], "approver": "sales", "not_by": ["sales"]}]}}])
+    plain = [i["plain"] for i in checks.run(Engine(ws))]
+    assert "A quote could never be approved by “Big discounts need the OK”: the only people it's for may not answer it" in plain, plain
 
 
 def test_an_ai_step_that_picks_a_record_answers_with_the_one_the_example_names(app, owner):

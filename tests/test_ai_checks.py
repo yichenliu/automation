@@ -175,5 +175,6 @@ def test_the_analyst_suggests_less_checking_once_the_ai_has_earned_it(app, owner
 
 def test_the_analyst_is_told_when_the_ai_works_alone_and_when_a_person_checks(app):
     assert "AI OR A PERSON" in prompts.SYSTEM and "when_unsure" in prompts.SYSTEM
-    assert prompts.DEFS["step"]["properties"]["review"]["enum"] == schema.REVIEW_MODES
+    assert all(kind.get("properties", {}).get("review", {"enum": schema.REVIEW_MODES})["enum"] == schema.REVIEW_MODES
+               for kind in prompts.DEFS["step"]["anyOf"])
     assert schema.normalize_action({"type": "ai_fill", "field": "x", "instructions": "y", "review": True})["review"] == "always"

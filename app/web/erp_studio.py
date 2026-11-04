@@ -51,10 +51,7 @@ def _plain(problem, bp):
 def _save(ws, ops_, what, plain=None):
     """Apply the changes to the design, check it, and save it as a version (a choice renamed takes its records with it:
     chat.save_version), noted as `plain` says it if given. Returns (the changes said, the version it was made from)."""
-    # what's wrong already isn't this change's doing: what the design fails now, and what saving it as it is would
-    # (an app made before a newer way of saying something, brought up to date on any save)
-    already = schema.check(ws.blueprint or {}) + ops.apply(ws.blueprint or {}, [], always_check=True).problems
-    result = ops.apply(copy.deepcopy(ws.blueprint or {}), ops_, already=already)
+    result = ops.apply(copy.deepcopy(ws.blueprint or {}), ops_, already=ops.wrong_already(ws.blueprint))  # what's wrong already isn't this change's
     if result.problems:
         raise Refused(_plain(result.problems[0], ws.blueprint))
     changes = list(result.changes)

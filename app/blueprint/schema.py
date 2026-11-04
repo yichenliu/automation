@@ -1966,6 +1966,8 @@ def normalize_action(raw):
         action["message"] = str(_first(raw, "message", "question", "text", "reason", default="Please approve this."))[:1000]
         _follow_up(raw, action)
         apart = _not_by(raw)
+        if action["approver"] == "owner" and not action.get("approvers"):  # only the owner answers: kept from whoever raised
+            apart = [x for x in apart if x != "creator"]  # it, what the owner adds would wait for ever, and staff can't anyway
         if apart:
             action["not_by"] = apart
         if _yes(_first(raw, "step_up", "reauthenticate", "confirm_sign_in", "second_factor")):

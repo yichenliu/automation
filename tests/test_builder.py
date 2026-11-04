@@ -122,6 +122,26 @@ def test_a_change_puts_right_what_it_breaks_not_what_was_wrong_before(app, owner
     assert chat._already_found(ws, {}) == set()  # a first build: everything found is its own
 
 
+def test_an_old_app_newer_checks_find_fault_with_still_takes_a_small_change(app, owner):
+    """A rule saved before a newer check (a person column set to a team) doesn't stop adding a column: the AI isn't sent
+    back to rewrite the old rule (it never asked to, and doing it is how a small model goes round in circles)."""
+    _, ws = owner
+    ai.set_backend(ScriptedAI({"ops": CONSULTANCY, "reply": "Built."}))
+    _turn(ws, "build it")
+    bp = copy.deepcopy(ws.blueprint)
+    next(t for t in bp["tables"] if t["key"] == "projects")["fields"].append({"key": "approved_by", "label": "Approved by", "type": "user"})
+    bp["automations"].append({"key": "ok", "name": "Mark approved", "enabled": True, "trigger": {"type": "record_created", "table": "projects"},
+                              "conditions": [], "actions": [{"type": "update_record", "values": {"approved_by": "procurement"}}]})
+    ws.blueprint = bp
+    db.session.commit()
+    scripted = ScriptedAI({"ops": [{"op": "add_field", "table": "projects", "field": {"key": "note", "label": "Team note", "type": "long_text"}}],
+                           "reply": "Added a Team note."})
+    ai.set_backend(scripted)
+    m = _turn(ws, "Can you add a Team note to projects?")
+    assert m.status == "done" and any(f["key"] == "note" for t in ws.blueprint["tables"] for f in t["fields"])
+    assert not any("couldn't apply" in (c[-1]["content"] or "") for c in scripted.asked)
+
+
 def test_a_big_request_is_built_in_parts_in_one_turn_and_undone_as_one(app, owner):
     _, ws = owner
     first = {"ops": CONSULTANCY[:3], "reply": "Clients and projects are set up.", "more": True, "plan": "invoices, then payroll"}
