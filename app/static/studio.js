@@ -62,6 +62,10 @@
     const form = $("[data-studio-ask]");
     if (!form) return;
     const said = $(".studio-ask-said", form);
+    const box = form.elements.text;
+    const grow = () => { box.style.height = "auto"; box.style.height = `${Math.min(box.scrollHeight + 2, 160)}px`; };  // all of what they wrote, in sight
+    box.addEventListener("input", grow);
+    box.addEventListener("keydown", (ev) => { if (ev.key === "Enter" && !ev.shiftKey) { ev.preventDefault(); form.requestSubmit(); } });
     form.addEventListener("submit", async (ev) => {
       ev.preventDefault();
       const input = form.elements.text;
@@ -69,7 +73,7 @@
       if (!text) { input.focus(); return; }
       const button = $("button", form);
       button.disabled = true; input.disabled = true;
-      said.hidden = false; said.className = "studio-ask-said small"; said.innerHTML = `<span class="spin"></span> The AI is working out the change…`;
+      said.hidden = false; said.className = "studio-ask-said small"; said.innerHTML = `<span class="spin"></span> The AI is working out the change. This usually takes a minute or two…`;
       const data = new FormData();
       data.append("text", text); data.append("page", location.pathname + location.search);
       let m;
@@ -81,8 +85,8 @@
       const started = Date.now();
       let stop = false;
       const slow = () => {  // past a minute: it carries on without them watching; past ten, said plainly and left
-        said.innerHTML = `<span class="spin"></span> Still working: this can take a few minutes. You can leave this page; the change still happens, and the builder shows it when it's done.
-          <button type="button" class="btn sm ghost" data-stop>Stop waiting</button>`;
+        said.innerHTML = `<span class="spin"></span> Still working on it. You can keep looking around, or leave this page: the change still happens, and Change my app (in the menu) shows it when it's done.
+          <button type="button" class="btn sm ghost" data-stop title="The change still happens">Stop watching</button>`;
         $("[data-stop]", said).addEventListener("click", () => { stop = true; });
       };
       while (m && !["done", "failed"].includes(m.status) && !stop && Date.now() - started < 10 * 60 * 1000) {
@@ -94,17 +98,46 @@
       }
       if (!["done", "failed"].includes(m.status)) {
         said.className = "studio-ask-said small";
-        said.textContent = "It's still being worked on. Nothing has changed yet: the builder (Change my app) will show the answer when it's ready.";
+        said.textContent = "It's still being worked on. Nothing has changed yet: Change my app (in the menu) shows the answer when it's ready.";
         button.disabled = false; input.disabled = false;
         return;
       }
       const reply = html(`<div>${m.html || ""}</div>`);
       const replyText = $(".text", reply);  // the AI's reply itself, without the builder's progress and buttons
       const words = ((replyText || reply).textContent || "").replace(/\s+/g, " ").trim();
-      said.className = `studio-ask-said small ${m.status === "failed" ? "bad-text" : ""}`;
+      said.className = `studio-ask-said small ${m.status === "failed" ? "bad-text" : "done"}`;
       said.textContent = words.slice(0, 600) || (m.status === "done" ? "Done." : "That didn't work: try saying it another way.");
+      if (m.status === "done" && /\?\s*$/.test(words)) {  // it asked something: answered right here
+        said.appendChild(html(`<div class="small muted">To answer, type it in the box above and press Change it.</div>`));
+        input.placeholder = "Answer here, or say what else should change";
+      }
+      const show = $("[data-go]", reply);
+      if (m.status === "done" && show) {
+        const b = html(`<a class="btn sm" href="${esc(show.dataset.go)}">${icon("eye")}Show me</a>`);
+        said.appendChild(b);
+      }
+      const undo = $("[data-undo]", reply);  // what the builder offers with its reply, here too
+      if (m.status === "done" && undo) {
+        const b = html(`<button type="button" class="btn sm">${icon("undo-2")}Undo this change</button>`);
+        b.addEventListener("click", async () => {
+          b.disabled = true;
+          let note = null;
+          const send = async (all) => { const res = await fetch(undo.dataset.undo, {method: "POST", headers: {"Content-Type": "application/json", "X-CSRFToken": csrf()}, body: JSON.stringify({all})});
+            return {status: res.status, body: await res.json().catch(() => ({}))}; };
+          try {
+            let got = await send(false);
+            if (got.status === 409 && got.body.confirm && confirm(got.body.confirm)) got = await send(true);
+            note = got.status === 200 ? got.body : null;
+          } catch (e) { note = null; }
+          if (!note) b.disabled = false;
+          const back = note && html(`<div>${note.html || ""}</div>`);
+          said.textContent = note ? ((($(".text", back) || back).textContent || "").replace(/\s+/g, " ").trim() || "Undone.") : "That couldn't be undone here: undo it under Set up › Versions.";
+          if (note) onDone();
+        });
+        said.appendChild(b);
+      }
       button.disabled = false; input.disabled = false;
-      if (m.status === "done") { input.value = ""; onDone(); }
+      if (m.status === "done") { input.value = ""; grow(); onDone(); }
     });
   }
 
@@ -597,7 +630,7 @@
           <label class="field"><span>Name</span><input type="text" name="label" value="${esc(f.label)}" required maxlength="80"></label>
           ${kinds.length > 1 ? `<label class="field"><span>What goes in it</span><select name="type">${kinds.map((x) => `<option value="${x.type}" ${x.type === f.type ? "selected" : ""}>${esc(x.label)}</option>`).join("")}</select>
             <span class="help">${f.filled ? `${plural(f.filled, `${t.singular.toLowerCase()} has`, `${t.label.toLowerCase()} have`)} something in it, so only a kind that still fits.` : "Nothing's been entered in it yet, so it can be any kind."}</span></label>`
-            : f.filled && !f.calculated ? `<p class="help">${plural(f.filled, `${esc(t.singular.toLowerCase())} has`, `${esc(t.label.toLowerCase())} have`)} something in it, so it can only stay ${esc(f.kind.toLowerCase())}. To keep something else, add a new column.</p>` : ""}
+            : f.filled && !f.calculated ? `<p class="help">${plural(f.filled, `${esc(t.singular.toLowerCase())} has`, `${esc(t.label.toLowerCase())} have`)} something in it, so what goes in it can't change now. To keep something else, add a new column.</p>` : ""}
           ${f.type === "formula" ? `<label class="field"><span>Worked out as</span><input type="text" name="expression" value="${esc(f.expression)}"></label>` : ""}
           <label class="field"><span>Help shown under it</span><input type="text" name="help" value="${esc(f.help)}" maxlength="200" placeholder="What to put here"></label>
           ${f.calculated ? "" : `<label class="check"><input type="checkbox" name="required" ${f.required ? "checked" : ""}> It must be filled in</label>`}
@@ -806,6 +839,10 @@
       const got = await get(root.dataset.mapJson);
       if (!got) return;
       map = got.map; data = got.data;
+      if (["rule", "stages", "flow"].includes(item?.kind)) {  // and what's open, as it is now (a rule the AI just changed)
+        const fresh = await get(`${root.dataset.item}?id=${encodeURIComponent(itemId())}`);
+        item = fresh || {kind: "map"}; tried = null;
+      }
       if (["process", "list"].includes(item?.kind) && !mapItem(itemId())) item = {kind: "map"};
       draw();
     }
@@ -902,7 +939,8 @@
         : `its ${one(h.to)} is updated automatically`;
       const only = (h.only_if || []).length ? ` and ${h.only_if.map((x) => x.charAt(0).toLowerCase() + x.slice(1)).join(" and ")}` : "";
       const on = h.moves_to && h.how === "makes" ? ` and the ${one(h.from)} moves on to ${h.moves_to}` : "";
-      return `${whenSaid(h)}${only}, ${did}${on}${h.asks ? ", once someone approves it" : ""}${h.ai ? ", with the AI's help" : ""}.`;
+      const told = (h.tells || []).length ? `, and ${listSaid(h.tells)} ${h.tells.length === 1 && !/^everyone$/i.test(h.tells[0]) ? "is" : "are"} told` : "";
+      return `${whenSaid(h)}${only}, ${did}${on}${h.asks ? ", once someone approves it" : ""}${h.ai ? ", with the AI's help" : ""}${told}.`;
     }
     const autoHtml = (h, tag = false) => `<button type="button" class="map-auto ${h.on ? "" : "off"}" data-open="rule:${esc(h.rule)}" title="See or change the rule that does this: “${esc(h.label)}”">
       ${icon("zap")}<span>${tag ? `<span class="map-tag auto">Automatic</span>` : ""}${esc(handSaid(h))}${h.on ? "" : ` <span class="tag">switched off</span>`}${stoppedSaid(stoppedOf(h.rule))}</span></button>`;
@@ -1336,8 +1374,9 @@
           ${canEdit ? `<label class="switch-row small"><button type="button" class="switch ${r.on ? "on" : ""}" data-toggle aria-label="${r.on ? "Switch it off" : "Switch it on"}"></button>${r.on ? "On" : "Off"}</label>`
             : allowed ? `<button type="button" class="btn sm" data-change-it>${icon("pencil")}Change this rule</button>` : ""}</div></div>`));
       if (tried) {
-        main.appendChild(html(`<div class="wf-tried ${tried.starts ? "good" : "bad"}">${icon(tried.starts ? "play" : "circle-x")}<div class="grow">
-          ${tried.starts ? `<b>For “${esc(tried.title)}”</b>, it would do the steps lit up below. Nothing was actually done.` : `<b>It wouldn't start for “${esc(tried.title)}”:</b> ${esc(tried.why.join("; "))}.`}
+        main.appendChild(html(`<div class="wf-tried ${tried.starts ? "good" : "info"}">${icon(tried.starts ? "play" : "info")}<div class="grow">
+          ${tried.starts ? `<b>For “${esc(tried.title)}”</b>, it would do the steps lit up below. Nothing was actually done.`
+            : `<b>Nothing would happen for “${esc(tried.title)}” now.</b> It only goes ahead when ${esc(tried.why.map((w) => w.charAt(0).toLowerCase() + w.slice(1)).join(", and when "))}, and that isn't so for this one yet. Nothing was done.`}
           ${tried.assumed.length ? `<div class="small muted">Tried as if this had just happened: ${esc(tried.assumed.join("; "))}.</div>` : ""}</div>
           <button type="button" class="btn sm ghost" data-untry>Clear</button></div>`));
       }
@@ -1408,7 +1447,8 @@
     // Who, values and conditions: the pieces the step forms are made of.
     const WHO_FIRST = ["owner", "admin", "editor", "creator"];
     const whoSelect = (name, value) => `<select name="${name}">${[...item.who].sort((x, y) => (WHO_FIRST.indexOf(x.value) + 1 || 99) - (WHO_FIRST.indexOf(y.value) + 1 || 99)).map((w) => `<option value="${esc(w.value)}" ${w.value === value ? "selected" : ""}>${esc(w.label)}</option>`).join("")}
-      ${value && !item.who.some((w) => w.value === value) ? `<option value="${esc(value)}" selected>${esc(value)}</option>` : ""}</select>`;
+      ${value && !item.who.some((w) => w.value === value) ? `<option value="${esc(value)}" selected>${esc(WHO_SAID[value] || value)}</option>` : ""}</select>`;
+    const WHO_SAID = {everyone: "Everyone, even those who can only look", viewer: "Everyone, even those who can only look", portal: "The customer, in their portal"};
     const insertable = (table) => fieldsOf(table).map((f) => `<option value="{{record.${esc(f.key)}}}">${esc(f.label)}</option>`).join("");
     function textWithInserts(name, label, value, long = false, table = item.table, hint = "") {
       return `<label class="field"><span>${label}</span>${long ? `<textarea name="${name}" rows="4" placeholder="${esc(hint)}">${esc(value || "")}</textarea>` : `<input type="text" name="${name}" value="${esc(value || "")}" placeholder="${esc(hint)}">`}
@@ -1454,16 +1494,26 @@
       return `<div class="stack" data-conds>${rows.map((c) => condRow(table, c)).join("")}</div>
         <button type="button" class="btn sm ghost" data-add-cond>${icon("plus")}Add a condition</button>`;
     }
+    const OPS_FOR = {date: /^(equals|before_today|after_today|today|tomorrow|yesterday|within_|more_than_days_ago|this_|last_|next_|is_empty|not_empty)/,
+                     number: /^(equals|not_equals|greater_than|less_than|at_least|at_most|is_empty|not_empty)$/,
+                     choice: /^(equals|not_equals|one_of|is_empty|not_empty)$/, yesno: /^(equals)$/,
+                     other: /^(equals|not_equals|contains|is_empty|not_empty|one_of)$/};
+    const opsFor = (f) => {  // the tests that fit what the column keeps
+      const kind = !f ? "other" : ["date", "datetime"].includes(f.type) ? "date" : ["number", "money", "percent", "formula", "rollup", "duration", "rating"].includes(f.type) ? "number"
+        : ["select", "multi_select"].includes(f.type) ? "choice" : f.type === "checkbox" ? "yesno" : "other";
+      return data.ops.filter((o) => OPS_FOR[kind].test(o.op));
+    };
     function condRow(table, c = {}) {
       const fields = fieldsOf(table);
       const f = fields.find((x) => x.key === c.field);
-      const op = data.ops.find((o) => o.op === (c.op || "equals")) || data.ops[0];
+      const ops = opsFor(f);
+      const op = ops.find((o) => o.op === (c.op || "equals")) || data.ops.find((o) => o.op === c.op) || ops[0] || data.ops[0];
       const value = Array.isArray(c.value) ? c.value.join(", ") : (c.value ?? "");
       const input = !op.value ? "" : f && f.options.length && ["equals", "not_equals"].includes(op.op)
         ? `<select name="value">${f.options.map((o) => `<option ${o === value ? "selected" : ""}>${esc(o)}</option>`).join("")}</select>`
         : `<input type="text" name="value" value="${esc(value)}" placeholder="Value">`;
       return `<div class="row wrap cond-row"><select name="field" aria-label="Column"><option value="">Column…</option>${fields.map((x) => `<option value="${esc(x.key)}" ${x.key === c.field ? "selected" : ""}>${esc(x.label)}</option>`).join("")}</select>
-        <select name="op" aria-label="Test">${data.ops.map((o) => `<option value="${o.op}" ${o.op === op.op ? "selected" : ""}>${esc(o.label)}</option>`).join("")}</select>
+        <select name="op" aria-label="Test">${[...new Set([...ops, op])].map((o) => `<option value="${o.op}" ${o.op === op.op ? "selected" : ""}>${esc(o.label)}</option>`).join("")}</select>
         ${input}<button type="button" class="btn sm ghost icon" data-drop-row aria-label="Remove">${icon("x")}</button></div>`;
     }
     function wireConds(scope, table) {
@@ -1704,12 +1754,12 @@
       const find = $("[data-find]", box), found = $("[data-found]", box);
       const load = async () => {
         const got = await get(`${root.dataset.records}?table=${encodeURIComponent(item.table)}&q=${encodeURIComponent(find.value)}`);
-        found.innerHTML = (got && got.items.length) ? got.items.map((r) => `<li><button type="button" data-rec="${r.id}">${icon("play")}<span class="grow">${esc(r.title)}${r.detail ? `<div class="faint tiny">${esc(r.detail)}</div>` : ""}</span></button></li>`).join("")
+        found.innerHTML = (got && got.items.length) ? got.items.map((r) => `<li><button type="button" data-rec="${r.id}" data-title="${esc(r.title)}">${icon("play")}<span class="grow">${esc(r.title)}${r.detail ? `<div class="faint tiny">${esc(r.detail)}</div>` : ""}</span></button></li>`).join("")
                                                    : `<li class="faint small pad">None found</li>`;
         $$("[data-rec]", found).forEach((b) => b.addEventListener("click", async () => {
           const res = await post(root.dataset.try, {id: itemId(), record: b.dataset.rec});
           if (res.error) { statusLine(status, [res.error], "bad"); return; }
-          tried = {...res, title: b.textContent.trim()};
+          tried = {...res, title: b.dataset.title};
           draw();
           tryPanel();
         }));

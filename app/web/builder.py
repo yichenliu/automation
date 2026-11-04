@@ -80,18 +80,28 @@ def undo(wid, mid):
     m = db.session.get(Message, mid)
     if m is None or m.workspace_id != ws.id or m.version_before is None or not m.version_after:
         abort(404)
-    number = chat.restore(ws, m.version_before, by=current_user.id)
+    from ..models import Version
+    later = Version.query.filter(Version.workspace_id == ws.id, Version.number > m.version_after).order_by(Version.number).all()
+    what = (m.changes or ["that change"])[0]
+    if later and not (request.get_json(silent=True) or {}).get("all"):  # an older change: what came after it goes too, said first
+        named = "; ".join(f"“{(v.changes or ['a change'])[0][:80]}”" for v in later[:3]) + (f" and {len(later) - 3} more" if len(later) > 3 else "")
+        return jsonify(confirm=f"Undoing “{what[:80]}” also undoes {'the change' if len(later) == 1 else f'the {len(later)} changes'} made after it: "
+                               f"{named}. Undo {'both' if len(later) == 1 else 'them all'}?"), 409
+    try:
+        number = chat.restore(ws, m.version_before, by=current_user.id, why=f"Undid “{what[:120]}”" + (f" and {len(later)} later change{'s' if len(later) != 1 else ''}" if later else ""))
+    except ValueError:
+        return jsonify(error="That change can't be undone from here: the version before it isn't kept. Set up › Versions shows what can be."), 400
     binned, kept = chat.unmade(ws, m)
-    text = "Undone. The design is back to how it was before that change."
+    text = "Undone. Your app is back to how it was before that change."
     if binned:
         text += (f" What it added went in the bin too: {', '.join(binned[:4])}{f' and {len(binned) - 4} more' if len(binned) > 4 else ''} "
                  f"(you can bring {'it' if len(binned) == 1 else 'them'} back from the bin).")
     if kept:
         text += f" Kept {', '.join(kept[:3])}: {'it has' if len(kept) == 1 else 'they have'} been used since."
-    text += " Nothing your people entered was touched."
+    text += " Nothing your people entered was deleted."
     note = Message(workspace_id=ws.id, channel="builder", role="assistant", status="done", user_id=current_user.id,
                    text=text,
-                   changes=[f"Went back to the design as it was at version {m.version_before}"],
+                   changes=[f"Undid “{what[:120]}”"],
                    version_before=number - 1, version_after=number)
     db.session.add(note)
     db.session.commit()

@@ -1109,9 +1109,10 @@ def design(wid):
     present = modules._present(ws.blueprint)
     from .. import appmap
     kept = {n for (n,) in db.session.query(Version.number).filter_by(workspace_id=ws.id)}  # what each change can be undone back to
+    later_said = {v.number: [(x.changes or ["a change"])[0][:70] for x in reversed(versions) if x.number > v.number] for v in versions}  # what goes with it
     staged = sum(1 for t in engine.visible_blueprint().get("tables", []) if appmap._stages(t))  # as the App map counts them
     return render_template("app/design.html", ws=ws, e=engine, versions=versions, counts=engine.counts(), shown=engine.visible_blueprint(),
-                           kept=kept, staged=staged,
+                           kept=kept, staged=staged, later_said=later_said,
                            words={a["key"]: automations.describe(engine, a) for a in engine.bp.get("automations", [])},
                            parts={k: p for k, p in modules.MODULES.items() if k not in present})
 
@@ -1175,11 +1176,13 @@ def publish(wid):
 @login_required
 def restore_version(wid, number):
     ws, _ = ctx(wid, "admin")
+    undone = Version.query.filter(Version.workspace_id == ws.id, Version.number > number).order_by(Version.number).all()
+    what = (undone[0].changes or ["a change"])[0][:120] if undone else "a change"
     try:
-        chat.restore(ws, number, by=current_user.id)
+        chat.restore(ws, number, by=current_user.id, why=f"Undid “{what}”" + (f" and {len(undone) - 1} later change{'s' if len(undone) != 2 else ''}" if len(undone) > 1 else ""))
     except ValueError:
         abort(404)
-    flash("Undone: your app works as it did before that change. Nothing anyone entered was touched.", "success")
+    flash("Undone: your app works as it did before that change. Nothing anyone entered was deleted.", "success")
     return redirect(url_for("app.design", wid=wid))
 
 

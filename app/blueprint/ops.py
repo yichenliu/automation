@@ -1148,6 +1148,31 @@ SETTING_WORDS = {"label": "its name", "type": "what it keeps", "options": "its c
                  "display": "how it's shown", "prefix": "its prefix", "digits": "its digits", "options_by": "which choices it offers"}
 
 
+COND_SAID = {"equals": "is {}", "not_equals": "is not {}", "contains": "contains {}", "is_empty": "is empty", "not_empty": "is filled in",
+             "greater_than": "is more than {}", "less_than": "is less than {}", "at_least": "is at least {}", "at_most": "is at most {}",
+             "one_of": "is one of {}", "before_today": "is before today", "after_today": "is after today", "today": "is today",
+             "within_next_days": "is within the next {} days", "within_last_days": "is within the last {} days",
+             "more_than_days_ago": "is more than {} days ago", "changed": "changes", "changed_to": "changes to {}"}
+
+
+def _cond_said(label, c):
+    """A condition as people say it: “Due is more than 14 days ago”, never “Due more than days ago 14”."""
+    value = c.get("value")
+    value = ", ".join(map(str, value)) if isinstance(value, list) else "" if value is None else str(value)
+    words = COND_SAID.get(c.get("op"), str(c.get("op", "")).replace("_", " ") + " {}")
+    return f"{label} {words.format(value)}".strip()
+
+
+def _whose_path(tables, t, path):
+    """{{record.customer.email}} as people say it: “its customer's email”, each step through a link by its label."""
+    words, at = [], t
+    for part in path.split("."):
+        f = schema.field(at, part) if at else None
+        words.append(((f or {}).get("label") or part.replace("_", " ")).lower())
+        at = tables.get(f["table"]) if f and f["type"] == "link" else None
+    return "its " + "'s ".join(words)
+
+
 def _automation_said(bp, a):
     """What an automation does, in brief, for the change list: the closing reply knows only what that list says, so an
     automation that asks the procurement manager to approve must say so."""
@@ -1155,8 +1180,7 @@ def _automation_said(bp, a):
     t = tables.get(a["trigger"].get("table"))
     label = lambda k, of=None: ((schema.field(of or t, k) or {}).get("label") or str(k).replace("_", " "))  # noqa: E731
     thing = lambda key: (tables.get(key) or {}).get("singular", str(key).replace("_", " ")).lower()  # noqa: E731
-    cond = lambda cs: " and ".join(f"{label(c['field'])} {c['op'].replace('_', ' ')} {c.get('value', '')}".strip()  # noqa: E731
-                                   for c in list(schema.condition_leaves(cs))[:2])
+    cond = lambda cs: " and ".join(_cond_said(label(c["field"]), c) for c in list(schema.condition_leaves(cs))[:2])  # noqa: E731
     trig = a["trigger"]
     when = WHEN_SAID.get(trig["type"], "").format(_a(t["singular"].lower() if t else "record")) if trig["type"] in WHEN_SAID else \
         f"every {trig.get('every', 'day')}" if trig["type"] == "schedule" else f"from its “{trig.get('label') or a['name']}” button"
@@ -1196,7 +1220,7 @@ def _automation_said(bp, a):
         elif kind == "update_record":
             said.append("sets " + ", ".join(label(k) for k in list(x["values"])[:3]))
         elif kind in ("notify", "send_email"):
-            said.append(("emails " if kind == "send_email" else "tells ") + re.sub(r"\{\{\s*record\.(\w+)\s*\}\}", lambda m: f"its {label(m.group(1))}", str(x.get("to") or "everyone")))
+            said.append(("emails " if kind == "send_email" else "tells ") + re.sub(r"\{\{\s*record\.([\w.]+)\s*\}\}", lambda m: _whose_path(tables, t, m.group(1)), str(x.get("to") or "everyone")))
         elif kind == "generate_document":
             said.append("produces the PDF")
         elif kind == "wait":
@@ -1666,7 +1690,13 @@ def _apply_one(bp, op, raw, result, where):
             old = schema.field(t, key)
         t["fields"][t["fields"].index(old)] = new
         what = [k for k in new if new.get(k) != old.get(k)] + [k for k in old if k not in new]
-        said = list(dict.fromkeys(SETTING_WORDS.get(k, k.replace("_", " ")) for k in sorted(set(what))))
+        said = list(dict.fromkeys(SETTING_WORDS.get(k, k.replace("_", " ")) for k in sorted(set(what)) if k not in ("options", "option_colors")
+                                  or k == "option_colors" and "options" not in what))
+        if "options" in what:  # the choices said as what changed in them: “added Waiting on parts”, not “its choices”
+            was, now = list(old.get("options") or []), list(new.get("options") or [])
+            added, gone = [o for o in now if o not in was], [o for o in was if o not in now]
+            said = [*(f"added “{o}”" for o in added), *(f"took away “{o}”" for o in gone),
+                    *(["put its choices in a new order"] if not added and not gone and was != now else []), *said]
         changes.append(f"Changed {t['label']} › {new['label']} ({', '.join(said) or 'no difference'})")
         result.navigate = result.navigate or f"table:{t['key']}"
     elif op == "remove_field":

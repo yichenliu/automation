@@ -28,7 +28,7 @@
       {% for i in tried.issues %}<div class="try bad">{{ icon('circle-x') }}<span>{{ i }}</span></div>{% endfor %}
     </div>{% endif %}
     {% if m.progress %}<details class="steps"><summary>What I did, step by step</summary><ul>{% for line in m.progress %}<li class="{{ 'bad' if line.startswith(("Couldn't", "Didn't")) }}">{{ line }}</li>{% endfor %}</ul></details>{% endif %}
-    {% if m.changes %}<div class="changes">{% for c in m.changes %}<div class="ch">{{ icon('undo-2' if c.startswith('Went back') else 'check') }}<span>{{ c }}</span></div>{% endfor %}</div>{% endif %}
+    {% if m.changes %}<div class="changes">{% for c in m.changes %}<div class="ch">{{ icon('undo-2' if c.startswith(('Went back', 'Undid')) else 'check') }}<span>{{ c }}</span></div>{% endfor %}</div>{% endif %}
     {% if m.results %}
       <div class="results"><table class="grid"><thead><tr>{% for c in m.results.columns %}<th>{{ c }}</th>{% endfor %}</tr></thead><tbody>
       {% for row in m.results.rows %}<tr data-open="/w/{{ ws.id }}/app/t/{{ m.results.table }}/{{ row.id }}">{% for cell in row.cells %}<td>{{ cell }}</td>{% endfor %}</tr>
@@ -36,7 +36,7 @@
     {% endif %}
     <div class="msg-actions">
       {% if m.navigate %}<button class="btn sm" data-go="{{ m.navigate }}">{{ icon('eye') }}Show me</button>{% endif %}
-      {% if m.version_after and m.version_before is not none and m.status == 'done' and not (m.changes and m.changes[0].startswith('Went back')) %}
+      {% if m.version_after and m.version_before is not none and m.status == 'done' and not (m.changes and m.changes[0].startswith(('Went back', 'Undid'))) %}
         <button class="btn sm ghost" data-undo="{{ url_for('builder.undo', wid=ws.id, mid=m.id) }}">{{ icon('undo-2') }}Undo</button>{% endif %}
       {% if m.status == 'failed' %}<button class="btn sm" data-retry="{{ url_for('builder.retry', wid=ws.id, mid=m.id) }}">{{ icon('refresh-cw') }}Try again</button>{% endif %}
       {% if m.status == 'done' and 'carry on' in (m.text or '').lower() %}<button class="btn sm primary" data-starter-text="Carry on building what isn't done yet">{{ icon('play') }}Carry on building</button>{% endif %}

@@ -253,3 +253,39 @@ def test_a_stage_a_rule_uses_cant_be_removed_unseen_and_a_rule_made_twice_is_mad
     db.session.refresh(ws)
     a = next(x for x in ws.blueprint["automations"] if x["key"] == key)
     assert [c for c in a["conditions"] if c["op"] == "changed_to"] == [{"field": "status", "op": "changed_to", "value": "Sent"}]
+
+
+def test_undoing_an_older_change_from_the_builder_names_what_goes_with_it_and_never_fails(app, client, owner):
+    from app.extensions import db
+    from app.models import Message
+    _, ws = owner
+    _built(ws, TRADE)
+    login(client)
+    first = ws.version
+    url = f"/w/{ws.id}/app/studio/data/change"
+    client.post(url, json={"do": "add_field", "table": "jobs", "label": "Gate code", "type": "text"})
+    client.post(url, json={"do": "add_field", "table": "jobs", "label": "Site contact", "type": "text"})
+    db.session.refresh(ws)
+    m = Message(workspace_id=ws.id, channel="builder", role="assistant", status="done", text="Added Gate code",
+                changes=["Added Gate code to Jobs"], version_before=first, version_after=first + 1)
+    db.session.add(m)
+    db.session.commit()
+    asked = client.post(f"/w/{ws.id}/chat/{m.id}/undo", json={})
+    assert asked.status_code == 409 and "Added Site contact to Jobs" in asked.get_json()["confirm"]  # what goes with it, said first
+    done = client.post(f"/w/{ws.id}/chat/{m.id}/undo", json={"all": True})
+    assert done.status_code == 200 and "Undid “Added Gate code to Jobs”" in done.get_json()["html"]
+    gone = Message(workspace_id=ws.id, channel="builder", role="assistant", status="done", changes=["x"], version_before=999, version_after=1000)
+    db.session.add(gone)
+    db.session.commit()
+    assert client.post(f"/w/{ws.id}/chat/{gone.id}/undo", json={"all": True}).status_code in (400, 409)  # never a server error
+
+
+def test_change_notes_say_what_changed_in_words(app, owner):
+    from app.blueprint import ops
+    _, ws = owner
+    _built(ws, TRADE)
+    done = ops.apply(ws.blueprint, [{"op": "update_field", "table": "jobs", "key": "status", "changes": {"options": ["Booked", "Done", "Waiting on parts", "Signed off"]}}])
+    assert any("added “Waiting on parts”" in c for c in done.changes) and not any("its choices" in c for c in done.changes)
+    mail = ops.apply(ws.blueprint, [{"op": "add_automation", "automation": {"key": "m", "name": "Mail", "trigger": {"type": "record_created", "table": "jobs"},
+                                                                            "actions": [{"type": "send_email", "to": "{{record.customer.name}}", "subject": "Hi", "body": "Hi"}]}}])
+    assert any("emails its customer's name" in c for c in mail.changes) and not any("{{" in c for c in mail.changes)

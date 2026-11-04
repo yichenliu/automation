@@ -24,10 +24,10 @@
     {% for v in versions %}
     <div class="version"><span class="n" title="Version {{ v.number }}">v{{ v.number }}</span>
       <div><div class="small">{% for c in v.changes[:6] %}<div>{{ c }}</div>{% endfor %}{% if v.changes|length > 6 %}<div class="faint">and {{ v.changes|length - 6 }} more</div>{% endif %}</div>
-        <div class="faint tiny mt-1">{{ {'chat': 'asked in the builder', 'restore': 'undone', 'start': 'start', 'manual': 'changed by hand', 'discovery': 'from Microsoft 365', 'import': 'from a file', 'studio': 'changed on the App map', 'parts': 'ready-made parts added', 'published': 'published from the test copy'}.get(v.source, v.source) }}{% if v.by %} · {{ v.by }}{% endif %} · {{ v.created_at|ago }}</div></div>
+        <div class="faint tiny mt-1">{{ {'chat': 'asked of the AI', 'restore': 'undone', 'start': 'start', 'manual': 'changed by hand', 'discovery': 'from Microsoft 365', 'import': 'from a file', 'studio': 'changed on the App map', 'parts': 'ready-made parts added', 'published': 'published from the test copy'}.get(v.source, v.source) }}{% if v.by %} · {{ v.by }}{% endif %} · {{ v.created_at|ago }}</div></div>
       {% if (v.number - 1) in kept and member and member.can('admin') %}{% set later = ws.version - v.number %}{% set what = (v.changes[0] if v.changes else 'this change')|truncate(80) %}
         <form method="post" action="{{ url_for('app.restore_version', wid=ws.id, number=v.number - 1) }}"
-              data-confirm-text="Undo “{{ what }}”{% if later %} and the {{ later }} change{{ 's' if later != 1 }} made after it{% endif %}? Your app goes back to how it was before it. Everything people have entered stays as it is.">
+              data-confirm-text="Undo “{{ what }}”{% if later %} and what was changed after it ({% for x in later_said[v.number][:3] %}“{{ x }}”{{ ', ' if not loop.last }}{% endfor %}{% if later > 3 %} and {{ later - 3 }} more{% endif %}){% endif %}? Your app goes back to how it was before it. Nothing anyone entered is deleted (a renamed choice gets its old name back on their records too).">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn sm" title="Your app goes back to how it was just before this">{{ icon('undo-2') }}{{ 'Undo this' if not later else 'Undo this and later' }}</button></form>{% endif %}
       {% if v.number == ws.version %}<span class="tag">now</span>{% endif %}
     </div>

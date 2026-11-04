@@ -122,7 +122,15 @@
     const undo = ev.target.closest("[data-undo]");
     if (undo) {
       undo.disabled = true;
-      const m = await post(undo.dataset.undo);
+      const send = (all) => fetch(undo.dataset.undo, {method: "POST", headers: {"Content-Type": "application/json", "X-CSRFToken": csrf}, body: JSON.stringify({all})})
+        .then(async (r) => ({status: r.status, body: await r.json().catch(() => ({}))})).catch(() => ({status: 0, body: {}}));
+      let got = await send(false);
+      if (got.status === 409 && got.body.confirm) {  // an older change: what came after it goes too, so asked first
+        if (!confirm(got.body.confirm)) { undo.disabled = false; return; }
+        got = await send(true);
+      }
+      if (got.status !== 200) { undo.disabled = false; alert(got.body.error || "That couldn't be undone just now: try again, or use Set up › Versions."); return; }
+      const m = got.body;
       place(m.html, m.id); scrollDown();
       if (m.version_after) document.getElementById("version").textContent = m.version_after;
       try { frame.contentWindow.location.reload(); } catch (e) {}

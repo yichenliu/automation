@@ -14,13 +14,13 @@
       {% if not messages and (ws.blueprint.get('tables') or []) %}
       <div class="welcome" id="welcome">
         <h2>What would you like to change?</h2>
-        <p class="muted">Say it in your own words, like you'd tell a colleague. You'll see the change appear on the right straight away, and you can undo anything.</p>
+        <p class="muted">Say it in your own words, like you'd tell a colleague. You'll see the change in your app straight away, and you can undo anything.</p>
         <div class="starters">{% for s in ['Add a due date to invoices and remind me about overdue ones every Monday', 'Let customers see their own invoices online', 'Make a page with this month’s sales and what’s waiting for me'] %}<button class="starter" data-starter>{{ icon('sparkles') }}<div>{{ s }}</div></button>{% endfor %}</div>
       </div>
       {% elif not messages %}
       <div class="welcome" id="welcome">
         <h2>Let's build your app</h2>
-        <p class="muted">Tell me how {{ ws.name }} works: what you sell or do, what you keep track of, and what you'd like to stop doing by hand. You'll see the system appear on the right. Everything can be changed, and every change can be undone.</p>
+        <p class="muted">Tell me how {{ ws.name }} works: what you sell or do, what you keep track of, and what you'd like to stop doing by hand. You'll see it appear as it's built. Everything can be changed, and every change can be undone.</p>
         <div class="starters">
           {% if focus == 'file' %}<div class="starter-file" data-pick-file>{{ icon('file-spreadsheet') }}<div><b>Drop your spreadsheet here</b><small>Or click to choose one. I'll build the app around it and bring its rows in.</small></div></div>{% endif %}
           <a class="starter" href="{{ url_for('builder.discover', wid=ws.id) }}">{{ icon('cloud') }}<div><b>Learn from my Microsoft 365</b><small>Read my OneDrive spreadsheets and mail, and propose an app.</small></div></a>

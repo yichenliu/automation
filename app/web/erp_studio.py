@@ -201,6 +201,10 @@ def _item(ws, engine, item_id):
     return None
 
 
+DAYS_SAID = {"within_next_days": "is within the next … days", "within_last_days": "is within the last … days",
+             "more_than_days_ago": "is more than … days ago"}  # each test said once, the days in it
+
+
 def _workflow_page_data(ws, engine):
     tables = [{"key": t["key"], "label": t["label"], "singular": t["singular"],
                "fields": [{"key": f["key"], "label": f["label"], "type": f["type"], "options": f.get("options") or [],
@@ -209,7 +213,7 @@ def _workflow_page_data(ws, engine):
     from ..engine.automations import OP_WORDS
     return {"items": studio.workflow_items(engine), "tables": tables, "version": ws.version,
             "steps": [{"type": k, "label": studio.STEP_WORDS[k]} for k in studio.STEP_TYPES],
-            "ops": [{"op": k, "label": v, "value": k not in schema.NO_VALUE} for k, v in OP_WORDS.items() if k in schema.CONDITION_OPS],
+            "ops": [{"op": k, "label": DAYS_SAID.get(k, v), "value": k not in schema.NO_VALUE} for k, v in OP_WORDS.items() if k in schema.CONDITION_OPS],
             "teams": [{"key": tm["key"], "name": tm["name"]} for tm in schema.teams(engine.bp)]}
 
 

@@ -170,7 +170,7 @@ def _progress_lines(content):
     return lines
 
 
-GUESS = {True: (15, 45), False: (5, 20)}  # minutes, before this computer has done any: a whole business, a change
+GUESS = {True: (15, 45), False: (1, 6)}  # minutes, before this computer has done any: a whole business, a change
 
 
 def typical_minutes(first):

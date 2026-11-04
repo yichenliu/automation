@@ -67,7 +67,8 @@ def handoffs(bp, tables):
                             "on": a.get("enabled", True), "button": a["trigger"]["type"] == "button", "ai": ai, "asks": asks,
                             "event": a["trigger"]["type"], "press": a["trigger"].get("label") or "", "every": a["trigger"].get("every") or "",
                             "sets": _sets(tables[to], s) if how == "updates" else [], "moves_to": _moves_to(a, src),
-                            "step_if": s.get("only_if") or []})
+                            "step_if": s.get("only_if") or [],
+                            "tells": [x.get("to") or "everyone" for x in schema.steps_of(a["actions"]) if x.get("type") == "notify"]})
     return out
 
 
@@ -236,7 +237,8 @@ def build(engine, problems=(), names=None):
         shown.append({**p, "cards": lists, "count": sum(c["count"] for c in lists), "problems": sum(len(c["problems"]) for c in lists),
                       "ai": sum(len(c["ai"]["steps"]) + len(c["ai"]["fields"]) for c in lists),
                       "handoffs": [{**h, "from_label": seen[h["from"]]["label"], "to_label": seen[h["to"]]["label"],
-                                    "only_if": only_if.get(h["rule"], []) + _step_if(engine, h)} for h in p["handoffs"]]})
+                                    "only_if": only_if.get(h["rule"], []) + _step_if(engine, h),
+                                    "tells": list(dict.fromkeys(_who(engine, h["from"], w) for w in h.get("tells") or []))} for h in p["handoffs"]]})
     return {"processes": shown,
             "reference": [{**card(k), "used_by": sorted({t["label"] for t in seen.values() if t["key"] != k and not t.get("embedded")
                                                          and any(f["type"] == "link" and f.get("table") == k for f in t["fields"])})}
