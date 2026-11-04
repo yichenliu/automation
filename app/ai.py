@@ -42,6 +42,9 @@ recording = contextvars.ContextVar("recording", default=None)
 # The builder at work (a turn, or writing an owner's check): it asks with less chance and a fixed seed, so the same
 # request gets the same design, not a different one each time it's asked (AI_BUILDER_TEMPERATURE, AI_BUILDER_SEED).
 building = contextvars.ContextVar("building", default=False)
+# how many times the builder has asked again after the model went round in a loop: each new go a little less fixed
+# (warmer, another seed), so it doesn't take the same path into the same loop
+again = contextvars.ContextVar("again", default=0)
 
 
 def set_backend(fn):
@@ -149,10 +152,10 @@ def _chat(messages, schema, think, on_progress):
     if schema:
         body["format"] = schema
     budget = cfg["AI_MAX_TOKENS"] + (cfg.get("AI_THINK_TOKENS", 8000) if thinks else 0)  # the thinking counts towards the cap
-    steady = building.get()
+    steady, tries = building.get(), again.get()
     body["options"] = {"num_predict": budget, "top_p": 0.9,
-                       "temperature": cfg.get("AI_BUILDER_TEMPERATURE", 0.3) if steady else cfg.get("AI_TEMPERATURE", 0.6),
-                       **({"seed": cfg["AI_BUILDER_SEED"]} if steady and cfg.get("AI_BUILDER_SEED") is not None else {}),
+                       "temperature": min(0.9, (cfg.get("AI_BUILDER_TEMPERATURE", 0.3) if steady else cfg.get("AI_TEMPERATURE", 0.6)) + 0.2 * tries),
+                       **({"seed": cfg["AI_BUILDER_SEED"] + tries} if steady and cfg.get("AI_BUILDER_SEED") is not None else {}),
                        **({"num_ctx": cfg["AI_NUM_CTX"]} if cfg["AI_NUM_CTX"] else {})}
     try:
         response = requests.post(f"{url}/api/chat", json=body, stream=True, timeout=(10, 600))

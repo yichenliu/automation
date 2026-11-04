@@ -359,6 +359,8 @@ def design(workspace, convo, on_progress=None, on_note=None, sheet_cells=None, i
         raise
     except ai.AIError as exc:  # cut off or unreadable: almost always too much at once, so ask for a smaller first part
         current_app.logger.info("Builder for workspace %s: asking again after %s", workspace.id, exc)
+        if isinstance(exc, ai.Stuck):
+            ai.again.set(ai.again.get() + 1)  # went round in a loop: the next go a little less fixed
         if on_note:
             on_note("That was a lot at once: building it in smaller parts")
         convo = convo + [{"role": "user", "content": "Your answer was too long and got cut off. Send only the first part now "
@@ -812,12 +814,13 @@ def _count(n, word):
 def work(message_id):
     """Do one queued turn (called by the background worker), keeping what the model was asked and answered for training."""
     calls = []
-    token, steady = ai.recording.set(calls), ai.building.set(True)
+    token, steady, tries = ai.recording.set(calls), ai.building.set(True), ai.again.set(0)
     try:
         _work(message_id)
     finally:
         ai.recording.reset(token)
         ai.building.reset(steady)
+        ai.again.reset(tries)
     message = db.session.get(Message, message_id)
     if message is not None and message.status == "done":
         training.keep(message, calls)
@@ -897,6 +900,8 @@ def _work(message_id):
         except ai.AIError as exc:
             if isinstance(exc, (ai.CutOff, ai.Stuck)) and not shrunk:  # one more go, asked for a smaller piece
                 shrunk = True
+                if isinstance(exc, ai.Stuck):
+                    ai.again.set(ai.again.get() + 1)
                 note("That was too much in one go; building it in smaller pieces")
                 convo = smaller() if replies else convo + [{"role": "user", "content": (
                     "Your answer got stuck repeating itself and was lost. Start again with only the first part: the main "

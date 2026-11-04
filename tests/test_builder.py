@@ -344,3 +344,35 @@ def test_a_reply_never_claims_a_change_that_didnt_happen(app, owner):
     ai.set_backend(ScriptedAI(same))
     m = _turn(ws, "the clients list is wrong, fix it")
     assert m.changes == [] and m.text.startswith("I didn't change anything this time") and "fixed" not in m.text
+
+
+def test_each_go_after_the_model_went_round_in_a_loop_is_a_little_less_fixed(app, owner, monkeypatch):
+    """Asked again with the same fixed seed and coolness, a model stuck in a loop can take the same path into it: each new
+    go after a loop is warmer and has another seed, and the next turn starts steady again."""
+    _, ws = owner
+    stuck = ai.Stuck("The AI got stuck writing its answer (it kept repeating itself).")
+    scripted = ScriptedAI(stuck, stuck, {"ops": CONSULTANCY, "reply": "I've set up clients, projects and invoices."})
+    tries = []
+
+    def backend(messages, schema_, on_progress):
+        tries.append(ai.again.get())
+        return scripted(messages, schema_, on_progress)
+    ai.set_backend(backend)
+    assert _turn(ws, "I run a consultancy: clients, projects, invoices.").status == "done" and tries == [0, 1, 2]
+    sent = []
+
+    class Done:
+        status_code = 200
+
+        def iter_lines(self):
+            yield b'{"message": {"content": "{}"}, "done": true, "done_reason": "stop"}'
+    monkeypatch.setattr(ai.requests, "post", lambda url, json=None, **kw: sent.append(json) or Done())
+    ai.set_backend(None)
+    monkeypatch.setitem(app.config, "AI_BUILDER_SEED", 7)
+    monkeypatch.setitem(app.config, "AI_BUILDER_TEMPERATURE", 0.3)
+    steady, again = ai.building.set(True), ai.again.set(2)
+    try:
+        ai.chat([{"role": "user", "content": "hi"}])
+    finally:
+        ai.building.reset(steady), ai.again.reset(again)
+    assert sent[-1]["options"]["seed"] == 9 and abs(sent[-1]["options"]["temperature"] - 0.7) < 1e-9
