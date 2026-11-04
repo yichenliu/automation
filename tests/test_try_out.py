@@ -655,3 +655,24 @@ def test_a_formula_that_gives_words_is_shown_as_words_and_compared_as_them(app, 
     engine = Engine(ws)
     as_number = {"type": "formula", "format": "number", "expression": "iif(on_hand <= reorder_level, 'Low', 'OK')"}  # an app saved before
     assert trial._same(engine, as_number, "Low", "Low", {}) and not trial._same(engine, as_number, "OK", "Low", {})
+
+
+def test_a_person_looked_up_through_a_link_is_compared_as_a_person(app, owner):
+    """A request's approver, looked up from its cost centre, holds who it is: “Sam” expected is Sam, not “came out Sam,
+    expected Sam”. And a percentage written as 1 for 1% matches 1%."""
+    user, ws = owner
+    result = ops.apply(ws.blueprint, [
+        {"op": "create_table", "table": "cost_centres", "label": "Cost centres", "fields": [
+            {"key": "name", "type": "text", "required": True}, {"key": "approver", "type": "user"}]},
+        {"op": "create_table", "table": "requests", "label": "Requests", "fields": [
+            {"key": "title", "type": "text", "required": True}, {"key": "cost_centre", "type": "link", "table": "cost_centres"},
+            {"key": "approver", "type": "lookup", "via": "cost_centre", "field": "approver"}, {"key": "variance", "type": "percent"}]}])
+    assert not result.problems, result.problems
+    chat.save_version(ws, result.blueprint, result.changes, "chat")
+    engine = Engine(ws)
+    looked_up = schema.field(engine.tables["requests"], "approver")
+    assert engine.kind(looked_up) == "user"
+    assert trial._same(engine, looked_up, user.id, user.name, {}) and trial._same(engine, looked_up, [user.id], user.name, {})
+    assert not trial._same(engine, looked_up, user.id + 1000, user.name, {})
+    variance = schema.field(engine.tables["requests"], "variance")
+    assert trial._same(engine, variance, 0.01, 1, {}) and trial._same(engine, variance, 1, 1, {}) and not trial._same(engine, variance, 0.02, 1, {})

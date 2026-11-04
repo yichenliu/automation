@@ -129,3 +129,20 @@ def test_a_reminder_two_days_before_an_event_at_a_time_matches_once(app, owner):
     later = e.create("events", {"title": "Lunch", "starts": f"{(e.today + timedelta(days=3)).isoformat()} 12:00"})
     when = [{"field": "starts", "op": "equals", "value": "{{add_days(today(), 2)}}"}]
     assert Engine(ws).matches(soon, when) and not Engine(ws).matches(later, when)
+
+
+def test_a_percentage_worked_out_as_a_whole_number_is_kept_as_a_fraction(app, owner):
+    """“(revenue - cost) / revenue * 100” for a percentage would show as 9320%: it's saved giving 0.932, shown as 93.2%."""
+    _, ws = owner
+    result = ops.apply(ws.blueprint, [{"op": "create_table", "table": "projects", "label": "Projects", "fields": [
+        {"key": "name", "type": "text", "required": True}, {"key": "revenue", "type": "money"}, {"key": "cost", "type": "money"},
+        {"key": "margin", "type": "formula", "format": "percent", "expression": "iif(revenue == 0, 0, round((revenue - cost) / revenue * 100, 1))"},
+        {"key": "rounded", "type": "formula", "format": "percent", "expression": "round(cost / revenue * 100) / 100"}]}])
+    assert not result.problems, result.problems
+    chat.save_version(ws, result.blueprint, result.changes, "chat")
+    fields = {f["key"]: f for f in ws.blueprint["tables"][0]["fields"]}
+    assert fields["margin"]["expression"] == "iif(revenue == 0, 0, round((revenue - cost) / revenue, 3))"
+    assert fields["rounded"]["expression"] == "round(cost / revenue * 100) / 100"  # a fraction already: left alone
+    e = Engine(ws)
+    p = e.create("projects", {"name": "Fit-out", "revenue": 44000, "cost": 3000})
+    assert e.value(p, "margin") == 0.932 and e.display(fields["margin"], e.value(p, "margin")) == "93.2%"

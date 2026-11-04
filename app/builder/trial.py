@@ -986,6 +986,9 @@ def _same(engine, f, actual, wanted, names):
         return actual in (None, "", [])
     kind = engine.kind(f) if f else None
     if kind == "percent":
+        a = to_number(actual)
+        if a is not None and abs(a - 0.01) < 1e-9 and to_number(str(wanted).strip()) == 1:  # “1” is as likely 1% as 100%
+            return True
         wanted = schema.as_fraction(wanted)
     if kind == "duration" and isinstance(wanted, str):  # "8:00", "1.5h", "90m", as it's typed in
         wanted = parse_duration(wanted) if parse_duration(wanted) is not None else wanted
@@ -1003,10 +1006,11 @@ def _same(engine, f, actual, wanted, names):
         return bool(actual) == (str(wanted).strip().lower() in ("true", "yes", "1", "ticked", "on"))
     if f is not None and kind in ("date", "datetime"):
         return str(actual or "")[:10] == str(wanted)[:10]
+    if f is not None and kind == "user":  # a person, or a lookup of one (a request's approver, from its cost centre)
+        people = {str(x) for x in (actual if isinstance(actual, list) else [actual])}
+        return all(str(_person(engine, w)) in people for w in (wanted if isinstance(wanted, list) else [wanted]))
     if isinstance(actual, list):
         return [str(x).lower() for x in actual] == [str(x).lower() for x in (wanted if isinstance(wanted, list) else [wanted])]
-    if f is not None and f["type"] == "user":
-        return actual == _person(engine, wanted)
     return str(actual if actual is not None else "").strip().lower() == str(wanted).strip().lower()
 
 

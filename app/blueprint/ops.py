@@ -1384,8 +1384,49 @@ def _resolve_percents(t):
     for f in t["fields"]:
         if f["type"] == "formula":
             f["expression"] = schema.percents_fixed(t, f["expression"])
+            if f.get("format") == "percent":
+                f["expression"] = _as_fraction(f["expression"])
     for rule in t.get("rules", []):
         rule["check"] = schema.percents_fixed(t, rule["check"])
+
+
+def _as_fraction(expression):
+    """A percentage formula written to give a whole number ("(revenue - cost) / revenue * 100", which shows as 9320%) as
+    percentages are kept, a fraction: the "* 100" taken off, and a round() around it keeping two more places (93.2% stays
+    93.2%). One that also divides by 100 (rounding a fraction) is left as it is."""
+    import ast
+    if not isinstance(expression, str) or not re.search(r"\*\s*100\b|\b100(?:\.0*)?\s*\*", expression) or re.search(r"/\s*100\b", expression):
+        return expression
+    try:
+        tree = copy.deepcopy(expr.parse(expression))  # (parse keeps what it read: never changed in place)
+    except expr.ExprError:
+        return expression
+
+    class Hundreds(ast.NodeTransformer):
+        taken = 0
+
+        def visit_BinOp(self, node):
+            self.generic_visit(node)
+            if isinstance(node.op, ast.Mult):
+                for kept, other in ((node.left, node.right), (node.right, node.left)):
+                    if isinstance(other, ast.Constant) and not isinstance(other.value, bool) and other.value == 100:
+                        self.taken += 1
+                        return kept
+            return node
+
+        def visit_Call(self, node):
+            before = self.taken
+            self.generic_visit(node)
+            if self.taken > before and isinstance(node.func, ast.Name) and node.func.id.lower() == "round":
+                if len(node.args) == 1:
+                    node.args.append(ast.Constant(2))
+                elif isinstance(node.args[1], ast.Constant) and isinstance(node.args[1].value, int):
+                    node.args[1] = ast.Constant(node.args[1].value + 2)
+            return node
+
+    fixed = Hundreds()
+    tree = fixed.visit(tree)
+    return ast.unparse(tree) if fixed.taken else expression
 
 
 def _resolve_lookup(t, f, tables):
