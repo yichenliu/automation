@@ -728,14 +728,14 @@ def _values(engine, t, values, names):
     return out
 
 
-def _act(trial, engine, step, names):
+def _act(trial, engine, step, names, hold=False):
     """Do one step of an example as whoever would. Raises ExampleWrong or FieldErrors (the app refused)."""
     do = step.get("do")
     if do == "add":
         t = _table(engine, step.get("table"))
         names["_adding"] = step.get("as")
         try:
-            record = engine.create(t["key"], _values(engine, t, step.get("values"), names), ai=False)
+            record = engine.create(t["key"], _values(engine, t, step.get("values"), names), ai=False, automations=not hold)
         finally:
             names.pop("_adding", None)
         if step.get("as"):
@@ -1186,15 +1186,41 @@ def _rule_saw(exc):
             + (f" with {saw}" if saw else "") + ". If those values should be allowed, the check is written backwards: fix the rule)")
 
 
+def _line_of(engine, step, alias):
+    """Whether a step adds a line of the record the example calls `alias` (a sale's line, right after the sale)."""
+    if not (isinstance(step, dict) and step.get("do") == "add" and alias):
+        return False
+    t = engine.tables.get(str(step.get("table") or "")) or next((x for x in engine.tables.values() if str(step.get("table") or "").lower()
+                                                                in (x["label"].lower(), x["singular"].lower())), None)
+    return bool(t and t.get("embedded") and alias in [v for v in (step.get("values") or {}).values() if isinstance(v, str)])
+
+
 def _play(trial, engine, example, names, out):
     last_run = db.session.query(db.func.max(Run.id)).filter(Run.workspace_id == trial.ws_id).scalar() or 0
     steps, by_hand = _not_by_hand(engine, example)
     if by_hand:
         out["by_hand"] = by_hand
+    # a record added with its lines straight after (a sale, then its two lines) is saved as its form saves it: the lines
+    # first, then its rules (the stock taken out for each line), never its rules on a record with no lines yet
+    held = {i for i, s in enumerate(steps) if isinstance(s, dict) and s.get("do") == "add" and i + 1 < len(steps)
+            and _line_of(engine, steps[i + 1], s.get("as"))}
+    pending = None  # (alias, record id) whose rules wait for its lines
+
+    def flush():
+        nonlocal pending
+        if pending:
+            engine.reset()
+            automations.on_change(engine, engine.get(pending[1]), None)
+            engine.reset()
+            pending = None
     for n, step in enumerate(steps, start=1):
         said = _step_words(step)
         try:
-            _act(trial, engine, step, names)
+            if pending and not _line_of(engine, step, pending[0]):
+                flush()
+            _act(trial, engine, step, names, hold=n - 1 in held)
+            if n - 1 in held:
+                pending = (step["as"], names[step["as"]])
         except ExampleWrong as exc:
             out.update(problem=f"step {n} ({said}): {exc}", kind="example")
             return out
@@ -1219,6 +1245,7 @@ def _play(trial, engine, example, names, out):
             out.update(problem=f"step {n} ({said}) should have been refused, but the app allowed it", kind="app",
                        plain=f"{_plain_step(engine, step, names)} should have been stopped, but wasn't")
             return out
+    flush()
     stopped = failed_runs(engine, last_run)
     for c in example.get("expect") or []:
         try:

@@ -616,3 +616,26 @@ def test_an_example_expecting_what_only_a_rule_started_from_outside_fills_in_is_
         "expect": [{"record": "pay1", "field": "invoice", "equals": "inv1"}]}
     _, (result,) = trial.try_out(ws, [example], screens=False)
     assert not result["ok"] and "only “Bank feed payments” fills it in" in result["problem"] and "leave this out of the example" in result["problem"]
+
+
+def test_a_record_added_then_its_lines_has_its_rules_run_once_the_lines_are_in(app, owner):
+    """A sale, then its two lines, as an example writes it: the sale's own rule (stock out for each line) runs as the form
+    runs it, once the lines are in, not on a sale with none yet."""
+    _, ws = owner
+    _built(ws, [{"op": "create_table", "table": "sales", "label": "Sales", "fields": [{"key": "customer", "type": "text"}]},
+                {"op": "create_table", "table": "sale_lines", "label": "Sale lines", "embedded": True, "fields": [
+                    {"key": "sale", "type": "link", "table": "sales", "required": True}, {"key": "item", "type": "text"},
+                    {"key": "quantity", "type": "number"}]},
+                {"op": "create_table", "table": "stock_movements", "label": "Stock movements", "fields": [
+                    {"key": "item", "type": "text"}, {"key": "quantity", "type": "number"}]},
+                {"op": "add_automation", "automation": {
+                    "key": "out", "name": "Sales take stock out", "trigger": {"type": "record_created", "table": "sales"},
+                    "actions": [{"type": "create_for_each", "table": "stock_movements", "source": {"table": "sale_lines", "via": "sale"},
+                                 "values": {"item": "{{item.item}}", "quantity": "{{item.quantity}}"}}]}}])
+    example = {"title": "A sale of two things takes them out of stock", "steps": [
+        {"do": "add", "table": "sales", "as": "s1", "values": {"customer": "Jane"}},
+        {"do": "add", "table": "sale_lines", "as": "l1", "values": {"sale": "s1", "item": "Beans", "quantity": 2}},
+        {"do": "add", "table": "sale_lines", "as": "l2", "values": {"sale": "s1", "item": "Mug", "quantity": 1}}],
+        "expect": [{"table": "stock_movements", "count": 2}]}
+    _, (sold,) = trial.try_out(ws, [example], screens=False)
+    assert sold["ok"], sold
