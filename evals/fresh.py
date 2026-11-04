@@ -31,6 +31,15 @@ TRADES = [
     "kitchen renovation company", "horse riding school", "computer repair shop", "landscape supplies yard",
     "carpet cleaning service", "chartered fishing tours", "mobile dog wash", "rural fuel delivery", "building inspector",
     "town planning consultancy",
+    # more, so later rounds meet businesses no round has built
+    "glass and glazing contractor", "tree surgery and arborist service", "tattoo studio with four artists", "funeral home",
+    "driving school", "optometrist with two stores", "mobile coffee van fleet", "costume hire shop", "auto electrician",
+    "pallet supplier and recycler", "commercial laundry for hotels", "drone survey company", "piano tuning and repairs",
+    "occupational therapy clinic", "cattle station selling to feedlots", "orchard selling at markets and wholesale",
+    "coffee roaster supplying cafés", "website design agency", "translation and interpreting service", "locksmith",
+    "mobile vet for farm animals", "trophy and engraving shop", "party supplies and balloon decorator", "tiling contractor",
+    "home builder doing six houses a year", "secondhand furniture store", "seafood wholesaler", "art framing shop",
+    "vending machine operator", "self-storage facility",
 ]
 
 STYLES = ("plain", "plain", "vague")
@@ -66,13 +75,29 @@ needs someone's OK or gets chased, and one or two real numbers (a limit, a perce
 No headings, no lists, no technical words."""
 
 
-def scenarios(n, seed=None):
+def scenarios(n, seed=None, avoid=()):
     """n new businesses: [{"key", "title", "fresh": trade, "style", "turns": []}] (the owner's words are written when the
-    run starts)."""
+    run starts), none of the trades in `avoid` (ones earlier rounds built)."""
     rng = random.Random(seed)
-    picked = rng.sample(TRADES, min(n, len(TRADES)))
+    left = [t for t in TRADES if t not in set(avoid)]
+    picked = rng.sample(left, min(n, len(left)))
     return [{"key": f"fresh{i + 1}", "title": f"Fresh: {trade}", "fresh": trade, "style": rng.choice(STYLES), "turns": []}
             for i, trade in enumerate(picked)]
+
+
+def used(sources):
+    """The trades earlier rounds built: from their run folders (results.jsonl) or text files, one trade a line."""
+    import json
+    from pathlib import Path
+    out = []
+    for source in sources or []:
+        path = Path(source)
+        if path.is_dir() and (path / "results.jsonl").exists():
+            out += [r["title"].removeprefix("Fresh: ") for r in map(json.loads, (path / "results.jsonl").open())
+                    if r.get("title", "").startswith("Fresh: ")]
+        elif path.is_file():
+            out += [line.strip() for line in path.open() if line.strip()]
+    return out
 
 
 def owner(trade, style="plain"):
