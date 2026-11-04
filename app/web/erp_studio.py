@@ -110,7 +110,8 @@ def studio_data(wid):
     """The data model: the App map's Data view (a list named in ?open= selected)."""
     ctx(wid)
     opened = request.args.get("open")
-    return redirect(url_for("app.studio_map", wid=wid, view="data", open=f"data:{opened}" if opened else "data"))
+    add = {"add": "column"} if opened and request.args.get("add") == "column" else {}  # its add-a-column form open
+    return redirect(url_for("app.studio_map", wid=wid, view="data", open=f"data:{opened}" if opened else "data", **add))
 
 
 @bp.route("/studio/data.json")

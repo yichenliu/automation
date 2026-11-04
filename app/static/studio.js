@@ -177,12 +177,13 @@
         c.addEventListener("click", (ev) => { if (!ev.target.closest("[data-add-col]")) select(c.dataset.table); });
         c.addEventListener("keydown", (ev) => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); select(c.dataset.table); } });
       });
-      $$("[data-add-col]", cards).forEach((b) => b.addEventListener("click", () => {
-        hooks.edit?.(true);
-        select(b.dataset.addCol);
-        const add = $("details.add-field", panel);
-        if (add) { add.open = true; $("input[name=label]", add)?.focus(); add.scrollIntoView({block: "nearest"}); }
-      }));
+      $$("[data-add-col]", cards).forEach((b) => b.addEventListener("click", () => addColumn(b.dataset.addCol)));
+    }
+    function addColumn(table) {
+      hooks.edit?.(true);
+      select(table);
+      const add = $("details.add-field", panel);
+      if (add) { add.open = true; $("input[name=label]", add)?.focus(); add.scrollIntoView({block: "nearest"}); }
     }
     function showMode() {
       root.classList.toggle("as-cards", mode === "cards");
@@ -657,6 +658,7 @@
     let fitted = false;
     const fitOnce = () => { if (!fitted && canvas.getBoundingClientRect().width) { fitted = true; fit(0.6); if (selected) reveal(selected.table); } };
     requestAnimationFrame(fitOnce);  // (hidden behind the map at first: fitted when it's shown)
+    if (selected && new URLSearchParams(location.search).get("add") === "column") setTimeout(() => addColumn(selected.table));  // from the list's own page
     window.matchMedia("(prefers-color-scheme: dark)").addEventListener?.("change", draw);
     $$("[data-data-mode]").forEach((b) => b.addEventListener("click", () => {
       mode = b.dataset.dataMode;
@@ -1437,7 +1439,7 @@
       const r = item;
       const tables = data.tables;
       switch (type) {
-        case "notify": return `<label class="field"><span>Who's told</span>${whoSelect("to", s.to || "admin")}</label>${textWithInserts("message", "What it says", s.message, true)}`;
+        case "notify": return `<label class="field"><span>Who's told</span>${whoSelect("to", s.to || "admin")}<span class="help">They get a message in the app, under Notifications.</span></label>${textWithInserts("message", "What it says", s.message, true)}`;
         case "send_email": return `${textWithInserts("to", "To (an address, or a detail of the record)", s.to)}${textWithInserts("subject", "Subject", s.subject)}${textWithInserts("body", "Message", s.body, true)}`;
         case "task": return `<label class="field"><span>Who does it</span>${whoSelect("to", s.to || "editor")}</label>${textWithInserts("message", "What they're asked to do", s.message, true)}
           <label class="field"><span>How urgent</span><select name="priority">${["low", "normal", "high", "urgent"].map((p) => `<option value="${p}" ${p === (s.priority || "normal") ? "selected" : ""}>${p[0].toUpperCase() + p.slice(1)}</option>`).join("")}</select></label>`;
