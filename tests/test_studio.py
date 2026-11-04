@@ -253,7 +253,7 @@ def test_each_change_is_a_version_that_says_it_was_made_in_a_studio(app, client,
     login(client)
     _change(client, ws, {"do": "update_table", "table": "orders", "label": "Sales orders"})
     page = client.get(f"/w/{ws.id}/app/design").get_data(as_text=True)
-    assert "changed in a studio" in page and "Renamed the table Orders to Sales orders" in page
+    assert "changed on the App map" in page and "Renamed the table Orders to Sales orders" in page
     assert client.post(f"/w/{ws.id}/app/studio/data/place", json={"positions": {"orders": [10, 20], "nope": [1, 1]}}).get_json()["ok"]
     assert ws.settings["studio"]["positions"] == {"orders": [10, 20]}
 

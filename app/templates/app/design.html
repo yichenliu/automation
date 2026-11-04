@@ -1,7 +1,7 @@
 {% extends "app/layout.html" %}
 {% block title %}Versions{% endblock %}
 {% block content %}
-<div class="page-head"><div class="titles"><h1>{{ icon('history') }}Versions</h1><p class="sub">Every change to how your app works: what changed, who made it and how (asked of the AI, in a studio, by going back). Go back to any of them: it only changes how your app works, and nothing anyone entered is ever deleted.</p></div>
+<div class="page-head"><div class="titles"><h1>{{ icon('history') }}Versions</h1><p class="sub">Every change to how your app works: what changed, who made it, and how (asked of the AI, changed on the App map, or undone). Any change can be undone: that only changes how your app works, and nothing anyone entered is ever deleted.</p></div>
   {% if member and member.can('admin') and not (ws.settings or {}).get('test_copy_of') %}<div class="actions">{% if parts %}<details class="add-parts"><summary class="btn">{{ icon('boxes') }}Add ready-made parts</summary>
     <form method="post" action="{{ url_for('app.add_parts', wid=ws.id) }}" class="card card-body stack add-parts-box"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       {% for key, p in parts.items() %}<label class="part"><input type="checkbox" name="parts" value="{{ key }}"><span>{{ icon(p.icon) }}<b>{{ p.label }}</b><small>{{ p.about }}</small></span></label>{% endfor %}
@@ -14,9 +14,8 @@
       <div class="card-body stack">
         {% set lists = shown.get('tables', []) %}
         <div><div class="row"><b class="grow">{{ icon('network') }} {{ lists|length }} list{{ 's' if lists|length != 1 }}</b><a class="btn sm ghost" href="{{ url_for('app.studio_data', wid=ws.id) }}">What each keeps{{ icon('chevron-right') }}</a></div>
-          <div class="chips mt-1">{% for t in lists %}<a class="tagchip" href="{{ url_for('app.studio_data', wid=ws.id, open=t.key) }}" title="{{ t.fields|length }} fields · {{ counts.get(t.key, 0) }} records">{{ t.label }}{% if t.combines %} ⧉{% endif %}</a>{% else %}<span class="faint small">Nothing set up yet: describe your business in the builder.</span>{% endfor %}</div></div>
-        {% set rules = shown.get('automations') or [] %}{% set flows = shown.get('flows') or [] %}{% set staged = lists|selectattr('workflow')|list %}
-        <div class="row"><b class="grow">{{ icon('workflow') }} {{ staged|length }} with stages · {{ rules|length }} rule{{ 's' if rules|length != 1 }} · {{ flows|length }} step-by-step flow{{ 's' if flows|length != 1 }}</b>
+          <div class="chips mt-1">{% for t in lists %}<a class="tagchip" href="{{ url_for('app.studio_data', wid=ws.id, open=t.key) }}" title="{{ t.fields|length }} columns · {{ counts.get(t.key, 0) }} {{ t.label|lc if counts.get(t.key, 0) != 1 else t.singular|lc }}">{{ t.label }}{% if t.combines %} ⧉{% endif %}</a>{% else %}<span class="faint small">Nothing set up yet: describe your business in the builder.</span>{% endfor %}</div></div>
+        {% set rules = shown.get('automations') or [] %}{% set flows = shown.get('flows') or [] %}<div class="row"><b class="grow">{{ icon('workflow') }} {{ staged }} that move along stages · {{ rules|length }} rule{{ 's' if rules|length != 1 }} · {{ flows|length }} step-by-step flow{{ 's' if flows|length != 1 }}</b>
           <a class="btn sm ghost" href="{{ url_for('app.studio_map', wid=ws.id) }}">App map{{ icon('chevron-right') }}</a></div>
         {% set ai_n = ai_count_for(ws) %}<div class="row"><b class="grow">{{ icon('bot') }} {{ ai_n }} job{{ 's' if ai_n != 1 }} the AI does</b><a class="btn sm ghost" href="{{ url_for('app.ai_page', wid=ws.id) }}">AI helpers{{ icon('chevron-right') }}</a></div>
       </div></div>
@@ -25,9 +24,12 @@
     {% for v in versions %}
     <div class="version"><span class="n" title="Version {{ v.number }}">v{{ v.number }}</span>
       <div><div class="small">{% for c in v.changes[:6] %}<div>{{ c }}</div>{% endfor %}{% if v.changes|length > 6 %}<div class="faint">and {{ v.changes|length - 6 }} more</div>{% endif %}</div>
-        <div class="faint tiny mt-1">{{ {'chat': 'asked in the builder', 'restore': 'went back', 'start': 'start', 'manual': 'changed by hand', 'discovery': 'from Microsoft 365', 'import': 'from a file', 'studio': 'changed in a studio', 'parts': 'ready-made parts added', 'published': 'published from the test copy'}.get(v.source, v.source) }}{% if v.by %} · {{ v.by }}{% endif %} · {{ v.created_at|ago }}</div></div>
-      {% if v.number != ws.version and member and member.can('admin') %}<form method="post" action="{{ url_for('app.restore_version', wid=ws.id, number=v.number) }}" data-confirm-text="Go back to how it worked in version {{ v.number }}? Everything you've entered stays as it is.">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn sm">Go back</button></form>{% elif v.number == ws.version %}<span class="tag">now</span>{% endif %}
+        <div class="faint tiny mt-1">{{ {'chat': 'asked in the builder', 'restore': 'undone', 'start': 'start', 'manual': 'changed by hand', 'discovery': 'from Microsoft 365', 'import': 'from a file', 'studio': 'changed on the App map', 'parts': 'ready-made parts added', 'published': 'published from the test copy'}.get(v.source, v.source) }}{% if v.by %} · {{ v.by }}{% endif %} · {{ v.created_at|ago }}</div></div>
+      {% if (v.number - 1) in kept and member and member.can('admin') %}{% set later = ws.version - v.number %}{% set what = (v.changes[0] if v.changes else 'this change')|truncate(80) %}
+        <form method="post" action="{{ url_for('app.restore_version', wid=ws.id, number=v.number - 1) }}"
+              data-confirm-text="Undo “{{ what }}”{% if later %} and the {{ later }} change{{ 's' if later != 1 }} made after it{% endif %}? Your app goes back to how it was before it. Everything people have entered stays as it is.">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn sm" title="Your app goes back to how it was just before this">{{ icon('undo-2') }}{{ 'Undo this' if not later else 'Undo this and later' }}</button></form>{% endif %}
+      {% if v.number == ws.version %}<span class="tag">now</span>{% endif %}
     </div>
     {% endfor %}
   </div>{% endif %}

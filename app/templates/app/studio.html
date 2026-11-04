@@ -2,16 +2,16 @@
 {% block title %}App map{% endblock %}
 {% block content %}
 <div class="page-head"><div class="titles"><h1>{{ icon('map') }}App map</h1>
-  <p class="sub">How your app works: where work comes in, the steps it goes through, who does what, and what happens automatically.
-    Click anything to see more.{% if can_edit %} Looking is safe: nothing changes until you press Change and save, and every change can be taken back.{% endif %}</p></div>
+  <p class="sub">How your app works, step by step: where work comes in, who does what, and what happens automatically. Open anything to see more.
+    {% if can_edit %}Looking is safe: nothing changes unless you change it yourself, and every change can be undone.{% endif %}</p></div>
   <div class="actions">
     <div class="segmented" role="tablist" aria-label="What to show">
       <button type="button" role="tab" data-show-view="map" aria-selected="{{ 'true' if view == 'map' else 'false' }}">{{ icon('route') }}How work flows</button>
       <button type="button" role="tab" data-show-view="data" aria-selected="{{ 'true' if view == 'data' else 'false' }}">{{ icon('table') }}What each list keeps</button></div>
   </div></div>
 {% if can_edit %}{% set ask_hint = 'Say what should change' %}{% include "app/_studio_ask.html" %}
-<div class="map-editing" data-editing-bar hidden role="status">{{ icon('pencil') }}<span class="grow"><b>You're changing your app.</b> Each change is checked first, saved as a new version, and can be taken back.</span>
-  <button type="button" class="btn sm primary" data-editing-done>Done changing</button></div>{% endif %}
+<div class="map-editing" data-editing-bar hidden role="status">{{ icon('pencil') }}<span class="grow"><b>Changing your app.</b> Each change is saved as soon as you make it, and can be undone.</span>
+  <button type="button" class="btn sm primary" data-editing-done>Done</button></div>{% endif %}
 <div data-studio-page data-view="{{ view }}" data-here="{{ url_for('app.studio_map', wid=ws.id) }}">
   <section data-view-pane="map" {{ 'hidden' if view != 'map' }}>
     <div class="studio wf-studio map-studio" data-studio="workflows" data-integrated="yes" data-can-edit="{{ 'yes' if can_edit else '' }}"

@@ -127,7 +127,7 @@ def _history(workspace, before_id):
     elsewhere = (Version.query.filter(Version.workspace_id == workspace.id, Version.source.notin_(["chat", "start"]),
                                       *([Version.created_at >= since] if since else []))
                  .order_by(Version.number).limit(40).all())
-    said = {"studio": "changed by hand in a studio", "manual": "changed by hand", "restore": "went back to an earlier version",
+    said = {"studio": "changed by hand on the App map", "manual": "changed by hand", "restore": "undid a change",
             "parts": "added ready-made parts", "published": "published from the test copy", "import": "brought in from a file"}
     items = [(m.created_at, 0, m) for m in turns] + [(v.created_at, 1, v) for v in elsewhere]
     out = []

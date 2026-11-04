@@ -66,7 +66,8 @@ def handoffs(bp, tables):
                 out.append({"from": src["key"], "at": at, "to": to, "how": how, "rule": a["key"], "label": a["name"],
                             "on": a.get("enabled", True), "button": a["trigger"]["type"] == "button", "ai": ai, "asks": asks,
                             "event": a["trigger"]["type"], "press": a["trigger"].get("label") or "", "every": a["trigger"].get("every") or "",
-                            "sets": _sets(tables[to], s) if how == "updates" else [], "moves_to": _moves_to(a, src)})
+                            "sets": _sets(tables[to], s) if how == "updates" else [], "moves_to": _moves_to(a, src),
+                            "step_if": s.get("only_if") or []})
     return out
 
 
@@ -234,8 +235,8 @@ def build(engine, problems=(), names=None):
         lists = [card(k) for k in p["lists"]]
         shown.append({**p, "cards": lists, "count": sum(c["count"] for c in lists), "problems": sum(len(c["problems"]) for c in lists),
                       "ai": sum(len(c["ai"]["steps"]) + len(c["ai"]["fields"]) for c in lists),
-                      "handoffs": [{**h, "from_label": seen[h["from"]]["label"], "to_label": seen[h["to"]]["label"], "only_if": only_if.get(h["rule"], [])}
-                                   for h in p["handoffs"]]})
+                      "handoffs": [{**h, "from_label": seen[h["from"]]["label"], "to_label": seen[h["to"]]["label"],
+                                    "only_if": only_if.get(h["rule"], []) + _step_if(engine, h)} for h in p["handoffs"]]})
     return {"processes": shown,
             "reference": [{**card(k), "used_by": sorted({t["label"] for t in seen.values() if t["key"] != k and not t.get("embedded")
                                                          and any(f["type"] == "link" and f.get("table") == k for f in t["fields"])})}
@@ -246,9 +247,29 @@ def build(engine, problems=(), names=None):
 
 
 def _only_if(engine, a):
+    """What else must be true for a rule to act, in words: not the change that starts it, nor the stage it acts at
+    (said already), but “Due is before today”."""
     from .engine import automations
+    table = engine.tables.get(a["trigger"].get("table") or "")
+    f = _status(table) if table else None
+    out = []
+    for c in a.get("conditions") or []:
+        if not isinstance(c, dict) or c.get("op") in ("changed", "changed_to") or (f and c.get("field") == f["key"] and c.get("op") == "equals"):
+            continue
+        try:
+            out.append(automations.describe_condition(engine, c, table["key"] if table else None))
+        except Exception:  # noqa: BLE001 - said without it rather than not drawn
+            pass
+    return out
+
+
+def _step_if(engine, h):
+    """The step's own “only if” (a payment marks its invoice paid only when nothing's left owing)."""
+    from .engine import automations
+    if not h.get("step_if"):
+        return []
     try:
-        return automations.describe(engine, a)["only_if"]
+        return [automations.automations_words(engine, h["step_if"], h["from"])]
     except Exception:  # noqa: BLE001 - said without it rather than not drawn
         return []
 

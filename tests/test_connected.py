@@ -117,7 +117,7 @@ def test_a_change_in_either_studio_reaches_everything_that_depends_on_it(app, cl
     history = chat._history(ws, 10 ** 9)
     said = " ".join(m["content"] for m in history)
     assert history[0]["content"] == "Make me an order tracker"
-    assert "Meanwhile the owner changed by hand in a studio" in said and "“Shipped” to “Dispatched”" in said and "Keep it." in said
+    assert "Meanwhile the owner changed by hand on the App map" in said and "“Shipped” to “Dispatched”" in said and "Keep it." in said
     assert "Dispatched" in prompts.outline(ws.blueprint, {})
     assert not schema.check(ws.blueprint)
 

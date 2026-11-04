@@ -160,7 +160,7 @@ def studio_undo(wid):
     if not isinstance(to, int) or to < 1 or to >= (ws.version or 0):
         return jsonify(error="There's nothing to take back"), 400
     try:  # (restore names the records as they were then too: choices renamed since get their old names back)
-        chat.restore(ws, to, by=current_user.id, why=f"Took back a change made in a studio (back to how it was at version {to})")
+        chat.restore(ws, to, by=current_user.id, why="Undid a change made on the App map")
     except ValueError:
         return jsonify(error="That version isn't there any more"), 400
     return jsonify(ok=True, version=ws.version)
@@ -394,5 +394,19 @@ def studio_workflow_records(wid):
         abort(404)
     q = (request.args.get("q") or "").strip().lower()
     rows = list(reversed(engine.rows(table)[-400:]))
-    found = [{"id": r.id, "title": engine.title(r)} for r in rows if not q or q in str(engine.title(r)).lower()][:30]
+    found = [{"id": r.id, "title": engine.title(r), "detail": _told_apart(engine, table, r)} for r in rows if not q or q in str(engine.title(r)).lower()][:30]
     return jsonify(items=found)
+
+
+def _told_apart(engine, table, r):
+    """A second line for a record in a list to pick from, so ones named alike (three payments of one invoice) differ:
+    when it was added, and its first amount or stage."""
+    t = engine.tables[table]
+    bits = [f"added {ago(r.created_at)}"] if r.created_at else []
+    for f in t["fields"]:
+        v = (r.data or {}).get(f["key"])
+        if v not in (None, "", []) and (engine.kind(f) == "money" or f["type"] == "select") and f["key"] != t.get("title_field"):
+            bits.append(f"{f['label']}: {engine.display(f, v)}")
+        if len(bits) >= 3:
+            break
+    return " · ".join(bits)

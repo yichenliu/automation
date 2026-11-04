@@ -1107,7 +1107,11 @@ def design(wid):
     versions = Version.query.filter_by(workspace_id=ws.id).order_by(Version.number.desc()).limit(100).all() if g.member.can("admin") else []
     from ..blueprint import modules
     present = modules._present(ws.blueprint)
+    from .. import appmap
+    kept = {n for (n,) in db.session.query(Version.number).filter_by(workspace_id=ws.id)}  # what each change can be undone back to
+    staged = sum(1 for t in engine.visible_blueprint().get("tables", []) if appmap._stages(t))  # as the App map counts them
     return render_template("app/design.html", ws=ws, e=engine, versions=versions, counts=engine.counts(), shown=engine.visible_blueprint(),
+                           kept=kept, staged=staged,
                            words={a["key"]: automations.describe(engine, a) for a in engine.bp.get("automations", [])},
                            parts={k: p for k, p in modules.MODULES.items() if k not in present})
 
@@ -1175,7 +1179,7 @@ def restore_version(wid, number):
         chat.restore(ws, number, by=current_user.id)
     except ValueError:
         abort(404)
-    flash(f"The design is back to version {number}. Your records weren't touched.", "success")
+    flash("Undone: your app works as it did before that change. Nothing anyone entered was touched.", "success")
     return redirect(url_for("app.design", wid=wid))
 
 

@@ -984,6 +984,8 @@ def _do(engine, automation, action, record, run):
                     values = {**copy_matching(engine, action["table"], linked or record, also=[record]), **values}
                 made.append(engine.create(action["table"], values, by=_by(automation), depth=depth, automations=True))
         t = engine.tables[action["table"]]
+        if not made:  # nothing to make them from: said, never “Created 0 lines”
+            return {"result": f"No {schema.lc(t['label'])} were added: there was nothing in {f['label']} to add them for"}
         return {"result": f"Created {len(made)} {schema.lc(t['label']) if len(made) != 1 else schema.lc(t['singular'])}, one for each in {f['label']}"}
     if kind == "create_for_each":
         source = action["source"]
@@ -997,6 +999,8 @@ def _do(engine, automation, action, record, run):
                     values = {**copy_matching(engine, action["table"], row, also=[made_for.record if made_for else None, record]), **values}
                 made.append(engine.create(action["table"], values, by=_by(automation), depth=depth, automations=False))
         t, s = engine.tables[action["table"]], engine.tables[source["table"]]
+        if not made:
+            return {"result": f"No {schema.lc(t['label'])} were added: it had no {schema.lc(s['label'])} to copy"}
         return {"result": f"Created {len(made)} {schema.lc(t['label']) if len(made) != 1 else schema.lc(t['singular'])} from its {schema.lc(s['label'])}"}
     if kind == "delete_record":
         target = record

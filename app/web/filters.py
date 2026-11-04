@@ -122,6 +122,10 @@ def about_field(e, t, f):
             used = [schema.field(t, n)["label"] for n in sorted(expr.names_in(f["expression"])) if schema.field(t, n)]
         except Exception:  # noqa: BLE001 - a formula that can't be read is still shown, just without its parts
             used = []
+        from ..engine import automations
+        said = automations.expression_words(e, t["key"], f["expression"]) if t else ""
+        if said and not said.startswith("worked out") and len(said) <= 60:  # “Total − Paid”, as it's worked out
+            return kind, said
         return kind, ("from " + ", ".join(used[:-1]) + (" and " if len(used) > 1 else "") + used[-1]) if used else f["expression"]
     if f["type"] == "rollup":
         what = AGGREGATE_WORDS.get(f["aggregate"], f["aggregate"])

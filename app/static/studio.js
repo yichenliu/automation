@@ -46,7 +46,7 @@
     if (!lines || !lines.length) return;
     const el = html(`<div class="studio-said ${kind}">${icon(kind === "bad" ? "triangle-alert" : "circle-check")}<div class="grow">${lines.slice(0, 3).map((l) => `<div>${esc(l)}</div>`).join("")}${lines.length > 3 ? `<div class="faint">and ${lines.length - 3} more</div>` : ""}</div></div>`);
     if (undo) {
-      const b = html(`<button type="button" class="btn sm">${icon("undo-2")}Take it back</button>`);
+      const b = html(`<button type="button" class="btn sm">${icon("undo-2")}Undo</button>`);
       b.addEventListener("click", undo);
       el.appendChild(b);
     }
@@ -54,7 +54,7 @@
     close.addEventListener("click", () => { box.innerHTML = ""; });
     el.appendChild(close);
     box.appendChild(el);
-    if (kind !== "bad") setTimeout(() => { if (el.isConnected) el.classList.add("fading"); }, 9000);
+    if (kind !== "bad") setTimeout(() => { if (el.isConnected) el.classList.add("fading"); }, undo ? 20000 : 9000);  // long enough to undo
   }
 
   // --- asking the AI, from inside a studio -----------------------------------------------------------------------------
@@ -69,7 +69,7 @@
       if (!text) { input.focus(); return; }
       const button = $("button", form);
       button.disabled = true; input.disabled = true;
-      said.hidden = false; said.className = "studio-ask-said small"; said.innerHTML = `<span class="spin"></span> Working on it: the AI is changing your app…`;
+      said.hidden = false; said.className = "studio-ask-said small"; said.innerHTML = `<span class="spin"></span> The AI is working out the change…`;
       const data = new FormData();
       data.append("text", text); data.append("page", location.pathname + location.search);
       let m;
@@ -79,11 +79,24 @@
       } catch (e) { m = null; }
       if (!m) { said.textContent = "That didn't reach the AI: try again."; button.disabled = false; input.disabled = false; return; }
       const started = Date.now();
-      while (m && !["done", "failed"].includes(m.status) && Date.now() - started < 30 * 60 * 1000) {
+      let stop = false;
+      const slow = () => {  // past a minute: it carries on without them watching; past ten, said plainly and left
+        said.innerHTML = `<span class="spin"></span> Still working: this can take a few minutes. You can leave this page; the change still happens, and the builder shows it when it's done.
+          <button type="button" class="btn sm ghost" data-stop>Stop waiting</button>`;
+        $("[data-stop]", said).addEventListener("click", () => { stop = true; });
+      };
+      while (m && !["done", "failed"].includes(m.status) && !stop && Date.now() - started < 10 * 60 * 1000) {
         await new Promise((r) => setTimeout(r, 1500));
         const next = await get(form.dataset.poll + m.id);
         if (next) m = next;
         if (m.status === "waiting_ai") said.innerHTML = `<span class="spin"></span> Waiting for the AI to be free…`;
+        else if (Date.now() - started > 60 * 1000 && !$("[data-stop]", said)) slow();
+      }
+      if (!["done", "failed"].includes(m.status)) {
+        said.className = "studio-ask-said small";
+        said.textContent = "It's still being worked on. Nothing has changed yet: the builder (Change my app) will show the answer when it's ready.";
+        button.disabled = false; input.disabled = false;
+        return;
       }
       const reply = html(`<div>${m.html || ""}</div>`);
       const replyText = $(".text", reply);  // the AI's reply itself, without the builder's progress and buttons
@@ -429,7 +442,7 @@
       const done = await post(root.dataset.undo, {to});
       if (done.error) { statusLine(status, [done.error], "bad"); return; }
       await reload();
-      statusLine(status, ["Taken back: it's as it was before that change"], "good");
+      statusLine(status, ["Undone: it's as it was before that change"], "good");
     }
     async function reload() {
       const fresh = await get(root.dataset.json);
@@ -476,7 +489,7 @@
           <p class="small muted">${plural(tables().length, "list", "lists")}, ${plural(model.links.length, "link", "links")} between them. A line joins a list to the one it looks up: ${esc(example())}.
             ${canEdit ? "Drag a list to move it; drag its + onto another list to link the two." : ""}</p></div>
         <ul class="studio-list">${tables().map((t) => `<li><button type="button" data-pick="${esc(t.key)}">${icon(t.icon)}<span class="grow">${esc(t.label)}</span><span class="faint tiny">${plural(t.fields.length, "column", "columns")}</span></button></li>`).join("")}</ul>
-        ${canEdit ? `<p class="small faint">${icon("info")} Every change here is checked first and saved as a new version: after each one, a <b>Take it back</b> button undoes it. Records are never deleted by a change here.</p>` : ""}
+        ${canEdit ? `<p class="small faint">${icon("info")} Every change here is checked first and saved straight away; after each one, an <b>Undo</b> button takes it back. Nothing people have entered is ever deleted by a change here.</p>` : ""}
       </div>`);
       $$("[data-pick]", box).forEach((b) => b.addEventListener("click", () => select(b.dataset.pick)));
       return box;
@@ -497,11 +510,11 @@
             : `<a class="btn sm ghost" href="${esc(root.dataset.workflows)}?table=${encodeURIComponent(t.key)}">${icon("workflow")}Its stages and rules</a>`}</div>
         <div><h2 class="panel-title">${icon(t.icon)}${esc(t.label)}</h2><p class="small muted">${plural(t.count, t.singular.toLowerCase(), t.label.toLowerCase())} now${t.embedded ? " · filled in inside another record" : ""}</p>
           ${t.combines.length ? `<p class="small">${icon("layers")} Put together from ${esc(t.combines.map((k) => (tableOf(k) || {label: k}).label).join(", "))}, and kept up to date as they change: nobody adds to it by hand. Ask the AI to change what goes into it.</p>` : ""}</div>
-        ${canEdit ? `<form class="stack" data-form="table">
+        ${canEdit ? `<details class="rename-list"><summary class="small">${icon("pencil")}Rename this list or move it in the menu</summary><form class="stack mt-1" data-form="table">
           <label class="field"><span>Name of the list</span><input type="text" name="label" value="${esc(t.label)}" required maxlength="80"></label>
           <label class="field"><span>One of them is called</span><input type="text" name="singular" value="${esc(t.singular)}" maxlength="60"></label>
           ${sections.length ? `<label class="field"><span>In the menu under</span><select name="section">${sections.map((s) => `<option value="${esc(s.key)}" ${s.key === t.module ? "selected" : ""}>${esc(s.label)}</option>`).join("")}</select></label>` : ""}
-          <button class="btn sm">Save</button></form>` : ""}
+          <button class="btn sm">Save</button></form></details>` : ""}
         ${allowed && !canEdit ? `<button type="button" class="btn sm" data-change-it>${icon("pencil")}Change what it keeps</button>` : ""}
         ${canEdit ? addFieldForm(t) : ""}
         <div><div class="label">What each ${esc(t.singular.toLowerCase())} keeps${canEdit ? ` <span class="faint tiny">· drag to put them in order</span>` : ""}${t.fields.some((f) => f.required) ? ` <span class="faint tiny">· <span class="req">*</span> must be filled in</span>` : ""}</div>
@@ -509,7 +522,7 @@
             ${canEdit ? icon("grip-vertical", "grip") : ""}<button type="button" data-field="${esc(f.key)}"><span class="grow"><b>${esc(f.label)}</b>${f.required ? ' <span class="req">*</span>' : ""}${f.title ? ' <span class="tag" title="Each one is called by this">used as its name</span>' : ""}${stageField(t, f) ? ' <span class="tag">its stages</span>' : ""}
             <div class="faint tiny">${esc([f.kind !== f.label ? f.kind : "", f.detail].filter(Boolean).join(" · "))}</div></span>${icon("chevron-right")}</button></li>`).join("")}</ul></div>
         ${canEdit ? `<details class="danger-zone"><summary class="small">Delete this list</summary>
-          <p class="small muted">${t.count ? `Its ${plural(t.count, "record goes", "records go")} to the bin with it, and come${t.count === 1 ? "s" : ""} back if you take it back.` : "It has no records."}</p>
+          <p class="small muted">${t.count ? `Its ${plural(t.count, `${esc(t.singular.toLowerCase())} goes`, `${esc(t.label.toLowerCase())} go`)} to the bin with it, and come${t.count === 1 ? "s" : ""} back if you undo this.` : `It has no ${esc(t.label.toLowerCase())} in it.`}</p>
           <button type="button" class="btn sm danger" data-delete-table>${icon("trash-2")}Delete ${esc(t.label)}</button></details>` : ""}
       </div>`);
       $("[data-back]", box).addEventListener("click", () => select(null));
@@ -556,11 +569,14 @@
         const fd = new FormData(form);
         const made = await change({do: "add_field", table: t.key, label: fd.get("label"), type: fd.get("type"), options: fd.get("options"),
                                    link_to: fd.get("link_to"), to: fd.get("link_to"), multiple: !!fd.get("multiple"), expression: fd.get("expression"), required: !!fd.get("required")});
-        if (made) { const fresh = tableOf(t.key); select(t.key, fresh.fields[fresh.fields.length - 1].key); }
+        if (made) { const fresh = tableOf(t.key); justAdded = fresh.fields[fresh.fields.length - 1].key; select(t.key, justAdded); }
       });
     }
 
+    let justAdded = null;  // the column just added: its panel says it's saved
     function fieldPanel(t, f) {
+      const added = justAdded === f.key;
+      justAdded = null;
       const family = [["text", "long_text", "rich_text"], ["number", "money"], ["date", "datetime"]].find((x) => x.includes(f.type));
       // what it can change to: any kind while nothing's filled in; once something is, only a kind those values fit
       const kinds = f.calculated ? [] : model.types.filter((x) => x.type === f.type || !x.type.match(/formula|autonumber/)
@@ -568,6 +584,7 @@
       const numeric = ["number", "percent", "formula", "rollup"].includes(f.type);
       const box = html(`<div class="stack">
         <div class="row"><button type="button" class="btn sm ghost" data-back>${icon("chevron-left")}${esc(t.label)}</button></div>
+        ${added ? `<p class="studio-said good small">${icon("circle-check")}<span>Added and saved: every ${esc(t.singular.toLowerCase())} has it now. You can change more about it below, or leave it as it is.</span></p>` : ""}
         <div><h2 class="panel-title">${esc(f.label)}</h2><p class="small muted">${esc(f.kind)}${f.detail ? " · " + esc(f.detail) : ""}</p>
           ${f.ai ? `<p class="small"><span class="ai-tag">${icon("sparkles")}AI</span> The AI fills this in.</p>` : ""}
           ${stageField(t, f) && integrated ? `<p class="small">${icon("arrow-right")} These are each ${esc(t.singular.toLowerCase())}'s stages. Add one between two, put them in order or rename them where you can see how ${esc(a(t.singular.toLowerCase()))} moves along:
@@ -576,7 +593,7 @@
         <form class="stack" data-form="field">
           <label class="field"><span>Name</span><input type="text" name="label" value="${esc(f.label)}" required maxlength="80"></label>
           ${kinds.length > 1 ? `<label class="field"><span>What goes in it</span><select name="type">${kinds.map((x) => `<option value="${x.type}" ${x.type === f.type ? "selected" : ""}>${esc(x.label)}</option>`).join("")}</select>
-            <span class="help">${f.filled ? `${plural(f.filled, `${t.singular.toLowerCase()} has`, `${t.label.toLowerCase()} have`)} something in it, so only a kind that still fits.` : "Any kind, while nothing is filled in yet."}</span></label>`
+            <span class="help">${f.filled ? `${plural(f.filled, `${t.singular.toLowerCase()} has`, `${t.label.toLowerCase()} have`)} something in it, so only a kind that still fits.` : "Nothing's been entered in it yet, so it can be any kind."}</span></label>`
             : f.filled && !f.calculated ? `<p class="help">${plural(f.filled, `${esc(t.singular.toLowerCase())} has`, `${esc(t.label.toLowerCase())} have`)} something in it, so it can only stay ${esc(f.kind.toLowerCase())}. To keep something else, add a new column.</p>` : ""}
           ${f.type === "formula" ? `<label class="field"><span>Worked out as</span><input type="text" name="expression" value="${esc(f.expression)}"></label>` : ""}
           <label class="field"><span>Help shown under it</span><input type="text" name="help" value="${esc(f.help)}" maxlength="200" placeholder="What to put here"></label>
@@ -595,12 +612,12 @@
           ${f.ai_fillable && !f.calculated ? `<fieldset class="ai-trust stack"><label class="check"><input type="checkbox" name="ai_on" ${f.ai_instructions ? "checked" : ""}> <span class="ai-tag">${icon("sparkles")}AI</span> The AI fills this in</label>
             <label class="field" data-ai-said ${f.ai_instructions ? "" : "hidden"}><span>What the AI is asked</span><textarea name="ai" rows="3" placeholder="Summarise the notes in one sentence">${esc(f.ai_instructions)}</textarea>
             <span class="help">It fills it in when a record is added or what it's made from changes; people can still change it.</span></label></fieldset>` : ""}
-          ${!f.calculated && !["select", "multi_select", "link", "user", "file", "image", "signature"].includes(f.type) ? `<label class="field"><span>Filled in to start with</span><input type="text" name="default" value="${esc(f.default ?? "")}" maxlength="200"></label>` : ""}
+          ${!f.calculated && !["select", "multi_select", "link", "user", "file", "image", "signature", "checkbox"].includes(f.type) ? `<label class="field"><span>Filled in to start with</span><input type="text" name="default" value="${esc(f.default ?? "")}" maxlength="200"></label>` : ""}
           <button class="btn primary sm">Save</button></form>
         ${["select", "multi_select"].includes(f.type) ? choices(t, f) : ""}
         ${f.title ? "" : `<button type="button" class="btn sm ghost" data-title>${icon("tag")}Use this as each ${esc(t.singular.toLowerCase())}'s name</button>`}
         <details class="danger-zone"><summary class="small">Remove this column</summary>
-          <p class="small muted">What's filled in is kept, and comes back if you take it back.</p>
+          <p class="small muted">What people entered in it is kept, and comes back if you undo this.</p>
           <button type="button" class="btn sm danger" data-remove>${icon("trash-2")}Remove ${esc(f.label)}</button></details>`}
         ${allowed && !canEdit ? `<button type="button" class="btn sm" data-change-it>${icon("pencil")}Change it</button>` : ""}
       </div>`);
@@ -795,6 +812,7 @@
       const done = await post(root.dataset.change, {id, change: body});
       if (done.error) { statusLine(status, [done.error], "bad"); return false; }
       undoStack.push(done.before);
+      if (body.do === "add_rule") done.said = [`Made “${body.name}”. It's on now.`];
       data.items = done.items; data.tables = done.tables;
       item = done.item || {kind: "map"}; tried = null;
       remember(done.id || itemId());
@@ -873,7 +891,7 @@
       const did = h.how === "makes" ? `${a(one(h.to))} is made automatically`
         : h.sets.length ? `its ${one(h.to)}'s ${listSaid(h.sets.map(([f, v]) => `${f} is set to “${v}”`))} automatically`
         : `its ${one(h.to)} is updated automatically`;
-      const only = (h.only_if || []).length ? `, if ${h.only_if.map((x) => x.charAt(0).toLowerCase() + x.slice(1)).join(" and ")}` : "";
+      const only = (h.only_if || []).length ? ` and ${h.only_if.map((x) => x.charAt(0).toLowerCase() + x.slice(1)).join(" and ")}` : "";
       const on = h.moves_to && h.how === "makes" ? ` and the ${one(h.from)} moves on to ${h.moves_to}` : "";
       return `${whenSaid(h)}${only}, ${did}${on}${h.asks ? ", once someone approves it" : ""}${h.ai ? ", with the AI's help" : ""}.`;
     }
@@ -882,10 +900,11 @@
     // a rule said by what starts it: a button people press is by hand, the rest happen by themselves
     function ruleHtml(r, here = false) {
       const every = (EVERY[r.every] || "Every so often").toLowerCase();
-      const on = r.moves_to ? ` and moves ${here ? "it" : "them"} on to ${esc(r.moves_to)}` : "";
-      const said = r.event === "button" ? `<span class="map-tag">By hand</span>Someone presses “${esc(r.press || r.name)}”<span class="faint"> · then the app does the rest: ${esc(r.name)}</span>`
-        : r.event === "schedule" ? `${here ? `<span class="map-tag auto">Automatic</span>${esc(cap(every))}, for the ones here: ` : ""}${esc(r.name)}${here ? `<span class="faint">${on}</span>` : `<span class="faint"> · ${esc(every)}${r.at ? `, for ones at ${esc(r.at)}` : ""}${on}</span>`}`
-        : `${here ? `<span class="map-tag auto">Automatic</span>When one gets here: ` : ""}${esc(r.name)}${!here && r.at ? `<span class="faint"> · when one reaches ${esc(r.at)}${on}</span>` : `<span class="faint">${on}</span>`}`;
+      const on = r.moves_to ? `, moving ${here ? "it" : "them"} on to ${esc(r.moves_to)}` : "";
+      const only = (r.only_if || []).length ? ` if ${esc(r.only_if.map((x) => x.charAt(0).toLowerCase() + x.slice(1)).join(" and "))}` : "";
+      const said = r.event === "button" ? `<span class="map-tag">By hand</span>Someone presses “${esc(r.press || r.name)}”<span class="muted">, then the app does the rest: ${esc(r.name)}</span>`
+        : r.event === "schedule" ? `${here ? `<span class="map-tag auto">Automatic</span>` : ""}${esc(cap(every))}: ${esc(r.name)}<span class="muted">${here ? `, for the ones here${only}` : r.at ? `, for ones at ${esc(r.at)}${only}` : only}${on}</span>`
+        : `${here ? `<span class="map-tag auto">Automatic</span>When one gets here: ` : ""}${esc(r.name)}<span class="muted">${!here && r.at && !r.name.toLowerCase().includes(r.at.toLowerCase()) ? ` · when one reaches ${esc(r.at)}` : ""}${only}${on}</span>`;
       return `<button type="button" class="map-auto ${r.on ? "" : "off"}" data-open="rule:${esc(r.key)}" title="See or change this rule">
         ${icon(r.event === "button" ? "user" : "zap")}<span>${said}${r.on ? "" : ` <span class="tag">switched off</span>`}${stoppedSaid(r.stopped)}</span></button>`;
     }
@@ -902,7 +921,7 @@
       const from = p.cards.slice(0, i).map((x) => x.key).reverse()
         .find((k) => p.links.some((l) => l.from === k && l.to === c.key) || p.handoffs.some((h) => h.how === "updates" && h.from === c.key && h.to === k));
       const byHand = hs.some((h) => h.how === "makes") || c.entries.length ? ""
-        : `<p class="map-line">${icon("user")}<span>People add ${a(one(c.key))}${from ? ` for ${a(one(from))}` : ""} themselves.</span></p>`;
+        : `<p class="map-line">${icon("user")}<span>Your team adds ${a(one(c.key))}${from ? ` for ${a(one(from))}` : ""}.</span></p>`;
       return `<div class="map-link">${byHand}${hs.map(autoHtml).join("")}</div>`;
     }
     // a list with stages of its own goes through them in order (›); a plain Status is only a choice of where one is
@@ -911,11 +930,11 @@
       return `<div class="map-stages-row"><span class="map-cap">${c.workflow ? "Stages" : esc(c.field_label || "Status")}</span><ol class="map-stages ${c.workflow ? "" : "plain"}" aria-label="${c.workflow ? `The stages ${esc(many(c.key))} go through, in order` : `What its ${esc(c.field_label || "Status")} can be`}">${c.stages.map((st) => {
         const n = stepAt(c.key, st.name);
         return `<li class="map-stage ${n ? "lit" : ""}" title="${esc(cap(howMany(st.count, c.key)))} at ${esc(st.name)} now${st.approves ? " · someone approves at this stage" : ""}${st.rules.length ? " · something happens automatically here" : ""}">
-          ${n ? `<i class="map-n" title="Step ${n} of the example">${n}</i>` : ""}<span>${esc(st.name)}</span>${st.count && !played ? `<b>${st.count}</b>` : ""}${st.approves ? icon("user-check") : ""}${st.rules.length ? icon("zap") : ""}</li>`;
+          ${n ? `<i class="map-n">step ${n}</i>` : ""}<span>${esc(st.name)}</span>${st.count && !played ? `<b>${st.count}</b>` : ""}${st.approves ? icon("user-check") : ""}${st.rules.length ? icon("zap") : ""}</li>`;
       }).join("")}</ol></div>`;
     }
-    const byHandSaid = (c) => c.workflow ? (c.anytime.length || c.stages.some((st) => st.moves.length) ? `People move them on with buttons: ${listSaid([...new Set(c.stages.flatMap((st) => st.moves.map((m) => `“${m.label}”`)).concat(c.anytime.map((m) => `“${m.label}”`)))].slice(0, 4))}.` : "")
-      : `People move them along by changing their ${c.field_label || "Status"}.`;
+    const byHandSaid = (c) => c.workflow ? (c.anytime.length || c.stages.some((st) => st.moves.length) ? `Your team moves them on with buttons: ${listSaid([...new Set(c.stages.flatMap((st) => st.moves.map((m) => `“${m.label}”`)).concat(c.anytime.map((m) => `“${m.label}”`)))].slice(0, 4))}.` : "")
+      : `Your team moves them along by changing their ${c.field_label || "Status"}.`;
     function stepHtml(p, c, i, said) {
       const auto = [...p.handoffs.filter((h) => h.from === c.key && !said.has(`${h.rule}>${h.to}`)).map(autoHtml),
                     ...c.rules.filter((r) => !p.handoffs.some((h) => h.rule === r.key)).map(ruleHtml)];
@@ -924,7 +943,7 @@
         ${p.cards.length > 1 ? `<span class="map-step-n" aria-hidden="true">${i + 1}</span>` : ""}
         <div class="map-step-body">
           <header class="map-step-head"><button type="button" class="map-step-name" data-open="list:${esc(c.key)}">${icon(c.icon)}<b>${esc(c.label)}</b></button>
-            <span class="faint small">${esc(howMany(c.count, c.key))} now</span><span class="map-step-more">Details${icon("chevron-right")}</span></header>
+            <span class="muted small">${esc(howMany(c.count, c.key))} now</span><span class="map-step-more">Details${icon("chevron-right")}</span></header>
           ${stagesHtml(c)}
           ${hand ? `<p class="map-line">${icon("user")}<span>${esc(hand)}</span></p>` : ""}
           ${c.entries.length ? `<p class="map-line">${icon(c.entries[0].icon)}<span>Comes in from ${esc(listSaid(c.entries.map((e) => e.label.charAt(0).toLowerCase() + e.label.slice(1))))}.</span></p>` : ""}
@@ -944,7 +963,7 @@
       const examples = map.examples.filter((x) => x.tables.some((t) => p.lists.includes(t)));
       return `<section class="map-proc" data-proc="${esc(p.key)}">
         <header class="map-proc-head"><div class="grow">
-          <h2 class="map-proc-title" data-name>${icon("route")}<span>${esc(p.name)}</span>${allowed ? `<button type="button" class="btn sm ghost icon" data-rename title="Call it what your business calls it" aria-label="Rename it">${icon("pencil")}</button>` : ""}</h2>
+          <h2 class="map-proc-title" data-name>${icon("route")}<span>${esc(p.name)}</span>${allowed ? `<button type="button" class="btn sm ghost" data-rename title="Call it what your business calls it">${icon("pencil")}Rename</button>` : ""}</h2>
           ${p.cards.length > 1 ? `<p class="small muted">${p.cards.length} steps, from top to bottom: ${esc(p.cards.map((c) => c.label).join(" → "))}</p>` : ""}</div>
           ${examples.length ? `<form class="map-play" data-form="play">${examples.length > 1 ? `<select name="example" aria-label="Which example">${examples.map((x) => `<option value="${x.n}">${esc(x.title)}</option>`).join("")}</select>`
             : `<input type="hidden" name="example" value="${examples[0].n}">`}
@@ -1021,8 +1040,8 @@
     function drawMap() {
       const fix = toLookAt();
       if (fix) main.appendChild(fix);
-      if (map.processes.length) main.appendChild(html(`<p class="map-key">${icon("user")}done by hand <span class="faint">·</span> ${icon("zap")}happens automatically
-        <span class="faint">·</span> <span class="map-stage mini">Booked <b>3</b></span> how many are at that stage now</p>`));
+      if (map.processes.length) main.appendChild(html(`<p class="map-key">${icon("user")}done by your team <span class="faint">·</span> ${icon("zap")}happens automatically
+        <span class="faint">·</span> <b class="map-count">3</b> how many are at that stage now</p>`));
       if (!map.processes.length && !map.reference.length) {
         main.appendChild(html(`<div class="card empty"><h3>${icon("map", "big")}<br>Nothing to show yet</h3><p class="muted">${canEdit ? "Say what your business needs in the box above: this fills in as your app is built." : "Once your app has lists, they show here."}</p></div>`));
       } else if (!map.processes.length) {
@@ -1064,7 +1083,7 @@
       const ai = aiSaid(t);
       main.appendChild(html(`<div class="wf-head"><div class="grow"><h2>${icon(t.icon)}${esc(t.label)}</h2>
         <p class="small muted">${esc(cap(howMany(t.count, key)))} now${p && p.cards.length > 1 ? ` · step ${p.lists.indexOf(key) + 1} of ${p.cards.length} in ${esc(p.name)}` : r && r.used_by.length ? ` · used by ${esc(listSaid(r.used_by.map((x) => x.toLowerCase())))}` : ""}</p></div>
-        <div class="row wrap"><a class="btn sm" href="${esc(root.dataset.openTable.replace("__table__", key))}">${icon("external-link")}See the ${esc(many(key))}</a>
+        <div class="row wrap"><a class="btn sm" href="${esc(root.dataset.openTable.replace("__table__", key))}">${icon("table")}See the ${esc(many(key))}</a>
           <a class="btn sm" href="${esc(root.dataset.here)}?view=data&amp;open=${encodeURIComponent(`data:${key}`)}" data-to-data="${esc(key)}">${icon("table")}What each ${esc(one(key))} keeps</a></div></div>`));
       const atStage = new Set(t.stages.flatMap((st) => st.rules));
       const said = (k) => {  // a rule at a stage, said as what it does there
@@ -1081,11 +1100,11 @@
             : `${st.moves.map((m) => `<p class="map-line">${icon("user")}<span><span class="map-tag">By hand</span>${esc(pressSaid(m))}.</span></p>`).join("")}
           ${st.approves ? `<p class="map-line">${icon("user-check")}<span><span class="map-tag">By hand</span>Someone approves ${esc(a(one(key)))} here.</span></p>` : ""}
           ${st.rules.length ? `<div class="map-autos">${st.rules.map(said).join("")}</div>
-            ${st.rules.some((k) => hands.some((h) => h.rule === k && h.from === key) || (t.rules.find((x) => x.key === k) || {}).moves_to)
-              ? `<p class="map-line faint">${icon("info")}<span>If ${esc(a(one(key)))} stays at ${esc(st.name)}, this didn't happen: open it to see its last runs and what stopped it.</span></p>` : ""}` : ""}`}</li>`;
+            ${st.rules.some((k) => { const x = t.rules.find((y) => y.key === k) || {}; return x.event !== "schedule" && (hands.some((h) => h.rule === k && h.from === key) || x.moves_to); })
+              ? `<p class="map-line">${icon("info")}<span>If ${esc(a(one(key)))} stays at ${esc(st.name)}, this may not have worked: open it to see what happened.</span></p>` : ""}` : ""}`}</li>`;
       const stages = t.stages.length ? `<ol class="map-stage-list ${canEdit ? "changing" : ""}" data-stage-list>${t.stages.map(stageRow).join("")}</ol>
           ${!canEdit && t.anytime.length ? t.anytime.map((m) => `<p class="map-line">${icon("user")}<span><span class="map-tag">By hand</span>At any stage, ${esc(pressSaid(m).charAt(0).toLowerCase() + pressSaid(m).slice(1))}.</span></p>`).join("") : ""}
-          ${!canEdit && !t.workflow ? `<p class="map-line">${icon("user")}<span><span class="map-tag">By hand</span>People move ${esc(a(one(key)))} along by changing its ${esc(t.field_label || "Status")}.</span></p>` : ""}
+          ${!canEdit && !t.workflow ? `<p class="map-line">${icon("user")}<span><span class="map-tag">By hand</span>Your team moves ${esc(a(one(key)))} along by changing its ${esc(t.field_label || "Status")}.</span></p>` : ""}
           ${canEdit ? `<p class="help">Drag a stage to move it, or change its name and press Save: every ${esc(one(key))} at it, and every rule, follows.
             Their colours are set with the ${esc(t.field_label || "Status")} column, under <a href="#" data-to-data="${esc(key)}">What each ${esc(one(key))} keeps</a>.</p>` : ""}`
         : `<p class="small muted">${esc(cap(many(key)))} don't move along stages: they're kept for the rest of the work to use${r && r.used_by.length ? ` (${esc(listSaid(r.used_by.map((x) => x.toLowerCase())))})` : ""}.</p>`;
@@ -1101,9 +1120,9 @@
           <section><h3>${icon("log-out")}Where they come from</h3>
             ${t.entries.map((e) => `<p class="map-line">${icon(e.icon)}<span>${esc(e.label)}.</span></p>`).join("")}${comes.map(autoHtml).join("")}
             ${t.seen_in_portal ? `<p class="map-line">${icon("users")}<span>Customers can see theirs in their portal.</span></p>` : ""}
-            ${comes.length ? "" : `<p class="map-line">${icon("user")}<span>People add them themselves${from ? `, for ${esc(a(one(from)))}` : ""}.</span></p>`}</section>
+            ${comes.length ? "" : `<p class="map-line">${icon("user")}<span>Your team adds them${from ? `, each for ${esc(a(one(from)))}` : ""}.</span></p>`}</section>
           <section><h3>${icon("zap")}${atStage.size ? "Also happens automatically" : "What happens automatically"}</h3>${rest.length ? `<div class="map-autos">${rest.join("")}</div>`
-            : `<p class="small muted">${atStage.size ? "Nothing else: what happens at each stage is beside it." : "Nothing yet."}</p>`}
+            : `<p class="small muted">${atStage.size ? "Nothing else: what happens at each stage is shown with that stage." : "Nothing yet."}</p>`}
             ${allowed ? `<div><button type="button" class="btn sm" data-new-rule>${icon("plus")}Make something happen automatically</button></div>` : ""}</section>
           ${ai.length ? `<section><h3>${icon("sparkles")}Where the AI helps</h3><p class="map-line ai">${icon("sparkles")}<span>The AI ${esc(listSaid(ai))}.</span></p>
             <a class="small" href="${esc(root.dataset.aiPage)}">Change what the AI does</a></section>` : ""}
@@ -1177,7 +1196,7 @@
           <p class="map-summary" data-summary></p>
           <label class="field"><span>Call it <span class="faint">(you can leave this)</span></span><input type="text" name="name" maxlength="80"></label>
           <div class="row wrap"><button class="btn primary">Make it</button><button type="button" class="btn ghost" data-cancel>Cancel</button></div>
-          <p class="help">Once it's made you can add more to it: an email, a task for someone, a change to another list. And it can be switched off or taken back.</p></form></section>`);
+          <p class="help">Once it's made you can add more to it: an email, a task for someone, a change to another list. It can be switched off or undone.</p></form></section>`);
       main.appendChild(box);
       const form = $("[data-form=new-rule]", box), fm = form.elements;
       const said = () => {
@@ -1190,7 +1209,8 @@
         const names = stagesOf(fm.table.value);
         $("[value=stage]", fm.type).disabled = !names.length;
         if (!names.length && fm.type.value === "stage") fm.type.value = "record_created";
-        const was = fm.stage.value;
+        const was = names.includes(fm.stage.value) ? fm.stage.value
+          : names.find((n) => /done|finish|complete|signed off|delivered|paid|closed|won|accepted/i.test(n)) || names[names.length - 1];
         fm.stage.innerHTML = names.map((n) => `<option ${n === was ? "selected" : ""}>${esc(n)}</option>`).join("");
         fm.stage.hidden = fm.type.value !== "stage";
         const s = said();
@@ -1309,9 +1329,9 @@
       main.appendChild(chart);
       $("[data-toggle]", main)?.addEventListener("click", () => { if (r.on && !confirm(`Switch “${r.name}” off? It stops running until it's switched back on.`)) return; change({do: "set_enabled", on: !r.on}); });
       $("[data-change-it]", main)?.addEventListener("click", () => hooks.edit?.(true));
-      $("[data-try-it]", main)?.addEventListener("click", () => tryPanel());
+      $("[data-try-it]", main)?.addEventListener("click", () => { tryPanel(); intoView(); });
       $("[data-untry]", main)?.addEventListener("click", () => { tried = null; draw(); });
-      $$(".wf-step", chart).forEach((n) => activate(n, () => stepPanel(n.dataset.at)));
+      $$(".wf-step", chart).forEach((n) => activate(n, () => { stepPanel(n.dataset.at); intoView(); }));
       activate($("[data-edit=when]", chart), whenPanel);
       const cond = $("[data-edit=if]", chart);
       if (cond) activate(cond, conditionsPanel);
@@ -1320,6 +1340,7 @@
       $$("[data-way]", chart).forEach((b) => activate(b, () => wayPanel(b.dataset.way, Number(b.dataset.n))));
       rulePanel();
     }
+    const intoView = () => { if (matchMedia("(max-width: 1250px)").matches) panel.scrollIntoView({behavior: "smooth", block: "start"}); };  // below, on a phone
     function activate(el, fn) {
       if (!el) return;
       el.addEventListener("click", fn);
@@ -1643,15 +1664,15 @@
       panel.innerHTML = "";
       const t = tableOf(item.table);
       const box = html(`<div class="stack"><button type="button" class="btn sm ghost" data-back>${icon("chevron-left")}About this rule</button>
-        <h2 class="panel-title">${icon("play")}Try it on a record</h2>
+        <h2 class="panel-title">${icon("play")}Try it on ${esc(t ? a(t.singular.toLowerCase()) : "one")}</h2>
         <p class="small muted">See what it would do for one of your ${esc(t ? t.label.toLowerCase() : "records")}, step by step. Nothing is changed and nobody is told.</p>
-        <input type="search" placeholder="Find one by name" data-find aria-label="Find a record"><ul class="studio-list" data-found></ul></div>`);
+        <input type="search" placeholder="Find one" data-find aria-label="Find one"><ul class="studio-list" data-found></ul></div>`);
       panel.appendChild(box);
       $("[data-back]", box).addEventListener("click", rulePanel);
       const find = $("[data-find]", box), found = $("[data-found]", box);
       const load = async () => {
         const got = await get(`${root.dataset.records}?table=${encodeURIComponent(item.table)}&q=${encodeURIComponent(find.value)}`);
-        found.innerHTML = (got && got.items.length) ? got.items.map((r) => `<li><button type="button" data-rec="${r.id}">${icon("play")}<span class="grow">${esc(r.title)}</span></button></li>`).join("")
+        found.innerHTML = (got && got.items.length) ? got.items.map((r) => `<li><button type="button" data-rec="${r.id}">${icon("play")}<span class="grow">${esc(r.title)}${r.detail ? `<div class="faint tiny">${esc(r.detail)}</div>` : ""}</span></button></li>`).join("")
                                                    : `<li class="faint small pad">None found</li>`;
         $$("[data-rec]", found).forEach((b) => b.addEventListener("click", async () => {
           const res = await post(root.dataset.try, {id: itemId(), record: b.dataset.rec});
@@ -1910,9 +1931,11 @@
     // they're changing it until they're done.
     const bar = $("[data-editing-bar]");
     function edit(on) {
+      const was = bar && !bar.hidden;
       if (bar) bar.hidden = !on;
       mapApi.setEditing(on);
       dataApi.setEditing(on);
+      if (was && !on) statusLine($(".studio-status", page.dataset.view === "data" ? dataRoot : mapRoot), ["Done. Everything you changed was saved as you went."], "good");
     }
     $("[data-editing-done]")?.addEventListener("click", () => edit(false));
     dataApi = dataStudio(dataRoot, {edit});

@@ -211,3 +211,19 @@ def test_a_message_sent_twice_in_a_row_from_before_is_sent_once_after_any_change
     rule["actions"] = rule["actions"] + [tell, dict(tell)]  # saved like this by an older version
     done = ops.apply(bp, [{"op": "update_table", "table": "customers", "label": "Clients"}])
     assert [x["type"] for x in next(a for a in done.blueprint["automations"] if a["key"] == "to_job")["actions"]] == ["create_record", "notify"]
+
+
+def test_versions_undo_a_change_back_to_just_before_it_and_count_stages_as_the_map_does(app, client, owner):
+    _, ws = owner
+    _built(ws, TRADE)
+    login(client)
+    before = ws.version
+    assert client.post(f"/w/{ws.id}/app/studio/data/change", json={"do": "add_field", "table": "payments", "label": "Paid by card", "type": "checkbox"}).get_json()["ok"]
+    page = client.get(f"/w/{ws.id}/app/design").get_data(as_text=True)
+    assert f'action="/w/{ws.id}/app/design/restore/{before}"' in page and "Undo this</button>" in page  # this change, undone: as it was before it
+    assert "Undo “Added Paid by card" in page and "changed on the App map" in page
+    assert "5 that move along stages" in page  # quotes, jobs, restocks with stages of their own; invoices and customers a plain Status
+    client.post(f"/w/{ws.id}/app/design/restore/{before}")
+    from app.extensions import db
+    db.session.refresh(ws)
+    assert not any(f["key"] == "paid_by_card" for t in ws.blueprint["tables"] if t["key"] == "payments" for f in t["fields"])
