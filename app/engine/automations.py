@@ -2008,7 +2008,7 @@ def describe_action(engine, automation, action):
         thing = t["singular"] if t else action["table"]
         mine = (engine.tables.get(table) or {}).get("singular", "record").lower()
         back = [k for k, v in action["values"].items() if isinstance(v, str) and v.strip() in ("{{record}}", "{{ record }}")]
-        parts = [f"{(engine.field(action['table'], k) or {'label': k})['label']} {_lower(humanize(engine, v, table))}"
+        parts = [f"{(engine.field(action['table'], k) or {'label': k})['label']}: {_lower(humanize(engine, v, table))}"
                  for k, v in action["values"].items() if k not in back and str(v).strip() not in ("{{item}}", "{{ item }}")]
         if kind == "create_for_each" and action["source"].get("field"):
             f = engine.field(table, action["source"]["field"]) or {"label": action["source"]["field"]}

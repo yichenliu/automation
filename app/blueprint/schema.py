@@ -2076,6 +2076,9 @@ def normalize_action(raw):
     return action
 
 
+REPEATS_ARE_SLIPS = ("notify", "send_email", "task", "request_approval")
+
+
 def normalize_automation(raw):
     if not isinstance(raw, dict):
         raise SchemaError("an automation must be an object")
@@ -2095,6 +2098,8 @@ def normalize_automation(raw):
             to = _first(trigger_raw, "to", "value", "changed_to")
             conditions.insert(0, {"field": changed, "op": "changed_to" if to is not None else "changed", **({"value": to} if to is not None else {})})
     actions = [normalize_action(a) for a in _list(_first(raw, "actions", "then", "do", "steps", default=[]))]
+    # the same message, email or task twice in a row is a slip: everyone told twice
+    actions = [a for i, a in enumerate(actions) if not (i and a["type"] in REPEATS_ARE_SLIPS and a == actions[i - 1])]
     if not actions:
         raise SchemaError(f"the automation “{name or key}” needs at least one action")
     return {"key": key, "name": name or label_of(key), "enabled": raw.get("enabled", True) not in (False, "false", 0),

@@ -303,29 +303,40 @@ the builder makes, and fitting together (one list of products for all; what join
 
 ## The App map: the whole app drawn, and changed by hand
 
-✅ **App map** (Set up › App map): the whole app in one picture, worked out from its design (never drawn by hand, so it
-can't disagree with what the app does; app/appmap.py). **How work flows** shows each **process** as a row: the lists work
-goes through in order (a quote, then its job, its invoice, its payment), joined by arrows that are the hand-offs (a rule
-making the next record at a stage, or a payment marking its invoice paid), each list with its stages and how many records
-are at each. Lists many others look things up in (customers, products) and ledgers several processes add to (stock
-movements) sit apart below. Layers, each on or off (remembered on the device): **Right now** (counts, what's waiting),
-**People** (who moves work on, where someone approves), **AI** (where it fills things in or acts, and whether a person
-checks it), **Problems** (what the design checks found, on the list it's about). Click in: a **process** (named as the
-business calls it, "Quote to cash"; **play one of the app's examples through it** in a throwaway copy, and the stages it
-went through light up, numbered, with the rules that ran and whether it came out right), a **list** (where its work comes
-from and goes on to, who and what acts on it, its stages, rules and screens), and from there the stages, a rule or a flow
-in full, with a trail back up. **What it keeps** is the data model, on the same page: a list clicked on the map opens
-there, and from there "where it is in your processes" goes back. The old Data model and Processes addresses lead here.
+✅ **App map** (Set up › App map): how the app works, worked out from its design (never drawn by hand, so it can't
+disagree with what the app does; app/appmap.py), written for someone who knows nothing about building apps. **How work
+flows** shows each **process** down the page as numbered steps, one list each (a quote, then its job, its invoice, its
+payment). Between two steps, the line says in a sentence how work gets there: "People add a quote for an enquiry
+themselves", or "When a job reaches Signed off, an invoice is made automatically" (a payment marking its invoice paid:
+"its invoice's Status is set to Paid automatically"). On each step: its stages in order with how many are at each now,
+where work comes in (a website form, a portal customers add through, emails), what else happens automatically there
+(a button people press is marked **By hand**; a daily check says so), who's involved, where the AI helps, what's waiting,
+and anything the checks found. Everything the checks found, and any rule that stopped with a problem lately, is in one
+box at the top. Lists the work looks things up in (customers, products) and ledgers several processes add to (stock
+movements) sit below as **Also in your app**. A process can be **renamed** as the business calls it ("Quote to cash"),
+and **Watch an example** acts out one of the app's examples in a throwaway copy, told as a story and numbered on the
+stages it went through. Click a step for its list in full: how one moves along (each stage, who presses what to move it
+on, what happens automatically when one gets there), where they come from, what happens automatically, where the AI
+helps, its step-by-step screens. **Looking is safe**: nothing on the page changes the app until someone presses a Change
+button (Change the stages, Change this rule, Change what it keeps); then a bar says they're changing it until they press
+Done. Stages are changed where they're shown: renamed in place, dragged into order, removed, or a new one added after
+any other (put between two, it leads on to the next), on a list with stages of its own or one whose Status is a plain
+choice (its choices, never a second Status). **Make something happen automatically** starts a rule in plain words:
+when a job reaches a stage, is added or changed, or has a button pressed, tell the owner, the admins or everyone. The
+AI box above it gives an example in the app's own words ("when a job reaches Signed off, tell me"). The old Data model
+and Processes addresses lead here.
 
-✅ **What it keeps** (the App map's data view): every list drawn as a box with its fields and what each keeps, and a line from
-each link to the list it points at (dashed for several). Drag a list to move it (kept for everyone), pan and zoom, show
-everything, tidy up, download it as a picture. Admins change it there: a new list; rename a list or what one record is
-called, or its menu section; add a field (any kind people fill in, a link to another list, a sum worked out); rename
-one, change its help, whether it must be filled in or be unique, kept private, its decimals, unit, currency or starting
-value; put the fields in order by dragging; add, remove, rename and order a choice's options; link two lists by
-dragging one's **+** onto the other; name records by a field; remove a field or a list.
+✅ **What each list keeps** (the App map's other view): every list as a card of its columns (a link to another list
+marked), with **Add a column** on each; or, at the press of **Diagram**, every list drawn as a box with its columns and a
+line from each link to the list it points at (dashed for several): drag a list to move it (kept for everyone), pan and
+zoom, show everything, tidy up, download it as a picture. A list clicked opens beside them, read first: **Change what it
+keeps** to change it. Admins change it there: a new list; rename a list or what one record is called, or its menu
+section; add a column (any kind people fill in, a link to another list, a sum worked out); rename one, change its help,
+whether it must be filled in or be unique, kept private, its decimals, unit, currency or starting value; put the
+columns in order by dragging; add, remove, rename and order a choice's options; link two lists by dragging one's **+**
+onto the other (in the diagram); name records by a column; remove a column or a list.
 
-✅ **Stages, rules and flows** (opened from the App map): everything with a flow to it, grouped by process and list. **Stages** drawn top to bottom,
+✅ **Stages, rules and flows** (opened from the App map, read first: **Change** to change them). **Stages** drawn top to bottom,
 each with how many records are in it and the rules that run when one gets there, with an arrow for each button that
 moves a record on (straight down to the next, round the right to one further on, round the left back, one arrow in for
 a move from many stages); add, rename, order and remove stages, set where new ones start, and add or change a move

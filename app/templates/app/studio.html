@@ -2,26 +2,18 @@
 {% block title %}App map{% endblock %}
 {% block content %}
 <div class="page-head"><div class="titles"><h1>{{ icon('map') }}App map</h1>
-  <p class="sub">Your whole app in one picture: how work moves from one list to the next, who does each part, where the AI helps, and what each list keeps.
-    Click any part to see it in full{% if can_edit %} and change it{% endif %}.</p></div>
+  <p class="sub">How your app works: where work comes in, the steps it goes through, who does what, and what happens automatically.
+    Click anything to see more.{% if can_edit %} Looking is safe: nothing changes until you press a Change button.{% endif %}</p></div>
   <div class="actions">
     <div class="segmented" role="tablist" aria-label="What to show">
       <button type="button" role="tab" data-show-view="map" aria-selected="{{ 'true' if view == 'map' else 'false' }}">{{ icon('route') }}How work flows</button>
-      <button type="button" role="tab" data-show-view="data" aria-selected="{{ 'true' if view == 'data' else 'false' }}">{{ icon('network') }}What it keeps</button></div>
-    {% if can_edit %}<span data-view-only="map" {{ 'hidden' if view != 'map' }}><button class="btn" type="button" data-wf-new-rule>{{ icon('plus') }}New rule</button>
-      <button class="btn" type="button" data-wf-new-stages>{{ icon('arrow-right') }}Add stages to a list</button></span>
-    <span data-view-only="data" {{ 'hidden' if view != 'data' }}><button class="btn" type="button" data-studio-new-table>{{ icon('plus') }}New list</button></span>{% endif %}
+      <button type="button" role="tab" data-show-view="data" aria-selected="{{ 'true' if view == 'data' else 'false' }}">{{ icon('table') }}What each list keeps</button></div>
   </div></div>
-{% if can_edit %}{% set ask_hint = 'Or say what should change: “when an order is shipped, email the customer the tracking link”' %}{% include "app/_studio_ask.html" %}{% endif %}
+{% if can_edit %}{% set ask_hint = 'Want it to work differently? Say it in your own words: “' ~ ask_example ~ '”' %}{% include "app/_studio_ask.html" %}
+<div class="map-editing" data-editing-bar hidden role="status">{{ icon('pencil') }}<span class="grow"><b>You're changing your app.</b> Each change is checked first, saved as a new version, and can be taken back.</span>
+  <button type="button" class="btn sm primary" data-editing-done>Done changing</button></div>{% endif %}
 <div data-studio-page data-view="{{ view }}" data-here="{{ url_for('app.studio_map', wid=ws.id) }}">
   <section data-view-pane="map" {{ 'hidden' if view != 'map' }}>
-    <div class="map-layers" role="group" aria-label="What the map shows">
-      <span class="small muted">Show:</span>
-      <button type="button" class="chip-toggle" data-layer="live" aria-pressed="true" title="How many records are at each stage now, and what's waiting for someone">{{ icon('eye') }}Right now</button>
-      <button type="button" class="chip-toggle" data-layer="people" aria-pressed="true" title="Who moves work on, and who approves it">{{ icon('users') }}People</button>
-      <button type="button" class="chip-toggle" data-layer="ai" aria-pressed="true" title="Where the AI fills things in or acts, and whether a person checks it">{{ icon('sparkles') }}AI</button>
-      <button type="button" class="chip-toggle" data-layer="problems" aria-pressed="true" title="What the app's checks found that needs a look">{{ icon('triangle-alert') }}Problems</button>
-    </div>
     <div class="studio wf-studio map-studio" data-studio="workflows" data-integrated="yes" data-can-edit="{{ 'yes' if can_edit else '' }}"
          data-item="{{ url_for('app.studio_workflow_item', wid=ws.id) }}" data-change="{{ url_for('app.studio_workflow_change', wid=ws.id) }}"
          data-try="{{ url_for('app.studio_workflow_try', wid=ws.id) }}" data-records="{{ url_for('app.studio_workflow_records', wid=ws.id) }}"
@@ -30,20 +22,23 @@
          data-name="{{ url_for('app.studio_map_name', wid=ws.id) }}" data-play="{{ url_for('app.studio_map_play', wid=ws.id) }}"
          data-open-table="{{ url_for('app.table', wid=ws.id, table='__table__') }}" data-checks="{{ url_for('app.checks', wid=ws.id) }}"
          data-run-now="{{ url_for('app.run_now', wid=ws.id, key='__key__') }}" data-all-runs="{{ url_for('app.automations', wid=ws.id) }}">
-      <nav class="wf-rail" aria-label="Your app's processes"></nav>
       <section class="wf-main" aria-live="polite"></section>
       <aside class="studio-panel"></aside>
       <div class="studio-status" role="status" aria-live="polite"></div>
     </div>
   </section>
   <section data-view-pane="data" {{ 'hidden' if view != 'data' }}>
-    <p class="small muted mb-1">Every list in your app, what each one keeps, and how they link to each other.
-      {% if can_edit %}Drag a list to move it, click one to change it, or drag its {{ icon('plus') }} onto another list to link the two.{% else %}Click a list to see what it keeps.{% endif %}</p>
+    <div class="map-data-head"><p class="small muted grow">Every list in your app, and the columns each one keeps. Click a list to see it in full{% if can_edit %} or change it{% endif %}.</p>
+      <div class="segmented sm" role="group" aria-label="Show them as">
+        <button type="button" data-data-mode="cards" aria-pressed="true">{{ icon('layout-grid') }}Lists</button>
+        <button type="button" data-data-mode="diagram" aria-pressed="false" title="A diagram of how the lists link to each other">{{ icon('network') }}Diagram</button></div>
+      {% if can_edit %}<button class="btn sm" type="button" data-studio-new-table>{{ icon('plus') }}Add a list</button>{% endif %}</div>
     <div class="studio" data-studio="data" data-integrated="yes" data-can-edit="{{ 'yes' if can_edit else '' }}" data-here="{{ url_for('app.studio_map', wid=ws.id) }}"
          data-json="{{ url_for('app.studio_data_json', wid=ws.id) }}" data-change="{{ url_for('app.studio_data_change', wid=ws.id) }}"
          data-place="{{ url_for('app.studio_data_place', wid=ws.id) }}" data-undo="{{ url_for('app.studio_undo', wid=ws.id) }}"
          data-open-table="{{ url_for('app.table', wid=ws.id, table='__table__') }}">
-      <div class="studio-canvas" tabindex="0" role="application" aria-label="Diagram of your lists and how they link. Use the panel beside it to change them.">
+      <div class="studio-cards"></div>
+      <div class="studio-canvas" tabindex="0" role="application" aria-label="Diagram of your lists and how they link. Use the panel beside it to change them." hidden>
         <svg class="studio-svg" aria-hidden="true"></svg>
         <div class="studio-tools" role="toolbar" aria-label="Diagram">
           <button type="button" class="btn sm ghost icon" data-zoom="in" title="Closer" aria-label="Closer">{{ icon('zoom-in') }}</button>
@@ -53,9 +48,9 @@
           <button type="button" class="btn sm ghost icon" data-download title="Download as a picture" aria-label="Download as a picture">{{ icon('download') }}</button>
           {% if can_edit %}<button type="button" class="btn sm ghost icon" data-undo-last title="Take back the last change" aria-label="Take back the last change" disabled>{{ icon('undo-2') }}</button>{% endif %}
         </div>
-        <div class="studio-status" role="status" aria-live="polite"></div>
       </div>
       <aside class="studio-panel"></aside>
+      <div class="studio-status" role="status" aria-live="polite"></div>
       <script type="application/json" data-model>{{ model|tojson }}</script>
     </div>
   </section>

@@ -98,11 +98,16 @@
   // =================================================================================================================
   // The data model
   // =================================================================================================================
-  function dataStudio(root) {
-    const canEdit = !!root.dataset.canEdit;
-    const canvas = $(".studio-canvas", root), svg = $(".studio-svg", root), panel = $(".studio-panel", root);
+  function dataStudio(root, hooks = {}) {
+    const allowed = !!root.dataset.canEdit;  // may change things (an admin)
+    let canEdit = false;  // is changing them now
+    const canvas = $(".studio-canvas", root), svg = $(".studio-svg", root), panel = $(".studio-panel", root), cards = $(".studio-cards", root);
+    // each list as a card of its columns (what most people want), or the diagram of how they link
+    const MODE = "keel-data-mode";
+    let mode = "cards";
+    try { mode = localStorage.getItem(MODE) === "diagram" ? "diagram" : "cards"; } catch (e) { /* cards */ }
     const status = $(".studio-status", root);
-    const integrated = !!root.dataset.integrated;  // the App map's “What it keeps” view
+    const integrated = !!root.dataset.integrated;  // the App map's “What each list keeps” view
     let model = JSON.parse(($("script[data-model]", root) || $("#studio-model")).textContent);
     const undoStack = [];
     const W = 248, HEAD = 40, ROW = 24, PAD = 8;
@@ -157,7 +162,39 @@
       places = fresh ? out : {...out, ...(model.positions || {})};
     }
 
+    function drawCards() {
+      if (!cards) return;
+      cards.innerHTML = tables().map((t) => {
+        const parent = t.embedded && t.fields.find((f) => f.link);
+        return `<article class="data-card ${selected && selected.table === t.key ? "on" : ""}" data-table="${esc(t.key)}" tabindex="0" role="button" aria-label="${esc(t.label)}: what it keeps">
+          <header>${icon(t.icon)}<b class="grow">${esc(t.label)}</b><span class="faint small" title="How many there are">${t.count}</span></header>
+          ${parent ? `<p class="tiny faint">The lines on each ${esc((tableOf(parent.link) || {singular: parent.label}).singular.toLowerCase())}</p>`
+            : t.combines.length ? `<p class="tiny faint">Put together from ${esc(t.combines.map((k) => (tableOf(k) || {label: k}).label).join(", "))}</p>` : ""}
+          <ul class="data-cols">${t.fields.map((f) => `<li class="${f.link ? "link" : ""}" title="${esc(f.kind)}${f.detail ? ` · ${esc(f.detail)}` : ""}">${f.link ? icon("link") : ""}${esc(f.label)}</li>`).join("")}</ul>
+          ${allowed && !t.combines.length ? `<button type="button" class="btn sm ghost" data-add-col="${esc(t.key)}">${icon("plus")}Add a column</button>` : ""}</article>`;
+      }).join("") || `<p class="muted">No lists yet.</p>`;
+      $$(".data-card", cards).forEach((c) => {
+        c.addEventListener("click", (ev) => { if (!ev.target.closest("[data-add-col]")) select(c.dataset.table); });
+        c.addEventListener("keydown", (ev) => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); select(c.dataset.table); } });
+      });
+      $$("[data-add-col]", cards).forEach((b) => b.addEventListener("click", () => {
+        hooks.edit?.(true);
+        select(b.dataset.addCol);
+        const add = $("details.add-field", panel);
+        if (add) { add.open = true; $("input[name=label]", add)?.focus(); add.scrollIntoView({block: "nearest"}); }
+      }));
+    }
+    function showMode() {
+      root.classList.toggle("as-cards", mode === "cards");
+      root.classList.toggle("no-panel", mode === "cards" && !selected);
+      if (cards) cards.hidden = mode !== "cards";
+      canvas.hidden = mode === "cards";
+      $$("[data-data-mode]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.dataMode === mode)));
+    }
+
     function draw() {
+      drawCards();
+      showMode();
       themeColours();
       boxesLayer.innerHTML = ""; linksLayer.innerHTML = "";
       tables().forEach((t) => {
@@ -171,7 +208,7 @@
     function drawBox(t) {
       const [x, y] = places[t.key];
       const g = node("g", {class: "box", transform: `translate(${x},${y})`, "data-table": t.key, tabindex: "0", role: "button",
-                           "aria-label": `${t.label}: ${plural(t.fields.length, "field", "fields")}`}, boxesLayer);
+                           "aria-label": `${t.label}: ${plural(t.fields.length, "column", "columns")}`}, boxesLayer);
       const on = selected && selected.table === t.key;
       node("rect", {x: 0, y: 0, width: W, height: height(t), rx: 9, fill: colours.panel, stroke: on ? colours.accent : colours.border, "stroke-width": on ? 2 : 1, class: "box-frame"}, g);
       node("path", {d: `M0 9a9 9 0 0 1 9-9h${W - 18}a9 9 0 0 1 9 9v${HEAD - 9}h-${W}z`, fill: on ? colours.accentWeak : colours.head}, g);
@@ -411,6 +448,7 @@
 
     function select(table, field = null) {
       selected = table ? {table, field} : null;
+      if (mode === "cards" && table) cards?.querySelector(`[data-table="${CSS.escape(table)}"]`)?.scrollIntoView({block: "nearest"});
       if (integrated) history.replaceState(null, "", `${root.dataset.here}?view=data&open=${encodeURIComponent(table ? `data:${table}` : "data")}`);
       else history.replaceState(null, "", table ? `?open=${encodeURIComponent(table)}` : location.pathname);
       draw(); showPanel();
@@ -430,31 +468,39 @@
     function overview() {
       const box = html(`<div class="stack">
         <div><h2 class="panel-title">${icon("network")}Your lists</h2>
-          <p class="small muted">${plural(tables().length, "list", "lists")}, ${plural(model.links.length, "link", "links")} between them. A line joins a list to the one it points at: an order to its customer, a line to its order.</p></div>
-        <ul class="studio-list">${tables().map((t) => `<li><button type="button" data-pick="${esc(t.key)}">${icon(t.icon)}<span class="grow">${esc(t.label)}</span><span class="faint tiny">${plural(t.fields.length, "field", "fields")}</span></button></li>`).join("")}</ul>
-        ${canEdit ? `<p class="small faint">${icon("info")} Every change here is checked first and saved as a new version: <b>Take it back</b> undoes it. Records are never deleted by a change here.</p>` : ""}
+          <p class="small muted">${plural(tables().length, "list", "lists")}, ${plural(model.links.length, "link", "links")} between them. A line joins a list to the one it looks up: ${esc(example())}.
+            ${canEdit ? "Drag a list to move it; drag its + onto another list to link the two." : ""}</p></div>
+        <ul class="studio-list">${tables().map((t) => `<li><button type="button" data-pick="${esc(t.key)}">${icon(t.icon)}<span class="grow">${esc(t.label)}</span><span class="faint tiny">${plural(t.fields.length, "column", "columns")}</span></button></li>`).join("")}</ul>
+        ${canEdit ? `<p class="small faint">${icon("info")} Every change here is checked first and saved as a new version: after each one, a <b>Take it back</b> button undoes it. Records are never deleted by a change here.</p>` : ""}
       </div>`);
       $$("[data-pick]", box).forEach((b) => b.addEventListener("click", () => select(b.dataset.pick)));
       return box;
     }
 
+    function example() {  // a link of this app's own, said: "a job to its customer"
+      const l = model.links.find((x) => x.from !== x.to && tableOf(x.from) && tableOf(x.to));
+      return l ? `${a(tableOf(l.from).singular.toLowerCase())} to its ${tableOf(l.to).singular.toLowerCase()}` : "an order to its customer";
+    }
+    const a = (word) => `${/^[aeiou]/i.test(word) ? "an" : "a"} ${word}`;
+
     function tablePanel(t) {
       const sections = model.sections || [];
       const box = html(`<div class="stack">
-        <div class="row"><button type="button" class="btn sm ghost" data-back>${icon("chevron-left")}All lists</button>
+        <div class="row wrap"><button type="button" class="btn sm ghost" data-back>${icon("chevron-left")}All lists</button>
           ${t.embedded ? "" : `<a class="btn sm ghost" href="${esc(root.dataset.openTable.replace("__table__", t.key))}">Open the list${icon("external-link")}</a>`}
-          ${integrated ? `<a class="btn sm ghost" href="${esc(root.dataset.here)}?open=${encodeURIComponent(`list:${t.key}`)}" data-go-map="list:${esc(t.key)}">${icon("route")}Where it is in your processes</a>`
+          ${integrated ? `<a class="btn sm ghost" href="${esc(root.dataset.here)}?open=${encodeURIComponent(`list:${t.key}`)}" data-go-map="list:${esc(t.key)}">${icon("route")}Where it fits in the work</a>`
             : `<a class="btn sm ghost" href="${esc(root.dataset.workflows)}?table=${encodeURIComponent(t.key)}">${icon("workflow")}Its stages and rules</a>`}</div>
-        <div><h2 class="panel-title">${icon(t.icon)}${esc(t.label)}</h2><p class="small muted">${plural(t.count, "record", "records")}${t.embedded ? " · filled in inside another record" : ""}</p>
+        <div><h2 class="panel-title">${icon(t.icon)}${esc(t.label)}</h2><p class="small muted">${plural(t.count, t.singular.toLowerCase(), t.label.toLowerCase())} now${t.embedded ? " · filled in inside another record" : ""}</p>
           ${t.combines.length ? `<p class="small">${icon("layers")} Put together from ${esc(t.combines.map((k) => (tableOf(k) || {label: k}).label).join(", "))}, and kept up to date as they change: nobody adds to it by hand. Ask the AI to change what goes into it.</p>` : ""}</div>
         ${canEdit ? `<form class="stack" data-form="table">
           <label class="field"><span>Name of the list</span><input type="text" name="label" value="${esc(t.label)}" required maxlength="80"></label>
           <label class="field"><span>One of them is called</span><input type="text" name="singular" value="${esc(t.singular)}" maxlength="60"></label>
           ${sections.length ? `<label class="field"><span>In the menu under</span><select name="section">${sections.map((s) => `<option value="${esc(s.key)}" ${s.key === t.module ? "selected" : ""}>${esc(s.label)}</option>`).join("")}</select></label>` : ""}
           <button class="btn sm">Save</button></form>` : ""}
-        <div><div class="label">Fields${canEdit ? ` <span class="faint tiny">· drag to put them in order</span>` : ""}</div>
+        ${allowed && !canEdit ? `<button type="button" class="btn sm" data-change-it>${icon("pencil")}Change what it keeps</button>` : ""}
+        <div><div class="label">What each ${esc(t.singular.toLowerCase())} keeps${canEdit ? ` <span class="faint tiny">· drag to put them in order</span>` : ""}</div>
           <ul class="studio-fields" data-fields>${t.fields.map((f) => `<li ${canEdit ? 'draggable="true"' : ""} data-key="${esc(f.key)}">
-            ${canEdit ? icon("grip-vertical", "grip") : ""}<button type="button" data-field="${esc(f.key)}"><span class="grow"><b>${esc(f.label)}</b>${f.required ? ' <span class="req">*</span>' : ""}${f.title ? ' <span class="tag">name</span>' : ""}${f.stage ? ' <span class="tag">stages</span>' : ""}
+            ${canEdit ? icon("grip-vertical", "grip") : ""}<button type="button" data-field="${esc(f.key)}"><span class="grow"><b>${esc(f.label)}</b>${f.required ? ' <span class="req">*</span>' : ""}${f.title ? ' <span class="tag" title="Each one is called by this">its name</span>' : ""}${f.stage ? ' <span class="tag">stages</span>' : ""}
             <div class="faint tiny">${esc(f.kind)}${f.detail ? " · " + esc(f.detail) : ""}</div></span>${icon("chevron-right")}</button></li>`).join("")}</ul></div>
         ${canEdit ? addFieldForm(t) : ""}
         ${canEdit ? `<details class="danger-zone"><summary class="small">Delete this list</summary>
@@ -462,6 +508,7 @@
           <button type="button" class="btn sm danger" data-delete-table>${icon("trash-2")}Delete ${esc(t.label)}</button></details>` : ""}
       </div>`);
       $("[data-back]", box).addEventListener("click", () => select(null));
+      $("[data-change-it]", box)?.addEventListener("click", () => hooks.edit?.(true));
       $$("[data-field]", box).forEach((b) => b.addEventListener("click", () => select(t.key, b.dataset.field)));
       $("[data-form=table]", box)?.addEventListener("submit", (ev) => {
         ev.preventDefault();
@@ -477,14 +524,14 @@
     }
 
     function addFieldForm(t) {
-      return `<details class="add-field" ${t.fields.length < 2 ? "open" : ""}><summary class="btn sm">${icon("plus")}Add a field</summary>
+      return `<details class="add-field" ${t.fields.length < 2 ? "open" : ""}><summary class="btn sm">${icon("plus")}Add a column</summary>
         <form class="stack card card-body" data-form="add-field">
           <label class="field"><span>Name</span><input type="text" name="label" required maxlength="80" placeholder="Phone, Due date, Customer…"></label>
-          <label class="field"><span>It keeps</span><select name="type">${model.types.map((x) => `<option value="${x.type}">${esc(x.type === "link" ? "A link to another list" : x.label)}</option>`).join("")}</select></label>
+          <label class="field"><span>What goes in it</span><select name="type">${model.types.map((x) => `<option value="${x.type}">${esc(x.type === "link" ? "A link to another list" : x.label)}</option>`).join("")}</select></label>
           <label class="field" data-when="select multi_select" hidden><span>The choices, one on each line</span><textarea name="options" rows="4" placeholder="New&#10;In progress&#10;Done"></textarea></label>
           <label class="field" data-when="link" hidden><span>Which list</span><select name="link_to">${tables().map((x) => `<option value="${esc(x.key)}">${esc(x.label)}</option>`).join("")}</select></label>
           <label class="check" data-when="link" hidden><input type="checkbox" name="multiple"> Several of them, not just one</label>
-          <label class="field" data-when="formula" hidden><span>Worked out as</span><input type="text" name="expression" placeholder="quantity * price"><span class="help">Use the other fields' names: ${esc(t.fields.filter((f) => ["number", "money", "percent", "formula", "rollup"].includes(f.type)).map((f) => f.key).slice(0, 6).join(", ") || "quantity, price")}</span></label>
+          <label class="field" data-when="formula" hidden><span>Worked out as</span><input type="text" name="expression" placeholder="quantity * price"><span class="help">Use the other columns' names: ${esc(t.fields.filter((f) => ["number", "money", "percent", "formula", "rollup"].includes(f.type)).map((f) => f.key).slice(0, 6).join(", ") || "quantity, price")}</span></label>
           <label class="check"><input type="checkbox" name="required"> It must be filled in</label>
           <button class="btn primary sm">Add it</button></form></details>`;
     }
@@ -515,9 +562,9 @@
         ${!canEdit ? `<dl class="small">${f.help ? `<dt>Help</dt><dd>${esc(f.help)}</dd>` : ""}<dt>Must be filled in</dt><dd>${f.required ? "Yes" : "No"}</dd></dl>` : `
         <form class="stack" data-form="field">
           <label class="field"><span>Name</span><input type="text" name="label" value="${esc(f.label)}" required maxlength="80"></label>
-          ${kinds.length > 1 ? `<label class="field"><span>It keeps</span><select name="type">${kinds.map((x) => `<option value="${x.type}" ${x.type === f.type ? "selected" : ""}>${esc(x.label)}</option>`).join("")}</select>
+          ${kinds.length > 1 ? `<label class="field"><span>What goes in it</span><select name="type">${kinds.map((x) => `<option value="${x.type}" ${x.type === f.type ? "selected" : ""}>${esc(x.label)}</option>`).join("")}</select>
             <span class="help">${f.filled ? `${plural(f.filled, "record has", "records have")} one, so only a kind they already fit.` : "Any kind, while nothing is filled in yet."}</span></label>`
-            : f.filled && !f.calculated ? `<p class="help">${plural(f.filled, "record has", "records have")} one, so it stays ${esc(f.kind.toLowerCase())}: add a new field for another kind.</p>` : ""}
+            : f.filled && !f.calculated ? `<p class="help">${plural(f.filled, "record has", "records have")} one, so it stays ${esc(f.kind.toLowerCase())}: add a new column for another kind.</p>` : ""}
           ${f.type === "formula" ? `<label class="field"><span>Worked out as</span><input type="text" name="expression" value="${esc(f.expression)}"></label>` : ""}
           <label class="field"><span>Help shown under it</span><input type="text" name="help" value="${esc(f.help)}" maxlength="200" placeholder="What to put here"></label>
           ${f.calculated ? "" : `<label class="check"><input type="checkbox" name="required" ${f.required ? "checked" : ""}> It must be filled in</label>`}
@@ -539,11 +586,13 @@
           <button class="btn primary sm">Save</button></form>
         ${["select", "multi_select"].includes(f.type) ? choices(t, f) : ""}
         ${f.title ? "" : `<button type="button" class="btn sm ghost" data-title>${icon("tag")}Name each ${esc(t.singular.toLowerCase())} by this</button>`}
-        <details class="danger-zone"><summary class="small">Remove this field</summary>
+        <details class="danger-zone"><summary class="small">Remove this column</summary>
           <p class="small muted">What's filled in is kept, and comes back if you take it back.</p>
           <button type="button" class="btn sm danger" data-remove>${icon("trash-2")}Remove ${esc(f.label)}</button></details>`}
+        ${allowed && !canEdit ? `<button type="button" class="btn sm" data-change-it>${icon("pencil")}Change it</button>` : ""}
       </div>`);
       $("[data-back]", box).addEventListener("click", () => select(t.key));
+      $("[data-change-it]", box)?.addEventListener("click", () => hooks.edit?.(true));
       const form = $("[data-form=field]", box);
       form?.addEventListener("submit", (ev) => {
         ev.preventDefault();
@@ -609,14 +658,22 @@
     const fitOnce = () => { if (!fitted && canvas.getBoundingClientRect().width) { fitted = true; fit(0.6); if (selected) reveal(selected.table); } };
     requestAnimationFrame(fitOnce);  // (hidden behind the map at first: fitted when it's shown)
     window.matchMedia("(prefers-color-scheme: dark)").addEventListener?.("change", draw);
+    $$("[data-data-mode]").forEach((b) => b.addEventListener("click", () => {
+      mode = b.dataset.dataMode;
+      try { localStorage.setItem(MODE, mode); } catch (e) { /* this visit only */ }
+      draw(); showPanel();
+      if (mode === "diagram") { fitted = false; fitOnce(); }
+    }));
     $("[data-studio-new-table]")?.addEventListener("click", async () => {
+      hooks.edit?.(true);
       const label = prompt("What's the new list called? (Suppliers, Jobs, Assets…)");
       if (!label) return;
       const made = await change({do: "add_table", label});
       if (made) { const t = tables().find((x) => x.label.toLowerCase() === label.trim().toLowerCase()); if (t) select(t.key); }
     });
     if (!integrated) askBox(reload);
-    return {reload, select: (table) => { select(table); }, shown: () => { fitOnce(); if (selected) reveal(selected.table); }, changed: () => undoStack.length};
+    return {reload, select: (table) => { select(table); }, shown: () => { fitOnce(); if (selected) reveal(selected.table); }, changed: () => undoStack.length,
+            setEditing: (on) => { canEdit = allowed && on; draw(); showPanel(); }};
   }
 
   // Dragging rows of a list into a new order (fields, choices, stages).
@@ -652,14 +709,15 @@
   const FLOW_ICONS = {info: "info", form: "pencil", scan: "search", pick: "list-todo", photo: "camera", signature: "pencil", decide: "split", print: "printer"};
 
   function workflowStudio(root, hooks = {}) {
-    const canEdit = !!root.dataset.canEdit;
-    const rail = $(".wf-rail", root), main = $(".wf-main", root), panel = $(".studio-panel", root), status = $(".studio-status", root);
+    const allowed = !!root.dataset.canEdit;  // may change things (an admin)
+    let canEdit = false;  // is changing them now: looking is safe, nothing to press by mistake until they say so
+    const main = $(".wf-main", root), panel = $(".studio-panel", root), status = $(".studio-status", root);
     let data = JSON.parse($("#studio-model").textContent);
     let item = JSON.parse($("#studio-opened").textContent);
     let map = JSON.parse($("#studio-map").textContent);  // the whole app, worked out from its design (app/appmap.py)
     let tried = null;  // what "try it" said, shown on the rule's steps
     let played = null;  // an example played through a process in a copy: {process, title, ok, lines, problem, went, ran}
-    let stagesFor = null;  // the list "Give it stages" was pressed on
+    let cameFrom = null;  // the list just left for the whole map: shown where it is on it
     const undoStack = [];
 
     const tableOf = (key) => data.tables.find((t) => t.key === key);
@@ -671,7 +729,6 @@
     const cardOf = (table) => { for (const p of map.processes) { const c = p.cards.find((x) => x.key === table); if (c) return c; } return null; };
     const refOf = (table) => map.reference.find((r) => r.key === table);
     const groupOf = (table) => data.items.find((g) => g.table === table);
-    const ITEM_ICONS = {stages: "arrow-right", rule: "zap", flow: "list-todo"};
     function mapItem(id) {  // the map's own views: drawn here from what's loaded, not fetched
       const [kind, key] = [String(id || "").split(":")[0], String(id || "").split(":").slice(1).join(":")];
       if (kind === "map") return {kind: "map"};
@@ -681,27 +738,6 @@
     }
     if (!item) item = mapItem(JSON.parse($("#studio-open").textContent || "null")) || {kind: "map"};
 
-    function drawRail() {
-      const cur = itemId();
-      const btn = (id, ic, label, extra = "", sub = false) => `<button type="button" class="wf-item ${sub ? "sub" : ""} ${id === cur ? "active" : ""}" data-open="${esc(id)}">
-        ${icon(ic)}<span class="grow ellipsis">${esc(label)}</span>${extra}</button>`;
-      const items = (table) => ((groupOf(table) || {}).items || []).map((i) => btn(i.id, ITEM_ICONS[i.kind] || "zap", i.kind === "stages" ? "Its stages" : i.label,
-        i.kind === "rule" && !i.on ? '<span class="tag">off</span>' : "", true)).join("");
-      const flag = (problems) => problems && problems.length ? `<span class="m-problems ${problems.some((x) => x.bad) ? "bad-text" : "warn-text"}" title="${esc(problems.map((x) => x.text).join("\n"))}">${icon("triangle-alert")}</span>` : "";
-      let out = `<div class="wf-group">${btn("map", "map", "Your whole app")}${btn("data", "network", "What each list keeps")}</div>`;
-      out += map.processes.map((p) => `<div class="wf-group"><div class="wf-group-head">${icon("route")}<span class="ellipsis">${esc(p.name)}</span></div>
-        ${btn(`process:${p.key}`, "route", "The whole process")}
-        ${p.cards.map((c) => btn(`list:${c.key}`, c.icon, c.label, flag(c.problems)) + items(c.key)).join("")}</div>`).join("");
-      if (map.reference.length) {
-        out += `<div class="wf-group"><div class="wf-group-head">${icon("table")}Lists they look things up in</div>
-          ${map.reference.map((r) => btn(`list:${r.key}`, r.icon, r.label, flag(r.problems)) + items(r.key)).join("")}</div>`;
-      }
-      const across = groupOf("");
-      if (across && across.items.length) out += `<div class="wf-group"><div class="wf-group-head">${icon("globe")}Across the app</div>${items("")}</div>`;
-      if (!map.processes.length && !map.reference.length) out += `<p class="small muted pad">Nothing yet. ${canEdit ? "Ask for what your business needs above, or add a list." : ""}</p>`;
-      rail.innerHTML = out;
-      $$("[data-open]", rail).forEach((b) => b.addEventListener("click", () => open(b.dataset.open)));
-    }
     const itemId = () => !item ? "" : item.kind === "map" ? "map" : ["process", "list"].includes(item.kind) ? `${item.kind}:${item.key}`
       : `${item.kind}:${item.kind === "stages" ? item.table : item.key}`;
     const remember = (id = itemId()) => history.replaceState(null, "", `${root.dataset.here}${id && id !== "map" ? `?open=${encodeURIComponent(id)}` : ""}`);
@@ -710,12 +746,18 @@
       if (!id) id = "map";
       if (id === "data" || id.startsWith("data:")) { hooks.toData?.(id.slice(5)); return; }
       const local = mapItem(id);
-      if (local) { item = local; tried = null; remember(id); draw(); return; }
+      if (id === "map" && item && ["list", "process"].includes(item.kind)) cameFrom = item.kind === "list" ? item.key : null;
+      if (local) { const back = !!cameFrom; item = local; tried = null; remember(id); draw(); if (!back) toTop(); return; }
       const got = await get(`${root.dataset.item}?id=${encodeURIComponent(id)}`);
       if (!got) { statusLine(status, ["That isn't there any more"], "bad"); return; }
       item = got; tried = null;
       remember(id);
       draw();
+      toTop();
+    }
+    function toTop() {  // a new view starts at its top (back on the map, it's where the list left is)
+      const top = root.getBoundingClientRect().top + scrollY - 70;
+      if (scrollY > top) scrollTo({top: Math.max(0, top)});
     }
     async function refresh() {  // after a change anywhere (the data model, the AI): the map worked out again
       const got = await get(root.dataset.mapJson);
@@ -749,233 +791,388 @@
 
     function draw() {
       if (!item) item = {kind: "map"};
-      drawRail();
       main.innerHTML = ""; panel.innerHTML = "";
-      root.classList.toggle("wide", ["map", "process"].includes(item.kind));  // lanes need the room; no panel beside them
+      root.classList.toggle("wide", ["map", "process", "list"].includes(item.kind));  // read down the page; no panel beside them
       if (item.kind !== "map") main.appendChild(crumbs());
       if (item.kind === "map") drawMap();
       else if (item.kind === "process") drawProcess(procOf(item.key));
       else if (item.kind === "list") drawList(item.key);
       else if (item.kind === "rule") drawRule();
       else if (item.kind === "stages") drawStages();
-      else if (item.kind === "new") main.appendChild(html(`<div class="card empty"><h3>${icon("plus", "big")}<br>${esc(item.label)}</h3><p class="muted">Fill in the form beside this to make it.</p></div>`));
+      else if (item.kind === "new") main.appendChild(html(`<div class="card empty"><h3>${icon("plus", "big")}<br>${esc(item.label)}</h3><p class="muted">Fill in the form ${matchMedia("(max-width: 1250px)").matches ? "below" : "beside"} this to make it.</p></div>`));
       else drawFlow();
       wire(main);  // the trail at the top, whatever's drawn below it
     }
 
     // --- the map ------------------------------------------------------------------------------------------------------
-    // Where you are: the whole app › a process › a list › its stages or a rule.
+    // Each process down the page as the steps work goes through (a list each), what takes it from one step to the next
+    // said in a sentence on the line between them, and on each step what people, rules and the AI do there.
+    const a = (word) => `${/^[aeiou]/i.test(word) ? "an" : "a"} ${word}`;
+    const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
+    const listOf = (table) => cardOf(table) || refOf(table);
+    const singularOf = (table) => (listOf(table) || {singular: table}).singular || (listOf(table) || {label: table}).label;
+    const one = (table) => String(singularOf(table)).toLowerCase();
+    const many = (table) => String((listOf(table) || {label: table}).label).toLowerCase();
+    const howMany = (n, table) => `${n} ${n === 1 ? one(table) : many(table)}`;
+    const listSaid = (xs) => xs.length < 2 ? xs.join("") : `${xs.slice(0, -1).join(", ")} and ${xs[xs.length - 1]}`;
+    const aiSaid = (c) => [...(c.ai.fields.length ? [`fills in ${listSaid(c.ai.fields)}`] : []),
+                           ...c.ai.steps.map((s) => `helps with “${s.name}”${s.checked ? " (a person checks it)" : ""}`)];
+    const EVERY = {hour: "Every hour", day: "Every day", week: "Every week", month: "Every month"};
+    const allLists = () => [...map.processes.flatMap((p) => p.cards), ...map.reference];
+    const stoppedOf = (rule) => { for (const c of allLists()) { const r = c.rules.find((x) => x.key === rule); if (r) return r.stopped || 0; } return 0; };
+    const stoppedSaid = (n) => n ? ` <span class="bad-text">· stopped with a problem ${n === 1 ? "once" : `${n} times`} lately</span>` : "";
+
+    // Where you are, each name a way back: the whole app › a list › its stages or a rule.
     function crumbs() {
+      const table = ["stages", "rule", "flow"].includes(item.kind) ? item.table : null;
       const trail = [["map", "Your whole app"]];
-      const table = item.kind === "list" ? item.key : item.kind === "stages" ? item.table : item.table || null;
-      const p = item.kind === "process" ? procOf(item.key) : table ? procWith(table) : null;
-      if (p && item.kind !== "process") trail.push([`process:${p.key}`, p.name]);
-      if (table && item.kind !== "list") trail.push([`list:${table}`, (cardOf(table) || refOf(table) || {label: table}).label]);
-      const here = item.kind === "process" ? p.name : item.kind === "list" ? (cardOf(item.key) || refOf(item.key)).label : item.kind === "stages" ? "Its stages" : item.label || item.name || "";
-      return html(`<nav class="map-crumbs small" aria-label="Where you are">${trail.map(([id, label]) => `<button type="button" class="link" data-open="${esc(id)}">${esc(label)}</button>`).join(`<span class="faint">›</span>`)}
-        <span class="faint">›</span><span aria-current="page">${esc(here)}</span></nav>`);
+      if (table && listOf(table)) trail.push([`list:${table}`, listOf(table).label]);
+      const here = item.kind === "process" ? procOf(item.key).name : item.kind === "list" ? listOf(item.key).label
+        : item.kind === "stages" ? "Its stages" : item.label || item.name || "";
+      return html(`<nav class="map-crumbs" aria-label="Where you are">${icon("chevron-left")}${trail.map(([id, label]) => `<button type="button" class="link" data-open="${esc(id)}">${esc(label)}</button><span class="faint">›</span>`).join("")}
+        <span aria-current="page">${esc(here)}</span></nav>`);
     }
     const litAt = (table, stage) => {
       if (!played) return "";
       const n = played.went.findIndex((w) => w.table === table && w.stage === stage);
       return n >= 0 ? `lit" data-step="${n + 1}` : "";
     };
-    const problemsBadge = (problems) => problems.length ? `<span class="m-problems ${problems.some((x) => x.bad) ? "bad-text" : "warn-text"}" title="${esc(problems.map((x) => x.text).join("\n"))}">${icon("triangle-alert")}${problems.length}</span>` : "";
-    const aiCount = (c) => c.ai.steps.length + c.ai.fields.length;
 
-    function cardHtml(c, big = false) {
-      const stages = c.stages.length
-        ? `<div class="map-stages ${big ? "tall" : ""}">${c.stages.map((st) => `<span class="map-stage ${litAt(c.key, st.name)}" title="${esc(st.name)}: ${plural(st.count, c.singular.toLowerCase(), c.label.toLowerCase())}${st.approves ? " · someone approves here" : ""}${st.ai ? " · the AI acts here" : ""}">
-            <span class="ellipsis">${esc(st.name)}</span><b class="m-live">${st.count || ""}</b>${st.approves ? icon("user-check", "m-people") : ""}${st.ai ? icon("sparkles", "m-ai") : ""}
-            ${big && st.rules.length ? `<span class="map-stage-rules">${st.rules.map((k) => { const r = c.rules.find((x) => x.key === k); return r ? `<button type="button" class="map-rule ${r.on ? "" : "off"}" data-open="rule:${esc(k)}">${icon("zap")}${esc(r.name)}</button>` : ""; }).join("")}</span>` : ""}</span>`).join("")}</div>`
-        : `<div class="faint tiny">${c.workflow ? "" : "Kept, not moved along stages"}</div>`;
-      return `<div class="map-card ${big ? "big" : ""} ${c.problems.some((x) => x.bad) ? "has-bad" : ""}" data-open="list:${esc(c.key)}" role="button" tabindex="0" aria-label="${esc(c.label)}">
-        <div class="map-card-head">${icon(c.icon)}<b class="grow ellipsis">${esc(c.label)}</b><span class="m-live faint small" title="Records in it now">${c.count}</span></div>
-        ${c.entries.length ? `<div class="map-entries">${c.entries.map((e) => `<span class="tagchip" title="Work comes in from here">${icon(e.icon)}${esc(e.label)}</span>`).join("")}</div>` : ""}
-        ${stages}
-        <div class="map-badges">
-          ${c.people.length ? `<span class="m-people" title="Who moves it on or approves: ${esc(c.people.join(", "))}">${icon("users")}<span class="ellipsis">${esc(c.people.slice(0, 2).join(", "))}${c.people.length > 2 ? "…" : ""}</span></span>` : ""}
-          ${aiCount(c) ? `<span class="m-ai ai-tag" title="${esc([...c.ai.fields.map((f) => `Fills in ${f}`), ...c.ai.steps.map((s) => `${s.name}${s.checked ? " (a person checks it)" : ""}`)].join("\n"))}">${icon("sparkles")}AI ${aiCount(c)}</span>` : ""}
-          ${c.waiting ? `<span class="m-live warn-text" title="Approvals and tasks waiting on its records">${icon("list-todo")}${c.waiting} waiting</span>` : ""}
-          ${problemsBadge(c.problems)}</div></div>`;
+    // A hand-off said as people would: “When a quote reaches Accepted, a job is made automatically.”
+    function whenSaid(h) {
+      const it = a(one(h.from));
+      if (h.event === "schedule") return `${EVERY[h.every] || "Every so often"}${h.at ? `, for each ${one(h.from)} at ${h.at}` : ""}`;
+      if (h.button) return `When someone presses “${h.press || h.label}” on ${it}`;
+      if (h.at) return `When ${it} reaches ${h.at}`;
+      if (h.event === "record_created") return `When ${it} is added`;
+      if (h.event === "record_updated") return `When ${it} is changed`;
+      if (h.event === "record_deleted") return `When ${it} is deleted`;
+      if (h.event === "schedule") return EVERY[h.every] || "Every so often";
+      return `When ${it} is added or changed`;
     }
-    // the hand-offs from one list to the next: the rules (or links) between them, said on the arrow
-    function arrowHtml(p, from, to, shown) {
-      const hs = p.handoffs.filter((h) => (h.how === "makes" ? h.from === from && h.to === to : h.to === from && h.from === to));
-      hs.forEach((h) => shown.add(h.rule + h.to));
-      const linked = p.links.some((l) => l.from === from && l.to === to);
-      return `<div class="map-arrow">${hs.map((h) => `<button type="button" class="map-hand ${h.on ? "" : "off"}" data-open="rule:${esc(h.rule)}" title="${esc(h.label)}${h.on ? "" : " (switched off)"}">
-          ${h.how === "updates" ? `<span class="faint tiny">${esc(a(singularOf(h.from).toLowerCase()))}${h.at ? ` at ${esc(h.at)}` : ""} updates it</span>`
-            : h.at ? `<span class="faint tiny">at ${esc(h.at)}</span>` : h.button ? `<span class="faint tiny">by its button</span>` : ""}<span class="ellipsis">${esc(h.label)}</span>
-          <span class="map-hand-marks">${h.asks ? icon("user-check", "m-people") : ""}${h.ai ? icon("sparkles", "m-ai") : ""}</span></button>`).join("")
-        || (linked ? `<span class="faint tiny">raised from it</span>` : "")}<span class="map-arrow-line" aria-hidden="true"></span></div>`;
+    function handSaid(h) {
+      const did = h.how === "makes" ? `${a(one(h.to))} is made automatically`
+        : h.sets.length ? `its ${one(h.to)}'s ${listSaid(h.sets.map(([f, v]) => `${f} is set to “${v}”`))} automatically`
+        : `its ${one(h.to)} is updated automatically`;
+      return `${whenSaid(h)}, ${did}${h.asks ? ", once someone approves it" : ""}${h.ai ? ", with the AI's help" : ""}.`;
     }
-    function laneHtml(p, big = false) {
-      const shown = new Set();
-      let lane = "";
-      p.cards.forEach((c, i) => {
-        if (i) lane += arrowHtml(p, p.cards[i - 1].key, c.key, shown);
-        lane += cardHtml(c, big);
-      });
-      const rest = p.handoffs.filter((h) => !shown.has(h.rule + h.to));
-      return `<div class="map-lane ${big ? "big" : ""}">${lane}</div>
-        ${rest.length ? `<div class="map-more small">${rest.map((h) => `<button type="button" class="map-hand inline ${h.on ? "" : "off"}" data-open="rule:${esc(h.rule)}">
-          ${icon("zap")}<span>${esc(h.from_label)}${h.at ? ` at ${esc(h.at)}` : ""} ${h.how === "makes" ? "→ adds to" : "→ updates"} ${esc(h.to_label)}</span><span class="faint">· ${esc(h.label)}</span>
-          ${h.ai ? icon("sparkles", "m-ai") : ""}${h.asks ? icon("user-check", "m-people") : ""}</button>`).join("")}</div>` : ""}`;
+    const autoHtml = (h) => `<button type="button" class="map-auto ${h.on ? "" : "off"}" data-open="rule:${esc(h.rule)}" title="See or change the rule that does this: “${esc(h.label)}”">
+      ${icon("zap")}<span>${esc(handSaid(h))}${h.on ? "" : ` <span class="tag">switched off</span>`}${stoppedSaid(stoppedOf(h.rule))}</span></button>`;
+    // a rule said by what starts it: a button people press is by hand, the rest happen by themselves
+    function ruleHtml(r, here = false) {
+      const every = (EVERY[r.every] || "Every so often").toLowerCase();
+      const said = r.event === "button" ? `<span class="map-tag">By hand</span>Someone presses “${esc(r.press || r.name)}”<span class="faint"> · then the app does the rest: ${esc(r.name)}</span>`
+        : r.event === "schedule" ? `${here ? `<span class="map-tag auto">Automatic</span>${esc(cap(every))}, for the ones here: ` : ""}${esc(r.name)}${here ? "" : `<span class="faint"> · ${esc(every)}${r.at ? `, for ones at ${esc(r.at)}` : ""}</span>`}`
+        : `${here ? `<span class="map-tag auto">Automatic</span>When one gets here: ` : ""}${esc(r.name)}${!here && r.at ? `<span class="faint"> · when one reaches ${esc(r.at)}</span>` : ""}`;
+      return `<button type="button" class="map-auto ${r.on ? "" : "off"}" data-open="rule:${esc(r.key)}" title="See or change this rule">
+        ${icon(r.event === "button" ? "user" : "zap")}<span>${said}${r.on ? "" : ` <span class="tag">switched off</span>`}${stoppedSaid(r.stopped)}</span></button>`;
     }
-    function lastCheck() {
-      const last = map.last, bad = map.problems || [];
-      if (!(bad.length || (last && (last.failing.length || last.issues.length)))) return "";
-      return `<div class="notice warn small m-problems">${icon("triangle-alert")}<div class="grow">
-        ${last && last.failing.length ? `<div>Your app's checks found ${plural(last.failing.length, "example that doesn't", "examples that don't")} come out right: ${esc(last.failing.slice(0, 3).join("; "))}.</div>` : ""}
-        ${last && last.issues.length ? `<div>${esc(last.issues.slice(0, 2).join(" "))}</div>` : ""}
-        ${bad.map((x) => `<div>${esc(x.text)}</div>`).join("")}</div><a class="btn sm" href="${esc(root.dataset.checks)}">See the checks</a></div>`;
-    }
+    const pressSaid = (m) => `Someone ${m.who.length ? `(${listSaid(m.who)}) ` : ""}presses “${m.label}” to move it to ${m.to}`;
 
-    function drawMap() {
-      const lists = map.processes.reduce((n, p) => n + p.cards.length, 0) + map.reference.length;
-      const ai = map.processes.reduce((n, p) => n + p.ai, 0);
-      main.appendChild(html(`<div class="wf-head"><div class="grow"><h2>${icon("map")}Your whole app</h2>
-        <p class="small muted">${plural(map.processes.length, "process", "processes")} running through ${plural(lists, "list", "lists")}${ai ? `, the AI helping in ${plural(ai, "place", "places")}` : ""}.
-          Work moves along each row, from the first list to the last; click a process, a list or an arrow to see it in full.</p></div></div>`));
-      main.appendChild(howTo());
-      const warn = lastCheck();
-      if (warn) main.appendChild(html(warn));
-      if (!map.processes.length && !map.reference.length) {
-        main.appendChild(html(`<div class="card empty"><h3>${icon("map", "big")}<br>Nothing to map yet</h3><p class="muted">${canEdit ? "Say what your business needs in the box above, and the map draws itself as the app is built." : "Once the app has lists, they're drawn here."}</p></div>`));
-      }
-      map.processes.forEach((p) => {
-        main.appendChild(html(`<article class="map-proc"><header class="map-proc-head">
-          <button type="button" class="map-proc-name" data-open="process:${esc(p.key)}">${icon("route")}${esc(p.name)}${icon("chevron-right")}</button>
-          <span class="faint small m-live">${plural(p.count, "record", "records")}</span>${p.problems ? `<span class="m-problems warn-text small">${icon("triangle-alert")}${p.problems}</span>` : ""}</header>
-          ${laneHtml(p)}</article>`));
-      });
-      if (map.reference.length) {
-        main.appendChild(html(`<section class="map-ref"><h3 class="label">${icon("table")}Lists your processes look things up in</h3><div class="chips">
-          ${map.reference.map((r) => `<button type="button" class="tagchip" data-open="list:${esc(r.key)}" title="${r.used_by.length ? `Used by ${esc(r.used_by.join(", "))}` : ""}">${icon(r.icon)}${esc(r.label)}<span class="m-live faint">${r.count}</span>${problemsBadge(r.problems)}</button>`).join("")}</div></section>`));
-      }
-      if (map.elsewhere.length) {
-        main.appendChild(html(`<section class="map-ref"><h3 class="label">${icon("globe")}Rules about the whole app</h3><div class="chips">
-          ${map.elsewhere.map((a) => `<button type="button" class="tagchip ${a.on ? "" : "off"}" data-open="rule:${esc(a.key)}">${icon("zap")}${esc(a.name)}</button>`).join("")}</div></section>`));
-      }
-      wire(main);
+    // What brings work to step i of a process: a rule an earlier step runs to make it, or one of its own updating an
+    // earlier step (a payment marking its invoice paid). The ones said on the line into a step aren't said again on it.
+    function intoStep(p, i) {
+      const cur = p.cards[i].key, earlier = p.cards.slice(0, i).map((c) => c.key);
+      return p.handoffs.filter((h) => (h.how === "makes" && h.to === cur && earlier.includes(h.from))
+                                    || (h.how === "updates" && h.from === cur && earlier.includes(h.to)));
     }
-    function howTo() {
-      return html(`<details class="map-howto small"><summary>${icon("info")}How to read the map</summary>
-        <ul class="map-key small">
-          <li>${icon("route")}<span>Each row is a <b>process</b>: the lists work goes through, in order.</span></li>
-          <li><span class="map-stage mini">Stage <b>3</b></span><span>A list's <b>stages</b>, and how many records are at each now.</span></li>
-          <li>${icon("arrow-right")}<span>An <b>arrow</b> is a hand-off: a rule (or a person) taking the work to the next list.</span></li>
-          <li>${icon("user-check")}<span>Someone <b>approves</b> it there.</span></li>
-          <li>${icon("sparkles")}<span>The <b>AI</b> fills something in or acts there.</span></li>
-          <li>${icon("triangle-alert")}<span>The app's checks found something to look at.</span></li></ul>
-        <p class="muted">Use <b>Show</b> above the map to hide what you don't need. <b>What it keeps</b> shows what each list keeps and how they link.
-          ${map.examples.length ? "Open a process to <b>play an example</b> through it and watch where it goes." : ""}</p></details>`);
+    function linkHtml(p, i) {
+      const c = p.cards[i], hs = intoStep(p, i);
+      const from = p.cards.slice(0, i).map((x) => x.key).reverse()
+        .find((k) => p.links.some((l) => l.from === k && l.to === c.key) || hs.some((h) => h.how === "updates" && h.to === k));
+      const byHand = hs.some((h) => h.how === "makes") || c.entries.length ? ""
+        : `<p class="map-line">${icon("user")}<span>People add ${a(one(c.key))}${from ? ` for ${a(one(from))}` : ""} themselves.</span></p>`;
+      return `<div class="map-link">${byHand}${hs.map(autoHtml).join("")}</div>`;
     }
-
-    function drawProcess(p) {
-      main.appendChild(html(`<div class="wf-head"><div class="grow"><h2>${icon("route")}${esc(p.name)}</h2>
-        <p class="small muted">${p.cards.map((c) => esc(c.label)).join(" → ")}. Each list's stages are below it, with the rules that act at each.</p></div></div>`));
-      main.appendChild(processTools(p));
-      if (played && played.process === p.key) main.appendChild(playedBox());
-      main.appendChild(html(`<div>${laneHtml(p, true)}</div>`));
-      const said = p.handoffs.map((h) => `<li><button type="button" class="link" data-open="rule:${esc(h.rule)}">${esc(h.label)}</button>:
-        ${h.how === "makes" ? `when ${esc(a(singularOf(h.from).toLowerCase()))} ${h.at ? `gets to ${esc(h.at)}` : h.button ? "has its button pressed" : "changes"}, it makes ${esc(a(singularOf(h.to).toLowerCase()))}`
-          : `${esc(a(singularOf(h.from).toLowerCase()))} updates its ${esc(singularOf(h.to).toLowerCase())}`}${h.asks ? ", once someone approves" : ""}${h.ai ? ", with the AI's help" : ""}${h.on ? "" : " <span class=\"tag\">off</span>"}.</li>`).join("");
-      if (said) main.appendChild(html(`<section class="card card-body"><h3 class="label">${icon("arrow-right")}How work is handed on</h3><ul class="map-said small">${said}</ul></section>`));
-      const problems = p.cards.flatMap((c) => c.problems.map((x) => ({...x, list: c.label})));
-      if (problems.length) main.appendChild(html(`<section class="card card-body m-problems"><h3 class="label">${icon("triangle-alert")}To look at</h3>
-        <ul class="map-said small">${problems.map((x) => `<li class="${x.bad ? "bad-text" : ""}"><b>${esc(x.list)}:</b> ${esc(x.text)}</li>`).join("")}</ul></section>`));
-      wire(main);
+    function stagesHtml(c) {
+      if (!c.stages.length) return "";
+      return `<div class="map-stages-row"><span class="map-cap">Stages</span><ol class="map-stages" aria-label="The stages ${esc(many(c.key))} go through, in order">${c.stages.map((st) => `<li class="map-stage ${litAt(c.key, st.name)}"
+        title="${esc(cap(howMany(st.count, c.key)))} at ${esc(st.name)} now${st.approves ? " · someone approves at this stage" : ""}${st.rules.length ? " · something happens automatically here" : ""}">
+        <span>${esc(st.name)}</span>${st.count ? `<b>${st.count}</b>` : ""}${st.approves ? icon("user-check") : ""}${st.rules.length ? icon("zap") : ""}</li>`).join("")}</ol></div>`;
     }
-    const a = (word) => `${/^[aeiou]/i.test(word) ? "an" : "a"} ${word}`;
-    const singularOf = (table) => (cardOf(table) || refOf(table) || {singular: table}).singular || (cardOf(table) || refOf(table) || {label: table}).label;
-
-    function processTools(p) {
+    function stepHtml(p, c, i, said) {
+      const auto = [...p.handoffs.filter((h) => h.from === c.key && !said.has(`${h.rule}>${h.to}`)).map(autoHtml),
+                    ...c.rules.filter((r) => !p.handoffs.some((h) => h.rule === r.key)).map(ruleHtml)];
+      const ai = aiSaid(c);
+      return `<article class="map-step ${c.problems.some((x) => x.bad) ? "has-bad" : ""}" data-open="list:${esc(c.key)}" id="step-${esc(c.key)}">
+        ${p.cards.length > 1 ? `<span class="map-step-n" aria-hidden="true">${i + 1}</span>` : ""}
+        <div class="map-step-body">
+          <header class="map-step-head"><button type="button" class="map-step-name" data-open="list:${esc(c.key)}">${icon(c.icon)}<b>${esc(c.label)}</b></button>
+            <span class="faint small">${esc(howMany(c.count, c.key))} now</span><span class="map-step-more">See all of it${icon("chevron-right")}</span></header>
+          ${stagesHtml(c)}
+          ${c.entries.length ? `<p class="map-line">${icon(c.entries[0].icon)}<span>Comes in from ${esc(listSaid(c.entries.map((e) => e.label.charAt(0).toLowerCase() + e.label.slice(1))))}.</span></p>` : ""}
+          ${auto.length ? `<div class="map-autos">${auto.join("")}</div>` : ""}
+          ${c.people.length ? `<p class="map-line">${icon("users")}<span>Who's involved: ${esc(listSaid(c.people))}.</span></p>` : ""}
+          ${ai.length ? `<p class="map-line ai">${icon("sparkles")}<span>The AI ${esc(listSaid(ai))}.</span></p>` : ""}
+          ${c.waiting ? `<p class="map-line warn-text">${icon("list-todo")}<span>${c.waiting} waiting for someone to approve or do.</span></p>` : ""}
+          ${c.problems.map((x) => `<p class="map-line ${x.bad ? "bad-text" : "warn-text"}">${icon("triangle-alert")}<span>${esc(x.text)}</span></p>`).join("")}
+        </div></article>`;
+    }
+    function processHtml(p) {
+      const said = new Set();
+      p.cards.forEach((c, i) => { if (i) intoStep(p, i).forEach((h) => said.add(`${h.rule}>${h.to}`)); });
+      let steps = "";
+      p.cards.forEach((c, i) => { if (i) steps += linkHtml(p, i); steps += stepHtml(p, c, i, said); });
       const examples = map.examples.filter((x) => x.tables.some((t) => p.lists.includes(t)));
-      const box = html(`<div class="map-tools">
-        <form class="map-tool" data-form="play"><span class="label">${icon("play")}Play an example through it</span>
-          ${examples.length ? `<div class="row"><select name="example" aria-label="Which example">${examples.map((x) => `<option value="${x.n}">${esc(x.title)}</option>`).join("")}</select>
-            <button class="btn sm primary">${icon("play")}Play it</button></div><span class="help">Acted out in a copy of your app: nothing real changes. The stages it goes through light up.</span>`
-            : `<span class="small muted">No examples yet: the builder makes some each time it changes your app, and you can add your own under Checks.</span>`}</form>
-        ${canEdit ? `<form class="map-tool" data-form="name"><span class="label">${icon("pencil")}What your business calls it</span>
-          <div class="row"><input type="text" name="name" value="${p.named ? esc(p.name) : ""}" placeholder="${esc(p.name)}" maxlength="60" aria-label="What your business calls it">
-          <button class="btn sm">Name it</button></div><span class="help">“Quote to cash”, “Hiring”: leave it empty to name it after its lists.</span></form>` : ""}</div>`);
-      if (!examples.length) $("[data-form=play]", box).removeAttribute("data-form");
-      $("[data-form=name]", box)?.addEventListener("submit", async (ev) => {
-        ev.preventDefault();
-        const done = await post(root.dataset.name, {process: p.key, name: ev.target.elements.name.value});
-        if (done.error) { statusLine(status, [done.error], "bad"); return; }
-        map = done.map; draw();
-        statusLine(status, [ev.target.elements.name.value.trim() ? `Called “${ev.target.elements.name.value.trim()}” now` : "Named after its lists again"], "good");
-      });
-      $("[data-form=play]", box)?.addEventListener("submit", async (ev) => {
+      return `<section class="map-proc" data-proc="${esc(p.key)}">
+        <header class="map-proc-head"><div class="grow">
+          <h2 class="map-proc-title" data-name>${icon("route")}<span>${esc(p.name)}</span>${allowed ? `<button type="button" class="btn sm ghost icon" data-rename title="Call it what your business calls it" aria-label="Rename it">${icon("pencil")}</button>` : ""}</h2>
+          ${p.cards.length > 1 ? `<p class="small muted">${p.cards.length} steps, from top to bottom: ${esc(p.cards.map((c) => c.label).join(" → "))}</p>` : ""}</div>
+          ${examples.length ? `<form class="map-play" data-form="play">${examples.length > 1 ? `<select name="example" aria-label="Which example">${examples.map((x) => `<option value="${x.n}">${esc(x.title)}</option>`).join("")}</select>`
+            : `<input type="hidden" name="example" value="${examples[0].n}">`}
+            <button class="btn sm" title="Act out ${examples.length === 1 ? `“${esc(examples[0].title)}”` : "an example"} in a practice copy of your app, and see where it goes">${icon("play")}Watch an example</button></form>` : ""}</header>
+        ${played && played.process === p.key ? playedHtml() : ""}
+        <div class="map-journey">${steps}</div></section>`;
+    }
+    function wireProcess(sec, p) {
+      $("[data-rename]", sec)?.addEventListener("click", (ev) => { ev.stopPropagation(); renameProcess(sec, p); });
+      $("[data-unplay]", sec)?.addEventListener("click", () => { played = null; draw(); });
+      $("[data-form=play]", sec)?.addEventListener("submit", async (ev) => {
         ev.preventDefault();
         const b = $("button", ev.target);
-        b.disabled = true; b.innerHTML = `<span class="spin"></span> Playing it in a copy…`;
+        b.disabled = true; b.innerHTML = `<span class="spin"></span> Acting it out…`;
         const got = await post(root.dataset.play, {example: Number(ev.target.elements.example.value)});
-        b.disabled = false; b.innerHTML = `${icon("play")}Play it`;
+        b.disabled = false; b.innerHTML = `${icon("play")}Watch an example`;
         if (got.error) { statusLine(status, [got.error], "bad"); return; }
         played = {process: p.key, ...got};
         draw();
+        $(`[data-proc="${CSS.escape(p.key)}"] .map-played`, main)?.scrollIntoView({block: "nearest"});
       });
-      return box;
     }
-    function playedBox() {
-      const r = played;
-      const box = html(`<div class="wf-tried ${r.ok ? "good" : "bad"}">${icon(r.ok ? "circle-check" : "circle-x")}<div class="grow">
-        <b>${esc(r.title)}</b>: ${r.ok ? "it came out as expected." : `it didn't come out right${r.problem ? `: ${esc(r.problem)}` : "."}`}
-        ${r.went.length ? `<ol class="map-went small">${r.went.map((w) => `<li><b>${esc((cardOf(w.table) || refOf(w.table) || {singular: w.table}).singular)}${w.record ? ` “${esc(w.record)}”` : ""}</b> → ${esc(w.stage)} <span class="faint">(${esc(w.by)})</span></li>`).join("")}</ol>` : ""}
-        ${r.ran.length ? `<div class="small muted">Rules that ran: ${esc(r.ran.join(", "))}.</div>` : ""}
-        ${r.lines.length ? `<ul class="map-said small">${r.lines.map(([ok, line]) => `<li class="${ok ? "" : "bad-text"}">${icon(ok ? "check" : "x")}${esc(line)}</li>`).join("")}</ul>` : ""}
-        <div class="small muted">Played in a copy: nothing in your app changed.</div></div>
-        <button type="button" class="btn sm ghost" data-unplay>Clear</button></div>`);
-      $("[data-unplay]", box).addEventListener("click", () => { played = null; draw(); });
+    function renameProcess(sec, p) {
+      const form = html(`<form class="map-rename"><input type="text" name="name" value="${esc(p.name)}" maxlength="60" aria-label="What your business calls it" placeholder="Quote to cash, Hiring…">
+        <button class="btn sm primary">Save</button><button type="button" class="btn sm ghost" data-cancel>Cancel</button></form>`);
+      $("[data-name]", sec).replaceWith(form);
+      form.elements.name.focus(); form.elements.name.select();
+      $("[data-cancel]", form).addEventListener("click", draw);
+      form.addEventListener("submit", async (ev) => {
+        ev.preventDefault();
+        const name = form.elements.name.value.trim();
+        const done = await post(root.dataset.name, {process: p.key, name: name === p.name && !p.named ? "" : name});
+        if (done.error) { statusLine(status, [done.error], "bad"); return; }
+        map = done.map; draw();
+        statusLine(status, [name && name !== p.name ? `Called “${name}” now` : "Named after its lists"], "good");
+      });
+    }
+    // An example acted out in a copy, as a story, its steps numbered on the map below it.
+    function playedHtml() {
+      const r = played, seen = new Set();
+      const story = r.went.map((w) => {
+        const id = `${w.table}:${w.record}`, first = !seen.has(id);
+        seen.add(id);
+        const what = `${one(w.table)}${w.record ? ` “${w.record}”` : ""}`;
+        return first ? `${cap(a(what))} was ${w.by === "a rule" ? "made automatically" : "added"}, at ${w.stage}.`
+                     : `The ${what} was moved to ${w.stage}${w.by === "a rule" ? " automatically" : ""}.`;
+      });
+      return `<div class="wf-tried map-played ${r.ok ? "good" : "bad"}">${icon(r.ok ? "circle-check" : "circle-x")}<div class="grow">
+        <b>${esc(r.title)}</b>: ${r.ok ? "it worked as expected." : `it didn't come out right${r.problem ? `: ${esc(r.problem)}` : "."}`}
+        ${story.length ? `<ol class="map-went">${story.map((s) => `<li>${esc(s)}</li>`).join("")}</ol>` : ""}
+        ${r.lines.length ? `<div class="small">What it should end with: ${r.lines.map(([ok, line]) => `<span class="${ok ? "good-text" : "bad-text"}">${icon(ok ? "check" : "x")}${esc(line)}</span>`).join(" ")}</div>` : ""}
+        <div class="small muted">The numbers on the stages below show where it went. It was acted out in a practice copy: nothing in your app changed.</div></div>
+        <button type="button" class="btn sm ghost" data-unplay>Clear</button></div>`;
+    }
+
+    // Everything the checks found, in one place at the top, each with the way to the list it's about.
+    function toLookAt() {
+      const found = [...map.processes.flatMap((p) => p.cards), ...map.reference].flatMap((c) => c.problems.map((x) => ({...x, list: c.key, label: c.label})));
+      found.push(...(map.problems || []));
+      allLists().forEach((c) => c.rules.filter((r) => r.stopped).forEach((r) => found.push({bad: true, rule: r.key,
+        text: `“${r.name}” stopped with a problem ${r.stopped === 1 ? "once" : `${r.stopped} times`} lately, so what it does didn't happen`, list: c.key, label: c.label})));
+      const last = map.last, failing = last ? last.failing : [], issues = last ? last.issues : [];
+      if (!found.length && !failing.length && !issues.length) return null;
+      const bad = found.some((x) => x.bad) || failing.length;
+      const box = html(`<section class="map-fix ${bad ? "bad" : ""}"><h3>${icon("triangle-alert")}${bad ? "Something needs fixing" : "Worth a look"}</h3><ul>
+        ${found.map((x) => `<li>${x.list ? `<button type="button" class="link" data-open="${x.rule ? `rule:${esc(x.rule)}` : `list:${esc(x.list)}`}">${esc(x.label)}</button>: ` : ""}${esc(x.text)}</li>`).join("")}
+        ${failing.length ? `<li>${plural(failing.length, "example doesn't", "examples don't")} come out right: ${esc(failing.slice(0, 3).join("; "))}.</li>` : ""}
+        ${issues.slice(0, 2).map((x) => `<li>${esc(x)}</li>`).join("")}</ul>
+        <a class="btn sm" href="${esc(root.dataset.checks)}">See all the checks</a>${canEdit ? `<span class="small muted">or say what to fix in the box above</span>` : ""}</section>`);
       return box;
     }
 
-    // one list: where it sits, what moves it on, what acts on it, and the way into each part
-    function drawList(key) {
-      const c = cardOf(key), r = refOf(key), p = procWith(key);
-      const t = c || r;
-      main.appendChild(html(`<div class="wf-head"><div class="grow"><h2>${icon(t.icon)}${esc(t.label)}</h2>
-        <p class="small muted">${plural(t.count, "record", "records")}${p ? ` · part of ${esc(p.name)}` : r && r.used_by.length ? ` · looked up by ${esc(r.used_by.join(", "))}` : ""}</p></div></div>`));
-      const hands = map.processes.flatMap((x) => x.handoffs);
-      const from = hands.filter((h) => (h.how === "makes" ? h.to : h.from) === key && (h.how === "makes" ? h.from : h.to) !== key);
-      const to = hands.filter((h) => (h.how === "makes" ? h.from : h.to) === key);
-      const step = (h, other) => `<li><button type="button" class="map-hand inline ${h.on ? "" : "off"}" data-open="rule:${esc(h.rule)}">${icon("zap")}<span><b>${esc(other)}</b>
-        <span class="faint">· ${esc(h.label)}${h.at ? ` (at ${esc(h.at)})` : ""}</span></span>${h.ai ? icon("sparkles", "m-ai") : ""}${h.asks ? icon("user-check", "m-people") : ""}</button></li>`;
-      main.appendChild(html(`<div class="map-list-view">${c ? `<div class="map-lane big solo">${cardHtml(c, true)}</div>` : ""}
-        <div class="stack">
-          <section><h3 class="label">${icon("arrow-right")}Work comes from</h3>${from.length ? `<ul class="map-flow">${from.map((h) => step(h, h.how === "makes" ? h.from_label : h.to_label)).join("")}</ul>`
-            : `<p class="small muted">${c && c.entries.length ? esc(c.entries.map((e) => e.label).join(", ")) : "People add them by hand."}</p>`}</section>
-          <section><h3 class="label">${icon("arrow-right")}And goes on to</h3>${to.length ? `<ul class="map-flow">${to.map((h) => step(h, h.how === "makes" ? h.to_label : h.from_label)).join("")}</ul>`
-            : `<p class="small muted">Nothing hands it on by itself${r && r.used_by.length ? `; ${esc(r.used_by.join(", "))} look it up` : ""}.</p>`}</section></div></div>`));
+    function drawMap() {
+      const fix = toLookAt();
+      if (fix) main.appendChild(fix);
+      if (!map.processes.length && !map.reference.length) {
+        main.appendChild(html(`<div class="card empty"><h3>${icon("map", "big")}<br>Nothing to show yet</h3><p class="muted">${canEdit ? "Say what your business needs in the box above: this fills in as your app is built." : "Once your app has lists, they show here."}</p></div>`));
+      } else if (!map.processes.length) {
+        main.appendChild(html(`<p class="muted">None of your lists moves work along stages yet, so there's no step-by-step work to show. These are the lists your app keeps.</p>`));
+      }
+      map.processes.forEach((p) => { const sec = html(processHtml(p)); main.appendChild(sec); wireProcess(sec, p); });
+      if (map.reference.length) {
+        main.appendChild(html(`<section class="map-ref"><h3 class="label">${icon("table")}${map.processes.length ? "Also in your app" : "Your lists"}</h3>
+          ${map.processes.length ? `<p class="small muted">Lists the steps above look things up in, like who a piece of work is for.</p>` : ""}<div class="chips">
+          ${map.reference.map((r) => `<button type="button" class="tagchip" data-open="list:${esc(r.key)}">${icon(r.icon)}${esc(r.label)}<span class="faint">${r.count}</span>${r.problems.length ? icon("triangle-alert", r.problems.some((x) => x.bad) ? "bad-text" : "warn-text") : ""}</button>`).join("")}</div></section>`));
+      }
+      if (map.elsewhere.length) {
+        main.appendChild(html(`<section class="map-ref"><h3 class="label">${icon("zap")}Also happens automatically</h3>
+          <p class="small muted">On a schedule, or when an email or another system sends something in.</p><div class="map-autos">${map.elsewhere.map((r) => ruleHtml(r)).join("")}</div></section>`));
+      }
       wire(main);
-      listPanel(key);
+      if (cameFrom) {  // back from a list: where it is on the map
+        const el = $(`#step-${CSS.escape(cameFrom)}`, main);
+        cameFrom = null;
+        if (el) { el.scrollIntoView({block: "center"}); el.classList.add("flash"); }
+      }
     }
-    function listPanel(key) {
-      const c = cardOf(key), r = refOf(key), t = c || r;
-      const items = (groupOf(key) || {items: []}).items;
-      const box = html(`<div class="stack"><h2 class="panel-title">${icon(t.icon)}${esc(t.label)}</h2>
-        <div class="row wrap"><a class="btn sm" href="${esc(root.dataset.openTable.replace("__table__", key))}">${icon("external-link")}Open the list</a>
-          <a class="btn sm" href="${esc(root.dataset.here)}?view=data&amp;open=${encodeURIComponent(`data:${key}`)}" data-to-data="${esc(key)}">${icon("network")}What it keeps</a></div>
-        ${c && c.entries.length ? `<p class="small">${icon("globe")} Work comes in from ${esc(c.entries.map((e) => e.label.toLowerCase()).join(", "))}.</p>` : ""}
-        ${c && c.people.length ? `<p class="small m-people">${icon("users")} Moved on or approved by ${esc(c.people.join(", "))}.</p>` : ""}
-        ${c && aiCount(c) ? `<div class="small m-ai"><b>${icon("sparkles")} Where the AI helps</b><ul class="map-said">${c.ai.fields.map((f) => `<li>Fills in ${esc(f)}</li>`).join("")}${c.ai.steps.map((s) => `<li>${esc(s.name)}${s.checked ? " · a person checks it" : ""}</li>`).join("")}</ul>
-          <a class="small" href="${esc(root.dataset.aiPage)}">Change what the AI does</a></div>` : ""}
-        ${t.problems.length ? `<div><div class="label">${icon("triangle-alert")}To look at</div><ul class="map-said small">${t.problems.map((x) => `<li class="${x.bad ? "bad-text" : ""}">${esc(x.text)}</li>`).join("")}</ul></div>` : ""}
-        <div><div class="label">Its stages, rules and step-by-step screens</div>
-          ${items.length ? `<ul class="studio-list">${items.map((i) => `<li><button type="button" data-open="${esc(i.id)}">${icon(ITEM_ICONS[i.kind] || "zap")}<span class="grow"><b>${esc(i.kind === "stages" ? "Its stages" : i.label)}</b>
-            ${i.about ? `<div class="faint tiny">${esc(i.about)}</div>` : ""}</span>${i.kind === "rule" && !i.on ? '<span class="tag">off</span>' : ""}${icon("chevron-right")}</button></li>`).join("")}</ul>`
-            : `<p class="small muted">None yet.</p>`}
-          ${canEdit && c && !c.workflow ? `<button type="button" class="btn sm" data-add-stages="${esc(key)}">${icon("arrow-right")}Give it stages</button>` : ""}</div></div>`);
-      panel.appendChild(box);
-      wire(box);
-      $("[data-add-stages]", box)?.addEventListener("click", () => { stagesFor = key; $("[data-wf-new-stages]")?.click(); });
+    function drawProcess(p) {
+      const sec = html(processHtml(p));
+      main.appendChild(sec);
+      wireProcess(sec, p);
+      wire(main);
     }
 
-    // what's clickable in a drawing or panel: opens it here; "What it keeps" opens the data view at that list
+    // One list: how one moves along its stages, where they come from, what happens to them by itself, where the AI
+    // helps; and the ways to change each.
+    function drawList(key) {
+      const t = listOf(key), r = refOf(key), p = procWith(key);
+      const items = (groupOf(key) || {items: []}).items;
+      const stagesItem = items.find((i) => i.kind === "stages"), flows = items.filter((i) => i.kind === "flow");
+      const hands = map.processes.flatMap((x) => x.handoffs);
+      const comes = hands.filter((h) => h.how === "makes" && h.to === key && h.from !== key);
+      const auto = [...hands.filter((h) => h.from === key), ...hands.filter((h) => h.how === "updates" && h.to === key)].map(autoHtml)
+        .concat(t.rules.filter((x) => !hands.some((h) => h.rule === x.key)).map(ruleHtml));
+      const from = p && (p.links.find((l) => l.to === key) || {}).from;
+      const ai = aiSaid(t);
+      main.appendChild(html(`<div class="wf-head"><div class="grow"><h2>${icon(t.icon)}${esc(t.label)}</h2>
+        <p class="small muted">${esc(cap(howMany(t.count, key)))} now${p && p.cards.length > 1 ? ` · step ${p.lists.indexOf(key) + 1} of ${p.cards.length} in ${esc(p.name)}` : r && r.used_by.length ? ` · looked up by ${esc(listSaid(r.used_by))}` : ""}</p></div>
+        <div class="row wrap"><a class="btn sm" href="${esc(root.dataset.openTable.replace("__table__", key))}">${icon("external-link")}Open the list</a>
+          <a class="btn sm" href="${esc(root.dataset.here)}?view=data&amp;open=${encodeURIComponent(`data:${key}`)}" data-to-data="${esc(key)}">${icon("table")}What each ${esc(one(key))} keeps</a></div></div>`));
+      const stageRow = (st, i) => `<li data-key="${esc(st.name)}" class="${litAt(key, st.name)}" ${canEdit ? 'draggable="true"' : ""}><span class="map-step-n">${i + 1}</span>
+          <div class="row">${canEdit ? `${icon("grip-vertical", "grip")}<input type="text" class="grow" value="${esc(st.name)}" data-rename-stage="${esc(st.name)}" maxlength="60" aria-label="Name of the stage ${esc(st.name)}">
+            <button type="button" class="btn sm ghost icon" data-remove-stage="${esc(st.name)}" title="Remove this stage" aria-label="Remove ${esc(st.name)}">${icon("trash-2")}</button>`
+            : `<b class="grow">${esc(st.name)}</b><span class="faint small nowrap">${st.count ? `${esc(howMany(st.count, key))} here now` : "none here now"}</span>`}</div>
+          ${canEdit ? "" : `${st.moves.map((m) => `<p class="map-line">${icon("user")}<span><span class="map-tag">By hand</span>${esc(pressSaid(m))}.</span></p>`).join("")}
+          ${st.approves ? `<p class="map-line">${icon("user-check")}<span><span class="map-tag">By hand</span>Someone approves ${esc(a(one(key)))} here.</span></p>` : ""}
+          ${st.rules.length ? `<div class="map-autos">${st.rules.map((k) => t.rules.find((x) => x.key === k)).filter(Boolean).map((x) => ruleHtml(x, true)).join("")}</div>` : ""}`}</li>`;
+      const stages = t.stages.length ? `<ol class="map-stage-list ${canEdit ? "changing" : ""}" data-stage-list>${t.stages.map(stageRow).join("")}</ol>
+          ${!canEdit && t.anytime.length ? t.anytime.map((m) => `<p class="map-line">${icon("user")}<span><span class="map-tag">By hand</span>At any stage, ${esc(pressSaid(m).charAt(0).toLowerCase() + pressSaid(m).slice(1))}.</span></p>`).join("") : ""}
+          ${!canEdit && !t.workflow ? `<p class="map-line">${icon("user")}<span><span class="map-tag">By hand</span>People move ${esc(a(one(key)))} along by changing its ${esc(t.field_label || "Status")}.</span></p>` : ""}
+          ${canEdit ? `<form class="map-add-stage" data-form="add-stage"><label class="small" for="new-stage">Add a stage</label><input type="text" id="new-stage" name="name" required maxlength="60" placeholder="Waiting on parts">
+            <label class="small" for="new-stage-after">after</label><select id="new-stage-after" name="after">${t.stages.map((st, i) => `<option ${i === t.stages.length - 1 ? "selected" : ""}>${esc(st.name)}</option>`).join("")}</select>
+            <button class="btn sm primary">${icon("plus")}Add it</button></form>
+            <p class="help">Drag a stage to move it, or change its name where it is: every ${esc(one(key))} at it, and every rule, follows.</p>` : ""}`
+        : `<p class="small muted">${esc(cap(many(key)))} don't move along stages: they're kept, and looked up.</p>`;
+      const box = html(`<div class="map-list-view">
+        <section><h3>${icon("arrow-right")}How ${esc(a(one(key)))} moves along</h3>${stages}
+          ${t.people.length ? `<p class="map-line">${icon("users")}<span>Who's involved: ${esc(listSaid(t.people))}.</span></p>` : ""}
+          ${allowed ? `<div class="row wrap">${t.stages.length ? (canEdit ? "" : `<button type="button" class="btn sm" data-edit-stages>${icon("pencil")}Change the stages</button>`)
+              : `<button type="button" class="btn sm" data-add-stages>${icon("plus")}Give them stages</button>`}
+            ${stagesItem ? `<button type="button" class="btn sm ghost" data-open="${esc(stagesItem.id)}">${icon("user")}Who can move them on</button>` : ""}</div>` : ""}</section>
+        <div class="stack">
+          <section><h3>${icon("log-out")}Where they come from</h3>
+            ${t.entries.map((e) => `<p class="map-line">${icon(e.icon)}<span>${esc(e.label)}.</span></p>`).join("")}${comes.map(autoHtml).join("")}
+            ${t.seen_in_portal ? `<p class="map-line">${icon("users")}<span>Customers can see theirs in their portal.</span></p>` : ""}
+            ${comes.length ? "" : `<p class="map-line">${icon("user")}<span>People add them themselves${from ? `, for ${esc(a(one(from)))}` : ""}.</span></p>`}</section>
+          <section><h3>${icon("zap")}What happens automatically</h3>${auto.length ? `<div class="map-autos">${auto.join("")}</div>` : `<p class="small muted">Nothing yet.</p>`}
+            ${allowed ? `<div><button type="button" class="btn sm" data-new-rule>${icon("plus")}Make something happen automatically</button></div>` : ""}</section>
+          ${ai.length ? `<section><h3>${icon("sparkles")}Where the AI helps</h3><p class="map-line ai">${icon("sparkles")}<span>The AI ${esc(listSaid(ai))}.</span></p>
+            <a class="small" href="${esc(root.dataset.aiPage)}">Change what the AI does</a></section>` : ""}
+          ${flows.length ? `<section><h3>${icon("list-todo")}Step-by-step screens</h3>${flows.map((f) => `<button type="button" class="map-auto" data-open="${esc(f.id)}">${icon("list-todo")}<span>${esc(f.label)}<span class="faint"> · ${esc(f.about || "")}</span></span></button>`).join("")}</section>` : ""}
+          ${t.problems.length ? `<section class="map-fix ${t.problems.some((x) => x.bad) ? "bad" : ""}"><h3>${icon("triangle-alert")}To look at</h3><ul>${t.problems.map((x) => `<li>${esc(x.text)}</li>`).join("")}</ul></section>` : ""}
+        </div></div>`);
+      main.appendChild(box);
+      $("[data-add-stages]", box)?.addEventListener("click", () => newStages(key));
+      $("[data-new-rule]", box)?.addEventListener("click", () => newRule(key));
+      $("[data-edit-stages]", box)?.addEventListener("click", () => hooks.edit?.(true));
+      const list = $("[data-stage-list]", box);
+      if (canEdit && list) {
+        const field = t.field;
+        $$("[data-rename-stage]", list).forEach((input) => input.addEventListener("change", () => {
+          const now = input.value.trim();
+          if (now && now !== input.dataset.renameStage) stageChange(key, {do: "rename_stage", field, old: input.dataset.renameStage, new: now});
+        }));
+        $$("[data-remove-stage]", list).forEach((b) => b.addEventListener("click", () => {
+          if (confirm(`Remove the stage “${b.dataset.removeStage}”?`)) stageChange(key, {do: "remove_stage", field, name: b.dataset.removeStage});
+        }));
+        sortable(list, (names) => stageChange(key, {do: "order_stages", field, names}));
+        $("[data-form=add-stage]", box).addEventListener("submit", (ev) => {
+          ev.preventDefault();
+          stageChange(key, {do: "add_stage", field, name: ev.target.elements.name.value, after: ev.target.elements.after.value});
+        });
+      }
+      wire(main);
+    }
+    // A list's stages changed where they're shown: the list stays open, drawn again from the design as it is now.
+    async function stageChange(key, body) {
+      statusLine(status, ["Saving…"], "info");
+      const done = await post(root.dataset.change, {id: `stages:${key}`, change: {...body, table: key}});
+      if (done.error) { statusLine(status, [done.error], "bad"); return false; }
+      undoStack.push(done.before);
+      const fresh = await get(root.dataset.mapJson);
+      if (fresh) { map = fresh.map; data = fresh.data; }
+      draw();
+      statusLine(status, done.said, "good", takeBack);
+      return true;
+    }
+
+    // --- starting something new: something that happens automatically, or stages for a list ------------------------
+    function newRule(table) {
+      hooks.edit?.(true);
+      item = {kind: "new", label: "Make something happen automatically", table}; draw();
+      const lists = data.tables.filter((t) => listOf(t.key));
+      const stagesOf = (key) => (listOf(key) || {stages: []}).stages.map((st) => st.name);
+      const box = html(`<div class="stack"><h2 class="panel-title">${icon("zap")}Make something happen automatically</h2>
+        <form class="stack" data-form="new-rule">
+          <label class="field"><span>When</span><select name="table">${lists.map((t) => `<option value="${esc(t.key)}" ${t.key === table ? "selected" : ""}>${esc(cap(a(t.singular.toLowerCase())))}</option>`).join("")}</select></label>
+          <label class="field"><span class="sr-only">What happens to it</span><select name="type"><option value="stage">reaches a stage…</option><option value="record_created">is added</option>
+            <option value="record_updated">is changed</option><option value="button">has a button pressed on it</option></select></label>
+          <label class="field" data-for="stage"><span>The stage</span><select name="stage"></select></label>
+          <label class="field"><span>Then tell</span><select name="to">${[["owner", "The owner"], ["admin", "The admins"], ["editor", "Everyone on the team"], ["creator", "Whoever added it"]].map(([v, l]) => `<option value="${v}">${l}</option>`).join("")}</select>
+            <span class="help">They get a message in the app, under Notifications.</span></label>
+          <label class="field"><span>Call it</span><input type="text" name="name" maxlength="80" placeholder="Tell the owner when a job is signed off"></label>
+          <button class="btn primary sm">Make it</button>
+          <p class="help">Once it's made, you can add more to it: an email, a task for someone, a change to another list.</p></form></div>`);
+      panel.innerHTML = "";
+      panel.appendChild(box);
+      const form = $("[data-form=new-rule]", box), fm = form.elements;
+      const fill = () => {
+        const names = stagesOf(fm.table.value);
+        $("[value=stage]", fm.type).disabled = !names.length;
+        if (!names.length && fm.type.value === "stage") fm.type.value = "record_created";
+        fm.stage.innerHTML = names.map((n) => `<option>${esc(n)}</option>`).join("");
+        $("[data-for=stage]", form).hidden = fm.type.value !== "stage";
+      };
+      fm.table.addEventListener("change", fill); fm.type.addEventListener("change", fill); fill();
+      form.addEventListener("submit", (ev) => {
+        ev.preventDefault();
+        const key = fm.table.value, t = tableOf(key), it = t.singular.toLowerCase(), c = listOf(key);
+        const said = {stage: `reaches ${fm.stage.value}`, record_created: "is added", record_updated: "is changed", button: "has its button pressed"}[fm.type.value];
+        const name = fm.name.value.trim() || `When ${a(it)} ${said}`;
+        const trigger = fm.type.value === "stage" ? {type: "record_updated", table: key, field: c.field, to: fm.stage.value}
+          : {type: fm.type.value, table: key, label: fm.type.value === "button" ? name.slice(0, 40) : undefined};
+        const message = fm.type.value === "stage" ? `{{record}} is now ${fm.stage.value}` : fm.type.value === "record_created" ? `New ${it}: {{record}}` : `${name}: {{record}}`;
+        change({do: "add_rule", name, trigger, step: {type: "notify", to: fm.to.value, message}}, "");
+      });
+    }
+    function newStages(table) {
+      hooks.edit?.(true);
+      item = {kind: "new", label: "Stages for a list", table}; draw();
+      const without = data.tables.filter((t) => !t.stages);
+      const box = html(`<div class="stack"><h2 class="panel-title">${icon("arrow-right")}Stages for a list</h2>
+        <p class="small muted">Each one then moves from one stage to the next, by a button people press, and things can happen automatically at each.</p>
+        ${without.length ? `<form class="stack" data-form="new-stages"><label class="field"><span>The list</span><select name="table">${without.map((t) => `<option value="${esc(t.key)}" ${t.key === table ? "selected" : ""}>${esc(t.label)}</option>`).join("")}</select></label>
+          <label class="field"><span>Use the choices of</span><select name="field"><option value="">A new Status column</option></select></label>
+          <label class="field" data-new><span>The stages, one on each line</span><textarea name="stages" rows="4">New\nIn progress\nDone</textarea></label>
+          <button class="btn primary sm">Add the stages</button></form>` : `<p class="small">Every list has stages already.</p>`}</div>`);
+      panel.innerHTML = "";
+      panel.appendChild(box);
+      const form = $("[data-form=new-stages]", box);
+      if (!form) return;
+      const fill = () => {
+        const t = tableOf(form.elements.table.value);
+        form.elements.field.innerHTML = `<option value="">A new Status column</option>` + t.fields.filter((f) => f.type === "select").map((f) => `<option value="${esc(f.key)}">${esc(f.label)} (${esc(f.options.join(", "))})</option>`).join("");
+        $("[data-new]", form).hidden = !!form.elements.field.value;
+      };
+      form.elements.table.addEventListener("change", fill);
+      form.elements.field.addEventListener("change", () => { $("[data-new]", form).hidden = !!form.elements.field.value; });
+      fill();
+      form.addEventListener("submit", (ev) => {
+        ev.preventDefault();
+        change({do: "add_stages", table: form.elements.table.value, field: form.elements.field.value, stages: form.elements.stages.value}, `stages:${form.elements.table.value}`);
+      });
+    }
+
+    // what's clickable in a drawing or panel: opens it here; "What each one keeps" opens the data view at that list
     function wire(scope) {
       $$("[data-open]", scope).forEach((el) => {
         if (el.dataset.wired) return;
@@ -1029,9 +1226,11 @@
       const r = item;
       main.appendChild(html(`<div class="wf-head">
         <div class="grow"><h2>${icon("zap")}${esc(r.name)}</h2>
-          <p class="small muted">${r.runs.total ? `Ran ${plural(r.runs.total, "time", "times")} lately${r.runs.failed ? `, <span class="bad-text">${r.runs.failed} stopped with a problem</span>` : ""}` : "It hasn't run yet"}</p></div>
-        <div class="row wrap">${r.table ? `<button type="button" class="btn sm" data-try-it>${icon("play")}Try it on a record</button>` : ""}
-          ${canEdit ? `<button type="button" class="switch ${r.on ? "on" : ""}" data-toggle title="${r.on ? "Turn off" : "Turn on"}" aria-label="${r.on ? "Turn off" : "Turn on"}"></button>` : `<span class="tag">${r.on ? "on" : "off"}</span>`}</div></div>`));
+          <p class="small muted">${r.on ? "" : `<b>Switched off:</b> it doesn't run. `}${r.runs.total ? `Ran ${plural(r.runs.total, "time", "times")} lately${r.runs.failed ? `, <span class="bad-text">${r.runs.failed} stopped with a problem</span>` : ""}.`
+            : `It hasn't run yet: it runs ${esc(r.when.charAt(0).toLowerCase() + r.when.slice(1))}.`}</p></div>
+        <div class="row wrap">${r.table ? `<button type="button" class="btn sm" data-try-it title="See what it would do for one of your records: nothing is changed">${icon("play")}Try it on a record</button>` : ""}
+          ${canEdit ? `<label class="switch-row small"><button type="button" class="switch ${r.on ? "on" : ""}" data-toggle aria-label="${r.on ? "Switch it off" : "Switch it on"}"></button>${r.on ? "On" : "Off"}</label>`
+            : allowed ? `<button type="button" class="btn sm" data-change-it>${icon("pencil")}Change this rule</button>` : ""}</div></div>`));
       if (tried) {
         main.appendChild(html(`<div class="wf-tried ${tried.starts ? "good" : "bad"}">${icon(tried.starts ? "play" : "circle-x")}<div class="grow">
           ${tried.starts ? `<b>For “${esc(tried.title)}”</b>, it would do the steps lit up below. Nothing was actually done.` : `<b>It wouldn't start for “${esc(tried.title)}”:</b> ${esc(tried.why.join("; "))}.`}
@@ -1042,9 +1241,10 @@
         <div class="wf-node wf-when" data-edit="when" tabindex="0" role="button"><div class="wf-kind">${icon("zap")}When</div><div class="wf-text">${esc(r.when.replace(/^When /, ""))}</div></div>
         ${r.only_if.length || canEdit ? `<div class="wf-arrow"></div><div class="wf-node wf-if ${r.only_if.length ? "" : "ghost"}" data-edit="if" tabindex="0" role="button"><div class="wf-kind">${icon("filter")}Only if</div>
           <div class="wf-text">${r.only_if.length ? esc(r.only_if.join(", and ")) : "Every time (click to add a condition)"}</div></div>` : ""}
-        ${stepsHtml(r.steps, "")}${addHere("", r.steps.length, true)}<div class="wf-end">${icon("circle-check")}Done</div></div>`);
+        ${stepsHtml(r.steps, "")}${addHere("", r.steps.length, true)}<div class="wf-end">That's all it does</div></div>`);
       main.appendChild(chart);
       $("[data-toggle]", main)?.addEventListener("click", () => change({do: "set_enabled", on: !r.on}));
+      $("[data-change-it]", main)?.addEventListener("click", () => hooks.edit?.(true));
       $("[data-try-it]", main)?.addEventListener("click", () => tryPanel());
       $("[data-untry]", main)?.addEventListener("click", () => { tried = null; draw(); });
       $$(".wf-step", chart).forEach((n) => activate(n, () => stepPanel(n.dataset.at)));
@@ -1074,8 +1274,8 @@
       panel.innerHTML = "";
       panel.appendChild(html(`<div class="stack"><h2 class="panel-title">${icon("zap")}About this rule</h2>
         ${canEdit ? `<form class="stack" data-form="rename"><label class="field"><span>Name</span><input type="text" name="name" value="${esc(r.name)}" required maxlength="80"></label><button class="btn sm">Save</button></form>` : ""}
-        <p class="small muted">Click any box to see it in full${canEdit ? " or change it; a + adds a step there" : ""}.${r.runs.total ? " The numbers on a step say how often it ran in the rule's last runs." : ""}</p>
-        ${r.can_run ? `<button type="button" class="btn sm" data-run-now>${icon("play")}Run it now</button>` : ""}
+        <p class="small muted">It goes from the top down. Click any box to see it in full${canEdit ? " or change it; a + adds a step there" : ""}.${r.runs.total ? " The numbers on a step say how often it ran in the rule's last runs." : ""}</p>
+        ${r.can_run && canEdit ? `<button type="button" class="btn sm" data-run-now title="It does it for real, now">${icon("play")}Run it now</button>` : ""}
         ${r.hook ? `<div><div class="label">${icon("webhook")}Its address for other systems</div><p class="small muted">Your web shop or a form tool starts this rule by sending its data here. Keep it private.</p>
           <div class="row"><input type="text" class="keybox grow small" readonly value="${esc(r.hook)}" aria-label="Webhook address"><button class="btn sm" type="button" data-copy-hook>${icon("copy")}Copy</button></div></div>` : ""}
         ${r.recent.length ? `<div><div class="label">The last times it ran</div><ul class="timeline-list">${r.recent.map((run) => `<li>
@@ -1119,13 +1319,13 @@
       const rows = Object.entries(values || {});
       if (!rows.length) rows.push(["", ""]);
       return `<div class="stack" data-values>${rows.map(([k, v]) => valueRow(fields, k, v)).join("")}</div>
-        <button type="button" class="btn sm ghost" data-add-value>${icon("plus")}Another field</button>`;
+        <button type="button" class="btn sm ghost" data-add-value>${icon("plus")}Another column</button>`;
     }
     function valueRow(fields, k, v) {
       const f = fields.find((x) => x.key === k);
       const input = f && f.options.length ? `<select name="value">${f.options.map((o) => `<option ${o === v ? "selected" : ""}>${esc(o)}</option>`).join("")}${v && !f.options.includes(v) ? `<option selected>${esc(v)}</option>` : ""}</select>`
-                                          : `<input type="text" name="value" value="${esc(typeof v === "object" ? JSON.stringify(v) : v ?? "")}" placeholder="A value, or {{record.field}}">`;
-      return `<div class="row value-row"><select name="field" aria-label="Field"><option value="">Field…</option>${fields.map((x) => `<option value="${esc(x.key)}" ${x.key === k ? "selected" : ""}>${esc(x.label)}</option>`).join("")}</select>
+                                          : `<input type="text" name="value" value="${esc(typeof v === "object" ? JSON.stringify(v) : v ?? "")}" placeholder="A value">`;
+      return `<div class="row value-row"><select name="field" aria-label="Column"><option value="">Column…</option>${fields.map((x) => `<option value="${esc(x.key)}" ${x.key === k ? "selected" : ""}>${esc(x.label)}</option>`).join("")}</select>
         <span class="faint">=</span>${input}<button type="button" class="btn sm ghost icon" data-drop-row aria-label="Remove">${icon("x")}</button></div>`;
     }
     function wireValues(scope, table) {
@@ -1154,7 +1354,7 @@
       const input = !op.value ? "" : f && f.options.length && ["equals", "not_equals"].includes(op.op)
         ? `<select name="value">${f.options.map((o) => `<option ${o === value ? "selected" : ""}>${esc(o)}</option>`).join("")}</select>`
         : `<input type="text" name="value" value="${esc(value)}" placeholder="Value">`;
-      return `<div class="row wrap cond-row"><select name="field" aria-label="Field"><option value="">Field…</option>${fields.map((x) => `<option value="${esc(x.key)}" ${x.key === c.field ? "selected" : ""}>${esc(x.label)}</option>`).join("")}</select>
+      return `<div class="row wrap cond-row"><select name="field" aria-label="Column"><option value="">Column…</option>${fields.map((x) => `<option value="${esc(x.key)}" ${x.key === c.field ? "selected" : ""}>${esc(x.label)}</option>`).join("")}</select>
         <select name="op" aria-label="Test">${data.ops.map((o) => `<option value="${o.op}" ${o.op === op.op ? "selected" : ""}>${esc(o.label)}</option>`).join("")}</select>
         ${input}<button type="button" class="btn sm ghost icon" data-drop-row aria-label="Remove">${icon("x")}</button></div>`;
     }
@@ -1240,11 +1440,11 @@
         case "notify": return `<label class="field"><span>Who's told</span>${whoSelect("to", s.to || "admin")}</label>${textWithInserts("message", "What it says", s.message, true)}`;
         case "send_email": return `${textWithInserts("to", "To (an address, or a detail of the record)", s.to)}${textWithInserts("subject", "Subject", s.subject)}${textWithInserts("body", "Message", s.body, true)}`;
         case "task": return `<label class="field"><span>Who does it</span>${whoSelect("to", s.to || "editor")}</label>${textWithInserts("message", "What they're asked to do", s.message, true)}
-          <label class="field"><span>How urgent</span><select name="priority">${["", "low", "normal", "high", "urgent"].map((p) => `<option value="${p}" ${p === (s.priority || "") ? "selected" : ""}>${p ? p[0].toUpperCase() + p.slice(1) : "Normal"}</option>`).join("")}</select></label>`;
+          <label class="field"><span>How urgent</span><select name="priority">${["low", "normal", "high", "urgent"].map((p) => `<option value="${p}" ${p === (s.priority || "normal") ? "selected" : ""}>${p[0].toUpperCase() + p.slice(1)}</option>`).join("")}</select></label>`;
         case "request_approval": return `<label class="field"><span>Who approves</span>${whoSelect("approver", s.approver || "admin")}</label>${textWithInserts("message", "What they're asked", s.message || "Please approve this.", true)}`;
         case "update_record": return `<div class="label">Set these on the ${esc((tableOf(r.table) || {singular: "record"}).singular.toLowerCase())}</div>${valuesRows(r.table, s.values)}`;
         case "create_record": return `<label class="field"><span>Add it to</span><select name="table" data-new-table>${tables.map((t) => `<option value="${esc(t.key)}" ${t.key === s.table ? "selected" : ""}>${esc(t.label)}</option>`).join("")}</select></label>
-          <div class="label">With</div><div data-values-for>${valuesRows(s.table || tables[0].key, s.values)}</div><p class="help">Fields with the same name are copied across by themselves.</p>`;
+          <div class="label">With</div><div data-values-for>${valuesRows(s.table || tables[0].key, s.values)}</div><p class="help">Columns with the same name are copied across by themselves.</p>`;
         case "wait": return `<div class="row"><label class="field grow"><span>Days</span><input name="days" type="number" min="0" value="${s.days || ""}"></label>
           <label class="field grow"><span>Hours</span><input name="hours" type="number" min="0" value="${s.hours || ""}"></label><label class="field grow"><span>Minutes</span><input name="minutes" type="number" min="0" value="${s.minutes || ""}"></label></div>
           <label class="field"><span>Or until the date in</span><select name="until"><option value="">—</option>${fieldsOf(r.table).filter((f) => ["date", "datetime"].includes(f.type)).map((f) => `<option value="${esc(f.key)}" ${f.key === s.until ? "selected" : ""}>${esc(f.label)}</option>`).join("")}</select></label>`;
@@ -1407,8 +1607,10 @@
       const n = s.stages.length;
       const yOf = (name) => TOP + s.stages.findIndex((x) => x.name === name) * (BH + GAP);
       const head = html(`<div class="wf-head"><div class="grow"><h2>${icon("arrow-right")}${esc(s.label)}</h2>
-        <p class="small muted">Each ${esc(s.singular.toLowerCase())} moves through these, in ${esc(s.field_label)}. The arrows are the buttons people press to move one on; click one to change who can press it.</p></div></div>`);
+        <p class="small muted">Each ${esc(s.singular.toLowerCase())} moves through these, in ${esc(s.field_label)}. The arrows are the buttons people press to move one on; click one to see who can press it.</p></div>
+        ${allowed && !canEdit ? `<button type="button" class="btn sm" data-change-it>${icon("pencil")}Change them</button>` : ""}</div>`);
       main.appendChild(head);
+      $("[data-change-it]", head)?.addEventListener("click", () => hooks.edit?.(true));
       const width = BX + BW + 260, height = TOP * 2 + n * BH + (n - 1) * GAP;
       const wrap = html(`<div class="wf-stage-wrap"><svg class="wf-stage-svg" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" role="img" aria-label="${esc(s.label)}"></svg></div>`);
       main.appendChild(wrap);
@@ -1483,7 +1685,7 @@
       const s = item;
       panel.innerHTML = "";
       const box = html(`<div class="stack"><h2 class="panel-title">${icon("arrow-right")}${esc(s.label)}</h2>
-        <a class="btn sm ghost" href="${esc(root.dataset.here)}?view=data&amp;open=${encodeURIComponent(`data:${s.table}`)}" data-to-data="${esc(s.table)}">${icon("network")}What it keeps</a>
+        <a class="btn sm ghost" href="${esc(root.dataset.here)}?view=data&amp;open=${encodeURIComponent(`data:${s.table}`)}" data-to-data="${esc(s.table)}">${icon("table")}What each one keeps</a>
         <div><div class="label">Stages${canEdit ? ` <span class="faint tiny">· drag to put them in order</span>` : ""}</div>
           <ul class="studio-fields" data-stages>${s.stages.map((st) => `<li ${canEdit ? 'draggable="true"' : ""} data-key="${esc(st.name)}">${canEdit ? icon("grip-vertical", "grip") : ""}
             <button type="button" data-stage="${esc(st.name)}"><span class="grow"><b>${esc(st.name)}</b>${st.start ? ' <span class="tag">start</span>' : ""}<div class="faint tiny">${plural(st.count, s.singular.toLowerCase(), s.plural.toLowerCase())}${st.rules.length ? ` · ${plural(st.rules.length, "rule", "rules")}` : ""}</div></span>${icon("chevron-right")}</button></li>`).join("")}</ul></div>
@@ -1556,7 +1758,9 @@
     // --- a step-by-step flow --------------------------------------------------------------------------------------
     function drawFlow() {
       const f = item;
-      main.appendChild(html(`<div class="wf-head"><div class="grow"><h2>${icon("list-todo")}${esc(f.label)}</h2><p class="small muted">${esc(f.starts)}. One screen at a time; nothing is saved until the last one.</p></div></div>`));
+      main.appendChild(html(`<div class="wf-head"><div class="grow"><h2>${icon("list-todo")}${esc(f.label)}</h2><p class="small muted">${esc(f.starts)}. One screen at a time; nothing is saved until the last one.</p></div>
+        ${allowed && !canEdit ? `<button type="button" class="btn sm" data-change-it>${icon("pencil")}Change it</button>` : ""}</div>`));
+      $("[data-change-it]", main)?.addEventListener("click", () => hooks.edit?.(true));
       main.appendChild(html(`<div class="wf-chart">${f.steps.map((s, i) => `${i ? '<div class="wf-arrow"></div>' : ""}<div class="wf-node wf-screen" data-step="${esc(s.key)}" tabindex="0" role="button">
         <div class="wf-kind">${icon(FLOW_ICONS[s.kind] || "info")}Screen ${i + 1}</div><div class="wf-text"><b>${esc(s.label)}</b>${s.text ? `<div class="small muted">${esc(s.text.slice(0, 160))}</div>` : ""}</div>
         ${s.detail ? `<div class="wf-cond">${esc(s.detail)}</div>` : ""}</div>`).join("")}
@@ -1573,7 +1777,7 @@
             <label class="field"><span>It's for</span><select name="kind"><option value="info">Reading instructions</option><option value="form">Filling in fields</option><option value="photo">Taking a photo</option><option value="signature">Signing</option></select></label>
             <label class="field"><span>Title</span><input type="text" name="label" maxlength="80"></label>
             <label class="field"><span>Instructions</span><textarea name="text" rows="3"></textarea></label>
-            <label class="field" data-kind="form photo signature"><span>Field${""}</span><select name="field" multiple size="5">${f.fields.map((x) => `<option value="${esc(x.key)}">${esc(x.label)}</option>`).join("")}</select></label>
+            <label class="field" data-kind="form photo signature"><span>Column</span><select name="field" multiple size="5">${f.fields.map((x) => `<option value="${esc(x.key)}">${esc(x.label)}</option>`).join("")}</select></label>
             <button class="btn primary sm">Add it at the end</button></form></details>
           <details class="danger-zone"><summary class="small">Delete this flow</summary><button type="button" class="btn sm danger" data-delete>${icon("trash-2")}Delete ${esc(f.label)}</button></details>` : ""}</div>`);
       panel.appendChild(box);
@@ -1598,7 +1802,7 @@
         <h2 class="panel-title">${icon(FLOW_ICONS[s.kind] || "info")}${esc(s.label)}</h2>${s.detail ? `<p class="small muted">${esc(s.detail)}</p>` : ""}
         ${canEdit ? `<form class="stack" data-form="screen"><label class="field"><span>Title</span><input type="text" name="label" value="${esc(s.label)}" required maxlength="80"></label>
           <label class="field"><span>Instructions</span><textarea name="text" rows="4">${esc(s.text)}</textarea></label>
-          ${s.kind === "form" ? `<label class="field"><span>Fields to fill in</span><select name="fields" multiple size="6">${f.fields.map((x) => `<option value="${esc(x.key)}" ${s.fields.includes(x.key) ? "selected" : ""}>${esc(x.label)}</option>`).join("")}</select></label>` : ""}
+          ${s.kind === "form" ? `<label class="field"><span>Columns to fill in</span><select name="fields" multiple size="6">${f.fields.map((x) => `<option value="${esc(x.key)}" ${s.fields.includes(x.key) ? "selected" : ""}>${esc(x.label)}</option>`).join("")}</select></label>` : ""}
           <button class="btn primary sm">Save</button></form>
           <div class="row wrap"><button type="button" class="btn sm" data-move="-1">${icon("arrow-up")}Earlier</button><button type="button" class="btn sm" data-move="1">${icon("arrow-down")}Later</button>
           <button type="button" class="btn sm danger" data-remove>${icon("trash-2")}Remove</button></div>` : (s.text ? `<p class="small">${esc(s.text)}</p>` : "")}</div>`);
@@ -1615,60 +1819,12 @@
       $("[data-remove]", box)?.addEventListener("click", () => { if (confirm("Remove this screen?")) change({do: "remove_step", step: key}); });
     }
 
-    // --- starting something new -----------------------------------------------------------------------------------
-    $("[data-wf-new-rule]")?.addEventListener("click", () => {
-      item = {kind: "new", label: "A new rule"}; draw();
-      panel.innerHTML = "";
-      const box = html(`<div class="stack"><h2 class="panel-title">${icon("zap")}A new rule</h2>
-        <form class="stack" data-form="new-rule"><label class="field"><span>Name</span><input type="text" name="name" required maxlength="80" placeholder="Tell the manager about big orders"></label>
-          <label class="field"><span>When a record in</span><select name="table">${data.tables.map((t) => `<option value="${esc(t.key)}">${esc(t.label)}</option>`).join("")}</select></label>
-          <label class="field"><span>…</span><select name="type"><option value="record_created">is added</option><option value="record_updated">is changed</option><option value="record_created_or_updated">is added or changed</option><option value="button">has its button pressed</option></select></label>
-          <p class="help">It starts by telling the admins; change that, and add steps, once it's made.</p>
-          <button class="btn primary sm">Make it</button></form></div>`);
-      panel.appendChild(box);
-      $("[data-form=new-rule]", box).addEventListener("submit", (ev) => {
-        ev.preventDefault();
-        const fm = ev.target.elements, t = tableOf(fm.table.value);
-        change({do: "add_rule", name: fm.name.value, trigger: {type: fm.type.value, table: fm.table.value, label: fm.type.value === "button" ? fm.name.value.slice(0, 40) : undefined},
-                step: {type: "notify", to: "admin", message: `${fm.name.value}: {{record}}`}}, "");
-        void t;
-      });
-    });
-    $("[data-wf-new-stages]")?.addEventListener("click", () => {
-      item = {kind: "new", label: "Stages for a list"}; draw();
-      panel.innerHTML = "";
-      const without = data.tables.filter((t) => !t.stages);
-      const box = html(`<div class="stack"><h2 class="panel-title">${icon("arrow-right")}Stages for a list</h2>
-        <p class="small muted">Records then move from one stage to the next by buttons, and rules can act on each move.</p>
-        ${without.length ? `<form class="stack" data-form="new-stages"><label class="field"><span>The list</span><select name="table">${without.map((t) => `<option value="${esc(t.key)}">${esc(t.label)}</option>`).join("")}</select></label>
-          <label class="field"><span>Use the choices of</span><select name="field"><option value="">A new Status field</option></select></label>
-          <label class="field" data-new><span>The stages, one on each line</span><textarea name="stages" rows="4">New\nIn progress\nDone</textarea></label>
-          <button class="btn primary sm">Add the stages</button></form>` : `<p class="small">Every list has stages already.</p>`}</div>`);
-      panel.appendChild(box);
-      const form = $("[data-form=new-stages]", box);
-      if (!form) return;
-      const fill = () => {
-        const t = tableOf(form.elements.table.value);
-        form.elements.field.innerHTML = `<option value="">A new Status field</option>` + t.fields.filter((f) => f.type === "select").map((f) => `<option value="${esc(f.key)}">${esc(f.label)} (${esc(f.options.join(", "))})</option>`).join("");
-        $("[data-new]", form).hidden = !!form.elements.field.value;
-      };
-      form.elements.table.addEventListener("change", fill);
-      form.elements.field.addEventListener("change", () => { $("[data-new]", form).hidden = !!form.elements.field.value; });
-      if (stagesFor && without.some((t) => t.key === stagesFor)) form.elements.table.value = stagesFor;  // the list it was asked from
-      stagesFor = null;
-      fill();
-      form.addEventListener("submit", (ev) => {
-        ev.preventDefault();
-        change({do: "add_stages", table: form.elements.table.value, field: form.elements.field.value, stages: form.elements.stages.value}, `stages:${form.elements.table.value}`);
-      });
-    });
-
     draw();
-    root.addEventListener("click", (ev) => {  // a "What it keeps" link anywhere in a panel drawn by the older code
+    root.addEventListener("click", (ev) => {  // a "What each one keeps" link anywhere in a panel drawn by the older code
       const a = ev.target.closest("[data-to-data]");
       if (a && !a.dataset.wired) { ev.preventDefault(); hooks.toData?.(a.dataset.toData); }
     });
-    return {refresh, open, remember: () => remember()};
+    return {refresh, open, remember: () => remember(), setEditing: (on) => { canEdit = allowed && on; draw(); }};
   }
 
   // =================================================================================================================
@@ -1680,14 +1836,23 @@
     function show(view) {
       page.dataset.view = view;
       $$("[data-view-pane]", page).forEach((el) => { el.hidden = el.dataset.viewPane !== view; });
-      $$("[data-view-only]").forEach((el) => { el.hidden = el.dataset.viewOnly !== view; });
       $$("[data-show-view]").forEach((b) => b.setAttribute("aria-selected", String(b.dataset.showView === view)));
       if (view === "data") dataApi.shown();
     }
-    dataApi = dataStudio(dataRoot);
+    // Looking is safe: nothing on the page changes the app until someone presses a Change button, and then a bar says
+    // they're changing it until they're done.
+    const bar = $("[data-editing-bar]");
+    function edit(on) {
+      if (bar) bar.hidden = !on;
+      mapApi.setEditing(on);
+      dataApi.setEditing(on);
+    }
+    $("[data-editing-done]")?.addEventListener("click", () => edit(false));
+    dataApi = dataStudio(dataRoot, {edit});
     mapApi = workflowStudio(mapRoot, {
+      edit,
       toData: async (table) => {
-        await dataApi.reload();  // what the map changed (a new stage field) is there too
+        await dataApi.reload();  // what the map changed (a new stage column) is there too
         show("data");
         dataApi.select(table || null);
       },
@@ -1699,7 +1864,7 @@
         history.replaceState(null, "", `${page.dataset.here}?view=data`);
         return;
       }
-      await mapApi.refresh();  // what changed in the data model (a new list, a link) shows on the map
+      await mapApi.refresh();  // what changed in what's kept (a new list, a link) shows on the map
       show("map");
       mapApi.remember();
     }));
@@ -1711,21 +1876,6 @@
       show("map");
       mapApi.open(a.dataset.goMap);
     });
-    // what the map shows: each layer on or off, remembered on this device
-    const LAYERS = "keel-map-layers";
-    let off = [];
-    try { off = JSON.parse(localStorage.getItem(LAYERS) || "[]"); } catch (e) { off = []; }
-    const applyLayers = () => $$("[data-layer]").forEach((b) => {
-      const hidden = off.includes(b.dataset.layer);
-      b.setAttribute("aria-pressed", String(!hidden));
-      mapRoot.classList.toggle(`hide-${b.dataset.layer}`, hidden);
-    });
-    $$("[data-layer]").forEach((b) => b.addEventListener("click", () => {
-      off = off.includes(b.dataset.layer) ? off.filter((x) => x !== b.dataset.layer) : [...off, b.dataset.layer];
-      try { localStorage.setItem(LAYERS, JSON.stringify(off)); } catch (e) { /* kept for this visit only */ }
-      applyLayers();
-    }));
-    applyLayers();
     show(page.dataset.view || "map");
     askBox(async () => { await mapApi.refresh(); await dataApi.reload(); });
   }

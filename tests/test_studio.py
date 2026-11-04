@@ -40,7 +40,7 @@ def test_the_data_model_is_drawn_with_its_links_and_changed_by_hand(app, client,
     login(client)
     assert client.get(f"/w/{ws.id}/app/studio/data").headers["Location"].endswith("/studio?view=data&open=data")  # the old address
     page = client.get(f"/w/{ws.id}/app/studio?view=data").get_data(as_text=True)
-    assert "App map" in page and "What it keeps" in page and "data-model" in page and "studio.js" in page
+    assert "App map" in page and "What each list keeps" in page and "data-model" in page and "studio.js" in page
     model = client.get(f"/w/{ws.id}/app/studio/data.json").get_json()
     assert {t["key"] for t in model["tables"]} == {"customers", "orders"}
     assert model["links"] == [{"from": "orders", "field": "customer", "to": "customers", "many": False, "label": "Customer"}]

@@ -64,7 +64,19 @@ def handoffs(bp, tables):
                     to, how = link["table"], "updates"
             if to and not any(h["rule"] == a["key"] and h["to"] == to for h in out):
                 out.append({"from": src["key"], "at": at, "to": to, "how": how, "rule": a["key"], "label": a["name"],
-                            "on": a.get("enabled", True), "button": a["trigger"]["type"] == "button", "ai": ai, "asks": asks})
+                            "on": a.get("enabled", True), "button": a["trigger"]["type"] == "button", "ai": ai, "asks": asks,
+                            "event": a["trigger"]["type"], "press": a["trigger"].get("label") or "", "every": a["trigger"].get("every") or "",
+                            "sets": _sets(tables[to], s) if how == "updates" else []})
+    return out
+
+
+def _sets(t, step):
+    """What a step sets on the record it updates, as people would say it (“Status” to “Paid”): only plain values."""
+    out = []
+    for k, v in (step.get("values") or {}).items():
+        f = schema.field(t, k)
+        if f and isinstance(v, (str, int, float)) and not isinstance(v, bool) and "{{" not in str(v):
+            out.append([f["label"], str(v)])
     return out
 
 
@@ -74,7 +86,7 @@ def entries(bp, tables):
     for t in tables.values():
         if t.get("public_form"):
             out.setdefault(t["key"], []).append({"icon": "globe", "label": "A form on your website"})
-        if t.get("portal"):
+        if (t.get("portal") or {}).get("can_add"):  # one people only see there isn't where work comes in
             out.setdefault(t["key"], []).append({"icon": "users", "label": "Your customers' portal"})
     for a in bp.get("automations", []):
         kind = a["trigger"]["type"]
@@ -167,6 +179,7 @@ def build(engine, problems=(), names=None):
     for p in problems:  # "bad": the checks found it wrong; otherwise it may be right for this business, worth a look
         wrong.setdefault(p.get("where") or "", []).append({"text": p["plain"], "bad": p.get("level") == "fix"})
     comes = entries(bp, seen)
+    stopped = _stopped(engine)
 
     def card(key):
         t = seen[key]
@@ -181,19 +194,25 @@ def build(engine, problems=(), names=None):
         mine = [a for a in rules if a["trigger"].get("table") == key]
         moves = (t.get("workflow") or {}).get("transitions", [])
         approving = {m["to"] for m in moves if _approves(m)}
-        people = sorted({_who(engine, key, w)[:1].upper() + _who(engine, key, w)[1:] for m in moves for w in m.get("who") or []}
-                        | {_who(engine, key, s.get("approver") or s.get("assignee") or "admin")[:1].upper()
-                           + _who(engine, key, s.get("approver") or s.get("assignee") or "admin")[1:]
+
+        def by_hand(m):  # a button people press to move one on, and who may
+            return {"label": m.get("label") or f"Move to {m['to']}", "to": m["to"],
+                    "who": [cap(_who(engine, key, w)) for w in m.get("who") or []]}
+        people = sorted({cap(_who(engine, key, w)) for m in moves for w in m.get("who") or []}
+                        | {cap(_who(engine, key, s.get("approver") or s.get("assignee") or "admin"))
                            for a in mine for s in schema.steps_of(a["actions"]) if s.get("type") in ("request_approval", "task")})
         ai_fields = [g["label"] for g in t["fields"] if g.get("ai")]
         ai_steps = [{"rule": a["key"], "name": a["name"], "checked": s.get("review", "never") != "never"} for a in mine for s in _ai(a)]
         return {"key": key, "label": t["label"], "singular": t["singular"], "icon": t.get("icon") or "table", "count": counts.get(key, 0),
-                "workflow": bool(t.get("workflow")), "field": f["key"] if f else None,
+                "workflow": bool(t.get("workflow")), "field": f["key"] if f else None, "field_label": f["label"] if f else None,
                 "stages": [{"name": n, "count": by_stage.get(n, 0), "approves": n in approving or any(_asks(a) and _at_stage(a, t) == n for a in mine),
                             "ai": any(_ai(a) and _at_stage(a, t) == n for a in mine),
-                            "rules": [a["key"] for a in mine if _at_stage(a, t) == n]} for n in names_],
+                            "rules": [a["key"] for a in mine if _at_stage(a, t) == n],
+                            "moves": [by_hand(m) for m in moves if n in (m.get("from") or [])]} for n in names_],
+                "anytime": [by_hand(m) for m in moves if not m.get("from")],
                 "rules": [{"key": a["key"], "name": a["name"], "on": a.get("enabled", True), "at": _at_stage(a, t), "ai": bool(_ai(a)),
-                           "asks": _asks(a)} for a in mine],
+                           "asks": _asks(a), "stopped": stopped.get(a["key"], 0), **_started(a)} for a in mine],
+                "seen_in_portal": bool(t.get("portal")) and not (t.get("portal") or {}).get("can_add"),
                 "flows": [{"key": fl["key"], "label": fl["label"]} for fl in bp.get("flows") or [] if fl["table"] == key],
                 "people": people, "ai": {"fields": ai_fields, "steps": ai_steps}, "waiting": waiting.get(key, 0),
                 "entries": comes.get(key, []), "problems": wrong.get(key, [])}
@@ -205,12 +224,37 @@ def build(engine, problems=(), names=None):
                       "ai": sum(len(c["ai"]["steps"]) + len(c["ai"]["fields"]) for c in lists),
                       "handoffs": [{**h, "from_label": seen[h["from"]]["label"], "to_label": seen[h["to"]]["label"]} for h in p["handoffs"]]})
     return {"processes": shown,
-            "reference": [{"key": k, "label": seen[k]["label"], "icon": seen[k].get("icon") or "table", "count": counts.get(k, 0),
-                           "used_by": sorted({t["label"] for t in seen.values() if t["key"] != k and not t.get("embedded")
-                                              and any(f["type"] == "link" and f.get("table") == k for f in t["fields"])}),
-                           "problems": wrong.get(k, [])} for k in reference],
-            "elsewhere": [{"key": a["key"], "name": a["name"], "on": a.get("enabled", True)} for a in rules if not a["trigger"].get("table")],
+            "reference": [{**card(k), "used_by": sorted({t["label"] for t in seen.values() if t["key"] != k and not t.get("embedded")
+                                                         and any(f["type"] == "link" and f.get("table") == k for f in t["fields"])})}
+                          for k in reference],
+            "elsewhere": [{"key": a["key"], "name": a["name"], "on": a.get("enabled", True), "at": None, "stopped": stopped.get(a["key"], 0),
+                           **_started(a)} for a in rules if not a["trigger"].get("table")],
             "problems": wrong.get("", [])}
+
+
+def _started(a):
+    """What starts a rule, as the map says it: a button people press (by hand), a schedule, or a change to a record."""
+    t = a["trigger"]
+    return {"event": t["type"], "press": t.get("label") or "" if t["type"] == "button" else "", "every": t.get("every") or ""}
+
+
+def cap(s):
+    return s[:1].upper() + s[1:]
+
+
+def a(word):
+    return f"{'an' if word[:1].lower() in 'aeiou' else 'a'} {word}"
+
+
+def _stopped(engine, days=14):
+    """How many times each rule stopped with a problem lately: a job stuck at Signed off, its invoice never made."""
+    from datetime import timedelta
+    from .extensions import db
+    from .models import Run, utcnow
+    since = utcnow() - timedelta(days=days)
+    rows = db.session.query(Run.automation, db.func.count(Run.id)).filter(
+        Run.workspace_id == engine.ws.id, Run.status == "failed", Run.created_at >= since).group_by(Run.automation).all()
+    return {key: n for key, n in rows if key}
 
 
 def _approves(move):

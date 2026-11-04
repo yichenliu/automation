@@ -92,8 +92,10 @@ def test_the_app_map_is_one_page_for_how_work_flows_and_what_each_list_keeps(app
     _built(ws, TRADE)
     login(client)
     page = client.get(f"/w/{ws.id}/app/studio").get_data(as_text=True)
-    assert "<h1>" in page and "App map" in page and "How work flows" in page and "What it keeps" in page
+    assert "<h1>" in page and "App map" in page and "How work flows" in page and "What each list keeps" in page
     assert 'id="studio-map"' in page and "data-model" in page and "Quotes to payments" in page
+    assert "“when a job reaches Done, tell me”" in page  # what to ask for, said with this app's own lists
+    assert "Looking is safe" in page and "data-editing-bar" in page and 'class="ask-fab" type="button" hidden' in page
     assert client.get(f"/w/{ws.id}/app/studio/workflows?open=rule:to_job").headers["Location"].endswith("/studio?open=rule:to_job")
     assert '"key": "to_job"' in client.get(f"/w/{ws.id}/app/studio?open=rule:to_job").get_data(as_text=True)  # opened in it
     fresh = client.get(f"/w/{ws.id}/app/studio/map.json").get_json()
@@ -121,3 +123,57 @@ def test_an_example_played_through_a_process_lights_up_where_it_went_and_changes
     assert [(w["table"], w["stage"]) for w in played["went"]] == [("quotes", "Draft"), ("quotes", "Sent"), ("quotes", "Accepted"), ("jobs", "Booked")]
     assert Record.query.filter_by(workspace_id=ws.id).count() == 0  # played in a copy
     assert client.post(f"/w/{ws.id}/app/studio/map/play", json={"example": 5}).status_code == 400
+
+
+def test_a_portal_customers_only_see_isnt_where_work_comes_in_and_a_rule_that_keeps_stopping_is_said(app, owner):
+    """Jobs customers can see in their portal don't come in from it; a rule that stopped lately is counted on its list."""
+    _, ws = owner
+    _built(ws, TRADE + [{"op": "update_table", "table": "jobs", "portal": {"via": "customer"}},
+                        {"op": "update_table", "table": "quotes", "portal": {"via": "customer", "can_add": True}}])
+    from app.extensions import db
+    from app.models import Run
+    db.session.add(Run(workspace_id=ws.id, automation="to_invoice", name="Signed-off jobs are invoiced", status="failed"))
+    db.session.commit()
+    drawn = appmap.build(Engine(ws))
+    quotes, jobs = drawn["processes"][0]["cards"][:2]
+    assert [e["label"] for e in quotes["entries"]] == ["A form on your website", "Your customers' portal"]
+    assert jobs["entries"] == [] and jobs["seen_in_portal"]
+    assert [(r["key"], r["stopped"]) for r in jobs["rules"]] == [("to_invoice", 1)]
+    assert [(m["label"], m["to"]) for m in jobs["stages"][1]["moves"]] == [("Manager approves", "Signed off")]
+    assert jobs["stages"][1]["moves"][0]["who"] == ["An admin"] and jobs["field_label"] == "Status"
+    paid = next(h for h in drawn["processes"][0]["handoffs"] if h["rule"] == "paid")
+    assert paid["sets"] == [["Status", "Paid"]] and paid["event"] == "record_created"  # said: its invoice's Status is set to Paid
+
+
+def test_stages_are_changed_where_they_are_even_a_plain_status_and_one_put_between_leads_on(app, client, owner):
+    """A stage added between two gets a way on to the next; a list whose Status is a plain choice has its stages
+    changed as its choices, never a second Status made beside it."""
+    _, ws = owner
+    _built(ws, TRADE)
+    login(client)
+    url = f"/w/{ws.id}/app/studio/workflows/change"
+    done = client.post(url, json={"id": "stages:jobs", "change": {"do": "add_stage", "name": "Waiting on parts", "after": "Booked"}}).get_json()
+    assert done["ok"]
+    from app.extensions import db
+    db.session.refresh(ws)
+    jobs = next(t for t in ws.blueprint["tables"] if t["key"] == "jobs")
+    assert next(f for f in jobs["fields"] if f["key"] == "status")["options"] == ["Booked", "Waiting on parts", "Done", "Signed off"]
+    moves = {(tuple(m["from"]), m["to"]) for m in jobs["workflow"]["transitions"]}
+    assert (("Booked",), "Waiting on parts") in moves and (("Waiting on parts",), "Done") in moves
+    plain = {"id": "stages:invoices", "change": {"field": "status", "table": "invoices"}}
+    assert client.post(url, json={**plain, "change": {**plain["change"], "do": "add_stage", "name": "Chased", "after": "Sent"}}).get_json()["ok"]
+    assert client.post(url, json={**plain, "change": {**plain["change"], "do": "rename_stage", "old": "Draft", "new": "Being written"}}).get_json()["ok"]
+    assert client.post(url, json={**plain, "change": {**plain["change"], "do": "order_stages", "names": ["Being written", "Sent", "Paid", "Chased"]}}).get_json()["ok"]
+    db.session.refresh(ws)
+    invoices = next(t for t in ws.blueprint["tables"] if t["key"] == "invoices")
+    assert not invoices.get("workflow") and [f["key"] for f in invoices["fields"]].count("status") == 1
+    assert next(f for f in invoices["fields"] if f["key"] == "status")["options"] == ["Being written", "Sent", "Paid", "Chased"]
+    assert client.post(url, json={**plain, "change": {**plain["change"], "do": "add_move", "to": "Paid"}}).status_code == 400  # no moves: anyone picks any
+
+
+def test_the_same_message_twice_in_a_row_is_sent_once(app, owner):
+    from app.blueprint import schema
+    tell = {"type": "notify", "to": "everyone", "message": "Quote accepted: job made"}
+    a = schema.normalize_automation({"key": "x", "name": "X", "trigger": {"type": "record_created", "table": "quotes"},
+                                     "actions": [tell, dict(tell), {"type": "notify", "to": "admin", "message": "Quote accepted: job made"}, dict(tell)]})
+    assert [s["to"] for s in a["actions"]] == ["everyone", "admin", "everyone"]  # only the repeat straight after itself goes

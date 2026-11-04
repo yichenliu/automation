@@ -38,7 +38,7 @@ def test_finishing_a_project_drafts_its_invoice_and_says_so(app, owner):
     assert len(e.rows("invoices")) == 1
     words = automations.describe(e, ws.blueprint["automations"][0])
     assert words["when"] == "When a project is moved to Done" and words["only_if"] == []  # the stage it waits for, said once
-    assert words["then"][0].startswith("Create an invoice for this project: Amount its value · Due date ")
+    assert words["then"][0].startswith("Create an invoice for this project: Amount: its value · Due date: ")
 
 
 def test_a_button_and_a_linked_update(app, owner):

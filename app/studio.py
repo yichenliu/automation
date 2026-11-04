@@ -619,7 +619,10 @@ def stage_ops(bp, change, filled):
         return ops, []
     flow = copy.deepcopy(t.get("workflow"))
     if not flow:
-        raise SchemaError(f"{t['label']} has no stages yet")
+        plain = schema.field(t, slug(change.get("field") or ""))
+        if plain is None or plain["type"] != "select" or do not in ("add_stage", "rename_stage", "remove_stage", "order_stages"):
+            raise SchemaError(f"{t['label']} has no stages yet")
+        return _plain_stage_ops(t, plain, change, filled), []
     f = _field(t, flow["field"])
     names = list(f["options"])
     if do == "remove_stages":
@@ -633,6 +636,8 @@ def stage_ops(bp, change, filled):
         names.insert(at, name)
         if at > 0 and _yes(change.get("move", True)):
             flow["transitions"].append({"from": [names[at - 1]], "to": name, "label": f"Move to {name}"})
+            if at + 1 < len(names):  # put between two: from it, on to the next, as from the one before
+                flow["transitions"].append({"from": [name], "to": names[at + 1], "label": f"Move to {names[at + 1]}"})
         return _stage_change(t, f, names, flow), []
     if do == "rename_stage":
         old = change.get("old")
@@ -695,6 +700,39 @@ def stage_ops(bp, change, filled):
         flow["transitions"].pop(i)
         return [{"op": "update_table", "table": t["key"], "workflow": flow}], []
     raise SchemaError("That can't be changed here")
+
+
+def _plain_stage_ops(t, f, change, filled):
+    """The stages of a list whose Status is a plain choice (anyone picks any): changed as its choices, in order."""
+    do, names = change.get("do"), list(f["options"])
+    if do == "add_stage":
+        name = _name(change.get("name"), "name for the stage", 60)
+        if name in names:
+            raise SchemaError(f"There's a stage called {name} already")
+        after = change.get("after")
+        names.insert(names.index(after) + 1 if after in names else len(names), name)
+    elif do == "rename_stage":
+        old, new = change.get("old"), _name(change.get("new"), "new name for the stage", 60)
+        if old not in names:
+            raise SchemaError("That stage isn't there any more: reload the page")
+        if new in names and new != old:
+            raise SchemaError(f"There's a stage called {new} already")
+        return [{"op": "rename_choice", "table": t["key"], "key": f["key"], "old": old, "new": new}]
+    elif do == "remove_stage":
+        name = change.get("name")
+        if name not in names:
+            raise SchemaError("That stage isn't there any more: reload the page")
+        n = filled(t["key"], f["key"], name)
+        if n:
+            raise SchemaError(f"{n} {t['label'].lower() if n != 1 else t['singular'].lower()} {'are' if n != 1 else 'is'} at {name}: "
+                              f"move {'them' if n != 1 else 'it'} on first")
+        names.remove(name)
+    else:
+        order = [str(x) for x in change.get("names") or []]
+        if sorted(order) != sorted(names):
+            raise SchemaError("The stages changed while you were moving them: reload the page")
+        names = order
+    return [{"op": "update_field", "table": t["key"], "key": f["key"], "changes": {"options": names}}]
 
 
 def _stage_change(t, f, names, flow):

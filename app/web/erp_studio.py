@@ -252,9 +252,20 @@ def studio_map(wid):
     own = next((i["id"] for grp in data["items"] if grp["table"] == table for i in grp["items"]), None) if table else None
     opened = request.args.get("open") or own or "map"
     item = _item(ws, engine, opened) if opened.partition(":")[0] in ("stages", "rule", "flow") else None
-    return render_template("app/studio.html", ws=ws, e=engine, data=data, opened=item, open_id=opened, map=_map(ws, engine),
+    drawn = _map(ws, engine)
+    return render_template("app/studio.html", ws=ws, e=engine, data=data, opened=item, open_id=opened, map=drawn,
                            model=_model(ws, engine), view="data" if request.args.get("view") == "data" or opened.startswith("data") else "map",
-                           can_edit=g.member.can("admin"))
+                           can_edit=g.member.can("admin"), ask_example=_ask_example(drawn), quiet_ask=True)
+
+
+def _ask_example(drawn):
+    """What someone might ask for, said with this app's own lists: “when a job reaches Signed off, tell me”."""
+    staged = [c for p in drawn["processes"] for c in p["cards"] if len(c["stages"]) >= 2]
+    if staged:
+        c = staged[min(1, len(staged) - 1)]
+        return f"when {appmap.a(c['singular'].lower())} reaches {c['stages'][-2 if len(c['stages']) > 2 else -1]['name']}, tell me"
+    lists = [c for p in drawn["processes"] for c in p["cards"]] + drawn["reference"]
+    return f"when a new {lists[0]['singular'].lower()} is added, tell me" if lists else "keep a list of our customers and their jobs"
 
 
 @bp.route("/studio/map.json")
