@@ -39,6 +39,7 @@
       {% if m.version_after and m.version_before is not none and m.status == 'done' and not (m.changes and m.changes[0].startswith(('Went back', 'Undid'))) %}
         <button class="btn sm ghost" data-undo="{{ url_for('builder.undo', wid=ws.id, mid=m.id) }}">{{ icon('undo-2') }}Undo</button>{% endif %}
       {% if m.status == 'failed' %}<button class="btn sm" data-retry="{{ url_for('builder.retry', wid=ws.id, mid=m.id) }}">{{ icon('refresh-cw') }}Try again</button>{% endif %}
+      {% if m.status == 'done' and (m.text or '').startswith('Not everything works yet') %}<button class="btn sm primary" data-starter-text="Fix what didn't come out right">{{ icon('wand-sparkles') }}Fix these</button>{% endif %}
       {% if m.status == 'done' and 'carry on' in (m.text or '').lower() %}<button class="btn sm primary" data-starter-text="Carry on building what isn't done yet">{{ icon('play') }}Carry on building</button>{% endif %}
     </div>
   {% endif %}

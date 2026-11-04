@@ -260,19 +260,25 @@ def _add(engine, t, values):
             changed = False
             for key in exc.errors:
                 f = schema.field(t, key)
-                if f is None:  # a rule across fields ("_"): other values for what it reads (an Active coach needs a
-                    # signed waiver: one On leave); its dates first left empty where they may be (no pickup date yet),
-                    # then each a little later than the one before, in the order of the form, then the other way round
+                if f is None:  # a rule across fields ("_"): what it reads first left empty where it may be (no pickup
+                    # date yet, no cost yet), then other values for it (an Active coach needs a signed waiver: one On
+                    # leave), each field a different one (a margin of revenue less cost is never 0 for want of it); its
+                    # dates each a little later than the one before, in the order of the form, then the other way round
                     dated = lambda g: engine.kind(g) in ("date", "datetime")  # noqa: E731
-                    for g in _read_by_rule(t, exc):
+                    for i, g in enumerate(_read_by_rule(t, exc)):
                         if dated(g) and attempt:
                             continue
-                        if dated(g) and not g.get("required"):
-                            changed |= values.pop(g["key"], None) is not None
+                        if not g.get("required") and attempt == 0 and values.get(g["key"]) not in (None, ""):
+                            values.pop(g["key"], None)
+                            changed = True
+                            continue
+                        if dated(g):
                             continue
                         others = _others(engine, g, attempt)
-                        if attempt < len(others) and values.get(g["key"]) != others[attempt]:
-                            values[g["key"]] = others[attempt]
+                        n = attempt - (0 if g.get("required") else 1)
+                        pick = others[(n + i) % len(others)] if others and n < len(others) else None
+                        if pick is not None and values.get(g["key"]) != pick:
+                            values[g["key"]] = pick
                             changed = True
                         elif not g.get("required") and values.pop(g["key"], None) is not None:
                             changed = True
@@ -747,6 +753,10 @@ def _the_one_meant(engine, step, names):
         keys = set(step.get("values") or {})
         tables = [t["key"] for t in engine.tables.values() if keys and keys <= {f["key"] for f in t["fields"]}]
     added = [(key, rid) for key, rid in reversed(names.get("_added", [])) if not tables or key in tables]
+    if not added and tables:  # none the example added: the one the app made itself (the invoice a finished job became)
+        engine.reset()
+        added = [(key, r.id) for _, r, key in sorted(((r.id, r, key) for key in dict.fromkeys(tables) if key in engine.tables
+                                                      for r in engine.rows(key)), key=lambda x: x[0], reverse=True)]
     main = [x for x in added if not engine.tables.get(x[0], {}).get("embedded")] or added
     return main[0][1] if main else None
 
@@ -1113,6 +1123,12 @@ def _shows_a_link(engine, f):
     return bool(source) and source["type"] == "link"
 
 
+def _named(engine, w, names):
+    """A record an example named ("f1") by the name people see (“Mike Foreman”); anything else as it was written."""
+    record = engine.get(names[w]) if isinstance(w, str) and isinstance(names.get(w), int) else None
+    return engine.title(record) if record is not None else str(w)
+
+
 def _same(engine, f, actual, wanted, names):
     if isinstance(wanted, str) and FILLED.match(wanted):
         return actual not in (None, "", [])
@@ -1135,9 +1151,12 @@ def _same(engine, f, actual, wanted, names):
         return a is not None and w is not None and abs(a - w) <= max(0.011, abs(w) * 0.001)
     if f is not None and (f["type"] == "link" or _shows_a_link(engine, f)):  # a lookup of a link (a note's patient, by its visit) too
         ids = actual if isinstance(actual, list) else [actual]
-        wanted_id = names.get(wanted) if isinstance(wanted, str) else wanted
-        return any(str(i) == str(wanted_id) for i in ids) or any(engine.title(engine.get(i)).lower() == str(wanted).strip().lower()
-                                                                    for i in ids if i and engine.get(i))
+
+        def among(w):  # one the example named ("f1"), or by its name ("Mike Foreman"), is one of those linked
+            wanted_id = names.get(w, w) if isinstance(w, str) else w
+            return any(str(i) == str(wanted_id) for i in ids) or any(engine.title(engine.get(i)).lower() == str(w).strip().lower()
+                                                                     for i in ids if i and engine.get(i))
+        return all(among(w) for w in (wanted if isinstance(wanted, list) else [wanted]))  # a crew of five: each of them
     if kind == "checkbox":
         return bool(actual) == (str(wanted).strip().lower() in ("true", "yes", "1", "ticked", "on"))
     if f is not None and kind in ("date", "datetime"):
@@ -1190,7 +1209,8 @@ def _expect(engine, c, names):
     as_kept = schema.as_fraction(wanted) if engine.kind(f) == "percent" else \
         parse_duration(wanted) if engine.kind(f) == "duration" and isinstance(wanted, str) and parse_duration(wanted) is not None else wanted
     expected = "filled in" if isinstance(wanted, str) and FILLED.match(wanted) else engine.display(f, as_kept) \
-        if wanted not in (None, "") and f["type"] not in ("link", "user") and not _shows_a_link(engine, f) else str(wanted or "empty")
+        if wanted not in (None, "") and f["type"] not in ("link", "user") and not _shows_a_link(engine, f) else \
+        ", ".join(_named(engine, w, names) for w in (wanted if isinstance(wanted, list) else [wanted])) if wanted not in (None, "", []) else "empty"
     plain = f"{t['singular']}’s {label}: {shown}" if ok else f"{t['singular']}’s {label} came out {shown}, expected {expected}"
     said = f"{c.get('record')} ({t['key']}).{key} is {actual!r}; expected {wanted!r}"
     if not ok and f.get("expression") and len(path) == 1:  # how it was worked out, to tell a wrong sum from a wrong expectation
@@ -1204,6 +1224,10 @@ def _expect(engine, c, names):
                  f"email, another system, a file), which an example can't send: a {schema.lc(t['singular'])} added by hand doesn't "
                  f"start it, so leave this out of the example)")
     idle = _never_ran(engine, record, key) if not ok and len(path) == 1 else []
+    for a, step in (_sets_from_elsewhere(engine, record, key) if not ok and len(path) == 1 else []):
+        said += (f" (the rule “{a['name']}” on {a['trigger'].get('table')} sets it on its {step['target']}, but didn't on {c.get('record')}: "
+                 f"it runs when {automations_words(engine, a.get('conditions') or [], a['trigger'].get('table')) or 'one changes'}"
+                 + (f", and that step only if {automations_words(engine, step['only_if'], a['trigger'].get('table'))}" if step.get("only_if") else "") + ")")
     for a in idle:
         one = schema.lc(t["singular"])
         said += (f" (the rule “{a['name']}” sets it, but never ran on {c.get('record')}: "
@@ -1248,14 +1272,23 @@ def _formula_reads(engine, record, expression, names, deeper=True):
 def _rollup_reads(engine, record, f, names, deeper=True):
     """What a total was added up from, line by line: “the sum of quote_lines.amount over its 2 quote_lines: 1500.0 (from
     quantity = 10, unit_price = 150.0), 1000.0 (…)”, to tell a wrong sum in the example from a wrong total."""
+    linked = []
     try:
-        rows = engine.related(record, f["table"], f["via"]) if f.get("via") else []
+        rows = linked = engine.related(record, f["table"], f["via"]) if f.get("via") else []
         if f.get("filters"):
             rows = [r for r in rows if engine.matches(r, f["filters"], about=record)]
     except Exception:  # noqa: BLE001 - a path it can't follow: said without the lines
         rows = []
     g = engine.field(f["table"], f["field"]) if f.get("field") and f["table"] in engine.tables else None
     what = f"the {f.get('aggregate', 'sum')} of {f['table']}" + (f".{f['field']}" if f.get("field") else "")
+    if not rows and linked and f.get("filters"):  # why none count: they're linked, but not the ones it adds up
+        theirs = []
+        for c in schema.condition_leaves(f["filters"])[:2]:
+            h = engine.field(f["table"], str(c.get("field") or "").split(".")[0]) if f["table"] in engine.tables else None
+            if h is not None:
+                theirs.append(f"{h['key']}: " + ", ".join(sorted({engine.display(h, engine.value(r, h['key'])) or "empty" for r in linked})[:4]))
+        return (what + f": {len(linked)} {f['table']} link to it, but only those where "
+                + automations_words(engine, f["filters"], f["table"]) + " count" + (f" (theirs: {'; '.join(theirs)})" if theirs else ""))
     if not rows:
         return what + f": no {f['table']} records count towards it"
     parts = []
@@ -1264,6 +1297,23 @@ def _rollup_reads(engine, record, f, names, deeper=True):
         read = _formula_reads(engine, r, g["expression"], names, deeper=False) if deeper and g is not None and g.get("expression") else ""
         parts.append(f"{value!r}" + (f" (from {read})" if read else ""))
     return what + f" over its {len(rows)} {f['table']}: " + ", ".join(parts) + (", …" if len(rows) > 6 else "")
+
+
+def _sets_from_elsewhere(engine, record, key):
+    """The rules on other lists that set this field on a record of this one, through a link (an alteration done moving
+    its order on): [(rule, step)], to say what they wait for when it didn't come out."""
+    out = []
+    for a in engine.bp.get("automations", []):
+        source = engine.tables.get(a["trigger"].get("table") or "")
+        if not a.get("enabled", True) or source is None or source["key"] == record.table:
+            continue
+        for act in schema.steps_of(a["actions"]):
+            if act.get("type") != "update_record" or not act.get("target") or key not in (act.get("values") or {}):
+                continue
+            path = schema.link_path(source, act["target"], engine.tables)
+            if path and path[-1].get("table") == record.table:
+                out.append((a, act))
+    return out[:2]
 
 
 def _never_ran(engine, record, key):
@@ -1382,9 +1432,11 @@ def _rule_saw(exc, title="", n=None):
     refused = (f"If this example is meant to show it being stopped, the rule is right: mark step {n} \"refused\": true "
                f"(nothing is saved by it) and expect only what's there after it")
     said = f" (the rule on {table} checks `{check}`, which must come out true for a record to be saved; it came out false" + (f" with {saw}" if saw else "")
+    kept = ("If the rule is what the owner asked for and this example isn't about it, its values break the rule (a margin "
+            "of 0 where at least 10% is needed): send the example corrected, with values that keep to it")
     if STOPPED.search(title or ""):
         return said + f". {refused}; only if those values should be allowed is the check written backwards)"
-    return said + f". If those values should be allowed, the check is written backwards: fix the rule. {refused})"
+    return said + f". {kept}. If those values should be allowed, the check is written backwards: fix the rule. {refused})"
 
 
 def _line_of(engine, step, alias):
@@ -1497,7 +1549,9 @@ def _play(trial, engine, example, names, out):
         out["plain"] = "; ".join([p for ok, p in out["lines"] if not ok] + [i["plain"] for i in stopped])
         if by_hand:
             out["problem"] += (f" (the example's own steps added {', '.join(by_hand)} by hand after it happened; they were left out, "
-                               f"since the app has to do that itself)")
+                               f"since the app has to do that itself: a rule that adds them when it happens (create_record, or "
+                               f"create_for_each over its lines, so what's used is lines, not words in a note), or, if people "
+                               f"record them themselves, an example that says so in its title)")
             out["plain"] += f" (the app didn't add the {', '.join(schema.lc(x) for x in by_hand)} itself)"
     return out
 

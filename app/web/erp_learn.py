@@ -57,6 +57,12 @@ def checks(wid):
                              f"were using the app, most recently with: “{stopped['error']}”. Find what causes it and fix it, so it works "
                              f"when it's used for real.", user=current_user)
                 return redirect(url_for("builder.build", wid=wid))
+        elif what == "fix":  # what isn't right (all of it, or the one pressed on), sent to the builder in one press
+            text = checking.fix_request(ws, only=request.form.get("only") or None)
+            if text:
+                chat.ask(ws, text, user=current_user)
+                return redirect(url_for("builder.build", wid=wid))
+            flash("Nothing here needs fixing now.", "success")
         elif what == "put_aside":  # a check that couldn't be written, no longer wanted
             said = request.form.get("said") or ""
             ws.state = {**(ws.state or {}), "refused_checks": [x for x in (ws.state or {}).get("refused_checks") or [] if x.get("said") != said]}

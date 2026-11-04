@@ -74,7 +74,7 @@ def general(wid):
         audit.log(ws.id, "settings", "business details")
         flash("Saved.", "success")
         return redirect(url_for(".general", wid=wid))
-    return render_template("settings/general.html", ws=ws, timezones=TIMEZONES, business=_settings(ws).get("business", {}), section="general")
+    return render_template("settings/general.html", ws=ws, e=Engine(ws), timezones=TIMEZONES, business=_settings(ws).get("business", {}), section="general")
 
 
 @bp.route("/appearance", methods=["GET", "POST"])

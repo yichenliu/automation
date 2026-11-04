@@ -235,6 +235,27 @@ def _overlap(a, b):
     return s1 < e2 and s2 < e1
 
 
+CURRENCIES = (("Australia/", "AUD"), ("Pacific/Auckland", "NZD"), ("Pacific/Chatham", "NZD"), ("Europe/London", "GBP"),
+              ("Europe/Dublin", "EUR"), ("Europe/Zurich", "CHF"), ("Europe/Oslo", "NOK"), ("Europe/Stockholm", "SEK"),
+              ("Europe/Copenhagen", "DKK"), ("Europe/Warsaw", "PLN"), ("Europe/Prague", "CZK"), ("Europe/Budapest", "HUF"),
+              ("Europe/", "EUR"), ("America/Toronto", "CAD"), ("America/Vancouver", "CAD"), ("America/Edmonton", "CAD"),
+              ("America/Winnipeg", "CAD"), ("America/Halifax", "CAD"), ("America/St_Johns", "CAD"), ("America/Regina", "CAD"),
+              ("America/Mexico_City", "MXN"), ("America/Sao_Paulo", "BRL"), ("America/", "USD"), ("US/", "USD"),
+              ("Pacific/Honolulu", "USD"), ("Asia/Singapore", "SGD"), ("Asia/Hong_Kong", "HKD"), ("Asia/Tokyo", "JPY"),
+              ("Asia/Kolkata", "INR"), ("Asia/Calcutta", "INR"), ("Asia/Dubai", "AED"), ("Asia/Kuala_Lumpur", "MYR"),
+              ("Asia/Manila", "PHP"), ("Asia/Jakarta", "IDR"), ("Asia/Bangkok", "THB"), ("Asia/Shanghai", "CNY"),
+              ("Asia/Seoul", "KRW"), ("Africa/Johannesburg", "ZAR"), ("Pacific/Fiji", "FJD"))
+
+
+def currency_for(timezone):
+    """The currency code of where a business is, from its time zone ("Australia/Perth" → AUD), or "" if unknown."""
+    return next((code for start, code in CURRENCIES if str(timezone or "").startswith(start)), "")
+
+
+FILLED = {"not_empty", "not empty", "filled", "filled in", "filled_in", "any", "anything", "*", "set", "entered", "any value"}
+EMPTIED = {"empty", "is_empty", "blank", "nothing", "cleared", "none"}
+
+
 class Engine:
     def __init__(self, workspace, by=None, member=None):
         self.ws = workspace
@@ -263,7 +284,7 @@ class Engine:
         self.holidays = {str(h)[:10] for h in calendar.get("holidays") or []}  # "2026-12-25 Christmas Day": the date counts
         self.fy_start = int(calendar.get("fy_start") or 7)
         money = (workspace.settings or {}).get("money") or {}
-        self.base_currency = (money.get("base") or "").upper()
+        self.base_currency = (money.get("base") or "").upper() or currency_for(str(tz))  # unset: the one where the business is
         self.rates = {str(k).upper(): float(v) for k, v in (money.get("rates") or {}).items() if to_number(v)}
         self._rows, self._by_id, self._memo, self._index, self._computing, self._seals = {}, {}, {}, {}, set(), {}
         self.started = []  # automation runs this engine started (so a screen can say what ran)
@@ -1120,7 +1141,12 @@ class Engine:
             elif op in ("changed", "changed_to"):
                 before = (old or {}).get(c["field"]) if old is not None else None
                 ok = (old is None and actual not in (None, "")) or (old is not None and before != actual)
-                if ok and op == "changed_to":
+                said = c.get("value").strip().lower() if isinstance(c.get("value"), str) else None
+                if ok and op == "changed_to" and said in (FILLED | EMPTIED) and not (f and said in {str(o).lower() for o in f.get("options") or []}):
+                    # "changed_to": "not_empty" (or "filled in") is a change to anything; a number's 0 isn't filled in
+                    ok = (actual in (None, "", [])) if said in EMPTIED else actual not in (None, "", []) and not (
+                        f is not None and self.kind(f) in ("number", "money", "percent") and to_number(actual) == 0)
+                elif ok and op == "changed_to":
                     ok = self._equal(f, actual, wanted)
             else:
                 ok = False

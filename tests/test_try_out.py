@@ -66,7 +66,8 @@ def test_mistakes_with_one_sensible_reading_are_put_right_as_the_design_comes_in
     chat.save_version(ws, result.blueprint, result.changes, "chat")
     assert [i["text"] for i in checks.run(Engine(ws))] == [
         "the rule “Chase emailed quotes” checks status changed_to “Emailed”, but quotes.status has no such choice (its "
-        "choices: Draft, Awaiting approval, Sent, Declined): use one of them, or add it to the field's options"]
+        "choices: Draft, Awaiting approval, Sent, Declined): use one of them, add it to the field's options, or, if it means a "
+        "linked record's field, write its path (as order.status)"]
 
 
 def test_reading_the_design_finds_a_stuck_stage_a_choice_that_isnt_one_and_a_stage_nothing_reaches(app, owner):
@@ -345,7 +346,7 @@ def test_an_example_naming_the_record_a_lookup_shows_is_compared_by_that_record(
     wrong = {**example, "title": "Expected the other patient", "expect": [{"record": "n1", "field": "patient", "equals": "p2"}]}
     _, (right, other) = trial.try_out(ws, [example, wrong], screens=False)
     assert right["ok"], right
-    assert not other["ok"] and other["plain"] == "Treatment note’s Patient came out Casey, expected p2"
+    assert not other["ok"] and other["plain"] == "Treatment note’s Patient came out Casey, expected Robin"  # by name, not the example’s “p2”
 
 
 def test_an_example_refused_by_a_rule_tells_the_builder_what_the_rule_saw(app, owner):
@@ -902,7 +903,7 @@ def test_a_long_form_asks_what_matters_first_counting_its_lines(app, owner, clie
 
 def test_an_owners_check_is_always_written_and_a_step_acts_on_the_one_in_front_of_them(app, owner):
     """“A $6,000 order waits for my sign-off” on an app that doesn't do it yet: the check is still written (one, always),
-    so it fails and says so, rather than “couldn't be made a check”. A move that doesn't say which quote moves the one
+    so it says what the app doesn't do yet (nothing there could stop it), rather than “couldn't be made a check”. A move that doesn't say which quote moves the one
     just added, as a person would on the quote in front of them."""
     from app.builder import checking, prompts
     _, ws = owner
@@ -924,8 +925,8 @@ def test_an_owners_check_is_always_written_and_a_step_acts_on_the_one_in_front_o
     assert prompts.ALWAYS_ONE in messages[0]["content"] and prompts.NONE_IF_LOOKS not in messages[0]["content"]
     assert schema_["properties"]["examples"]["minItems"] == 1
     assert "should have been refused, but the app allowed it" in again[-1]["content"]  # shown what happened
-    assert result["kind"] == "app" and not result["ok"] and result["looked_again"] == "app", result
-    assert result["plain"] == "Moving the quote to Sent should have been stopped, but wasn't", result
+    assert result["kind"] == "missing" and not result["ok"] and result["looked_again"] == "app", result
+    assert result["plain"] == "your app doesn't do this yet: nothing waits for your sign-off", result  # nothing there could stop it
 
 
 def test_a_failing_owners_check_is_looked_at_again_before_the_owner_hears_it(app, owner):
@@ -1147,3 +1148,247 @@ def test_buttons_on_the_way_are_filled_in_with_dates_that_fit(app, owner):
     with trial_.copy_of(ws) as copy:
         result = trial_.play(copy, example)
     assert result["ok"], result
+
+
+def _failing_wedding(ws):
+    """Quotes whose discount sum is wrong, with the builder's wedding check kept and failing."""
+    from app.builder import checking
+    broken = json.loads(json.dumps(QUOTES))
+    broken[0]["fields"][3]["expression"] = "round(subtotal + discount_percent, 2)"
+    _built(ws, broken)
+    ws.state = {**(ws.state or {}), "examples": [EXAMPLES[0]]}
+    db.session.commit()
+    checking.check(ws, "a change")
+    assert [x["ok"] for x in ws.state["checks"]["examples"]] == [False]
+
+
+def test_the_owner_presses_fix_on_the_checks_page_and_the_builder_fixes_what_failed_before(app, owner, client, monkeypatch):
+    """Right in the end: a check that failed before the owner's request is theirs to raise, and pressing “Ask the builder
+    to fix them” raises it: the builder is told what isn't right, and the try-out fixes it even when the first answer
+    changes nothing."""
+    from .conftest import login
+    _, ws = owner
+    monkeypatch.setattr(chat, "TRY_OUT", True)
+    _failing_wedding(ws)
+    login(client)
+    page = client.get(f"/w/{ws.id}/app/checks").get_data(as_text=True)
+    assert "2 things not right yet." in page and "Ask the builder to fix them" in page and "Ask the builder to fix it" in page
+    back = client.post(f"/w/{ws.id}/app/checks", data={"do": "fix"})
+    assert back.status_code == 302 and "/build" in back.headers["Location"]
+    asked = Message.query.filter_by(role="user").one()
+    assert asked.text.startswith("Please fix what isn't right on my Checks page:\n- “A wedding quote with 15% off”: Quote’s Discount came out")
+    note = {"op": "add_field", "table": "quotes", "field": {"key": "note", "label": "Note", "type": "long_text"}}
+    scripted = ScriptedAI({"ops": [], "reply": "I can't fix that check. Shall I change how the discount is worked out?"},
+                          {"ops": [note], "reply": "Added a note."}, {"examples": []}, {"ops": [FIXED], "reply": "Fixed the discount.", "more": False})
+    ai.set_backend(scripted)
+    reply = Message.query.filter_by(role="assistant").one()
+    chat.work(reply.id)
+    m = db.session.get(Message, reply.id)
+    assert m.status == "done" and len(scripted.asked) == 4, m.error
+    assert "What isn't right in the app now" in scripted.asked[0][-1]["content"] and "A wedding quote" in scripted.asked[0][-1]["content"]
+    assert scripted.asked[1][-1]["content"].startswith("Yes: make it now")  # pressing “Fix” already said yes
+    assert "A wedding quote with 15% off" in scripted.asked[3][-1]["content"]  # failed before, but raised: fixed, not left
+    assert [x["ok"] for x in ws.state["checks"]["examples"]] == [True] and m.version_after == ws.version
+    assert not m.text.startswith("Not everything works yet")
+
+
+def test_a_failing_check_isnt_dropped_by_a_change_that_doesnt_touch_it(app, owner, monkeypatch):
+    """A change the owner asked for leaves a check that already failed as it is (theirs to raise), but never quietly drops
+    it: it stays on the Checks page, failing, with the button to fix it."""
+    _, ws = owner
+    monkeypatch.setattr(chat, "TRY_OUT", True)
+    _failing_wedding(ws)
+    ai.set_backend(ScriptedAI({"ops": [{"op": "add_field", "table": "quotes", "field": {"key": "note", "label": "Note", "type": "long_text"}}],
+                               "reply": "Added a Note."}, {"examples": []}))
+    reply = chat.ask(ws, "Can you add a Note to quotes?")
+    chat.work(reply.id)
+    assert [x["title"] for x in ws.state["examples"]] == ["A wedding quote with 15% off"]
+    assert [x["ok"] for x in ws.state["checks"]["examples"]] == [False]
+
+
+def test_fix_it_and_yes_please_are_understood_as_asking_for_what_isnt_right_to_be_fixed(app, owner):
+    from app.builder import checking
+    _, ws = owner
+    _failing_wedding(ws)
+    ws.state = {**ws.state, "refused_checks": [{"said": "Overdue invoices are chased after 14 days", "why": "there is no reminder", "missing": True}]}
+    db.session.commit()
+
+    def said(text, after=None):
+        if after:
+            db.session.add(Message(workspace_id=ws.id, channel="builder", role="assistant", text=after, status="done"))
+        m = Message(workspace_id=ws.id, channel="builder", role="user", text=text, status="done")
+        db.session.add(m)
+        db.session.commit()
+        return chat._mending(ws, m)
+
+    assert said("Can you add a Team note to quotes?") is None  # an ordinary change: not a fix
+    assert said("fix it please")["all"] and said("Fix what didn't come out right")["all"]
+    assert said("yes please", after="Not everything works yet. When I tried it out, this didn't come out right: “A wedding quote”.")["all"]
+    named = said("Make it do this: Overdue invoices are chased after 14 days, by email", after="I've added a Note to quotes.")
+    assert not named["all"] and named["found"]["missing"][0]["said"].startswith("Overdue") and not named["found"]["failing"]
+    text = checking.fix_request(ws)
+    assert "“A wedding quote with 15% off”" in text and "Please also make my app do these (it doesn't yet):\n- “Overdue invoices are chased after 14 days” (there is no reminder)" in text
+    assert checking.fix_request(ws, only="Overdue invoices are chased after 14 days").startswith("Please make my app do these")
+
+
+SHOP = [
+    {"op": "create_table", "table": "orders", "label": "Orders", "fields": [
+        {"key": "bride", "type": "text", "required": True}, {"key": "deposit", "type": "money"},
+        {"key": "status", "type": "select", "options": ["Enquiry", "Deposit paid", "In fitting", "Ready"]}]},
+    {"op": "create_table", "table": "alterations", "label": "Alterations", "fields": [
+        {"key": "what", "type": "text", "required": True}, {"key": "order", "type": "link", "table": "orders", "required": True},
+        {"key": "status", "type": "select", "options": ["Open", "Done"]}]},
+    {"op": "add_automation", "automation": {"key": "deposit_in", "name": "Deposit paid moves order on", "trigger": {"type": "record_updated", "table": "orders"},
+                                            "conditions": [{"field": "deposit", "op": "changed_to", "value": "not_empty"}],
+                                            "actions": [{"type": "update_record", "values": {"status": "Deposit paid"}}]}},
+    {"op": "add_automation", "automation": {"key": "done", "name": "Alteration done moves order", "trigger": {"type": "record_updated", "table": "alterations"},
+                                            "conditions": [{"field": "status", "op": "changed_to", "value": "Done"}],
+                                            "actions": [{"type": "update_record", "target": "order", "values": {"status": "Ready"},
+                                                         "only_if": [{"field": "status", "op": "equals", "value": "In fitting"}]}]}},
+]
+
+
+def test_a_step_on_a_linked_record_checks_that_records_stage_and_filled_in_means_any_value(app, owner):
+    """“When an alteration is done, move its order to Ready, if it's In fitting” means the order's stage (the alteration
+    has no such choice); “when the deposit changes to filled in” runs for any amount, not for the word "not_empty"."""
+    _, ws = owner
+    result = ops.apply(ws.blueprint, SHOP)
+    assert not result.problems, result.problems
+    step = next(a for a in result.blueprint["automations"] if a["key"] == "done")["actions"][0]
+    assert step["only_if"] == [{"field": "order.status", "op": "equals", "value": "In fitting"}]
+    assert any("now checks that order's Status" in c for c in result.changes), result.changes
+    chat.save_version(ws, result.blueprint, result.changes, "chat")
+    engine = Engine(ws)
+    order = engine.create("orders", {"bride": "Ava", "status": "Enquiry"})
+    engine.update(order, {"deposit": 0})
+    assert engine.value(engine.get(order.id), "status") == "Enquiry"  # a 0 isn't a deposit paid
+    engine.update(engine.get(order.id), {"deposit": 900})
+    assert engine.value(engine.get(order.id), "status") == "Deposit paid"
+    engine.update(engine.get(order.id), {"status": "In fitting"})
+    fix = engine.create("alterations", {"what": "Hem", "order": order.id, "status": "Open"})
+    engine.update(fix, {"status": "Done"})
+    assert engine.value(engine.get(order.id), "status") == "Ready"
+
+
+def test_a_rule_sent_again_to_add_a_message_keeps_what_its_steps_had(app, owner):
+    """“Tell me when an invoice is paid”, done by re-sending the payment's rule: the model drops the step's target and
+    values and folds the message in. What the step had is kept, and the message is a notify step of its own."""
+    _, ws = owner
+    design = [{"op": "create_table", "table": "invoices", "label": "Invoices", "fields": [
+                  {"key": "number", "type": "text", "required": True}, {"key": "status", "type": "select", "options": ["Draft", "Sent", "Paid"]}]},
+              {"op": "create_table", "table": "payments", "label": "Payments", "fields": [
+                  {"key": "invoice", "type": "link", "table": "invoices", "required": True}, {"key": "amount", "type": "money"}]},
+              {"op": "add_automation", "automation": {"key": "mark_paid", "name": "Mark invoice paid", "trigger": {"type": "record_created", "table": "payments"},
+                                                      "actions": [{"type": "update_record", "target": "invoice", "values": {"status": "Paid"}}]}}]
+    result = ops.apply(ws.blueprint, design)
+    again = ops.apply(result.blueprint, [{"op": "update_automation", "automation": {
+        "key": "mark_paid", "name": "Mark invoice paid", "trigger": {"type": "record_created", "table": "payments"},
+        "actions": [{"type": "update_record", "to": "invoice", "message": "Invoice {{record.invoice.number}} is paid"}]}}])
+    assert not again.problems, again.problems
+    steps = next(a for a in again.blueprint["automations"] if a["key"] == "mark_paid")["actions"]
+    assert [s["type"] for s in steps] == ["update_record", "notify"] and steps[0]["target"] == "invoice" and steps[0]["values"] == {"status": "Paid"}
+    assert "is paid" in steps[1]["message"]
+    told = chat._told_as_asked("Let me know when an invoice gets to Paid", again.blueprint)
+    assert told and told[0]["plain"] == "you asked to hear when an invoice gets to “Paid”, but you'd only hear about some of them"
+    own = ops.apply(again.blueprint, [{"op": "add_automation", "automation": {
+        "key": "paid_tell", "name": "Tell me when paid", "trigger": {"type": "record_updated", "table": "invoices"},
+        "conditions": [{"field": "status", "op": "changed_to", "value": "Paid"}], "actions": [{"type": "notify", "to": "owner", "message": "Paid"}]}}])
+    assert chat._told_as_asked("Let me know when an invoice gets to Paid", own.blueprint) == []
+
+
+def test_the_currency_is_where_the_business_is_until_its_set(app, owner):
+    from app.engine.records import currency_for
+    _, ws = owner
+    assert currency_for("Australia/Perth") == "AUD" and currency_for("Europe/London") == "GBP" and currency_for("America/Toronto") == "CAD"
+    assert currency_for("Mars/Base") == ""
+    assert Engine(ws).base_currency == currency_for(ws.timezone or app.config["DEFAULT_TIMEZONE"]) == "AUD"
+    ws.settings = {**(ws.settings or {}), "money": {"base": "NZD", "rates": {}}}
+    db.session.commit()
+    assert Engine(ws).base_currency == "NZD"
+
+
+def test_checks_compare_every_linked_record_and_find_one_the_app_made(app, owner):
+    """A crew of five expected by the names the example gave them is each of them; a press on a list the example added
+    nothing to is on the record the app made there itself."""
+    _, ws = owner
+    _built(ws, QUOTES)
+    engine = Engine(ws)
+    a, b, c = (engine.create("quotes", {"title": t}) for t in ("A", "B", "C"))
+    f = {"key": "crew", "type": "link", "table": "quotes"}
+    names = {"x": a.id, "y": b.id, "z": c.id}
+    assert trial._same(engine, f, [a.id, b.id], ["x", "y"], names) and not trial._same(engine, f, [a.id, b.id], ["x", "z"], names)
+    assert trial._same(engine, f, [a.id, b.id], ["A", "B"], names) and trial._named(engine, "x", names) == "A"
+    meant = trial._the_one_meant(engine, {"do": "move", "to": "Sent"}, {"_added": []})
+    assert meant == c.id  # the latest the app has of the list whose stage it is
+
+
+def test_nothing_moving_records_to_overdue_while_a_rule_chases_only_those_is_found(app, owner):
+    _, ws = owner
+    design = [{"op": "create_table", "table": "invoices", "label": "Invoices", "fields": [
+                  {"key": "number", "type": "text", "required": True}, {"key": "due_date", "type": "date"},
+                  {"key": "status", "type": "select", "options": ["Sent", "Overdue", "Paid"]}]},
+              {"op": "add_automation", "automation": {"key": "chase", "name": "Chase overdue invoices", "trigger": {"type": "schedule", "table": "invoices", "every": "day"},
+                                                      "conditions": [{"field": "status", "op": "equals", "value": "Overdue"}],
+                                                      "actions": [{"type": "notify", "to": "owner", "message": "Chase {{record.number}}"}]}}]
+    _built(ws, design)
+    found = [i for i in checks.run(Engine(ws)) if "Nothing moves" in i["text"]]
+    assert found and "due_date is before_today" in found[0]["text"] and found[0]["plain"].startswith("no invoice ever becomes “Overdue”")
+    _built(ws, [{"op": "add_automation", "automation": {"key": "late", "name": "Mark late ones", "trigger": {"type": "schedule", "table": "invoices", "every": "day"},
+                                                        "conditions": [{"field": "status", "op": "equals", "value": "Sent"}, {"field": "due_date", "op": "before_today"}],
+                                                        "actions": [{"type": "update_record", "values": {"status": "Overdue"}}]}}])
+    assert not [i for i in checks.run(Engine(ws)) if "Nothing moves" in i["text"]]
+
+
+def test_a_rule_across_two_amounts_is_kept_by_the_samples(app, owner):
+    """A margin rule (“at least 10% on each session”) refused every sample when both amounts got the same values: they're
+    left empty first where they may be, and each gets a different value after."""
+    _, ws = owner
+    _built(ws, [{"op": "create_table", "table": "sessions", "label": "Sessions", "fields": [
+        {"key": "student", "type": "text", "required": True}, {"key": "revenue", "type": "money"}, {"key": "cost", "type": "money"}],
+        "rules": [{"check": "is_empty(revenue) or is_empty(cost) or (revenue - cost) / revenue >= 0.1", "message": "Margin must be at least 10% on each session."}]}])
+    engine = Engine(ws)
+    t = engine.tables["sessions"]
+    record, errors = trial._add(engine, t, {"student": "Ava", "revenue": 120.5, "cost": 120.5})
+    assert record is not None and not errors, errors
+
+
+def test_the_owners_checks_are_about_what_they_said_not_asides():
+    from evals import fresh
+    assert fresh.META.search("A $6,000 order waits for the manager's OK, but I didn't mention that threshold so I can't confirm it")
+    assert fresh.META.search("A quote for 10 hours at $90 comes to $990 with GST, but I don't have those numbers")
+    assert not fresh.META.search("A quote for 10 hours at $90 comes to $990 with GST")
+    assert "{said}" in fresh.CHECKS and "no volumes" in fresh.CHECKS
+
+
+def test_a_fix_that_changes_nothing_says_what_still_isnt_right_and_asks_in_their_words(app, owner, monkeypatch):
+    """Pressing “Fix” where the builder finds no change that works: never “already set up that way” while a check still
+    fails; it says what still isn't right and asks for what should happen, in the owner's words."""
+    _, ws = owner
+    monkeypatch.setattr(chat, "TRY_OUT", True)
+    _failing_wedding(ws)
+    scripted = ScriptedAI({"ops": [], "reply": "I can't see what to change."}, {"ops": [], "reply": "Still nothing to change."},
+                          {"ops": [], "reply": "No change.", "more": False})
+    ai.set_backend(scripted)
+    reply = chat.ask(ws, "Fix what didn't come out right")
+    chat.work(reply.id)
+    m = db.session.get(Message, reply.id)
+    assert m.status == "done" and len(scripted.asked) == 3, m.error
+    assert m.text.startswith("Not everything works yet") and m.text.endswith(chat.COULDNT_FIX) and "Press “Fix these”" not in m.text, m.text
+
+
+def test_an_owners_check_that_cant_be_tried_any_more_stays_on_the_checks_page(app, owner, monkeypatch):
+    _, ws = owner
+    monkeypatch.setattr(chat, "TRY_OUT", True)
+    monkeypatch.setattr(chat, "TRY_FIXES", 1)
+    _built(ws, QUOTES)
+    mine = {"title": "A red quote", "by": "Sam", "steps": [{"do": "add", "table": "quotes", "as": "q", "values": {"title": "Red", "colour": "red"}}],
+            "expect": [{"record": "q", "field": "title", "equals": "Red"}]}
+    ws.state = {**(ws.state or {}), "examples": [mine]}
+    db.session.commit()
+    ai.set_backend(ScriptedAI({"ops": [{"op": "add_field", "table": "quotes", "field": {"key": "note", "label": "Note", "type": "long_text"}}],
+                               "reply": "Added a Note."}, {"examples": []}, {"ops": [], "reply": "Left it.", "examples": [], "more": False}))
+    reply = chat.ask(ws, "Can you add a Note to quotes?")
+    chat.work(reply.id)
+    assert [x["title"] for x in ws.state["examples"]] == ["A red quote"]
+    shown = ws.state["checks"]["examples"]
+    assert [(x["title"], x["ok"]) for x in shown] == [("A red quote", False)] and shown[0]["problem"].startswith("it can't be tried on your app")

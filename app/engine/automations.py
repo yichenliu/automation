@@ -1105,7 +1105,7 @@ def _do(engine, automation, action, record, run):
         amount = expr.to_number(_render(action["amount"], ctx))
         if not amount or amount <= 0:
             return {"result": "No payment link: there's nothing to pay"}
-        currency = (str(_render(action["currency"], ctx)) if action.get("currency") else "") or ((engine.ws.settings or {}).get("money") or {}).get("base")
+        currency = (str(_render(action["currency"], ctx)) if action.get("currency") else "") or engine.base_currency  # set, or where it is
         if not currency or not re.fullmatch(r"[A-Za-z]{3}", currency):
             raise ValueError("a payment link needs the currency: set your currency's code under Settings › Business (AUD, GBP, USD…)")
         if current_app.config.get("TRYING_OUT"):

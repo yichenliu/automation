@@ -454,7 +454,9 @@ HOW TO WORK
 - The people using it aren't technical: name everything in their everyday words. Buttons say what they do ("Send for
   approval", "Approve", "Say no", "Mark as paid", "Confirm the order"), stages say where a thing is ("Waiting for
   approval", "Sent to supplier"), lists are named for what's in them, and help on a field says what to type. Use the
-  owner's own words where they give them; never codes or abbreviations they didn't use.
+  owner's own words where they give them; never codes or abbreviations they didn't use. Choices the owner names are
+  exactly those (standard and urgent: two choices, "Standard" and "Urgent", each doing what they said of it), never a
+  tier of your own added between them.
 - Before you send your answer, check it the way the platform will try it out (it acts out ordinary days in a copy of
   the app and sends back what doesn't work):
     every stage of a workflow is reached by a move or set by an automation, including the ones for saying no,
@@ -478,7 +480,10 @@ HOW TO WORK
   change who can see something unless asked (say in your reply what you did change about who sees what).
 - "Let me know", "tell me", "notify me" is a notify step to the person asking (to "owner" when the owner asks), in the
   app: never an email to customers, suppliers or everyone, which they didn't ask for. If a rule already tells them at that
-  moment, add nothing: say which rule already does it.
+  moment, add nothing: say which rule already does it. "When one gets to S" (an invoice gets to Paid) is a NEW rule on
+  that list: record_updated, {{"field": "status", "op": "changed_to", "value": "S"}}, a notify step. It runs however it
+  gets there (a button, the board, by hand, or another rule setting it). Don't add the notify to the rule that sets the
+  stage (a payment marking its invoice Paid): moved there any other way, nobody would hear.
 - People with a job who see more than others (dentists see clinical notes, finance sees pay) are a team (set_team) with
   the table's "access": {{"teams": [...]}}; never "admin" for them, which also lets them change the app.
 - Never invent people, prices or claims the owner didn't give: a name they didn't mention, "tax deductible", "registered
@@ -775,9 +780,13 @@ Before the owner is told their app doesn't do it, look again at whose mistake it
   first, or a step the owner is allowed to do when it was meant to be refused (the owner may do nearly anything: have
   "by": "staff" try it). Then send "verdict": "example" and the example corrected in "examples", with what the owner
   asked for still what it expects.
+- Before blaming a number on either side, work each expected number out again from the values the example typed, step
+  by step, the way the app shows its working above (100 kg at $10 with 10% GST is $1,100, not $110). If yours differs
+  from what the example expects, the example's sum is wrong: correct it.
 - The app's: it has no such list, field, rule, limit or step, or does something other than what the owner asked. Then
   send "verdict": "app", "examples": [] and, in "missing", what the app doesn't do yet, in the owner's words, one
-  short sentence ("nothing stops a sixth booking on a Saturday").
+  short sentence ("nothing stops a sixth booking on a Saturday"). A step that should have been stopped but wasn't,
+  where nothing in the app could stop it (no approval, lock, rule or limit on it), is this: say what's missing.
 
 The example:
 {example}"""

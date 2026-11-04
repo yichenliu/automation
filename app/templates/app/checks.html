@@ -5,10 +5,13 @@
   <p class="sub">Things your app must always do. Each one is tried in a copy of your app after every change to it, so nothing that works gets broken without you knowing.</p></div>
   <form method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn" name="do" value="run" {{ 'disabled' if checking_now }}>{{ icon('refresh-cw') }}{{ 'Checking…' if checking_now else 'Check everything now' }}</button></form></div>
 
-{% if kept or problems %}
-<div class="notice {{ 'good' if not wrong and not problems else 'bad' }} mb-2">{{ icon('circle-check' if not wrong and not problems else 'circle-x') }}
-  <span>{% if not wrong and not problems %}<b>Everything checked works.</b>{% else %}<b>{{ wrong|length + problems|length }} thing{{ 's' if wrong|length + problems|length != 1 }} not right yet.</b> Ask the builder to fix {{ 'it' if wrong|length + problems|length == 1 else 'them' }}, or undo the last change under Versions.{% endif %}
-  {% if last_at %}<span class="faint small">Last checked {{ last_at|ago }}, after {{ last.why }}.</span>{% endif %}</span></div>
+{% set missing = refused|selectattr('missing')|list %}{% set n = wrong|length + (last.issues or [])|length + missing|length %}
+{% if kept or problems or missing %}
+<div class="notice {{ 'good' if not n and not stopped else 'bad' }} mb-2 row">{{ icon('circle-check' if not n and not stopped else 'circle-x') }}
+  <span class="grow">{% if not n and not stopped %}<b>Everything checked works.</b>{% elif n %}<b>{{ n }} thing{{ 's' if n != 1 }} not right yet.</b> The builder can fix {{ 'it' if n == 1 else 'them' }} for you, or you can undo the last change under Versions.{% else %}<b>A rule stopped while people used your app.</b> See below.{% endif %}
+  {% if last_at %}<span class="faint small">Last checked {{ last_at|ago }}, after {{ last.why }}.</span>{% endif %}</span>
+  {% if n %}<form method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="do" value="fix">
+    <button class="btn sm primary">{{ icon('wand-sparkles') }}Ask the builder to fix {{ 'it' if n == 1 else 'them' }}</button></form>{% endif %}</div>
 {% endif %}
 
 <div class="card mb-2"><div class="card-head"><h2>{{ icon('plus') }}Add a check</h2></div>
@@ -17,7 +20,8 @@
       <textarea name="said" rows="2" required placeholder="A quote for $1,000 with 10% off comes to $990 including GST"></textarea></label>
     <div class="row"><button class="btn primary">{{ icon('check') }}Add this check</button><span class="faint small">The AI turns it into a check and tries it on your app straight away.</span></div></form>
   {% for j in adding %}<div class="card-foot small">{{ icon('clock') }} Writing “{{ j.payload.said[:120] }}”…</div>{% endfor %}
-  {% for x in refused %}<div class="card-foot small row">{{ icon('circle-x') }}<span class="grow">{% if x.missing %}Your app doesn't do “{{ x.said[:160] }}” yet: {{ x.why }}. Ask the builder to add it, then add this check again.{% else %}Couldn't turn “{{ x.said[:160] }}” into a check: {{ x.why }}. Try it again with the names and numbers you see on the screen.{% endif %}</span>
+  {% for x in refused %}<div class="card-foot small row">{{ icon('circle-x') }}<span class="grow">{% if x.missing %}Your app doesn't do “{{ x.said[:160] }}” yet: {{ x.why }}. The builder can add it, and this check is tried again after.{% else %}Couldn't turn “{{ x.said[:160] }}” into a check: {{ x.why }}. Try it again with the names and numbers you see on the screen.{% endif %}</span>
+    {% if x.missing %}<form method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="do" value="fix"><input type="hidden" name="only" value="{{ x.said }}"><button class="btn sm primary">{{ icon('wand-sparkles') }}Ask the builder to add it</button></form>{% endif %}
     <form method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="do" value="put_aside"><input type="hidden" name="said" value="{{ x.said }}"><button class="btn sm ghost">{{ icon('x') }}Put aside</button></form></div>{% endfor %}
 </div>
 
@@ -33,7 +37,9 @@
       <span class="faint tiny">{{ 'yours' if c.by != 'builder' else 'from the builder' }}</span></summary>
     <div class="check-detail">{% if r %}<ul>{% for ok, line in r.lines %}<li class="{{ '' if ok else 'bad' }}">{{ line }}</li>{% endfor %}
       {% if r.problem and not r.ok and not (r.lines|rejectattr(0)|list) %}<li class="bad">{{ r.problem }}</li>{% endif %}</ul>{% else %}<p class="faint small">Not tried yet.</p>{% endif %}
-      <form method="post" class="row"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="do" value="remove"><input type="hidden" name="title" value="{{ c.title }}">
-        <button class="btn sm ghost">{{ icon('x') }}Remove this check</button></form></div></details>
+      <div class="row">{% if r and not r.ok %}<form method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="do" value="fix"><input type="hidden" name="only" value="{{ c.title }}">
+        <button class="btn sm primary">{{ icon('wand-sparkles') }}Ask the builder to fix it</button></form>{% endif %}
+      <form method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="do" value="remove"><input type="hidden" name="title" value="{{ c.title }}">
+        <button class="btn sm ghost">{{ icon('x') }}Remove this check</button></form></div></div></details>
 {% else %}<div class="card-body faint small">No checks yet. The builder adds one for each thing it builds, and you can add your own above.</div>{% endfor %}</div>
 {% endblock %}

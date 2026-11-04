@@ -389,9 +389,18 @@ def run(scenario, out):
             result["owner_checks"] = owner_checks(ws, scenario, data / "training")
         (data / "blueprint.json").write_text(json.dumps(bp, indent=1, ensure_ascii=False))  # as handed over
         if bp.get("tables"):
+            try:
+                result["fixing"] = fixed_up(ws, owner, scenario, result)
+            except Exception as exc:  # noqa: BLE001 - a fault of ours: said, and the run goes on
+                traceback.print_exc()
+                result["fixing"] = {"asks": [], "right_after": None, "crash": f"{type(exc).__name__}: {exc}"[:300]}
+            db.session.expire_all()
+            ws = db.session.get(Workspace, ws.id)
+            if result["fixing"].get("asks"):
+                (data / "blueprint_fixed.json").write_text(json.dumps(ws.blueprint, indent=1, ensure_ascii=False))
             theirs = ux.theirs_of(ws, result)
             result["map_ux"] = mapux.review(ws, theirs)  # the App map as the owner sees it, in a browser
-            result["updates"] = updated(ws, owner, scenario, result, theirs)
+            result["updates"] = updated(ws, owner, scenario, dict(result, stories=result["fixing"].get("stories", result.get("stories"))), theirs)
             ws = db.session.get(Workspace, ws.id)
             (data / "blueprint_updated.json").write_text(json.dumps(ws.blueprint, indent=1, ensure_ascii=False))
     return result
@@ -419,19 +428,89 @@ def updated(ws, owner, scenario, result, theirs, ask=True):
     return {"changes": changes, "ux": updates.findings(changes, theirs)}
 
 
+ASKS = 3  # how many times an owner asks for what isn't right to be fixed before giving up
+
+
+def fixed_up(ws, owner, scenario, result):
+    """Right in the end: an app that wasn't right when handed over, and the owner doing what it shows them, as a beginner
+    would: “Carry on building” when the builder says it didn't finish, otherwise “Ask the builder to fix them” on the
+    Checks page (its failing checks, what trying it out found, what it doesn't do yet), up to ASKS times. Whether it comes
+    right, after how many asks, and whether each reply said truly how it came out.
+    {"right_after": 0 (right when handed over) | n | None, "asks": [...], "stories": [...] (fixed scenarios)}"""
+    from app import jobs
+    from app.builder import chat, checking
+    from app.extensions import db
+    from app.models import Job, Message, Workspace
+    if not handed_over(result):
+        return {"right_after": 0, "asks": []}
+    checking.check(ws, "you asked")  # as the owner sees it now: their checks, after the handover's own
+    state = ws.state or {}
+    owners = {x["title"] for x in checking.examples(ws) if x.get("by", "builder") != "builder"}
+    failing = {x["title"] for x in (state.get("checks") or {}).get("examples") or [] if not x["ok"]}
+    must = owners | failing  # never quietly gone: the owner's checks, and the builder's that didn't work
+    out = {"right_after": None, "asks": []}
+    key = scenario["key"].split("-")[0]
+    for n in range(1, ASKS + 1):
+        last = Message.query.filter_by(workspace_id=ws.id, channel="builder", role="assistant").order_by(Message.id.desc()).first()
+        before = out["asks"][-1] if out["asks"] else None
+        if last is not None and last.status == "done" and "carry on" in (last.text or "").lower():
+            said, pressed = "Carry on building what isn't done yet", "Carry on building"
+        elif before and scenario.get("fresh") and (not before.get("changes") or "in your own words" in (last.text or "")):
+            # pressing it again would get the same: they say what should happen, as a person would
+            told = "\n\n".join(t["say"] for t in scenario.get("turns") or []) or scenario.get("real") or ""
+            said, pressed = fresh.explain(scenario["fresh"], told, last.text or "", before["still"]), "said in their own words"
+        else:
+            said, pressed = checking.fix_request(ws), "Ask the builder to fix them (Checks page)"
+        if not said:
+            out["nothing_to_press"] = True  # not right, but nothing on the screen says what or offers a way on
+            break
+        started = time.time()
+        reply = chat.ask(ws, said, user=owner)
+        try:
+            chat.work(reply.id)
+        except Exception as exc:  # noqa: BLE001
+            traceback.print_exc()
+            out["asks"].append({"pressed": pressed, "said": said[:600], "crash": f"{type(exc).__name__}: {exc}"[:300]})
+            break
+        for job in Job.query.filter(Job.workspace_id == ws.id, Job.status == "queued", Job.kind.in_(("import", "check_add"))).order_by(Job.id).all():
+            jobs.run(job)  # as the worker would: what the app didn't do yet, tried again
+        db.session.expire_all()
+        ws, reply = db.session.get(Workspace, ws.id), db.session.get(Message, reply.id)
+        checking.check(ws, "you asked")
+        db.session.expire_all()
+        ws = db.session.get(Workspace, ws.id)
+        found = checking.not_right(ws)
+        shown = {x["title"] for x in (ws.state.get("checks") or {}).get("examples") or []}
+        still = ([f"fails: {x['title']}: {x['why']}" for x in found["failing"]] + [f"wrong: {i}" for i in found["issues"]]
+                 + [f"doesn't do yet: {x['said']}" for x in found["missing"]] + [f"no longer tried: {t}" for t in sorted(must - shown)])
+        if reply.status != "done":
+            still.insert(0, f"the turn {reply.status}: {reply.error or ''}"[:200])
+        if result.get("stories"):
+            out["stories"] = stories.run(ws, key)
+            still += [f"story {st['result']}: {st['story']}" for st in out["stories"] if st["result"] != "pass"]
+        text = reply.text or ""
+        out["asks"].append({"pressed": pressed, "said": said[:600], "seconds": round(time.time() - started), "status": reply.status,
+                            "changes": len(reply.changes or []), "reply": text[:600], "still": still,
+                            "told_truly": not still or "Not everything works yet" in text or "couldn't" in text.lower() or "?" in text})
+        if not still:
+            out["right_after"] = n
+            break
+    return out
+
+
 def owner_checks(ws, scenario, folder):
     """The owner's own checks, written from what they said before the build, tried on what was built. Those the app could
     be checked on decide whether its build turns are verified lessons (training.verdict); none, and nobody can say."""
     from app.builder import checking, training
     out = []
     try:
-        said = fresh.checks(scenario["fresh"], scenario["real"])
+        said = fresh.checks(scenario["fresh"], "\n\n".join(t["say"] for t in scenario.get("turns") or []) or scenario["real"])  # what they told it
     except Exception as exc:  # noqa: BLE001 - no checks: the turns stay unverified
         print(f"  owner checks couldn't be written: {exc}", flush=True)
         return out
     for text in said:
         try:
-            r = checking.add(ws, text, by="owner")
+            r = checking.add_and_tell(ws, text, by="owner")  # as the Checks page does: one it doesn't do yet stays in view
         except Exception as exc:  # noqa: BLE001
             out.append({"check": text, "result": f"crash: {type(exc).__name__}"})
             continue
@@ -569,6 +648,18 @@ def report(result):
     why = handed_over(result)
     if why is not None:
         lines.append(f"  HANDED OVER: {'RIGHT' if not why else 'not right: ' + '; '.join(why[:6])}")
+    fx = result.get("fixing")
+    if fx is not None and why:
+        asks = fx.get("asks") or []
+        lines.append("  RIGHT IN THE END: " + (f"right after {fx['right_after']} ask{'s' if fx['right_after'] != 1 else ''} "
+                                               f"({round(sum(a.get('seconds', 0) for a in asks) / 60)} min)" if fx.get("right_after")
+                                               else f"not right after {len(asks)} ask{'s' if len(asks) != 1 else ''}"
+                                               + (" (nothing on the screen offered a way on)" if fx.get("nothing_to_press") else "")
+                                               + (f" (CRASH {fx['crash']})" if fx.get("crash") else "")))
+        for i, a in enumerate(asks, 1):
+            lines.append(f"    ask {i}, pressed {a['pressed']}: " + (f"CRASH {a['crash']}" if a.get("crash") else
+                         f"[{a['status']}] {a['seconds']}s, {a['changes']} changes" + ("" if a["told_truly"] else ", SAID IT WAS DONE BUT ISN'T")
+                         + "".join(f"\n      still: {x[:200]}" for x in a["still"][:5]) + f"\n      reply: {a['reply'][:300]}"))
     for t in result["turns"]:
         examples = ((t.get("tried") or {}).get("examples") or [])
         first = (t.get("tried") or {}).get("first")
@@ -684,6 +775,13 @@ def totals(results):
                if steady else "")
             + (f"  RIGHT WHEN HANDED OVER: {sum(1 for w in built if not w)}/{len(built)} apps (did what was asked, nothing wrong "
                f"when tried out, no errors, nothing left out)\n" if built else "")
+            + (lambda fx: f"  RIGHT IN THE END, the owner pressing what the app offers (fix / carry on) up to {ASKS} times: "
+                          f"{sum(1 for f in fx if f.get('right_after') is not None)}/{len(fx)} apps (at handover "
+                          f"{sum(1 for f in fx if f.get('right_after') == 0)}"
+                          + "".join(f", after {n} ask{'s' if n > 1 else ''} {sum(1 for f in fx if f.get('right_after') == n)}" for n in range(1, ASKS + 1))
+                          + f"; never {sum(1 for f in fx if f.get('right_after') is None)}); replies that said it was done when it wasn't: "
+                          f"{sum(1 for f in fx for a in f.get('asks') or [] if not a.get('told_truly', True))}\n" if fx else "")(
+                [r["fixing"] for r in results if r.get("fixing") is not None])
             + (f"  KEPT WORKING through later changes: {worked - broke}/{worked} stories that worked before a later change\n" if worked else "")
             + (lambda oc: f"  OWNER'S CHECKS: {sum(1 for c in oc if c['result'] == 'pass')} pass, {sum(1 for c in oc if c['result'] == 'fail')} "
                           f"fail, {sum(1 for c in oc if c['result'] not in ('pass', 'fail'))} couldn't check (of {len(oc)}); "

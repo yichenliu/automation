@@ -25,7 +25,7 @@ def test_owner_checks_decide_whether_a_build_is_verified(app, tmp_path, monkeypa
     folder = tmp_path / "training"
     monkeypatch.setattr(analyst.fresh, "checks", lambda trade, said: ["A $1,000 quote with GST is $1,100", "Nonsense", "A $6,000 order waits"])
     results = iter([{"ok": True, "kind": None}, None, {"ok": False, "kind": "app", "plain": "Order’s Status came out Sent"}])
-    monkeypatch.setattr(checking, "add", lambda ws, text, by=None: next(results))
+    monkeypatch.setattr(checking, "add_and_tell", lambda ws, text, by=None: next(results))
     ws = type("W", (), {"id": 7})()
     out = analyst.owner_checks(ws, {"fresh": "bakery", "real": "We bake."}, folder)
     assert [c["result"] for c in out] == ["pass", "couldn't check", "fail"]

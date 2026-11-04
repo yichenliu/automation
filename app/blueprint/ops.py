@@ -653,6 +653,7 @@ def _resolve_sense(bp, tables, changes):
         for act in schema.steps_of(a["actions"]):
             if act.get("only_if"):
                 act["only_if"] = _either(act["only_if"])
+                _on_target(t, act, tables, changes, a)
                 _spell(t, act["only_if"], tables)
             for path in act.get("paths") or []:
                 _spell(t, path.get("when"), tables)
@@ -925,6 +926,43 @@ def _either(conditions):
         if len({str(c["value"]).strip().lower() for c in group}) > 1:
             conditions = [c for c in conditions if c not in group] + [{"any": group}]
     return conditions
+
+
+CHOOSING = ("equals", "not_equals", "changed_to", "one_of")
+
+
+def _on_target(t, act, tables, changes, a):
+    """A step on a linked record (its order) "only if status is In fitting": it's about the order, so it means the order's
+    Status, but it's read on the record that started the rule (an alteration), where it never holds. A field only the
+    linked record has, or a choice only its field has, is written as that record's (order.status)."""
+    target = act.get("target")
+    if t is None or act.get("type") not in ("update_record", "generate_document", "run_automation") or not target or target == "created":
+        return
+    path = schema.link_path(t, target, tables)
+    other = tables.get(path[-1]["table"]) if path else None
+    if other is None or other is t:
+        return
+    moved = []
+    for c in schema.condition_leaves(act["only_if"]):
+        name = str(c.get("field") or "")
+        theirs = schema.field(other, name) if name and "." not in name else None
+        if theirs is None:
+            continue
+        mine = schema.field(t, name)
+        values = c.get("value") if isinstance(c.get("value"), list) else [c.get("value")]
+        if mine is not None:
+            choosing = {mine["type"], theirs["type"]} <= {"select", "multi_select"} and c.get("op") in CHOOSING \
+                and all(isinstance(v, str) and "{{" not in v for v in values)
+            if not choosing:
+                continue
+            ours, its = ({str(o).lower() for o in x.get("options") or []} for x in (mine, theirs))
+            if not (any(v.lower() not in ours for v in values) and all(v.lower() in its for v in values)):
+                continue
+        c["field"] = f"{target}.{name}"
+        moved.append(theirs.get("label") or name)
+    if moved:
+        changes.append(f"In “{a['name']}”, the step on its {schema.lc(other.get('singular') or other['label'])} now checks that "
+                       f"{schema.lc(other.get('singular') or other['label'])}'s {_and_words(moved)}, as the step is about it")
 
 
 def _spell(t, conditions, tables):
@@ -1257,6 +1295,46 @@ def _whose_path(tables, t, path):
         words.append(((f or {}).get("label") or part.replace("_", " ")).lower())
         at = tables.get(f["table"]) if f and f["type"] == "link" else None
     return "its " + "'s ".join(words)
+
+
+NOTIFY_KEYS = ("message", "subject")
+
+
+def _kept_steps(bp, sent):
+    """A rule sent again whole to change it (a notify added): the model often drops what a step already had (a step that
+    changes a linked record losing its "target", its "values" or its "only_if") or folds the new message into it. What a
+    step at the same place of the same kind had and the new one leaves out is kept, and a message folded into a step
+    that changes a record becomes its own notify step after it."""
+    key = slug(str(sent.get("key") or sent.get("name") or ""))
+    existing = next((x for x in bp.get("automations", []) if x["key"] == key or slug(x.get("name") or "") == key), None)
+    steps = sent.get("actions") if isinstance(sent.get("actions"), list) else sent.get("steps") if isinstance(sent.get("steps"), list) else None
+    if existing is None or steps is None:
+        return sent
+    out = []
+    for i, step in enumerate(steps):
+        old = existing["actions"][i] if i < len(existing["actions"]) else None
+        if not isinstance(step, dict):
+            out.append(step)
+            continue
+        step = dict(step)
+        if old and str(step.get("type") or "") == old.get("type"):
+            for k in ("values", "target", "only_if", "table"):
+                if k not in step and k in old:
+                    step[k] = copy.deepcopy(old[k])
+        told = None
+        if step.get("type") in ("update_record", "create_record") and any(k in step for k in NOTIFY_KEYS):
+            told = {"type": "notify", **{k: step.pop(k) for k in NOTIFY_KEYS if k in step}}
+            to = step.pop("to", None)
+            table = schema.table(bp, (existing.get("trigger") or {}).get("table") or "")
+            link = schema.field(table, slug(str(to))) if table and to is not None and step["type"] == "update_record" else None
+            if link is not None and link["type"] == "link":  # the record it changes ("to": "invoice"), not who hears
+                step.setdefault("target", slug(str(to)))
+            elif to is not None:
+                told["to"] = to
+        out.append(step)
+        if told and not any(isinstance(x, dict) and x.get("type") == "notify" for x in steps):
+            out.append(told)
+    return {**sent, "actions": out} if isinstance(sent.get("actions"), list) else {**sent, "steps": out}
 
 
 def _automation_said(bp, a):
@@ -1985,7 +2063,10 @@ def _apply_one(bp, op, raw, result, where):
         bp["pages"].remove(p)
         changes.append(f"Removed the page {p['label']}")
     elif op in ("add_automation", "update_automation"):
-        a = schema.normalize_automation(_first(raw, "automation", default={k: v for k, v in raw.items() if k != "op"}))
+        sent = _first(raw, "automation", default={k: v for k, v in raw.items() if k != "op"})
+        if op == "update_automation" and isinstance(sent, dict):
+            sent = _kept_steps(bp, sent)
+        a = schema.normalize_automation(sent)
         _infer_table(bp, a)
         existing = next((x for x in bp["automations"] if x["key"] == a["key"]), None)
         if existing:

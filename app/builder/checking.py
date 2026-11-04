@@ -52,8 +52,11 @@ def remember(workspace, walked, results, why, examples_=None, tell=True):
     itself). Returns what broke."""
     played = examples_ if examples_ is not None else examples(workspace)
     shown = [{"title": r["title"], "ok": r["ok"], "lines": [[ok, line] for ok, line in r["lines"]], "problem": r.get("plain") or r.get("problem") or "",
-              "kind": r["kind"], "by": x.get("by", "builder")}
-             for x, r in zip(played, results) if r["kind"] not in ("crash", "example")]  # the AI's own slips aren't the app's
+              "kind": r["kind"], "by": x.get("by", "builder")} if r["kind"] not in ("crash", "example") else
+             {"title": r["title"], "ok": False, "lines": [], "kind": "example", "by": x.get("by"),
+              "problem": f"it can't be tried on your app as it is now: {r.get('plain') or r.get('problem') or 'a step of it no longer fits'}"}
+             for x, r in zip(played, results)  # the AI's own slips aren't the app's, but an owner's check never quietly goes
+             if r["kind"] not in ("crash", "example") or (x.get("by", "builder") != "builder" and r["kind"] == "example")]
     issues = [i["plain"] for i in walked["issues"] if i["level"] == "fix"]
     state = dict(workspace.state or {})
     before = state.get("checks") or {}
@@ -147,34 +150,87 @@ def _again(workspace, engine, convo, said, example, result):
         with trial.copy_of(workspace) as copy:
             return corrected, {**trial.play(copy, corrected), "looked_again": "example"}
     missing = str(answer.get("missing") or "").strip().rstrip(".")
-    if answer.get("verdict") == "app" and result["kind"] == "example" and missing:  # it isn't in the app at all: it doesn't do it
+    if answer.get("verdict") == "app" and missing and (result["kind"] == "example" or _nothing_stops(result)):
+        # it isn't in the app at all: it doesn't do it (not “should have been stopped”: nothing there could stop it)
         return example, {**result, "kind": "missing", "plain": f"your app doesn't do this yet: {missing}", "looked_again": "app"}
     return example, {**result, "looked_again": answer.get("verdict") or ""}
+
+
+def _nothing_stops(result):
+    """A check that came out wrong only because a step that should have been refused wasn't (“should have been stopped,
+    but wasn't”): with the AI saying what's missing, the owner hears their app doesn't do it yet."""
+    return "should have been stopped" in (result.get("plain") or "") and not any(not ok for ok, _ in result.get("lines") or [])
 
 
 @jobs.handler("check_add")
 def _add_job(job):
     workspace = db.session.get(Workspace, job.workspace_id)
-    result = add(workspace, job.payload["said"], job.payload.get("by"))
+    result = add_and_tell(workspace, job.payload["said"], job.payload.get("by"))
+    return {"ok": bool(result and result["ok"])}
+
+
+def add_and_tell(workspace, said, by=None):
+    """A check the owner asked for, added (add) and its outcome told them: one the app doesn't do yet, or that couldn't be
+    written, stays on the Checks page (with the way on) until it's tried again or put aside. Returns add's result."""
+    result = add(workspace, said, by)
     engine = Engine(workspace, by="checks")
-    said = job.payload["said"][:120]
-    refused = [x for x in (workspace.state or {}).get("refused_checks") or [] if x.get("said") != job.payload["said"]]
+    short = said[:120]
+    refused = [x for x in (workspace.state or {}).get("refused_checks") or [] if x.get("said") != said]
     if result is not None and result["kind"] == "missing":  # it isn't in the app yet: said so, and kept in view
         missing = result["plain"].split(": ", 1)[-1]
-        text = f"Your app doesn't do “{said}” yet: {missing}. Ask the builder to add it."
-        refused = [{"said": job.payload["said"], "why": missing[:300], "missing": True, "at": utcnow().isoformat()}] + refused
+        text = f"Your app doesn't do “{short}” yet: {missing}. Ask the builder to add it (there's a button on the Checks page)."
+        refused = [{"said": said, "why": missing[:300], "missing": True, "by": by or "owner", "at": utcnow().isoformat()}] + refused
     elif result is None or result["kind"] == "example":
-        text = f"I couldn't turn “{said}” into a check: try saying it with the names and numbers you see on the screen."
+        text = f"I couldn't turn “{short}” into a check: try saying it with the names and numbers you see on the screen."
         why = (result or {}).get("plain") or (result or {}).get("problem") or "it couldn't be written as steps in your app"
-        refused = [{"said": job.payload["said"], "why": why[:300], "at": utcnow().isoformat()}] + refused
+        refused = [{"said": said, "why": why[:300], "by": by or "owner", "at": utcnow().isoformat()}] + refused
     elif result["ok"]:
-        text = f"Your new check “{said}” works: your app does this right, and it's checked after every change from now on."
+        text = f"Your new check “{short}” works: your app does this right, and it's checked after every change from now on."
     else:
-        text = f"Your new check “{said}” doesn't work yet: {result.get('plain') or result.get('problem')}. Ask the builder to fix it."
+        text = f"Your new check “{short}” doesn't work yet: {result.get('plain') or result.get('problem')}. Ask the builder to fix it."
     workspace.state = {**(workspace.state or {}), "refused_checks": refused[:5]}  # on the Checks page until tried again or put aside
     db.session.commit()
     automations.notify(engine, text, link=page(workspace), to="admin", kind="info" if result and result["ok"] else "error")
-    return {"ok": bool(result and result["ok"])}
+    return result
+
+
+def not_right(workspace):
+    """What the Checks page shows isn't right: {"failing": [{"title", "why"}], "issues": [plain], "missing": [{"said", "why"}]}
+    (the checks that don't come out right, what trying the app out found wrong, and what the owner asked to be checked
+    that the app doesn't do yet)."""
+    last = (workspace.state or {}).get("checks") or {}
+    failing = []
+    for x in last.get("examples") or []:
+        if not x.get("ok"):
+            lines = [line for ok, line in x.get("lines") or [] if not ok]
+            failing.append({"title": x["title"], "why": "; ".join(lines[:4]) or x.get("problem") or "it didn't come out right"})
+    missing = [{"said": x["said"], "why": x.get("why") or ""} for x in (workspace.state or {}).get("refused_checks") or [] if x.get("missing")]
+    return {"failing": failing, "issues": list(last.get("issues") or []), "missing": missing}
+
+
+def fix_request(workspace, only=None):
+    """The message the owner sends the builder with one press ("Ask the builder to fix them"): what isn't right, in the
+    words the Checks page uses. `only`: just the check (a title, or what was said) the owner pressed it on. "" if nothing."""
+    found = not_right(workspace)
+    if only:
+        found = {"failing": [x for x in found["failing"] if x["title"] == only], "issues": [i for i in found["issues"] if i == only],
+                 "missing": [x for x in found["missing"] if x["said"] == only]}
+    parts = []
+    if found["failing"] or found["issues"]:
+        parts.append("Please fix what isn't right on my Checks page:\n" + "\n".join(
+            [f"- “{x['title']}”: {x['why']}" for x in found["failing"][:8]] + [f"- {i}" for i in found["issues"][:6]]))
+    if found["missing"]:
+        parts.append(("Please also make my app do these" if parts else "Please make my app do these") + " (it doesn't yet):\n"
+                     + "\n".join(f"- “{x['said']}” ({x['why']})" if x["why"] else f"- “{x['said']}”" for x in found["missing"][:5]))
+    return "\n\n".join(parts)
+
+
+def try_again_missing(workspace):
+    """After the builder has had a go at what the app didn't do yet: those checks are tried again, as the owner would."""
+    for x in (workspace.state or {}).get("refused_checks") or []:
+        if x.get("missing"):
+            jobs.enqueue("check_add", {"said": x["said"], "by": x.get("by") or "owner"}, workspace_id=workspace.id,
+                         dedupe=f"check_add:{workspace.id}:{hashlib.sha1(x['said'].encode()).hexdigest()[:10]}")
 
 
 def after_platform_update():

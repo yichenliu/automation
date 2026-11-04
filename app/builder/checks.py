@@ -22,7 +22,7 @@ def run(engine):
     return (choices(engine) + impossible(engine) + unreachable(engine) + gaps(engine) + asked_on_no(engine) + left_to_others(engine)
             + out_of_reach(engine) + needs_rates(engine) + left_unfilled(engine) + made_only_sometimes(engine) + ai_doing_sums(engine)
             + approval_without_stages(engine) + skips_approvals(engine) + runs_while_true(engine) + wrong_kind(engine)
-            + nobody_may_answer(engine) + nobody_asked(engine))
+            + nobody_may_answer(engine) + nobody_asked(engine) + never_late(engine))
 
 
 STAGE_WORDS = re.compile(r"^(status|stage|state)$", re.I)
@@ -406,7 +406,8 @@ def choices(engine):
             continue
         for wrong in _not_a_choice(f, c.get("value")):
             out.append(_issue("fix", f"{where} checks {c['field']} {c['op']} “{wrong}”, but {owner['key']}.{f['key']} has no such choice "
-                                     f"(its choices: {', '.join(f['options'])}): use one of them, or add it to the field's options",
+                                     f"(its choices: {', '.join(f['options'])}): use one of them, add it to the field's options, or, if it means a linked "
+                                     f"record's field, write its path (as order.status)",
                               f"{where[:1].upper() + where[1:]} waits for {f['label']} “{wrong}”, which isn't one of its choices, "
                               f"so it would never happen", t["key"]))
     for a in engine.bp.get("automations", []):
@@ -534,6 +535,42 @@ def _set_by_rules(engine, t, key):
             value = (act.get("values") or {}).get(key)
             if mine and isinstance(value, str):
                 out.add(value.strip().lower())
+    return out
+
+
+LATE = re.compile(r"\b(overdue|late|expired|lapsed|past due|stale)\b", re.I)
+
+
+def never_late(engine):
+    """A stage that means time ran out (Overdue, Expired) that no rule ever sets, while a scheduled rule acts only on
+    records already at it (chase the overdue invoices): someone would have to remember to move each one there by hand,
+    so in practice nothing is ever chased."""
+    out = []
+    for t in engine.tables.values():
+        key = (t.get("workflow") or {}).get("field") or next((f["key"] for f in t["fields"] if f["type"] == "select"
+                                                              and (STAGE_WORDS.match(f["key"]) or STAGE_WORDS.match(f["label"]))), None)
+        f = schema.field(t, key) if key else None
+        if f is None:
+            continue
+        set_by = _set_by_rules(engine, t, key)
+        for stage in f.get("options") or []:
+            if not LATE.search(str(stage)) or str(stage).strip().lower() in set_by:
+                continue
+            waiting = next((a for a in engine.bp.get("automations", []) if a["trigger"]["type"] == "schedule"
+                            and a["trigger"].get("table") == t["key"]
+                            and any(c.get("field") == key and c.get("op") in ("equals", "one_of")
+                                    and str(stage).lower() in [str(v).lower() for v in (c["value"] if isinstance(c.get("value"), list) else [c.get("value")])]
+                                    for c in schema.condition_leaves(a.get("conditions")))), None)
+            if waiting is None:
+                continue
+            due = next((x for x in t["fields"] if x["type"] in ("date", "datetime") and re.search(r"\b(due|expir|end|until)", f"{x['key']} {x['label']}", re.I)), None)
+            out.append(_issue("fix", f"Nothing moves {_a(schema.lc(t['singular']))} to “{stage}”: rule {waiting['key']} only acts on ones already "
+                                     f"“{stage}”, and no rule sets it, so someone must remember to move each by hand. Add a daily rule "
+                                     f"on {t['key']} (schedule) that sets {key} to “{stage}” when "
+                                     + (f"{due['key']} is before_today" if due else "its date has passed")
+                                     + " and it isn't finished yet (its earlier stages)",
+                              f"no {schema.lc(t['singular'])} ever becomes “{stage}” by itself, so “{waiting['name']}” never has any to act on",
+                              t["key"]))
     return out
 
 

@@ -4,11 +4,12 @@ the builder's own worked examples, the owner's own checks), so nothing about the
 build turns are what the model is trained on (the fixed scenarios stay the exam, never the lessons).
 
 Like real owners, a third of them start vague ("need sumthing to run my biz its a mess"), and every one answers the
-builder's questions from how their business really works. Before anything is built, each owner also writes three checks
-of their own with numbers ("a $6,000 order waits for the manager's OK"): tried on the app afterwards, they're the
-independent check that makes a build turn a verified lesson (app/builder/training.py).
+builder's questions from how their business really works. Each owner also writes up to three checks of their own with
+numbers, from what they told the builder ("a $6,000 order waits for the manager's OK"): tried on the app afterwards,
+they're the independent check that makes a build turn a verified lesson (app/builder/training.py).
 """
 import random
+import re
 
 TRADES = [
     "landscaping business with three crews", "dental clinic with four dentists", "bike repair and sales shop", "electrical contractor",
@@ -48,14 +49,19 @@ VAGUE = """Write the first message the owner of a {trade} types into a chat with
 the way many busy owners do: one short line like a text message, lowercase, a typo or shorthand, saying almost nothing
 specific (like "need sumthing to run my biz its a mess tbh" or "can u set up a system 4 my shop"). Just the message."""
 
-CHECKS = """This is what the owner of a {trade} said about their business:
+CHECKS = """This is everything the owner of a {trade} has told the assistant building their new system:
 
 {said}
 
-Write 3 things this owner would check in their new system to know it works: each one sentence in their own words, with
-real numbers and the right answer worked out from what they said ("A quote for 10 hours at $90 comes to $990 with GST",
-"A $6,000 order waits for the manager's OK before it goes out"). Only what they said: invent nothing.
-Answer in JSON: {{"checks": ["...", "...", "..."]}}"""
+Write up to 3 things this owner would check in the system to know it does what they told it: each one sentence in their
+own words, about what the system does with a record (a sum it works out, an OK something must wait for, a reminder or
+alert after so many days, a stage something moves to, who may see or do what), with real numbers and the right answer
+worked out from what they said. Only what they told it above: nothing they didn't say, no volumes, speeds or staffing
+("forty orders a day"), and nothing about what you don't know. If they said too little to check, write fewer, or none.
+Answer in JSON: {{"checks": ["..."]}}"""
+
+META = re.compile(r"\b(I )?(didn'?t|did not|don'?t|do not|never) (mention|have|know|say|give)\b|\bcan'?t (confirm|verify|check)\b"
+                  r"|\bcannot (confirm|verify|check)\b|\bnot (sure|mentioned)\b", re.I)
 
 ANSWER = """You are the owner of a {trade}. This is how your business really works:
 
@@ -67,6 +73,21 @@ The assistant building your system just said:
 
 Answer like a busy owner texting back: short, plain words, only what it asked, using only the facts above (if it asks
 something they don't cover, say "whatever's normal"). Just your reply."""
+
+EXPLAIN = """You are the owner of a {trade}. You told the assistant building your system:
+
+{said}
+
+You asked it to fix what wasn't right in your app, and it replied:
+
+{reply}
+
+What still isn't right, as your app's Checks page shows it:
+{still}
+
+Reply like a busy owner texting back: a sentence or two of plain words saying what should happen instead (what you'd
+press, and what you'd expect to see then), using only what you told it above. If it asks you something, answer from
+that; if it isn't covered, say "whatever's normal". Just your reply."""
 
 ASK = """Write what the owner of a {trade} in Australia says when asked how their business works and what they need from a
 system. 4 to 6 sentences, in their own plain words, the way they'd say it to a friend: who their customers are, what
@@ -111,18 +132,26 @@ def owner(trade, style="plain"):
 
 
 def checks(trade, said):
-    """The owner's own checks, written from what they said before anything is built."""
+    """The owner's own checks, written from what they told the builder (`said`: their messages), before it's built."""
     from app import ai
     content, _ = ai.chat([{"role": "user", "content": CHECKS.format(trade=trade, said=said)}], think=False,
                          schema={"type": "object", "properties": {"checks": {"type": "array", "items": {"type": "string"}}}, "required": ["checks"]})
     found = ai.parse_json(content).get("checks") or []
-    return [str(c).strip() for c in found if str(c).strip()][:3]
+    return [str(c).strip() for c in found if str(c).strip() and not META.search(str(c))][:3]  # “…but I didn't mention it” isn't a check
 
 
 def answer(trade, said, asked):
     """The owner's reply to the builder's questions."""
     from app import ai
     content, _ = ai.chat([{"role": "user", "content": ANSWER.format(trade=trade, said=said, asked=asked[:3000])}], think=False)
+    return content.strip().strip('"')
+
+
+def explain(trade, said, reply, still):
+    """The owner saying in their own words what should happen, when pressing “fix” didn't put it right."""
+    from app import ai
+    content, _ = ai.chat([{"role": "user", "content": EXPLAIN.format(trade=trade, said=said[:3000], reply=reply[:2000],
+                                                                     still="\n".join(f"- {x}" for x in still[:6]))}], think=False)
     return content.strip().strip('"')
 
 
