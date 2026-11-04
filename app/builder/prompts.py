@@ -703,7 +703,8 @@ Add "refused": true to a step the app should NOT allow (a move whose condition i
 A change to a locked record (a sent invoice) is refused for staff; the owner and admins can still correct it, so a
 refused change to a locked record is tried as an ordinary staff member.
 "expect": {{"record": an "as" name, "field": a field key (or a path through links, "event.status"), "equals": the value}}
-or {{"table": a table key, "count": how many records it should then have}}.
+or {{"table": a table key, "count": how many records it should then have}}. What it expects is looked at once, after the
+last step: one value for each field, where it ends up (where it is part way is its own example that stops there).
 
 Rules:
 - Use only the tables, fields, stages, buttons and automations of the app below, by their keys. Never set a field

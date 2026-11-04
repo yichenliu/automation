@@ -694,3 +694,31 @@ def test_a_person_looked_up_through_a_link_is_compared_as_a_person(app, owner):
     assert not trial._same(engine, looked_up, user.id + 1000, user.name, {})
     variance = schema.field(engine.tables["requests"], "variance")
     assert trial._same(engine, variance, 0.01, 1, {}) and trial._same(engine, variance, 1, 1, {}) and not trial._same(engine, variance, 0.02, 1, {})
+
+
+def test_an_example_that_expects_two_values_of_one_field_is_its_own_mistake(app, owner):
+    """Expected at “Waiting for team lead” and at “Approved”: what an example expects is looked at once, at its end, so
+    it's the example that's wrong, told how to put it right, not the app."""
+    _, ws = owner
+    _built(ws, QUOTES)
+    example = {"title": "A quote goes out", "steps": [{"do": "add", "as": "q1", "table": "quotes", "values": {"title": "Wedding"}}],
+               "expect": [{"record": "q1", "field": "status", "equals": "Draft"}, {"record": "q1", "field": "status", "equals": "Sent"}]}
+    _, (result,) = trial.try_out(ws, [example], screens=False)
+    assert result["kind"] == "example" and "both “Draft” and “Sent”" in result["problem"] and "its own example" in result["problem"]
+    example["expect"] = example["expect"][:1] * 2  # the same twice is only said twice
+    _, (result,) = trial.try_out(ws, [example], screens=False)
+    assert result["kind"] != "example", result
+
+
+def test_a_rule_that_never_ran_on_the_record_is_said_with_why(app, owner):
+    """The quote's status is set by a rule that starts when a quote is changed: added with its lines, it never is, so the
+    builder is told the rule never ran and how to have it start."""
+    _, ws = owner
+    rule = {"key": "mark", "name": "Mark it sent", "trigger": {"type": "record_updated", "table": "quotes"},
+            "conditions": [{"field": "status", "op": "equals", "value": "Draft"}], "actions": [{"type": "update_record", "values": {"status": "Sent"}}]}
+    _built(ws, QUOTES + [{"op": "add_automation", "automation": rule}])
+    example = {"title": "A quote is sent", "steps": [{"do": "add", "as": "q1", "table": "quotes", "values": {"title": "Wedding"}},
+                                                     {"do": "add", "as": "l1", "table": "quote_lines", "values": {"quote": "q1", "item": "Cake", "quantity": 1, "unit_price": 10}}],
+               "expect": [{"record": "q1", "field": "status", "equals": "Sent"}]}
+    _, (result,) = trial.try_out(ws, [example], screens=False)
+    assert not result["ok"] and any("“Mark it sent” sets it, but never ran on q1: it starts when a quote is changed" in d for d in result["detail"]), result

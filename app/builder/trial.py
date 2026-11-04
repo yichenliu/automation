@@ -23,7 +23,7 @@ from flask import current_app
 from .. import database
 from ..blueprint import expr, schema
 from ..engine import automations
-from ..engine.records import Engine, FieldErrors, NoRate, RecordContext, mask, masked, parse_duration, to_number
+from ..engine.records import Engine, FieldErrors, NoRate, RecordContext, automations_words, mask, masked, parse_duration, to_number
 from ..extensions import db
 from ..models import Approval, Membership, Record, Run, User, Workspace
 
@@ -1066,6 +1066,14 @@ def _expect(engine, c, names):
         said += (f" (only {', '.join(f'“{a}”' for a in outside)} fills it in, and that starts when something comes in from outside (an "
                  f"email, another system, a file), which an example can't send: a {schema.lc(t['singular'])} added by hand doesn't "
                  f"start it, so leave this out of the example)")
+    idle = _never_ran(engine, record, key) if not ok and len(path) == 1 else []
+    for a in idle:
+        one = schema.lc(t["singular"])
+        said += (f" (the rule “{a['name']}” sets it, but never ran on {c.get('record')}: "
+                 + (f"it starts when {'an' if one[:1] in 'aeiou' else 'a'} {one} is changed, and nothing changed it after it was added (adding its lines doesn't): "
+                    f"start it when one is added or changed (record_created_or_updated), keeping its conditions)"
+                    if a["trigger"]["type"] == "record_updated" else
+                    f"its conditions weren't met: {automations_words(engine, a.get('conditions') or [], record.table) or 'none'})"))
     if not ok and actual in (None, "", []) and len(path) == 1 and _checking(engine, record, key):
         plain += " (the AI's work is waiting for someone to check it)"
         said += (f" (the AI's work for it is waiting for someone to check it, as its step's review says: to try it as kept, "
@@ -1089,6 +1097,15 @@ def _formula_reads(engine, record, expression, names):
             value = _shifted(engine, g, value, names["_waited"])
         out.append(f"{name} = {value!r}")
     return ", ".join(out[:8])
+
+
+def _never_ran(engine, record, key):
+    """The rules of a record's own list that set this field on it, started by a change to one, that never ran on it."""
+    ran = {r.automation for r in Run.query.filter_by(workspace_id=engine.ws.id, record_id=record.id)}
+    return [a for a in engine.bp.get("automations", []) if a.get("enabled", True) and a["trigger"].get("table") == record.table
+            and a["trigger"]["type"] in ("record_updated", "record_created", "record_created_or_updated") and a["key"] not in ran
+            and any(act.get("type") == "update_record" and not act.get("target") and key in (act.get("values") or {})
+                    for act in schema.steps_of(a["actions"]))]
 
 
 OUTSIDE = ("email_received", "webhook_received", "file_added")
@@ -1203,7 +1220,24 @@ def _line_of(engine, step, alias):
     return bool(t and t.get("embedded") and alias in [v for v in (step.get("values") or {}).values() if isinstance(v, str)])
 
 
+def _both(example):
+    """What an example expects is looked at once, after its last step: two values for one field can't both come out."""
+    seen = {}
+    for c in example.get("expect") or []:
+        if isinstance(c, dict) and c.get("record") and c.get("field") and "equals" in c:
+            was = seen.setdefault((c["record"], c["field"]), c["equals"])
+            if str(was).strip().lower() != str(c["equals"]).strip().lower():
+                return (f"it expects {c['record']}'s {c['field']} to be both “{was}” and “{c['equals']}”, but what an example "
+                        f"expects is looked at once, after its last step: expect where it ends up, and make where it is part "
+                        f"way its own example that stops there")
+    return None
+
+
 def _play(trial, engine, example, names, out):
+    both = _both(example)
+    if both:
+        out.update(problem=both, kind="example")
+        return out
     last_run = db.session.query(db.func.max(Run.id)).filter(Run.workspace_id == trial.ws_id).scalar() or 0
     steps, by_hand = _not_by_hand(engine, example)
     if by_hand:
