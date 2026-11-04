@@ -108,7 +108,7 @@ def by_hand(workspace, scenario_key):
         note("the same rule pressed twice", again == 400 and twice == 1, "" if again == 400 and twice == 1 else
              f"pressed twice it answered {again} and there are {twice} of it", [got2.get("error")] if got2.get("error") else [])
         if made:
-            note(f"the owner is told when {a(aim['singular'].lower())} reaches {aim['told']}", *_told(trial, aim, walked["made"].get(key)))
+            note(f"the owner is told when {a(aim['singular'].lower())} reaches {aim['told']}", *_told(trial, aim, walked["made"]))
 
         # a stage put after the first, then renamed
         stages = f"stages:{key}"
@@ -156,10 +156,11 @@ def by_hand(workspace, scenario_key):
     return out, after
 
 
-def _told(trial, aim, record_id):
+def _told(trial, aim, made):
     """(ok, why): a record moved to the stage, as people would, and the owner has a message saying so."""
     from app.engine.records import FieldErrors
     from app.models import Notification
+    record_id = made.get(aim["table"])
     if record_id is None:
         return None, "there was no record to move"
     engine = trial.engine()
@@ -167,6 +168,11 @@ def _told(trial, aim, record_id):
     before = Notification.query.filter_by(workspace_id=trial.ws_id, user_id=trial.owner_id).count()
     try:
         record = engine.get(record_id)
+        if (record.data or {}).get(aim["field"]) == aim["told"]:  # trying it out took it there already: a new one, as people would add
+            record, _ = trials._add(engine, t, trials.sample_values(engine, t, trial.owner_id, made, 99))
+            if record is None:
+                return None, "there was no record to move"
+            before = Notification.query.filter_by(workspace_id=trial.ws_id, user_id=trial.owner_id).count()
         if t.get("workflow"):
             trials._take_along(engine, record, t, aim["told"])
         else:

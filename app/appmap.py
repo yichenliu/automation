@@ -239,12 +239,13 @@ def build(engine, problems=(), names=None):
                       "handoffs": [{**h, "from_label": seen[h["from"]]["label"], "to_label": seen[h["to"]]["label"],
                                     "only_if": only_if.get(h["rule"], []) + _step_if(engine, h),
                                     "tells": list(dict.fromkeys(_who(engine, h["from"], w) for w in h.get("tells") or []))} for h in p["handoffs"]]})
+    on_map = {c["key"] for p in shown for c in p["cards"]} | set(reference)  # a rule on a worked-out list (stock levels) is shown apart
     return {"processes": shown,
             "reference": [{**card(k), "used_by": sorted({t["label"] for t in seen.values() if t["key"] != k and not t.get("embedded")
                                                          and any(f["type"] == "link" and f.get("table") == k for f in t["fields"])})}
                           for k in reference],
             "elsewhere": [{"key": a["key"], "name": a["name"], "on": a.get("enabled", True), "at": None, "stopped": stopped.get(a["key"], 0),
-                           **_started(a)} for a in rules if not a["trigger"].get("table")],
+                           **_started(a)} for a in rules if a["trigger"].get("table") not in on_map],
             "problems": wrong.get("", [])}
 
 

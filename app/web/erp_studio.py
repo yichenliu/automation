@@ -48,9 +48,9 @@ def _plain(problem, bp):
     return text[:1].upper() + text[1:]
 
 
-def _save(ws, ops_, what):
+def _save(ws, ops_, what, plain=None):
     """Apply the changes to the design, check it, and save it as a version (a choice renamed takes its records with it:
-    chat.save_version). Returns (the changes said, the version it was made from)."""
+    chat.save_version), noted as `plain` says it if given. Returns (the changes said, the version it was made from)."""
     # what's wrong already isn't this change's doing: what the design fails now, and what saving it as it is would
     # (an app made before a newer way of saying something, brought up to date on any save)
     already = schema.check(ws.blueprint or {}) + ops.apply(ws.blueprint or {}, [], always_check=True).problems
@@ -61,17 +61,18 @@ def _save(ws, ops_, what):
     if not changes:
         raise Refused("That's how it is already")
     before = ws.version or 0
+    changes = [plain] if plain else changes
     chat.save_version(ws, result.blueprint, changes, "studio", by=current_user.id)
     return changes, before
 
 
-def _change(ws, what, make):
+def _change(ws, what, make, plain=None):
     """Run an edit: the ops `make` returns, saved; a refusal answered as {"error"} with status 400."""
     if not g.member.can("admin"):
         abort(403)
     try:
         ops_, _ = make()
-        changes, before = _save(ws, ops_, what)
+        changes, before = _save(ws, ops_, what, plain)
     except (SchemaError, Refused) as exc:
         db.session.rollback()
         return None, (jsonify(error=str(exc)), 400)
@@ -363,7 +364,8 @@ def studio_workflow_change(wid):
             opened["id"] = "" if change.get("do") == "remove_flow" else item_id
             return made, []
         raise SchemaError("That can't be changed here")
-    done, refused = _change(ws, "workflow", make)
+    plain = studio.stage_said(ws.blueprint, {**change, "table": change.get("table") or key}) if kind == "stages" else None
+    done, refused = _change(ws, "workflow", make, plain)
     if refused:
         return refused
     if change.get("do") == "add_stages":

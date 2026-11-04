@@ -1102,7 +1102,7 @@
       }
       if (map.elsewhere.length) {
         main.appendChild(html(`<section class="map-ref"><h3 class="label">${icon("zap")}Also happens automatically</h3>
-          <p class="small muted">On a schedule, or when an email or another system sends something in.</p><div class="map-autos">${map.elsewhere.map((r) => ruleHtml(r)).join("")}</div></section>`));
+          <p class="small muted">Rules that don't start from one of the lists above: on a schedule, when an email or another system sends something in, or on a list your app works out from others.</p><div class="map-autos">${map.elsewhere.map((r) => ruleHtml(r)).join("")}</div></section>`));
       }
       wire(main);
       if (cameFrom) {  // back from a list: where it is on the map

@@ -69,7 +69,19 @@ def test_sample_data_questions_and_waiting_for_the_ai(app, owner):
     ai.set_backend(ScriptedAI({"ops": [{"op": "add_field", "table": "clients", "field": {"key": "phone", "label": "Phone", "type": "phone"}}], "reply": "Added."}))
     chat.work(m.id)
     m = db.session.get(Message, m.id)
-    assert m.status == "done" and m.changes == ["Added Phone to Clients"]
+    assert m.status == "done" and m.changes == ["Added the column “Phone” to Clients"]
+
+
+def test_a_reply_that_repeats_the_last_one_is_written_again_from_what_this_turn_changed(app, owner):
+    _, ws = owner
+    ai.set_backend(ScriptedAI({"ops": CONSULTANCY, "reply": "I've set up clients, projects and invoices. Next, I can add a form."}))
+    _turn(ws, "build it")
+    again = ScriptedAI({"ops": [{"op": "add_field", "table": "clients", "field": {"key": "phone", "label": "Phone", "type": "phone"}}],
+                        "reply": "I've set up clients, projects and invoices. Next, I can add a form."},
+                       {"reply": "I've added a Phone column to clients."})
+    ai.set_backend(again)
+    m = _turn(ws, "add a phone number to clients")
+    assert m.text == "I've added a Phone column to clients." and "Phone" in again.asked[-1][-1]["content"]  # told from what was done
 
 
 def test_a_big_request_is_built_in_parts_in_one_turn_and_undone_as_one(app, owner):

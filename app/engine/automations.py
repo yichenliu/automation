@@ -1804,7 +1804,7 @@ def describe_trigger(engine, trigger):
     if kind == "file_added":
         return f"When a file is added to the OneDrive folder “{trigger.get('folder')}”"
     if kind == "webhook_received":
-        return "When another system sends data to this automation's web address"
+        return "When another system sends data to this rule's web address"
     every = trigger.get("every", "day")
     days = dict(zip(WEEKDAYS, ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]))
     at = _clock(trigger.get("at", "08:00"))

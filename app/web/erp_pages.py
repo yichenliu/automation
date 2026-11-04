@@ -690,7 +690,7 @@ def ai_take_over(wid, key, at):
                             url_for("app.ai_page", wid=wid) + f"#ai-{key}-{at}")
 
 
-AI_JOBS = {"fill": "Write or fill in a field", "check": "Check the record", "read": "Read its attached files"}
+AI_JOBS = {"fill": "Write or fill something in", "check": "Check the record", "read": "Read its attached files"}
 AI_WHEN = {"added": "is added", "changed": "is changed", "becomes": "has a field set to a value", "button": "gets a button press"}
 
 

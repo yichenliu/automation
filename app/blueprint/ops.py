@@ -1148,6 +1148,7 @@ SETTING_WORDS = {"label": "its name", "type": "what it keeps", "options": "its c
                  "display": "how it's shown", "prefix": "its prefix", "digits": "its digits", "options_by": "which choices it offers"}
 
 
+TOLD_SAID = {"owner": "the owner", "creator": "whoever added it", "admin": "the admins"}
 COND_SAID = {"equals": "is {}", "not_equals": "is not {}", "contains": "contains {}", "is_empty": "is empty", "not_empty": "is filled in",
              "greater_than": "is more than {}", "less_than": "is less than {}", "at_least": "is at least {}", "at_most": "is at most {}",
              "one_of": "is one of {}", "before_today": "is before today", "after_today": "is after today", "today": "is today",
@@ -1184,8 +1185,13 @@ def _automation_said(bp, a):
     trig = a["trigger"]
     when = WHEN_SAID.get(trig["type"], "").format(_a(t["singular"].lower() if t else "record")) if trig["type"] in WHEN_SAID else \
         f"every {trig.get('every', 'day')}" if trig["type"] == "schedule" else f"from its “{trig.get('label') or a['name']}” button"
-    if a["conditions"]:
-        when += f" if {cond(a['conditions'])}"
+    leaves = list(schema.condition_leaves(a["conditions"])) if a["conditions"] else []
+    moved = next((c for c in leaves if c.get("op") in ("changed", "changed_to")), None) if t and trig["type"] in ("record_updated", "record_created_or_updated") else None
+    if moved:  # “when an order's Status changes to Delivered”, not “when an order changes if Status changes to Delivered”
+        when = f"when {_a(t['singular'].lower())}'s {_cond_said(label(moved['field']), moved)}"
+        leaves = [c for c in leaves if c is not moved]
+    if leaves:
+        when += " if " + " and ".join(_cond_said(label(c["field"]), c) for c in leaves[:2])
     said = []
     for x in schema.steps_of(a["actions"]):
         kind = x["type"]
@@ -1211,7 +1217,7 @@ def _automation_said(bp, a):
             said.append("goes one of " + str(len(x["paths"]) + bool(x.get("otherwise"))) + " ways by " + ", ".join(
                 sorted({label(c["field"]) for p in x["paths"] for c in schema.condition_leaves(p["when"])})))
         elif kind == "create_record":
-            said.append(f"creates a {thing(x['table'])}")
+            said.append(f"adds {_a(thing(x['table']))}")
         elif kind == "create_for_each":
             said.append(f"adds {(tables.get(x['table']) or {}).get('label', x['table'] or 'records').lower()} for each "
                         + (label(x["source"]["field"]).lower() if x["source"].get("field") else "line"))
@@ -1220,7 +1226,8 @@ def _automation_said(bp, a):
         elif kind == "update_record":
             said.append("sets " + ", ".join(label(k) for k in list(x["values"])[:3]))
         elif kind in ("notify", "send_email"):
-            said.append(("emails " if kind == "send_email" else "tells ") + re.sub(r"\{\{\s*record\.([\w.]+)\s*\}\}", lambda m: _whose_path(tables, t, m.group(1)), str(x.get("to") or "everyone")))
+            to = str(x.get("to") or "everyone")
+            said.append(("emails " if kind == "send_email" else "tells ") + TOLD_SAID.get(to, re.sub(r"\{\{\s*record\.([\w.]+)\s*\}\}", lambda m: _whose_path(tables, t, m.group(1)), to)))
         elif kind == "generate_document":
             said.append("produces the PDF")
         elif kind == "wait":
@@ -1531,7 +1538,7 @@ def _apply_one(bp, op, raw, result, where):
             added = [f for f in t["fields"] if not schema.field(existing, f["key"])]
             existing["fields"].extend(added)
             if added:
-                changes.append(f"Added {len(added)} field{'s' if len(added) != 1 else ''} to {existing['label']}: {', '.join(f['label'] for f in added)}")
+                changes.append(f"Added {len(added)} column{'s' if len(added) != 1 else ''} to {existing['label']}: {', '.join(f['label'] for f in added)}")
             for key in ("access", "row_access", "rules", "lock_if", "lock_except", "colors", "wizard", "portal", "workflow",
                         "unique_together", "approve_changes", "sealed", "audit_views", "journey"):
                 if t.get(key) and t[key] != existing.get(key):
@@ -1663,7 +1670,7 @@ def _apply_one(bp, op, raw, result, where):
                 if v["type"] == "list" and v["key"] == "all" and "columns" in v and len(v["columns"]) < 8 and new["type"] != "long_text":
                     v["columns"].append(new["key"])
         if added:
-            changes.append(f"Added {', '.join(f['label'] for f in added)} to {t['label']}")
+            changes.append(f"Added the column{'s' if len(added) > 1 else ''} {_and_words([f'“{f['label']}”' for f in added])} to {t['label']}")
         result.navigate = result.navigate or f"table:{t['key']}"
     elif op == "update_field":
         t = _table(bp, _first(raw, "table", "table_key"), problems, where)

@@ -802,6 +802,17 @@ def _not_yet(wrong, issues):
             "happen, and I'll fix it.")
 
 
+def _said_before(message):
+    """Whether this reply is (nearly) the one before it in the conversation: a small model may answer by repeating its
+    last reply, which then tells the owner about the last change as if it were this one."""
+    import difflib
+    with db.session.no_autoflush:  # nothing of this turn's is written yet: the AI may be asked next
+        earlier = Message.query.filter(Message.workspace_id == message.workspace_id, Message.channel == message.channel, Message.role == "assistant",
+                                       Message.id < message.id, Message.text.isnot(None)).order_by(Message.id.desc()).first()
+    now, then = (" ".join(str(x or "").lower().split()) for x in (message.text, earlier.text if earlier else ""))
+    return bool(now and then) and (now in then or difflib.SequenceMatcher(None, now, then).ratio() > 0.8)
+
+
 def _unclaimed(text):
     """The reply after a try-out that found things still wrong: it doesn't open by calling them fixed."""
     return CLAIMS.sub(lambda m: "I changed", text.strip(), count=1)
@@ -1040,12 +1051,14 @@ def _work(message_id):
     message.text = replies[-1] if replies else ""
     if len(replies) > 1 or problems or missing:  # the parts' replies were written before the rest was checked: say what really happened
         message.text = _closing_reply(asked, replies, changes, missing, [p for p in problems if not p.startswith("I left out")], stuck)
+    elif changes and _said_before(message):  # the model said its last turn's reply again: never told as this turn's
+        message.text = _closing_reply(asked, [], changes, missing, [], stuck) or "I made these changes: " + "; ".join(changes[:4]) + "."
     message.text = plain(message.text, workspace.blueprint, asked)
     if tried:
         message.checks = {key: tried[key] for key in ("examples", "issues", "fixes", "first")}
         wrong = [x for x in tried["examples"] if not x["ok"]]
         if wrong or tried["issues"]:  # said first: what doesn't work matters more than what the reply meant to do
-            message.text = _not_yet(wrong, tried["issues"]) + "\n\nWhat I changed: " + _unclaimed(message.text)
+            message.text = plain(_not_yet(wrong, tried["issues"]), workspace.blueprint, asked) + "\n\nWhat I changed: " + _unclaimed(message.text)
     if changes and message.version_before:  # who can see what, first: the worst thing a change can do quietly is show too much
         before = Version.query.filter_by(workspace_id=workspace.id, number=message.version_before).first()
         seen = ops.access_changes(before.blueprint if before else {}, workspace.blueprint) if before else []

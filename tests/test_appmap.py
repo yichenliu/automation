@@ -221,7 +221,7 @@ def test_versions_undo_a_change_back_to_just_before_it_and_count_stages_as_the_m
     assert client.post(f"/w/{ws.id}/app/studio/data/change", json={"do": "add_field", "table": "payments", "label": "Paid by card", "type": "checkbox"}).get_json()["ok"]
     page = client.get(f"/w/{ws.id}/app/design").get_data(as_text=True)
     assert f'action="/w/{ws.id}/app/design/restore/{before}"' in page and "Undo this</button>" in page  # this change, undone: as it was before it
-    assert "Undo “Added Paid by card" in page and "changed on the App map" in page
+    assert "Undo “Added the column “Paid by card”" in page and "changed on the App map" in page
     assert "5 that move along stages" in page  # quotes, jobs, restocks with stages of their own; invoices and customers a plain Status
     client.post(f"/w/{ws.id}/app/design/restore/{before}")
     from app.extensions import db
@@ -271,7 +271,7 @@ def test_undoing_an_older_change_from_the_builder_names_what_goes_with_it_and_ne
     db.session.add(m)
     db.session.commit()
     asked = client.post(f"/w/{ws.id}/chat/{m.id}/undo", json={})
-    assert asked.status_code == 409 and "Added Site contact to Jobs" in asked.get_json()["confirm"]  # what goes with it, said first
+    assert asked.status_code == 409 and "Added the column “Site contact” to Jobs" in asked.get_json()["confirm"]  # what goes with it, said first
     done = client.post(f"/w/{ws.id}/chat/{m.id}/undo", json={"all": True})
     assert done.status_code == 200 and "Undid “Added Gate code to Jobs”" in done.get_json()["html"]
     gone = Message(workspace_id=ws.id, channel="builder", role="assistant", status="done", changes=["x"], version_before=999, version_after=1000)

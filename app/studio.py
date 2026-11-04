@@ -27,7 +27,7 @@ STEP_TYPES = ["notify", "send_email", "task", "request_approval", "update_record
 STEP_WORDS = {"notify": "Tell someone", "send_email": "Send an email", "task": "Ask someone to do something",
               "request_approval": "Ask for approval", "update_record": "Change this record", "create_record": "Add a record",
               "wait": "Wait", "assign": "Give it to someone", "branch": "Go one of several ways", "generate_document": "Make a document",
-              "ai_fill": "Have the AI fill in a field", "ai_check": "Have the AI check it", "ai_extract": "Have the AI read a document",
+              "ai_fill": "Have the AI fill something in", "ai_check": "Have the AI check it", "ai_extract": "Have the AI read a document",
               "ai_create_record": "Have the AI make a record from it", "webhook": "Send to another system"}
 TRIGGER_WORDS = {"record_created": "is added", "record_updated": "is changed", "record_created_or_updated": "is added or changed",
                  "record_deleted": "is deleted", "button": "a button is pressed on one", "schedule": "on a schedule"}
@@ -616,6 +616,21 @@ def flow_diagram(engine, flow):
 
 
 # --- workflows: changing them ------------------------------------------------------------------------------------------
+
+def stage_said(bp, change):
+    """A stage change in one plain line for its version (“Added the stage “On hold” to Orders, after New”), or None to
+    keep what the change itself says."""
+    t = schema.table(bp, change.get("table") or "")
+    if not t:
+        return None
+    label, do = t["label"], change.get("do")
+    return {"add_stage": lambda: f"Added the stage “{change.get('name')}” to {label}" + (f", after {change['after']}" if change.get("after") else ""),
+            "rename_stage": lambda: f"Renamed the stage “{change.get('old')}” to “{change.get('new')}” in {label}",
+            "remove_stage": lambda: f"Removed the stage “{change.get('name')}” from {label}",
+            "order_stages": lambda: f"Put {label}'s stages in this order: {' → '.join(map(str, change.get('names') or []))}",
+            "set_start": lambda: f"New {label.lower()} now start at {change.get('name')}",
+            }.get(do, lambda: None)()
+
 
 def stage_ops(bp, change, filled):
     """An edit to a list's stages, as ops. Returns (ops, renames) like data_ops."""
