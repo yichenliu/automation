@@ -695,6 +695,8 @@ _EXAMPLE = {"type": "object", "required": ["title", "steps", "expect"], "propert
     "expect": {"type": "array", "items": {"type": "object", "properties": {
         "record": _STRING, "field": _STRING, "equals": {}, "table": _STRING, "count": {"type": "integer"}}}}}}
 EXAMPLES_SCHEMA = {"type": "object", "required": ["examples"], "properties": {"examples": {"type": "array", "items": _EXAMPLE}}}
+ONE_EXAMPLE_SCHEMA = {"type": "object", "required": ["examples"], "properties": {"examples": {"type": "array", "items": _EXAMPLE,
+                                                                                              "minItems": 1, "maxItems": 1}}}
 FIX_SCHEMA = {"$defs": DEFS, "type": "object", "required": ["ops", "reply", "more"], "properties": {
     "ops": {"type": "array", "items": _OP}, "examples": {"type": "array", "items": _EXAMPLE}, "reply": _STRING, "more": {"type": "boolean"}}}
 EXAMPLES = """You check business apps before they're handed over. The owner asked for something and the app below is what
@@ -741,7 +743,10 @@ Rules:
 - Try what can go wrong: sums, discounts and tax, which way a record goes (over or under a limit), what a rule does
   when it fires, what's refused.
 - {count}
-If this change only touched looks, wording or layout, send "examples": []."""
+{when_none}"""
+NONE_IF_LOOKS = 'If this change only touched looks, wording or layout, send "examples": [].'
+ALWAYS_ONE = ("Always write it, even when the app below doesn't do it yet: the example then shows that it doesn't, and the "
+              "builder is asked to make it do it.")
 
 
 # Guidance shown only when the owner's words are about it: a pattern described to every build gets copied into builds

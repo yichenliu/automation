@@ -898,3 +898,28 @@ def test_a_long_form_asks_what_matters_first_counting_its_lines(app, owner, clie
     assert 'name="delivery"' not in upfront and 'name="deposit"' not in upfront and 'name="notes"' not in upfront
     assert "More details (optional): Delivery date, Collection date" in form and "More details (optional): Deposit" in form
     assert form.count('<div class="card-body form-grid">') == 1 + 3  # what's up front once, and inside each More details
+
+
+def test_an_owners_check_is_always_written_and_a_step_acts_on_the_one_in_front_of_them(app, owner):
+    """“A $6,000 order waits for my sign-off” on an app that doesn't do it yet: the check is still written (one, always),
+    so it fails and says so, rather than “couldn't be made a check”. A move that doesn't say which quote moves the one
+    just added, as a person would on the quote in front of them."""
+    from app.builder import checking, prompts
+    _, ws = owner
+    _built(ws, QUOTES)
+    asked = []
+
+    def backend(messages, schema_, on_progress):
+        asked.append((messages, schema_))
+        return json.dumps({"examples": [{"title": "x", "steps": [
+            {"do": "add", "table": "quotes", "as": "q1", "values": {"title": "Big job", "discount_percent": 5}},
+            {"do": "add", "table": "quote_lines", "as": "l1", "values": {"quote": "q1", "item": "Marquee", "quantity": 1, "unit_price": 6000}},
+            {"do": "move", "as": "", "to": "Sent", "refused": True}],
+            "expect": [{"record": "q1", "field": "status", "equals": "Draft"}]}]}), ""
+    ai.set_backend(backend)
+    result = checking.add(ws, "A $6,000 quote waits for my sign-off before it goes out", by="owner")
+    (messages, schema_), = asked
+    assert prompts.ALWAYS_ONE in messages[0]["content"] and prompts.NONE_IF_LOOKS not in messages[0]["content"]
+    assert schema_["properties"]["examples"]["minItems"] == 1
+    assert result["kind"] == "app" and not result["ok"], result
+    assert result["plain"] == "Moving the quote to Sent should have been stopped, but wasn't", result

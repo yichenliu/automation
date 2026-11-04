@@ -628,7 +628,7 @@ def _write_examples(workspace, asked, first):
                        for m in Membership.query.filter_by(workspace_id=workspace.id) if m.role != "portal")
     count = ("Write 3 or 4 examples that between them cover the main things this business does in the app." if first else
              "Write 1 to 3 examples about what this change does (what it adds or changes, not the rest of the app).")
-    convo = [{"role": "system", "content": prompts.EXAMPLES.format(count=count)},
+    convo = [{"role": "system", "content": prompts.EXAMPLES.format(count=count, when_none=prompts.NONE_IF_LOOKS)},
              {"role": "user", "content": f"The owner asked: {asked[:3000]}\n\nToday: {schema.today_words(engine.today)}"
                                          + (f"\nPeople in the app: {people}" if people else "")
                                          + f"\n\nThe app:\n{prompts.outline(workspace.blueprint, engine.counts())}"}]

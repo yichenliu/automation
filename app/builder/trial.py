@@ -723,6 +723,26 @@ def _guess(engine, names, alias, table=None):
     return alias
 
 
+def _the_one_meant(engine, step, names):
+    """A step that doesn't say which record (“press confirm_booking”): the latest one the example added of the table it's
+    about (the button's, the stage's, the one with the fields it changes), as a person presses it on the record in front
+    of them; a main record before a line."""
+    do, tables = step.get("do"), []
+    if do == "press":
+        wanted = str(step.get("button") or "").strip().lower()
+        tables = [a["trigger"].get("table") for a in engine.bp.get("automations", []) if a["trigger"]["type"] == "button"
+                  and wanted in (a["key"].lower(), a["name"].lower(), str(a["trigger"].get("label") or "").lower())]
+    elif do == "move":
+        wanted = str(step.get("to") or "").strip().lower()
+        tables = [t["key"] for t in engine.tables.values() if any(x.lower() == wanted for x in schema.stages(t))]
+    elif do == "change":
+        keys = set(step.get("values") or {})
+        tables = [t["key"] for t in engine.tables.values() if keys and keys <= {f["key"] for f in t["fields"]}]
+    added = [(key, rid) for key, rid in reversed(names.get("_added", [])) if not tables or key in tables]
+    main = [x for x in added if not engine.tables.get(x[0], {}).get("embedded")] or added
+    return main[0][1] if main else None
+
+
 def _values(engine, t, values, names):
     out = {}
     for key, value in (values or {}).items():
@@ -777,7 +797,12 @@ def _act(trial, engine, step, names, hold=False):
                                f"({automations.describe_trigger(engine, a['trigger']).lower()}): leave the “run” step out")
         automations.run_schedule(engine, a, "Tried out")
         return
-    record = _record(engine, names, step.get("record"))
+    alias = step.get("record") or (step.get("as") if step.get("as") in names else None)
+    if alias in (None, ""):  # it doesn't say which: the one in front of them
+        found = _the_one_meant(engine, step, names)
+        if found is not None:
+            alias, names["_this"] = "_this", found
+    record = _record(engine, names, alias)
     t = engine.tables[record.table]
     if do == "change":
         values = _values(engine, t, step.get("values"), names)
@@ -1411,14 +1436,18 @@ def _plain_step(engine, step, names):
     do = step.get("do")
     t = engine.tables.get(str(step.get("table") or "")) or next((t for t in engine.tables.values() if str(step.get("table") or "").lower()
                                                                 in (t["label"].lower(), t["singular"].lower())), None)
-    record = engine.get(names[step["record"]]) if step.get("record") in names else None
+    alias = step.get("record") if step.get("record") in names else "_this" if not step.get("record") and "_this" in names else None
+    record = engine.get(names[alias]) if alias else None
     one = (t or engine.tables.get(record.table if record is not None else "") or {"singular": "record"})["singular"].lower()
     if do == "add":
         return f"Adding {'an' if one[:1] in 'aeiou' else 'a'} {one}"
     if do == "move":
         return f"Moving the {one} to {step.get('to')}"
     if do == "press":
-        return f"Pressing “{step.get('button')}” on the {one}"
+        wanted = str(step.get("button") or "").strip().lower()
+        a = next((a for a in engine.bp.get("automations", []) if a["trigger"]["type"] == "button"
+                  and wanted in (a["key"].lower(), a["name"].lower(), str(a["trigger"].get("label") or "").lower())), None)
+        return f"Pressing “{(a and (a['trigger'].get('label') or a['name'])) or step.get('button')}” on the {one}"
     if do in ("approve", "reject"):
         return f"{'Approving' if do == 'approve' else 'Saying no to'} the {one}"
     if do == "change":
@@ -1431,14 +1460,14 @@ def _step_words(step):
     if do == "add":
         return f"add a {step.get('table')}" + (f" as {step['as']}" if step.get("as") else "")
     if do == "move":
-        return f"move {step.get('record')} to {step.get('to')}"
+        return f"move {step.get('record') or 'the one just added'} to {step.get('to')}"
     if do == "press":
-        return f"press {step.get('button')} on {step.get('record')}"
+        return f"press {step.get('button')} on {step.get('record') or 'the one just added'}"
     if do == "run":
         return f"run {step.get('rule') or step.get('button')}"
     if do == "wait":
         return f"wait {step.get('days')} days"
-    return f"{do} {step.get('record')}"
+    return f"{do} {step.get('record') or 'the one just added'}"
 
 
 def try_out(workspace, examples=(), screens=True):

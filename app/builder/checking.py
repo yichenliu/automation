@@ -96,12 +96,12 @@ def add(workspace, said, by=None):
     Returns its result, or None if the AI couldn't make one of it."""
     engine = Engine(workspace)
     convo = [{"role": "system", "content": prompts.EXAMPLES.format(count="Write exactly one example: the one the owner describes below, "
-                                                                           "with their numbers.")},
+                                                                           "with their numbers.", when_none=prompts.ALWAYS_ONE)},
              {"role": "user", "content": f"The owner wants this checked, always: {said[:1500]}\n\nToday: {schema.today_words(engine.today)}"
                                          f"\n\nThe app:\n{prompts.outline(workspace.blueprint, engine.counts())}"}]
     steady = ai.building.set(True)
     try:
-        content, _ = ai.chat(convo, schema=prompts.EXAMPLES_SCHEMA, think=current_app.config.get("AI_THINK_BUILDER", False))
+        content, _ = ai.chat(convo, schema=prompts.ONE_EXAMPLE_SCHEMA, think=current_app.config.get("AI_THINK_BUILDER", False))
     finally:
         ai.building.reset(steady)
     found = [x for x in ai.parse_json(content).get("examples") or [] if isinstance(x, dict) and x.get("steps")][:1]
