@@ -20,6 +20,7 @@ outweighs every "yes". Each answer is then graded:
     .venv/bin/python -m app.builder.training report <folders>          how much good data there is, and whether it's enough
     .venv/bin/python -m app.builder.training <folders> --out <folder>   gold lessons as train.jsonl / valid.jsonl
     .venv/bin/python -m app.builder.training label <folder> --message 12 --bad "approvals never moved on"
+    .venv/bin/python -m app.builder.training gaps <folders>             what builders couldn't make, most often first
 
 docs/FINETUNE.md says when there's enough to train on, and how to tell whether training helped.
 """
@@ -218,10 +219,32 @@ def report(paths):
     return "\n".join(lines)
 
 
+def gaps(paths):
+    """What builders couldn't make, or made wrong, most often first: [(need, how many times, what the platform said)]."""
+    from collections import Counter
+    seen, said = Counter(), {}
+    for folder in paths:
+        for path in Path(folder).rglob("gaps.jsonl"):
+            for line in path.open():
+                try:
+                    x = json.loads(line)
+                except ValueError:
+                    continue
+                key = str(x.get("need") or "").strip().lower()
+                if key:
+                    seen[key] += 1
+                    said.setdefault(key, (x.get("refused") or []) + (x.get("failing") or []))
+    return [(need, n, said[need][:3]) for need, n in seen.most_common()]
+
+
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv[:1] == ["report"]:
         print(report(argv[1:] or ["data/training"]))
+        return 0
+    if argv[:1] == ["gaps"]:  # what builders couldn't make, most often first: what the language should learn to say next
+        for need, n, said in gaps(argv[1:] or ["data/training"]):
+            print(f"{n:3}  {need}" + "".join(f"\n       {x[:200]}" for x in said))
         return 0
     if argv[:1] == ["label"]:
         parser = argparse.ArgumentParser(description="Say whether an app or a turn is right, as someone who used it.")

@@ -909,6 +909,28 @@ def _need_states(turn, needs, run):
     return states
 
 
+def _gaps(turn, states, run):
+    """What the builder couldn't make, or made wrong, with what it tried and what the platform said: kept where whoever
+    runs the platform reads it (DATA_DIR/training/gaps.jsonl, `python -m app.builder.training gaps`), so what the
+    language can't say yet is a list, never a guess. Nothing here stops a turn."""
+    left = [(n, state) for n, state in states if state in ("unmade", "wrong")]
+    if not left:
+        return
+    try:
+        from pathlib import Path
+        folder = Path(settings()["DATA_DIR"]) / "training"
+        folder.mkdir(parents=True, exist_ok=True)
+        refused = [p for entry in turn.log for p in entry.get("problems") or []][-8:]
+        failing = [f"{x.get('title')}: {r.get('problem')}" for x, r in _failing(run)][:6] if run else []
+        with open(folder / "gaps.jsonl", "a") as f:
+            for need, state in left:
+                f.write(json.dumps({"at": utcnow().isoformat(timespec="seconds"), "workspace": turn.workspace.id, "need": need.does,
+                                    "said": need.said, "state": state, "refused": refused, "failing": failing,
+                                    "language": registry.fingerprint()}, ensure_ascii=False) + "\n")
+    except Exception:  # noqa: BLE001 - keeping the list is a help, never a reason a turn fails
+        _log.warning("Keeping what the builder couldn't make failed", exc_info=True)
+
+
 def _hand_over(turn, needs, run, reply="", first=None, rounds=0, custom=(), stopped=None):
     from .chat import _not_yet, navigate_url, plain
     workspace, message = turn.workspace, turn.message
@@ -926,6 +948,7 @@ def _hand_over(turn, needs, run, reply="", first=None, rounds=0, custom=(), stop
         db.session.commit()
         checking.remember(workspace, run["walked"], [r for _, r in playable], "this change", [x for x, _ in playable], tell=False)
     states = _need_states(turn, needs, run)
+    _gaps(turn, states, run)
     unmade = [n.does.rstrip(".") for n, s in states if s == "unmade"]
     lines = [f"- {n.does.rstrip('.')}" + {"ok": "", "wrong": " (not right yet)", "unmade": " (not made yet)",
                                            "unchecked": " (made, but I couldn't try it out: check it yourself)"}[s] for n, s in states]
