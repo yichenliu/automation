@@ -12,7 +12,7 @@ brew install postgresql@18 pgvector    once: the database (PostgreSQL, with pgve
 ./start.sh install    start it automatically when you log in to this Mac, and restart it if it stops (one process)
 ./start.sh status | restart | stop | backup | uninstall
 .venv/bin/python -m app.worker                               a worker of its own (as many as you like, on any computer)
-WORKER=0 .venv/bin/uvicorn asgi:app --workers 4              several web processes, with the worker(s) run beside them
+WORKER=0 .venv/bin/uvicorn asgi:app --workers 4 --no-proxy-headers   several web processes, the worker(s) beside them
 .venv/bin/python -m app.database import-sqlite data/erp.db   bring an app made before PostgreSQL across (once)
 .venv/bin/python -m app.tools reset-link you@example.com    a link to choose a new password
 .venv/bin/python -m pytest -q

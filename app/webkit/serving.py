@@ -11,7 +11,7 @@ class Server:
         self._socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self._socket.bind((host, port))
         self.server_port = self._socket.getsockname()[1]
-        self._server = uvicorn.Server(uvicorn.Config(app, log_level="warning", access_log=False, lifespan="off"))
+        self._server = uvicorn.Server(uvicorn.Config(app, log_level="warning", access_log=False, lifespan="off", proxy_headers=False))
 
     def serve_forever(self):
         self._server.run(sockets=[self._socket])
