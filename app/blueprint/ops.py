@@ -1132,6 +1132,8 @@ def access_changes(old_bp, new_bp):
 
 def _and_words(items):
     items = list(items)
+    if not items:
+        return ""
     return items[0] if len(items) == 1 else ", ".join(items[:-1]) + " and " + items[-1]
 
 
@@ -1443,7 +1445,7 @@ def _policies_said(t):
             said.append(f"no two at overlapping times" + (f" for the same {per}" if per else ""))
         else:
             most = f"{limit['max']:g}" if not isinstance(limit["max"], str) else f"its {limit['max'].replace('_', ' ').replace('.', '’s ')}"
-            said.append(f"at most {most}" + (f" for the same {per}" if per else ""))
+            said.append(f"at most {most}" + (f" for the same {per}" if per else " at a time"))
     held = t.get("approve_changes")
     if held:
         what = _and_words([(schema.field(t, k) or {"label": k})["label"] for k in held["fields"]]) or "any change"

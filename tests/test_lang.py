@@ -421,3 +421,26 @@ def test_a_rule_that_makes_a_document_the_list_hasnt_got_makes_a_standard_one():
                                                                         {"do": "email", "to": "customer.email", "subject": "Your report", "body": "Attached.", "attach": ["job_report"]}]}}])
     assert not out.problems, out.problems
     assert [d["key"] for d in schema.table(out.blueprint, "jobs")["documents"]] == ["job_report"]
+
+
+@pytest.mark.parametrize("only_if", [[{"field": "status", "op": "equals", "value": "In progress"}], []])
+def test_a_limit_in_all_counting_only_some_stages_checks_itself(app, only_if):
+    out = lang.apply(everything(), [{"do": "limit", "list": "jobs", "max": 2, "only_if": only_if}])
+    assert not out.problems, out.problems
+    ws = _workspace(app, out.blueprint)
+    _, results = trial.try_out(ws, patterns.checks(out.blueprint), screens=False)
+    assert results and all(r["ok"] for r in results), [r.get("problem") for r in results]
+
+
+def test_a_limit_per_stage_is_refused_saying_how_to_count_only_some_stages():
+    out = lang.apply(everything(), [{"do": "limit", "list": "jobs", "per": ["status"], "max": 5}])
+    assert "leave per empty" in out.problems[0] and '"op": "one_of"' in out.problems[0]
+
+
+@pytest.mark.parametrize("said, only", [("Fix what didn't come out right", True), ("Please fix what isn't right on my Checks page:\n- x", True),
+                                        ("fix it", True), ("yes please", True), ("add a column “Team note”", False),
+                                        ("tell me when a funeral case reaches Closed", False),
+                                        ("No, the booking should wait until I approve the plan, then it moves on", False)])
+def test_only_a_plain_fix_request_skips_reading_what_the_owner_says(said, only):
+    from app.builder.build import only_fixing
+    assert only_fixing(said) is only

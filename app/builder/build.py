@@ -429,7 +429,7 @@ def _turn(turn):
     mending = _mending(workspace, question) if changing else None
     needs, custom = [], [x for x in _kept(workspace) if x.get("by") == "builder"]
     reply = ""
-    if not (mending and (mending.get("all") or mending.get("titles"))):
+    if not (mending and only_fixing(asked)):  # anything more than "fix it" is read: a change, or what should happen
         turn.note("Working out what you need")
         understood = Understood.model_validate(_ask(
             UNDERSTAND, f"{turn.about()}\n\nThe app now:\n{lang.describe(turn.bp)}\n\nEarlier:\n{turn.history() or '(nothing yet)'}\n\n"
@@ -493,7 +493,8 @@ def _turn(turn):
             break
         n = len(failing) + len(best["hard"]) + len(unmade)
         turn.note(f"Putting right {n} thing{'s' if n != 1 else ''} that didn't come out right or aren't made yet (trying {CANDIDATES} ways)")
-        user = (f"{turn.about()}\n\nThe needs:\n{needs_text or '(as the app is)'}\n\nThe app now:\n{lang.describe(turn.bp)}\n\n"
+        user = (f"{turn.about()}\n\nThe owner's latest message: {asked}\n\nThe needs:\n{needs_text or '(as the app is)'}\n\n"
+                f"The app now:\n{lang.describe(turn.bp)}\n\n"
                 + (f"Didn't come out right:\n{_said_failing(best)}\n\n" if failing or best["hard"] else "")
                 + (f"Not made yet: {', '.join(f'need {i}' for i in unmade)} (what was sent for them was refused)\n" if unmade else ""))
         answers = _ask_many(FIX.format(catalog=catalog("all")), user, _answer_schema("all", by_need=True), CANDIDATES)
@@ -522,6 +523,15 @@ def _turn(turn):
 
 
 TOO_MUCH = (ai.CutOff, ai.Stuck)
+FIX_ONLY = re.compile(r"^\W*(please\W+)?(fix|sort out|sort|correct|repair|mend)\b.{0,40}$|^\W*(yes|yeah|yep|ok|okay|sure|go ahead|do it|"
+                      r"please)\W*(please|thanks|do it)?\W*$", re.I | re.S)
+
+
+def only_fixing(text):
+    """Whether the owner only asked for what isn't right to be put right (the Fix button, the Checks page's, "fix it",
+    "yes please"), with nothing else to read: then the turn goes straight to putting it right."""
+    text = str(text or "").strip()
+    return text.startswith("Please fix what isn't right") or text == "Fix what didn't come out right" or bool(FIX_ONLY.match(text))
 
 
 def _make_lists(turn, needs_text):

@@ -636,10 +636,10 @@ class Payments(Feature):
 @register("feature", {"do": "limit", "list": "bookings", "per": ["date"], "max": 6, "only_if": [{"field": "status", "op": "not_equals", "value": "Cancelled"}]})
 class Limit(Feature):
     """At most max records may share the same values of per (six bookings a day; one per room per night), counting
-    only those that match only_if."""
+    only those that match only_if; with per left empty, at most max of them in all (five active cases at a time)."""
     do: Literal["limit"] = "limit"
     list: str
-    per: list[str]
+    per: list[str] = Field(default_factory=list)
     max: int
     only_if: list[Condition] = Field(default_factory=list)
     message: str | None = None
@@ -650,15 +650,21 @@ class Limit(Feature):
     def build(self, d, where):
         t = _t(d, self.list, where)
         per = []
+        stage = d.stage_field(t)
         for name in self.per:
             f = d.field(t, name)
             if f is None:
                 raise Problem(f"{where} › per: {name} isn't a field of {t['label']} (its fields: {', '.join(d.field_names(t))})")
+            if stage is not None and f["key"] == stage["key"]:
+                raise Problem(f"{where} › per: a limit isn't per stage (every new {t['singular'].lower()} starts at the same one): "
+                              f"to count only those at some stages, leave per empty (or per a date) and give only_if "
+                              f"{{\"field\": \"{stage['key']}\", \"op\": \"one_of\", \"value\": [the stages that count]}}")
             per.append(f["key"])
         limit = {"per": per, "max": self.max}
         if self.only_if:
             limit["where"] = ir_conditions(d, t, self.only_if, f"{where} › only_if")
-        limit["message"] = self.message or f"There can be at most {self.max} {t['label'].lower()} for the same {', '.join(per)}"
+        limit["message"] = self.message or (f"There can be at most {self.max} {t['label'].lower()} for the same {', '.join(per)}" if per
+                                            else f"There can be at most {self.max} {t['label'].lower()} at a time")
         entry = next((e for e in d.bp.get("features", []) if e["key"] == self.feature_key()), None)
         mine = (entry or {}).get("made", {}).get("limit")
         others = [x for x in t.get("limits") or [] if x != mine]
@@ -669,24 +675,33 @@ class Limit(Feature):
 
     def checks(self, d):
         t = d.list(self.list)
-        same = {}
+        stage = d.stage_field(t)
+        start = ((t.get("workflow") or {}).get("start") or (stage.get("options") or [None])[0]) if stage else None
+        same, counted = {}, None
         for i, name in enumerate(self.per):
             f = d.field(t, name)
             same[f["key"]] = "today+5" if d.kind(f) == "date" else _sample(d, f, i, "same")
-        for c in self.only_if:  # the ones counted
-            if c.op == "equals":
+        for c in self.only_if:  # the ones counted: a stage they're moved to (every new one starts at the first), or a value
+            if stage is not None and schema.slug(c.field) == stage["key"]:
+                stages = [s for s in (c.value if isinstance(c.value, list) else [c.value]) if s] if c.op in ("equals", "one_of") else \
+                    [s for s in stage.get("options") or [] if s != c.value] if c.op == "not_equals" else []
+                if start not in stages and stages:
+                    counted = d.choice(stage, stages[0])
+            elif c.op == "equals":
                 same[schema.slug(c.field)] = c.value
-        steps = []
-        made = {}
-        for n in range(1, self.max + 1):
+        steps, made = [], {}
+        for n in range(1, self.max + 2):
             steps += adding(d, t, f"b{n}", dict(same), made=made)
-        steps += adding(d, t, f"b{self.max + 1}", dict(same), made=made)
+            if counted:
+                steps.append({"do": "move", "record": f"b{n}", "to": counted})
         steps[-1]["refused"] = True
-        return [{"title": f"No more than {self.max} {t['label'].lower()} for the same {', '.join(self.per)}", "steps": steps,
-                 "expect": [{"table": t["key"], "count": self.max + sum(1 for s in steps if s["table"] == t["key"]) - (self.max + 1)}]}]
+        what = f"for the same {', '.join(self.per)}" if self.per else "at a time"
+        expect = [{"record": f"b{self.max + 1}", "field": stage["key"], "not_equals": counted}] if counted else \
+            [{"table": t["key"], "count": self.max + sum(1 for s in steps if s.get("table") == t["key"]) - (self.max + 1)}]
+        return [{"title": f"No more than {self.max} {t['label'].lower()} {what}", "steps": steps, "expect": expect}]
 
     def said(self, d):
-        return f"allows at most {self.max} {self.list} per {', '.join(self.per)}"
+        return f"allows at most {self.max} {self.list}" + (f" per {', '.join(self.per)}" if self.per else " at a time")
 
 
 @register("feature", {"do": "convert", "from_list": "quotes", "to_list": "jobs", "when_stage": "Accepted", "from_lines": "quote_lines", "to_lines": "job_lines"})
