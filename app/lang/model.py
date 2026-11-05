@@ -448,6 +448,17 @@ class RemoveFeature(Base):
     feature: str
 
 
+@register("patch", {"do": "add_stage", "list": "jobs", "stage": "On hold", "after": "Booked", "button": "Put on hold"}, "data")
+class AddStage(Base):
+    """Add one stage to a list's stages, after another: a button moves a record from that stage into it, and from it a
+    record moves on wherever it could from that stage. Everything else about the stages stays as it is."""
+    do: Literal["add_stage"]
+    list: str
+    stage: str
+    after: str
+    button: str | None = None
+
+
 @register("patch", {"do": "add_view", "list": "jobs", "view": {"type": "calendar", "label": "Job calendar", "date_field": "scheduled_for"}}, group="data")
 class AddView(Base):
     """Add a view to a list."""

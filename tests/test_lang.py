@@ -508,3 +508,14 @@ def test_an_owner_approving_what_only_they_may_send_is_their_move_and_staff_tryi
         "expect": [{"record": "q1", "field": "status", "equals": "Sent"}]}
     _, results = trial.try_out(ws, [example], screens=False)
     assert results[0]["ok"], results[0].get("problem")
+
+
+def test_a_stage_added_after_another_leads_on_where_that_one_did_and_nothing_else_changes():
+    bp = everything()
+    out = lang.apply(bp, [{"do": "add_stage", "list": "quotes", "stage": "On hold", "after": "Sent", "button": "Put on hold"}])
+    assert not out.problems, out.problems
+    t = schema.table(out.blueprint, "quotes")
+    assert schema.field(t, "status")["options"] == ["Draft", "Sent", "On hold", "Accepted", "Declined"]
+    moves = {(tuple(mv["from"]), mv["to"]) for mv in t["workflow"]["transitions"]}
+    assert (("Sent",), "On hold") in moves and (("Sent", "On hold"), "Accepted") in moves and (("Sent", "On hold"), "Declined") in moves
+    assert (("Draft",), "Sent") in moves

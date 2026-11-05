@@ -719,6 +719,26 @@ def translate(d, p, where):
             first = {"op": "update_field", "table": t["key"], "key": old["key"], "changes": {**old, "type": "select", "options": status["options"],
                                                                                              "default": status["default"]}}
         return [first, {"op": "update_table", "table": t["key"], "workflow": flow}]
+    if isinstance(p, m.AddStage):
+        t = _list(d, p.list, where)
+        f = d.stage_field(t)
+        if f is None:
+            raise Problem(f"{where}: {t['label']} has no stages yet: set_stages gives it some")
+        after = d.choice(f, p.after)
+        if after is None:
+            raise Problem(f"{where}: “{p.after}” isn't a stage of {t['label']} (its stages: {', '.join(f.get('options') or [])})")
+        new = p.stage.strip()
+        if d.choice(f, new) is not None:
+            raise Problem(f"{where}: {t['label']} already has the stage “{new}”")
+        options = list(f.get("options") or [])
+        options.insert(options.index(after) + 1, new)
+        flow = copy.deepcopy(t.get("workflow") or {"field": f["key"], "transitions": []})
+        onward = [mv for mv in flow.get("transitions", []) if after in (mv.get("from") or [])]
+        for mv in onward:  # from the new stage, on wherever the one before it could go
+            mv["from"] = list(mv["from"]) + [new]
+        flow.setdefault("transitions", []).append({"from": [after], "to": new, "label": (p.button or f"Move to {new}")[:60]})
+        return [{"op": "update_field", "table": t["key"], "key": f["key"], "changes": {**f, "options": options}},
+                {"op": "update_table", "table": t["key"], "workflow": flow}]
     if isinstance(p, m.AddView):
         t = _list(d, p.list, where)
         v = p.view
