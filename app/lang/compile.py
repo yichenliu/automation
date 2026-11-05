@@ -626,7 +626,7 @@ def _apply_ops(out, ir_ops, where):
     """Apply design ops to the outcome's design; a refused set leaves it as it was and says why."""
     if not ir_ops:
         return True
-    result = design_ops.apply(out.blueprint, ir_ops, already=design_ops.wrong_already(out.blueprint))
+    result = design_ops.apply(out.blueprint, ir_ops, already=design_ops.wrong_already(out.blueprint), strict=True)
     if result.problems:
         out.problems.extend(f"{where}: {re.sub(r'^change \\d+ \\([^)]*\\): ', '', p)}" for p in result.problems)
         return False

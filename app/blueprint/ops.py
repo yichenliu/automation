@@ -106,9 +106,10 @@ def wrong_already(blueprint):
     return schema.check(blueprint) + apply(blueprint, [], always_check=True).problems
 
 
-def apply(blueprint, ops, always_check=False, already=()):
+def apply(blueprint, ops, always_check=False, already=(), strict=False):
     """`already`: problems the design had before these changes (an old app checked by newer rules). They don't stop a
-    change that leaves them as they were; only a problem the changes bring does."""
+    change that leaves them as they were; only a problem the changes bring does. `strict`: the ops are exact (the Keel
+    language compiles to them): nothing is read into them, so a problem is said, never quietly put right."""
     bp = copy.deepcopy(blueprint) if blueprint else schema.empty()
     for k in ("modules", "tables", "pages", "automations"):
         bp.setdefault(k, [])
@@ -132,7 +133,7 @@ def apply(blueprint, ops, always_check=False, already=()):
             problems.append(f"{where}: {exc}")
         if restating and json.dumps(bp, sort_keys=True, default=str) == before:  # saying again what's so isn't a change
             del changes[said:]
-    result.corrected = _resolve(bp, changes, {t["key"] for t in bp["tables"]} - {t["key"] for t in (blueprint or {}).get("tables", [])})
+    result.corrected = [] if strict else _resolve(bp, changes, {t["key"] for t in bp["tables"]} - {t["key"] for t in (blueprint or {}).get("tables", [])})
     for a in bp["automations"]:  # the same message twice in a row, from before that was caught: sent once
         a["actions"] = [x for n, x in enumerate(a.get("actions") or []) if not (n and x.get("type") in schema.REPEATS_ARE_SLIPS and x == a["actions"][n - 1])]
     for t in bp["tables"]:
