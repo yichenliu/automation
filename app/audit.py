@@ -3,6 +3,7 @@ backups, private values revealed, API keys, changes to how the app works, printe
 of the one before it, so an entry changed or taken out afterwards shows: `verify` says whether the chain holds.
 
 Records keep their own history (every change to each field); this is the rest."""
+import logging
 import hashlib
 import json
 
@@ -11,6 +12,8 @@ from flask_login import current_user
 
 from .extensions import db
 from .models import AuditEvent, utcnow
+
+_log = logging.getLogger(__name__)
 
 WORDS = {  # what each kind of entry is, for people reading the log
     "signed_in": "Signed in", "sign_in_failed": "Sign-in refused", "signed_out": "Signed out", "password_reset": "Password reset",
@@ -38,8 +41,7 @@ def log(workspace_id, action, detail="", user=None, by=None):
         return entry
     except Exception:  # noqa: BLE001
         db.session.rollback()
-        from flask import current_app
-        current_app.logger.exception("Couldn't write to the audit log: %s %s", action, detail)
+        _log.exception("Couldn't write to the audit log: %s %s", action, detail)
         return None
 
 

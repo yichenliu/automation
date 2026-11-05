@@ -6,9 +6,9 @@ from datetime import datetime, timedelta
 from urllib.parse import urlencode
 
 import requests
-from flask import current_app
 
 from .apps import TIMEOUT, App, AppProblem, register
+from ..core.settings import settings
 
 PAGE_LIMIT = 10  # pages of items fetched in one sync at most (the rest come next time)
 
@@ -231,7 +231,7 @@ class _OAuthApp(App):
     env = ""
 
     def client(self):
-        cid, secret = current_app.config.get(f"{self.env}_CLIENT_ID"), current_app.config.get(f"{self.env}_CLIENT_SECRET")
+        cid, secret = settings().get(f"{self.env}_CLIENT_ID"), settings().get(f"{self.env}_CLIENT_SECRET")
         if not cid or not secret:
             raise AppProblem(f"Signing in to {self.name} needs the platform's {self.name} app first: {self.env}_CLIENT_ID and "
                              f"{self.env}_CLIENT_SECRET in .env")
@@ -342,7 +342,7 @@ class QuickBooks(_OAuthApp):
     ENTITIES = {"invoices": "Invoice", "customers": "Customer", "payments": "Payment"}
 
     def base(self, creds):
-        host = "sandbox-quickbooks.api.intuit.com" if current_app.config.get("QBO_SANDBOX") else "quickbooks.api.intuit.com"
+        host = "sandbox-quickbooks.api.intuit.com" if settings().get("QBO_SANDBOX") else "quickbooks.api.intuit.com"
         return f"https://{host}/v3/company/{creds.get('realm_id', '')}"
 
     def after_sign_in(self, args):

@@ -7,6 +7,7 @@ steps happen at once, so people see the result as they save; runs with AI steps 
 AI can't be reached, wait and carry on from the step they stopped at. A step that asks a person to approve pauses the
 run until they decide. Every run keeps its steps, so what an automation did (or why it didn't) can always be seen.
 """
+import logging
 import base64
 import contextvars
 import hashlib
@@ -21,7 +22,6 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import requests
-from flask import current_app
 from sqlalchemy import event, inspect as sa_inspect, or_
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -30,6 +30,9 @@ from ..blueprint import expr, schema
 from ..extensions import db
 from ..models import Approval, File, Membership, Notification, Record, Run, ScheduleRun, Workspace, utcnow
 from .records import Engine, FieldErrors, RecordContext, RecordProxy, automations_words
+from ..core.settings import settings
+
+_log = logging.getLogger(__name__)
 
 MAX_DEPTH = 5  # automations started by automations, at most this deep (stops loops)
 AI_RETRY_SECONDS = 30
@@ -212,12 +215,12 @@ def start(engine, automation, record, trigger, depth=0, context=None):
 
 def hook_token(workspace_id, key):
     """The secret part of an automation's webhook address: only someone given the address can start it."""
-    secret = str(current_app.config["SECRET_KEY"]).encode()
+    secret = str(settings()["SECRET_KEY"]).encode()
     return hmac.new(secret, f"hook:{workspace_id}:{key}".encode(), hashlib.sha256).hexdigest()[:32]
 
 
 def hook_url(workspace_id, key):
-    return f"{current_app.config['BASE_URL']}/hooks/{workspace_id}/{key}/{hook_token(workspace_id, key)}"
+    return f"{settings()['BASE_URL']}/hooks/{workspace_id}/{key}/{hook_token(workspace_id, key)}"
 
 
 def press(engine, automation, record, by):
@@ -250,7 +253,7 @@ class _Item:
 def _mail_ready(engine):
     """Whether the business's mailbox is connected (Microsoft 365), so emails can go out by themselves. A copy being tried
     out acts as if it were (it reaches nothing outside): it's the app's rules being tried, not the mailbox."""
-    if current_app.config.get("TRYING_OUT"):
+    if settings().get("TRYING_OUT"):
         return True
     from ..connectors import microsoft
     try:
@@ -380,7 +383,7 @@ def _let_go(run):
         try:
             leases.let_go(run)
         except SQLAlchemyError:
-            current_app.logger.exception("Couldn't let go of run %s (it's free again once its claim runs out)", run.id)
+            _log.exception("Couldn't let go of run %s (it's free again once its claim runs out)", run.id)
             db.session.rollback()
 
 
@@ -539,7 +542,7 @@ def _attempt(engine, automation, action, record, run, entry, log, do=None):
         if isinstance(exc, MicrosoftProblem):
             message = str(exc)
         else:
-            current_app.logger.exception("Automation %s failed at step %s", run.automation, entry["at"])
+            _log.exception("Automation %s failed at step %s", run.automation, entry["at"])
             if isinstance(exc, SQLAlchemyError):
                 db.session.rollback()
             message = f"Something went wrong on our side ({type(exc).__name__}); it's been logged"
@@ -1029,12 +1032,12 @@ def email_notifications(limit=40):
             continue
         from ..builder.chat import navigate_url
         link = navigate_url(ws, n.link) if n.link else None
-        body = n.text + (f"\n\n[Open it]({current_app.config['BASE_URL']}{link})" if link else "")
+        body = n.text + (f"\n\n[Open it]({settings()['BASE_URL']}{link})" if link else "")
         for person in people:
             try:
                 microsoft.send_mail(ws, person.email, f"{(ws.blueprint or {}).get('name') or ws.name}: {n.text[:90]}", body)
             except Exception as exc:  # a mailbox problem doesn't stop the platform; the notification is still in the app
-                current_app.logger.warning("Couldn't email a notification to %s: %s", person.email, exc)
+                _log.warning("Couldn't email a notification to %s: %s", person.email, exc)
     if pending:
         db.session.commit()
     return len(pending)
@@ -1210,7 +1213,7 @@ def _do(engine, automation, action, record, run):
         currency = (str(_render(action["currency"], ctx)) if action.get("currency") else "") or engine.base_currency  # set, or where it is
         if not currency or not re.fullmatch(r"[A-Za-z]{3}", currency):
             raise ValueError("a payment link needs the currency: set your currency's code under Settings › Business (AUD, GBP, USD…)")
-        if current_app.config.get("TRYING_OUT"):
+        if settings().get("TRYING_OUT"):
             return {"result": f"Would make a payment link for {currency.upper()} {amount:,.2f} (not while trying the app out)"}
         stripe, conn = apps.get("stripe"), apps.connection(engine.ws, "stripe")
         if conn is None or conn.status != "connected":
@@ -1218,7 +1221,7 @@ def _do(engine, automation, action, record, run):
         description = str(_render(action["description"], ctx)) if action.get("description") else engine.title(record)
         try:
             url, _ = stripe.checkout(apps.creds(conn), amount, currency, description,
-                                     f"{current_app.config['BASE_URL']}/paid",
+                                     f"{settings()['BASE_URL']}/paid",
                                      {"workspace": engine.ws.id, "record": record.id, "paid": json.dumps(action.get("paid") or {})})
         except apps.AppProblem as exc:
             raise ValueError(str(exc)) from exc
@@ -1229,7 +1232,7 @@ def _do(engine, automation, action, record, run):
         payload = _deep(engine, action.get("payload") or {}, ctx, record)
         path = _render(action["url"], ctx) if "{{" in action["url"] else action["url"]
         app = apps.get(action["app"])
-        if current_app.config.get("TRYING_OUT"):
+        if settings().get("TRYING_OUT"):
             return {"result": f"Would send to {app.name if app else action['app']} {path} (not sent while trying the app out)"}
         try:
             answer = apps.call(engine.ws, action["app"], action.get("method", "POST"), path, payload=payload)
@@ -1248,7 +1251,7 @@ def _do(engine, automation, action, record, run):
             payload = {"id": record.id, "table": record.table,
                        "record": {f["key"]: _plain(engine.value(record, f["key"])) for f in engine.tables[record.table]["fields"]}}
         url = _render(action["url"], ctx) if "{{" in action["url"] else action["url"]
-        if current_app.config.get("TRYING_OUT"):  # a copy being tried reaches nothing outside
+        if settings().get("TRYING_OUT"):  # a copy being tried reaches nothing outside
             return {"result": f"Would send to {url} (not sent while trying the app out)"}
         if action.get("method", "POST") == "GET":
             response = requests.get(url, params={k: v for k, v in (payload or {}).items() if not isinstance(v, (dict, list))}, timeout=15)
@@ -1380,7 +1383,7 @@ def _tell_contact(engine, record, field_key, token, what, by):
     by email when the business's mailbox is connected, and in the portal when they use it."""
     from ..connectors import microsoft
     address = engine.value(record, field_key) if "." not in field_key else engine._at_path(record, field_key)[1]
-    url = f"{current_app.config.get('BASE_URL', '')}/c/{token}"
+    url = f"{settings().get('BASE_URL', '')}/c/{token}"
     text = (f"{by} changed {what} on your record with {(engine.bp.get('name') or engine.ws.name)}. If this wasn't you or "
             f"someone you trust, cancel it here before it's approved: {url}")
     sent = False
@@ -1389,7 +1392,7 @@ def _tell_contact(engine, record, field_key, token, what, by):
             microsoft.send_mail(engine.ws, address, f"A change to {what}: please check it", text)
             sent = True
         except Exception as exc:  # the change still waits for approval; the approver sees nobody was told by email
-            current_app.logger.warning("Couldn't tell %s about a change: %s", address, exc)
+            _log.warning("Couldn't tell %s about a change: %s", address, exc)
     for uid in portal_people(engine, record):
         db.session.add(Notification(workspace_id=engine.ws.id, user_id=uid, kind="approval", text=text[:2000], link=f"cancel:{token}"))
     db.session.commit()

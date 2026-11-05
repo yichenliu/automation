@@ -48,7 +48,8 @@ import time
 from collections import deque, namedtuple
 
 import requests
-from flask import current_app, g, has_app_context
+from flask import g, has_app_context
+from .core.settings import settings
 
 log = logging.getLogger("ai")
 
@@ -160,7 +161,7 @@ _TAGS = {"builder": "_BUILDER", "fast": "_FAST", "embed": "_EMBED"}
 def _route(purpose):
     """Where a purpose's calls go: its provider, server, key and model. AI_MODEL_BUILDER, AI_BASE_URL_FAST and the like
     where they're set; the plain AI_* settings otherwise."""
-    cfg = current_app.config
+    cfg = settings()
     tag = _TAGS.get(purpose, "")
 
     def setting(name):
@@ -178,7 +179,7 @@ def _headers(route):
 
 
 def describe():
-    cfg = current_app.config
+    cfg = settings()
     route = _route("assistant")
     host = re.sub(r"^\w+://", "", route.url).split("/")[0]
     out = {"model": route.model, "url": route.url, "think": cfg["AI_THINK"], "provider": route.provider,
@@ -208,7 +209,7 @@ def check():
     if _backend:
         return
     routes = {}
-    for purpose in ("assistant", "builder", "fast") + (("embed",) if current_app.config.get("OLLAMA_EMBED_MODEL") else ()):
+    for purpose in ("assistant", "builder", "fast") + (("embed",) if settings().get("OLLAMA_EMBED_MODEL") else ()):
         route = _route(purpose)
         routes.setdefault((route.provider, route.url), route)
     for route in routes.values():
@@ -266,7 +267,7 @@ def _let_go():
     from .extensions import db
     if not _holding_writes():
         return
-    if current_app.config.get("TESTING"):
+    if settings().get("TESTING"):
         raise AssertionError("the AI was asked while this thread held unsaved writes: commit first")
     log.warning("The AI was asked while unsaved writes held the database", stack_info=True)
     if not db.session().in_nested_transaction():
@@ -393,7 +394,7 @@ _gates_lock = threading.Lock()
 
 
 def _gate(route):
-    limit = max(1, int(current_app.config.get("AI_CONCURRENCY") or 0) or (2 if route.provider == "ollama" else 8))
+    limit = max(1, int(settings().get("AI_CONCURRENCY") or 0) or (2 if route.provider == "ollama" else 8))
     with _gates_lock:
         gate = _gates.get((route.provider, route.url))
         if gate is None:
@@ -471,7 +472,7 @@ def chat(messages, *, schema=None, think=None, on_progress=None, purpose=None, p
     purpose picks the model ("builder", "fast", "assistant", "background"), priority the place in the queue
     ("interactive", "build", "background"), workspace_id whose turn it is; each, when not given, comes from where it's
     asked (see _who)."""
-    if current_app.config.get("TRYING_OUT"):  # a throwaway copy of an app being tried: its AI steps wait, as if it were off
+    if settings().get("TRYING_OUT"):  # a throwaway copy of an app being tried: its AI steps wait, as if it were off
         raise AIUnavailable("the AI isn't asked while an app is being tried out")
     purpose, priority, workspace_id = _who(purpose, priority, workspace_id)
     _let_go()
@@ -488,7 +489,7 @@ def chat(messages, *, schema=None, think=None, on_progress=None, purpose=None, p
 def _ask(messages, schema, think, on_progress, purpose, priority, workspace_id):
     """One call through the gateway: wait for a turn at its server, ask, count it."""
     route = _route(purpose)
-    deadline = Deadline(float(current_app.config.get("AI_DEADLINE") or 900))
+    deadline = Deadline(float(settings().get("AI_DEADLINE") or 900))
     asked, usage, waited = time.monotonic(), {}, None
     try:
         ask = {"ollama": _ollama_chat, "openai": _openai_chat}.get(route.provider)
@@ -522,7 +523,7 @@ def _waiting_note(on_progress):
 def _settings(think, purpose, priority):
     """What's asked of the model besides the conversation, the same whichever server answers: whether it thinks first,
     how long the answer may be, and how much chance it takes."""
-    cfg = current_app.config
+    cfg = settings()
     thinks = cfg["AI_THINK"] if think is None else think
     steady, tries = building.get() or purpose == "builder", again.get()
     seed = cfg.get("AI_BUILDER_SEED")
@@ -536,7 +537,7 @@ def _post(route, path, body, deadline, usage, *, stream=True, read_timeout=None)
     """POST to a model server, asking again with a growing wait when it can't be reached or says it's busy or broken (429,
     5xx), and never when it refused the request itself (another 4xx). Returns the last response, whatever its status;
     raises AIUnavailable when the server couldn't be reached at all, Late when the deadline came first."""
-    cfg = current_app.config
+    cfg = settings()
     tries, backoff = int(cfg.get("AI_RETRIES", 3)), float(cfg.get("AI_BACKOFF", 1.0))
     read_timeout = read_timeout or float(cfg.get("AI_READ_TIMEOUT") or 600)
     response = failure = None
@@ -723,7 +724,7 @@ def _openai_chat(route, messages, schema, ask, on_progress, deadline, usage):
         # The answer constrained to the schema as it's decoded. vLLM, SGLang, llama.cpp and LM Studio all take this form;
         # vLLM also takes its older `"guided_json": <schema>` in the body.
         body["response_format"] = {"type": "json_schema", "json_schema": {"name": "answer", "schema": schema, "strict": True}}
-    if current_app.config.get("AI_SERVER_PRIORITY"):
+    if settings().get("AI_SERVER_PRIORITY"):
         body["priority"] = PRIORITIES.index(ask["priority"])  # vLLM's priority scheduling: lower goes first
     response = _post(route, "/chat/completions", body, deadline, usage)
     _refused(response, route, "the request")
@@ -771,11 +772,11 @@ def embed(texts):
     builder. They're retried, given the deadline and counted (as "embed") like any call."""
     if _embedder:
         return _embedder(list(texts))
-    model = current_app.config.get("OLLAMA_EMBED_MODEL")
+    model = settings().get("OLLAMA_EMBED_MODEL")
     if not model:
         raise AIUnavailable("no embedding model is set (AI_MODEL_EMBED)")
     route, texts = _route("embed"), list(texts)
-    deadline, usage, began = Deadline(float(current_app.config.get("AI_DEADLINE") or 900)), {}, time.monotonic()
+    deadline, usage, began = Deadline(float(settings().get("AI_DEADLINE") or 900)), {}, time.monotonic()
     try:
         if route.provider not in PROVIDERS:
             raise AIError(f"AI_PROVIDER_EMBED is {route.provider!r}: it can be ollama or openai")

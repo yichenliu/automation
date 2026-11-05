@@ -13,6 +13,7 @@ Each step gets only what it needs: the language's catalog (generated from the re
 feature the platform has), the app as the language describes it, and the needs. A patch the platform can't apply
 comes back with exactly what's wrong and is sent again corrected, alone.
 """
+import logging
 import concurrent.futures
 import contextvars
 import copy
@@ -31,6 +32,9 @@ from ..extensions import db
 from ..lang import model as m, registry
 from ..models import Membership, Message, Workspace, utcnow
 from . import checking, trial
+from ..core.settings import settings
+
+_log = logging.getLogger(__name__)
 
 CANDIDATES = 3  # candidate fixes made at once for what didn't come out right
 SEARCH_ROUNDS = 2  # rounds of that, while each round helps
@@ -191,7 +195,7 @@ def _ask(system, user, schema_, progress=None, tries=0):
     token = ai.again.set(tries)
     try:
         content, _ = ai.chat([{"role": "system", "content": system}, {"role": "user", "content": user}], schema=schema_,
-                             on_progress=progress, think=current_app.config.get("AI_THINK_BUILDER"), purpose="builder")
+                             on_progress=progress, think=settings().get("AI_THINK_BUILDER"), purpose="builder")
     finally:
         ai.again.reset(token)
     return ai.parse_json(content) or {}
@@ -213,7 +217,7 @@ def _ask_many(system, user, schema_, n):
             try:
                 out.append(future.result())
             except ai.AIError as exc:
-                current_app.logger.info("A candidate fix wasn't made: %s", exc)
+                _log.info("A candidate fix wasn't made: %s", exc)
     return out
 
 
@@ -413,7 +417,7 @@ def work(message_id):
         message.status, message.error, message.finished_at = "failed", str(exc), utcnow()
         db.session.commit()
     except Exception as exc:  # a fault of ours: said, never left "thinking"
-        current_app.logger.exception("Builder turn %s failed", message_id)
+        _log.exception("Builder turn %s failed", message_id)
         db.session.rollback()
         message = db.session.get(Message, message_id)
         message.status, message.finished_at = "failed", utcnow()

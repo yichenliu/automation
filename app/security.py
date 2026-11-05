@@ -1,4 +1,5 @@
 """Who may do what, keeping secrets secret, and the browser-side protections every response carries."""
+import logging
 import base64
 import hashlib
 import json
@@ -13,10 +14,13 @@ from sqlalchemy import text
 
 from .extensions import db
 from .models import Membership, Workspace
+from .core.settings import settings
+
+_log = logging.getLogger(__name__)
 
 
 def _fernet():
-    key = hashlib.sha256(("tokens:" + current_app.config["SECRET_KEY"]).encode()).digest()
+    key = hashlib.sha256(("tokens:" + settings()["SECRET_KEY"]).encode()).digest()
     return Fernet(base64.urlsafe_b64encode(key))
 
 
@@ -30,7 +34,7 @@ def decrypt(token):
     try:
         return json.loads(_fernet().decrypt(token.encode()))
     except (InvalidToken, ValueError):
-        current_app.logger.error("A stored sign-in couldn't be decrypted (was the secret key in the data folder replaced?)")
+        _log.error("A stored sign-in couldn't be decrypted (was the secret key in the data folder replaced?)")
         return {}
 
 
@@ -141,7 +145,7 @@ class Throttle:
         if self.shared is not None:
             return self.shared
         try:
-            return not current_app.config.get("TESTING") and db.engine.dialect.name == "postgresql"
+            return not settings().get("TESTING") and db.engine.dialect.name == "postgresql"
         except RuntimeError:  # outside the app
             return False
 
@@ -165,7 +169,7 @@ class Throttle:
             with db.engine.begin() as conn:
                 return fn(conn, key)
         except Exception as exc:  # the database busy for a moment: this attempt is counted here instead
-            current_app.logger.warning("Couldn't count an attempt for the %s limit in the database: %s", self.name, exc)
+            _log.warning("Couldn't count an attempt for the %s limit in the database: %s", self.name, exc)
             return None
 
     # --- asked by the screens -----------------------------------------------------------------------------------
@@ -205,7 +209,7 @@ def client_ip():
     """Who's connecting. X-Forwarded-For is only believed when the platform runs behind a proxy that sets it
     (TRUST_PROXY=1); otherwise anyone could send a new one each time and dodge the sign-in limits."""
     from flask import current_app
-    if current_app.config.get("TRUST_PROXY"):
+    if settings().get("TRUST_PROXY"):
         return request.headers.get("X-Forwarded-For", request.remote_addr or "").split(",")[0].strip()
     return request.remote_addr or ""
 

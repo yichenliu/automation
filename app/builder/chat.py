@@ -4,12 +4,12 @@ A turn runs in the background (`work`), saving its progress as it goes so the ch
 then each table, field or automation as the AI writes it. Changes that don't fit are sent back to the AI to fix (twice
 at most); the design only changes when everything checks out, and every change is a new version that can be undone.
 """
+import logging
 import copy
 import json
 import re
 from datetime import datetime, timedelta
 
-from flask import current_app
 
 from .. import ai
 from ..blueprint import ops, schema
@@ -17,6 +17,9 @@ from ..engine.records import Engine, FieldErrors
 from ..extensions import db
 from ..models import Membership, Message, Version, Workspace, utcnow
 from . import checking, prompts, training, trial
+from ..core.settings import settings
+
+_log = logging.getLogger(__name__)
 
 AI_RETRY_SECONDS = 20
 HISTORY = 8
@@ -74,7 +77,7 @@ def save_version(workspace, blueprint, changes, source, message_id=None, by=None
     try:
         kept = carry.keep(workspace, before, blueprint) + carry.repriced(workspace, before, blueprint) if before.get("tables") else []
     except Exception:  # keeping values is a help: it never stops a design being saved (an undo brings them back)
-        current_app.logger.exception("Keeping records' values through version %s of workspace %s failed", number, workspace.id)
+        _log.exception("Keeping records' values through version %s of workspace %s failed", number, workspace.id)
         db.session.rollback()
         workspace.blueprint, workspace.version = blueprint, number
         kept = []
@@ -90,14 +93,14 @@ def save_version(workspace, blueprint, changes, source, message_id=None, by=None
             n = combined.rebuild(Engine(workspace, by="builder"), t)
             kept.append(f"Put together {t['label']} from {', '.join(combined.sources(blueprint, t))}: {n} record{'s' if n != 1 else ''}")
         except Exception:  # its records come with the next change to the lists it's made from
-            current_app.logger.exception("Putting together %s in workspace %s failed", t["key"], workspace.id)
+            _log.exception("Putting together %s in workspace %s failed", t["key"], workspace.id)
             db.session.rollback()
             workspace.blueprint, workspace.version = blueprint, number
     try:  # what the AI has read of the records, in the design's words as they are now
         from .. import knowledge
         knowledge.redesigned(workspace, before, blueprint)
     except Exception:  # never a reason a design isn't saved: the records are read again as they change
-        current_app.logger.exception("Marking records to read again after version %s of workspace %s failed", number, workspace.id)
+        _log.exception("Marking records to read again after version %s of workspace %s failed", number, workspace.id)
         db.session.rollback()
         workspace.blueprint, workspace.version = blueprint, number
     if source != "restore":
@@ -374,39 +377,39 @@ def design(workspace, convo, on_progress=None, on_note=None, sheet_cells=None, i
         return answer
 
     try:
-        content, _ = ai.chat(convo, schema=answer_schema, on_progress=on_progress, think=current_app.config["AI_THINK_BUILDER"])
+        content, _ = ai.chat(convo, schema=answer_schema, on_progress=on_progress, think=settings()["AI_THINK_BUILDER"])
         answer = parse(content)
     except ai.AIUnavailable:
         raise
     except ai.AIError as exc:  # cut off or unreadable: almost always too much at once, so ask for a smaller first part
-        current_app.logger.info("Builder for workspace %s: asking again after %s", workspace.id, exc)
+        _log.info("Builder for workspace %s: asking again after %s", workspace.id, exc)
         if isinstance(exc, ai.Stuck):
             ai.again.set(ai.again.get() + 1)  # went round in a loop: the next go a little less fixed
         if on_note:
             on_note("That was a lot at once: building it in smaller parts")
         convo = convo + [{"role": "user", "content": CUT_OFF_CHANGING if changing else CUT_OFF}]
-        content, _ = ai.chat(convo, schema=answer_schema, on_progress=on_progress, think=current_app.config["AI_THINK_BUILDER"])
+        content, _ = ai.chat(convo, schema=answer_schema, on_progress=on_progress, think=settings()["AI_THINK_BUILDER"])
         answer = parse(content)
     result = ops.apply(workspace.blueprint, answer.get("ops") or [], always_check=True, already=already)
     _tag(kind=kind, applied=not result.problems, problems=result.problems[:8], corrected=result.corrected[:8])
     for _ in range(REPAIRS):
         if not result.problems:
             break
-        current_app.logger.info("Builder for workspace %s: sending back %s", workspace.id, result.problems)
+        _log.info("Builder for workspace %s: sending back %s", workspace.id, result.problems)
         if on_note:
             on_note("Checking it all fits together")
         convo = convo + [{"role": "assistant", "content": content},
                          {"role": "user", "content": "The platform couldn't apply those changes:\n- " + "\n- ".join(result.problems[:16])
                                                      + (f"\n(and {len(result.problems) - 16} more; later ones often follow from the first)" if len(result.problems) > 16 else "")
                                                      + "\nSend the whole answer again with every change corrected (all the ops, not only the fixed ones)."}]
-        content, _ = ai.chat(convo, schema=answer_schema, on_progress=on_progress, think=current_app.config["AI_THINK_BUILDER"])
+        content, _ = ai.chat(convo, schema=answer_schema, on_progress=on_progress, think=settings()["AI_THINK_BUILDER"])
         answer = parse(content)
         result = ops.apply(workspace.blueprint, answer.get("ops") or [], always_check=True, already=already)
         _tag(kind=kind, applied=not result.problems, problems=result.problems[:8], corrected=result.corrected[:8], repair=True)
     if result.problems:  # keep what fits rather than lose the whole answer over one part of it
         salvaged = ops.salvage(workspace.blueprint, answer.get("ops") or [])
         if not salvaged.problems and salvaged.changed:
-            current_app.logger.info("Builder for workspace %s: kept the answer without %s", workspace.id, salvaged.left_out)
+            _log.info("Builder for workspace %s: kept the answer without %s", workspace.id, salvaged.left_out)
             result = salvaged
     return answer, result
 
@@ -429,7 +432,7 @@ def _asked_ops(answer, asked):
         if quoted and len(quoted & said) >= REVIEW_MATCH * len(quoted):
             out += check["ops"]
         elif check["ops"]:
-            current_app.logger.info("The check's “%s” isn't in the request; left out %s op(s)", check.get("asked"), len(check["ops"]))
+            _log.info("The check's “%s” isn't in the request; left out %s op(s)", check.get("asked"), len(check["ops"]))
     return out
 
 
@@ -513,7 +516,7 @@ def _closing_reply(asked, replies, changes, missing, trouble, stuck=()):
         if reply:
             return reply
     except Exception:  # a plainer reply beats none
-        current_app.logger.info("Closing reply couldn't be written by the AI", exc_info=True)
+        _log.info("Closing reply couldn't be written by the AI", exc_info=True)
     text = replies[0] if replies else ""
     if missing and stuck:
         text += (f" I still couldn't build {_and(missing)}, and I've tried more than once. Tell me just one small part of it in your own "
@@ -635,10 +638,10 @@ def _write_examples(workspace, asked, first):
                                          + (f"\nPeople in the app: {people}" if people else "")
                                          + f"\n\nThe app:\n{prompts.outline(workspace.blueprint, engine.counts())}"}]
     try:
-        content, _ = ai.chat(convo, schema=prompts.EXAMPLES_SCHEMA, think=current_app.config["AI_THINK_BUILDER"])
+        content, _ = ai.chat(convo, schema=prompts.EXAMPLES_SCHEMA, think=settings()["AI_THINK_BUILDER"])
         found = ai.parse_json(content).get("examples") or []
     except ai.AIError as exc:
-        current_app.logger.info("Worked examples couldn't be written for workspace %s: %s", workspace.id, exc)
+        _log.info("Worked examples couldn't be written for workspace %s: %s", workspace.id, exc)
         return []
     found = [x for x in found if isinstance(x, dict) and x.get("steps") and x.get("expect")][:4]
     _tag(kind="examples", applied=bool(found))
@@ -682,7 +685,7 @@ def _already_found(workspace, was):
     try:
         return {i["text"] for i in checks.run(engine)}
     except Exception:  # noqa: BLE001 - reading the old design is a help: without it, everything found is this turn's
-        current_app.logger.exception("Reading workspace %s's design as it was before this turn failed", workspace.id)
+        _log.exception("Reading workspace %s's design as it was before this turn failed", workspace.id)
         return set()
 
 
@@ -720,7 +723,7 @@ def _try_out(workspace, message, asked, behaviour, carry_on, progress, note, by,
             first = {"wrong": len(hard), "examples": [sum(1 for r in playable_now if r["ok"]), len(playable_now)],
                      "found": [i["text"] for i in hard][:8] + [f"{x['title']}: {r['problem']}" for x, r in failing][:8]}
         if before is not None and score > before["score"]:  # the fix broke more than it mended: back to before it
-            current_app.logger.info("Builder turn %s: a fix made the try-out worse (%s → %s); undone", message.id, before["score"], score)
+            _log.info("Builder turn %s: a fix made the try-out worse (%s → %s); undone", message.id, before["score"], score)
             restore(workspace, before["version"], by="the builder",
                     why=f"The builder undid its own fix, which made more go wrong when it tried the app out (back to version {before['version']})")
             changes = changes[:before["changes"]]
@@ -738,7 +741,7 @@ def _try_out(workspace, message, asked, behaviour, carry_on, progress, note, by,
             answer, result = design(workspace, carry_on(_fix_request(hard, soft if fixes == 1 else [], failing, wrong, changing=bool(was) and not (mending or {}).get("all")), None),
                                     progress, note, answer_schema=prompts.FIX_SCHEMA, changing=bool(was), me=me, theirs=theirs)
         except ai.AIError as exc:
-            current_app.logger.info("Builder turn %s: no fix from the AI (%s)", message.id, exc)
+            _log.info("Builder turn %s: no fix from the AI (%s)", message.id, exc)
             break
         corrected = {str(e.get("title")): e for e in answer.get("examples") or [] if isinstance(e, dict) and e.get("steps")}
         kinds = {str(x.get("title")): r["kind"] for x, r in zip(examples, results)}
@@ -873,7 +876,7 @@ def _ask_instead(workspace, asked):
         question = plain(str(ai.parse_json(content).get("question") or "").strip())
         return question if question.endswith("?") or "?" in question else None
     except Exception:  # noqa: BLE001 - the plain "couldn't fit" stands
-        current_app.logger.info("No question could be asked instead", exc_info=True)
+        _log.info("No question could be asked instead", exc_info=True)
         return None
 
 
@@ -999,7 +1002,7 @@ def work(message_id):
 
 def _v2(message_id):
     """Whether this turn is the Keel v2 builder's (app/builder/build.py): every turn, unless set otherwise."""
-    return current_app.config.get("BUILDER", "v2") == "v2"
+    return settings().get("BUILDER", "v2") == "v2"
 
 
 def _work(message_id):
@@ -1104,7 +1107,7 @@ def _work(message_id):
             db.session.commit()
             return
         except Exception as exc:  # a fault of ours: say so, rather than leave the turn "thinking" for ever
-            current_app.logger.exception("Builder turn %s failed", message.id)
+            _log.exception("Builder turn %s failed", message.id)
             db.session.rollback()
             if replies:
                 problems.append("something went wrong on our side while building the rest")
@@ -1132,7 +1135,7 @@ def _work(message_id):
             continue
         if result.problems:
             if reviewing:  # what the check would add didn't fit: the build stands as it was, and nothing more is claimed
-                current_app.logger.info("Builder turn %s: the check's additions didn't fit: %s", message.id, result.problems)
+                _log.info("Builder turn %s: the check's additions didn't fit: %s", message.id, result.problems)
                 break
             if fixing:  # the second try at what was cut didn't fit either: that stays out, and the plan carries on
                 fixing, plan, fixing_plan = None, fixing_plan, None
@@ -1152,7 +1155,7 @@ def _work(message_id):
                                                              "the one named), and a notify step to the person asking."}]
                 continue
             if not replies:  # nothing was saved, so the AI's reply (what it meant to build) isn't shown as if it were
-                current_app.logger.info("Builder turn %s: nothing fitted: %s", message.id, result.problems)
+                _log.info("Builder turn %s: nothing fitted: %s", message.id, result.problems)
                 message.ops = answer.get("ops") or []
                 message.text = ""
                 question = _ask_instead(workspace, asked) if len(asked.split()) <= VAGUE_WORDS else None
@@ -1242,7 +1245,7 @@ def _work(message_id):
         except ai.AIUnavailable:
             tried = None
         except Exception:  # trying it out must never cost the owner what was built
-            current_app.logger.exception("Trying out the app after turn %s failed", message.id)
+            _log.exception("Trying out the app after turn %s failed", message.id)
             db.session.rollback()
             message = db.session.get(Message, message.id)
             workspace = db.session.get(Workspace, workspace.id)

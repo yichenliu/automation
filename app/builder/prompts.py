@@ -6,9 +6,9 @@ building blocks themselves (screens, forms, documents, automations) are the plat
 import json
 import re
 
-from flask import current_app
 
 from ..blueprint import ops, schema
+from ..core.settings import settings
 
 SYSTEM = """You are the analyst and builder inside {platform}, where a business owner gets their own ERP by chatting with
 you. You understand how their business works and assemble the ERP from the platform's building blocks: tables, fields,
@@ -825,7 +825,7 @@ PLAYBOOKS = [(re.compile(r"tender|\bbids?\b|sourcing|delegation|limits?\b|separa
 
 def system(asked=""):
     """The analyst's instructions, with the playbooks the owner's words call for."""
-    text = SYSTEM.format(platform=current_app.config["PLATFORM_NAME"])
+    text = SYSTEM.format(platform=settings()["PLATFORM_NAME"])
     extra = "".join(guide.format() for pattern, guide in PLAYBOOKS if asked and pattern.search(asked))
     return text.replace("\nHOW TO WORK\n", extra + "\n\nHOW TO WORK\n", 1) if extra else text
 

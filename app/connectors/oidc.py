@@ -13,7 +13,8 @@ import time
 from urllib.parse import urlencode
 
 import requests
-from flask import current_app, url_for
+from flask import url_for
+from ..core.settings import settings
 
 _DISCOVERED = {}  # issuer: (when, its configuration)
 
@@ -23,18 +24,18 @@ class SSOProblem(Exception):
 
 
 def configured():
-    c = current_app.config
+    c = settings()
     return bool(c.get("OIDC_ISSUER") and c.get("OIDC_CLIENT_ID") and c.get("OIDC_CLIENT_SECRET"))
 
 
 def name():
     """What the button says: "Sign in with Google", "… with Okta"."""
-    issuer = str(current_app.config.get("OIDC_ISSUER") or "")
-    return current_app.config.get("OIDC_NAME") or ("Google" if "accounts.google.com" in issuer else "your company account")
+    issuer = str(settings().get("OIDC_ISSUER") or "")
+    return settings().get("OIDC_NAME") or ("Google" if "accounts.google.com" in issuer else "your company account")
 
 
 def _config():
-    issuer = str(current_app.config["OIDC_ISSUER"]).rstrip("/")
+    issuer = str(settings()["OIDC_ISSUER"]).rstrip("/")
     cached = _DISCOVERED.get(issuer)
     if cached and time.time() - cached[0] < 3600:
         return cached[1]
@@ -49,7 +50,7 @@ def _config():
 
 
 def redirect_uri():
-    return f"{current_app.config['BASE_URL']}{url_for('auth.sso_callback')}"
+    return f"{settings()['BASE_URL']}{url_for('auth.sso_callback')}"
 
 
 def login_url(session, linking=False):
@@ -60,7 +61,7 @@ def login_url(session, linking=False):
     state, nonce = secrets.token_urlsafe(24), secrets.token_urlsafe(24)
     session["sso"] = {"state": state, "nonce": nonce, "verifier": verifier, "at": time.time(), "linking": bool(linking)}
     challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
-    query = {"response_type": "code", "client_id": current_app.config["OIDC_CLIENT_ID"], "redirect_uri": redirect_uri(),
+    query = {"response_type": "code", "client_id": settings()["OIDC_CLIENT_ID"], "redirect_uri": redirect_uri(),
              "scope": "openid email profile", "state": state, "nonce": nonce, "code_challenge": challenge,
              "code_challenge_method": "S256", "prompt": "select_account"}
     return f"{_config()['authorization_endpoint']}?{urlencode(query)}"
@@ -78,14 +79,14 @@ def finish(session, args):
     try:
         answer = requests.post(found["token_endpoint"], timeout=15, data={
             "grant_type": "authorization_code", "code": args.get("code", ""), "redirect_uri": redirect_uri(),
-            "client_id": current_app.config["OIDC_CLIENT_ID"], "client_secret": current_app.config["OIDC_CLIENT_SECRET"],
+            "client_id": settings()["OIDC_CLIENT_ID"], "client_secret": settings()["OIDC_CLIENT_SECRET"],
             "code_verifier": pending["verifier"]}).json()
     except (requests.RequestException, ValueError) as exc:
         raise SSOProblem(f"{name()} didn't answer ({exc}). Try again.") from exc
     claims = _id_claims(answer.get("id_token") or "")
-    issuer = str(current_app.config["OIDC_ISSUER"]).rstrip("/")
+    issuer = str(settings()["OIDC_ISSUER"]).rstrip("/")
     audience = claims.get("aud") if isinstance(claims.get("aud"), list) else [claims.get("aud")]
-    if str(claims.get("iss", "")).rstrip("/") != issuer or current_app.config["OIDC_CLIENT_ID"] not in audience:
+    if str(claims.get("iss", "")).rstrip("/") != issuer or settings()["OIDC_CLIENT_ID"] not in audience:
         raise SSOProblem("The sign-in answer wasn't for this platform. Try again.")
     if claims.get("nonce") != pending.get("nonce") or float(claims.get("exp") or 0) < time.time() - 60:
         raise SSOProblem("The sign-in answer has expired. Try again.")

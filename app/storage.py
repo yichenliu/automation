@@ -9,10 +9,10 @@ import re
 import uuid
 from pathlib import Path
 
-from flask import current_app
 
 from .extensions import db
 from .models import File, utcnow
+from .core.settings import settings
 
 BLOCKED = {".exe", ".bat", ".cmd", ".com", ".scr", ".js", ".vbs", ".ps1", ".sh", ".app", ".dmg", ".msi", ".jar", ".html", ".htm", ".svg"}
 
@@ -33,9 +33,9 @@ def save(workspace_id, data, name, *, source="upload", record_id=None, field="",
     if Path(name).suffix.lower() in BLOCKED:
         raise FileRejected(f"“{name}” is a kind of file that can't be stored here.")
     content = data if isinstance(data, (bytes, bytearray)) else data.read()
-    limit = current_app.config["MAX_UPLOAD_MB"] * 1024 * 1024
+    limit = settings()["MAX_UPLOAD_MB"] * 1024 * 1024
     if len(content) > limit:
-        raise FileRejected(f"“{name}” is larger than {current_app.config['MAX_UPLOAD_MB']} MB.")
+        raise FileRejected(f"“{name}” is larger than {settings()['MAX_UPLOAD_MB']} MB.")
     if not content:
         raise FileRejected(f"“{name}” is empty.")
     now = utcnow()
@@ -121,7 +121,7 @@ _stores = {}
 
 
 def backend():
-    cfg = current_app.config
+    cfg = settings()
     kind = (cfg.get("FILES_BACKEND") or "local").lower()
     if kind == "s3":
         found = _stores.get(("s3", cfg.get("S3_BUCKET"), cfg.get("S3_PREFIX"), cfg.get("DATA_DIR")))

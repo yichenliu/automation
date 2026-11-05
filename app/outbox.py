@@ -18,12 +18,12 @@ import logging
 from datetime import timedelta
 from zoneinfo import ZoneInfo
 
-from flask import current_app
 from sqlalchemy import select
 
 from . import leases
 from .extensions import db
 from .models import File, Outbox, Run, Workspace, utcnow
+from .core.settings import settings
 
 log = logging.getLogger("outbox")
 TRIES = 6  # then it's given up on, and the people who run the app are told
@@ -38,12 +38,12 @@ class OutboxProblem(Exception):
 
 def at_once():
     """Whether messages are sent there and then (tests, try-outs, the simulator) instead of by the worker."""
-    cfg = current_app.config
+    cfg = settings()
     return bool(cfg.get("TESTING") or cfg.get("TRYING_OUT") or cfg.get("SIMULATION"))
 
 
 def _reaches_outside():
-    cfg = current_app.config
+    cfg = settings()
     return not (cfg.get("TRYING_OUT") or cfg.get("SIMULATION"))
 
 
@@ -129,7 +129,7 @@ SENDERS = {"email": _send_email, "sms": _send_sms}
 
 def _when(ws, at):
     try:
-        tz = ZoneInfo((ws.timezone if ws is not None else None) or current_app.config["DEFAULT_TIMEZONE"])
+        tz = ZoneInfo((ws.timezone if ws is not None else None) or settings()["DEFAULT_TIMEZONE"])
     except Exception:  # noqa: BLE001 - an unknown time zone
         tz = ZoneInfo("UTC")
     local = at.replace(tzinfo=ZoneInfo("UTC")).astimezone(tz)
