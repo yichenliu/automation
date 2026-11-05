@@ -552,3 +552,29 @@ def test_a_stage_a_rule_moves_records_on_from_isnt_a_dead_end(app):
     ws = _workspace(app, bp)
     walked, _ = trial.try_out(ws, [], screens=False)
     assert not [i for i in walked["issues"] if "orders record at In fitting can't move on" in i["text"]], walked["issues"]
+
+
+def test_asking_for_a_fix_makes_what_an_owners_check_said_the_app_doesnt_do_yet(app):
+    from app.models import Job
+    app.config["BUILDER"] = "v2"
+    bp = lang.apply(schema.empty("Shop"), [EVERYTHING[0], _invoices()]).blueprint
+    ws = _workspace(app, bp)
+    ws.state = {"refused_checks": [{"said": "I'm told when an invoice is paid", "missing": True, "by": "owner",
+                                    "why": "nothing tells anyone when an invoice is paid"}]}
+    db.session.add(Message(workspace_id=ws.id, channel="builder", role="assistant", status="done", text="Not everything works yet. …"))
+    db.session.commit()
+    model = Model({"data": {"lists": ["invoices"], "patches": []},
+                   "behaviour": {"work": [{"need": 1, "patches": [{"do": "stage_alert", "list": "invoices", "stage": "Paid"}]}]}})
+    ai.set_backend(model)
+    q = Message(workspace_id=ws.id, channel="builder", user_id=ws.owner_id, role="user", text="Fix what didn't come out right")
+    a = Message(workspace_id=ws.id, channel="builder", role="assistant", status="queued")
+    db.session.add_all([q, a])
+    db.session.commit()
+    from app.builder import chat
+    chat.work(a.id)
+    a = db.session.get(Message, a.id)
+    assert a.status == "done", a.error
+    assert "understand" not in model.asked and "behaviour" in model.asked  # straight to making what the check asks for
+    ws = db.session.get(Workspace, ws.id)
+    assert any(e["do"] == "stage_alert" for e in ws.blueprint["features"])
+    assert Job.query.filter_by(workspace_id=ws.id, kind="check_add").count() == 1  # and the owner's check is tried again

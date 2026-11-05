@@ -277,7 +277,10 @@ def _said_failing(run):
     lines = []
     for x, r in _failing(run)[:8]:
         steps = "; ".join(json.dumps(s, ensure_ascii=False) for s in x.get("steps", [])[:8])
-        lines.append(f"- “{x.get('title')}” (steps: {steps}; expects {json.dumps(x.get('expect'), ensure_ascii=False)}): {r.get('problem')}")
+        by = str(x.get("by") or "builder")
+        whose = (f"the feature {by[8:]}'s own check: change that feature (send it again with its key)" if by.startswith("feature:")
+                 else "your own worked example" if by == "builder" else "the owner's own check: the app must do what it says")
+        lines.append(f"- “{x.get('title')}” ({whose}; steps: {steps}; expects {json.dumps(x.get('expect'), ensure_ascii=False)}): {r.get('problem')}")
     lines += [f"- {i['text']}" for i in run["hard"][:6]]
     return "\n".join(lines)
 
@@ -458,6 +461,12 @@ def _turn(turn):
             return
         if needs:
             turn.note("What I'll make it do: " + "; ".join(n.does.rstrip(".") for n in needs[:6]))
+    asked_for = [x for x in ((mending or {}).get("found") or {}).get("missing") or [] if x.get("said")]
+    if asked_for:  # the owner's checks the app doesn't do yet: what they asked for, made now as needs of their own
+        known = {n.said.strip().lower() for n in needs}
+        needs = list(needs) + [Need(said=x["said"], does=x["said"].strip().rstrip(".")[:160]) for x in asked_for
+                               if x["said"].strip().lower() not in known]
+        turn.note("Making what your checks ask for: " + "; ".join(x["said"].rstrip(".")[:80] for x in asked_for[:3]))
     needs_text = "\n".join(f"{i}. {n.does} (from: “{n.said}”)" for i, n in enumerate(needs, start=1))
     if needs:
         _make_lists(turn, needs_text)
@@ -537,6 +546,8 @@ def _turn(turn):
         turn.save(out)
         turn.credit(patches, out, owners)
         best = run
+    if asked_for and turn.changes:  # the owner's checks for them are tried again, as the owner would
+        checking.try_again_missing(workspace)
     _hand_over(turn, needs, best, reply=reply, first=first, rounds=rounds, custom=custom)
 
 
