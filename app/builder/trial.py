@@ -81,8 +81,12 @@ def copy_of(workspace):
                    "SQLALCHEMY_BINDS": {}, "WTF_CSRF_ENABLED": False, "SQLALCHEMY_ENGINE_OPTIONS": {"pool_size": 2, "max_overflow": 4},
                    "MICROSOFT_CLIENT_ID": "", "MICROSOFT_CLIENT_SECRET": "", "OLLAMA_EMBED_MODEL": "", "SERVER_NAME": None})
     try:
-        place = database.throwaway(current_app.config["SQLALCHEMY_DATABASE_URI"], "tryout")  # an empty database of its own
-        config["SQLALCHEMY_DATABASE_URI"] = place.__enter__()
+        if current_app.config.get("TRY_IN_POSTGRES"):  # the old way: an empty PostgreSQL database of its own
+            place = database.throwaway(current_app.config["SQLALCHEMY_DATABASE_URI"], "tryout")
+            config["SQLALCHEMY_DATABASE_URI"] = place.__enter__()
+        else:  # the simulator: the same engine on an in-memory database, made in a fraction of a second
+            from .. import sim
+            config.update(sim.overrides())
         app = create_app(config)
         with app.app_context():
             if not any(p[0] == owner_id for p in people):

@@ -83,15 +83,19 @@ def create_app(overrides=None):
                                text="It's not your fault, and nothing you entered was lost. Go back and try again."), 500
 
     with app.app_context():
-        if db.engine.dialect.name != "postgresql":
+        if db.engine.dialect.name != "postgresql" and not app.config.get("SIMULATION"):
             raise RuntimeError("The platform runs on PostgreSQL only: run ./start.sh setup (it sets DATABASE_URL in .env)")
-        from . import migrate
-        new = migrate.is_new()
-        db.create_all()
-        migrate.upgrade(new)
+        if app.config.get("SIMULATION"):  # the simulator (app/sim): the same engine on an in-memory database
+            from .sim import store
+            store.create(db)
+        else:
+            from . import migrate
+            new = migrate.is_new()
+            db.create_all()
+            migrate.upgrade(new)
         from . import discovery, importer, intelligence, knowledge, learning  # noqa: F401 (register their background jobs)
 
-    if app.config["WORKER"] and not app.config.get("TESTING"):
+    if app.config["WORKER"] and not app.config.get("TESTING") and not app.config.get("SIMULATION"):
         from . import worker
         worker.start(app)
     return app

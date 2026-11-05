@@ -186,6 +186,8 @@ def _null_pool():
 def fix_sequences(session):
     """Each table's id counter moved past the ids already in it (after rows were copied in with their own)."""
     from sqlalchemy import text
+    if session.get_bind().dialect.name != "postgresql":
+        return  # SQLite carries on after the highest id by itself
     rows = session.execute(text("""SELECT c.table_name, pg_get_serial_sequence(quote_ident(c.table_name), c.column_name)
                                    FROM information_schema.columns c WHERE c.table_schema = 'public' AND c.column_name = 'id'
                                    AND c.column_default LIKE 'nextval%'""")).fetchall()
