@@ -173,10 +173,10 @@ def list_records(table):
         if not schema.field(t, key) and key not in ("created_at", "updated_at"):
             return _error(400, f"{t['label']} has no field “{key}” to sort by.")
         sort = {"field": key, "dir": "desc" if request.args["sort"].startswith("-") else "asc"}
-    rows = engine.query(t["key"], filters, q=request.args.get("q"), sort=sort)
     limit = int(min(max(to_number(request.args.get("limit")) or 50, 1), MAX_LIMIT))
     offset = int(max(to_number(request.args.get("offset")) or 0, 0))
-    return jsonify(total=len(rows), limit=limit, offset=offset, records=[_out(engine, t, r) for r in rows[offset:offset + limit]])
+    rows, total = engine.page(t["key"], filters, q=request.args.get("q"), sort=sort, offset=offset, limit=limit)  # only this page read
+    return jsonify(total=total, limit=limit, offset=offset, records=[_out(engine, t, r) for r in rows])
 
 
 @bp.route("/tables/<table>/records/<int:rid>")

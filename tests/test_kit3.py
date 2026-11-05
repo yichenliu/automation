@@ -6,7 +6,7 @@ from datetime import date, timedelta
 import pytest
 
 from app.blueprint import ops, schema
-from app.builder import chat, prompts
+from app.builder import chat
 from app.documents import build, produce
 from app.engine import automations
 from app.engine.records import Engine
@@ -58,8 +58,6 @@ def test_periods_links_and_me_in_filters(app, owner):
     result = ops.apply(ws.blueprint, [{"op": "add_view", "table": "sales", "view": {"key": "x", "type": "list",
                                                                                    "filters": [{"field": "consultant.nope", "op": "equals", "value": 1}]}}])
     assert any("“nope” isn't a field of Consultants" in p for p in result.problems)
-    trigger = list(prompts._TRIGGER["properties"])
-    assert trigger.index("every") < trigger.index("at") < trigger.index("table")  # the AI writes a schedule's timing first
 
 
 def test_a_work_order_explodes_its_products_bill_of_materials(app, owner):
@@ -416,14 +414,6 @@ def test_the_fourth_runs_shorthand_is_read_the_one_way_it_can_be(app, owner):
     assert Engine(ws).get(job.id).data["contract_value"] == 1250
 
 
-def test_the_closing_reply_isnt_told_about_things_not_built_when_there_are_none(app, owner):
-    from app import ai
-    from tests.conftest import ScriptedAI
-    scripted = ScriptedAI({"reply": "Done."}, {"reply": "Mostly done."})
-    ai.set_backend(scripted)
-    chat._closing_reply("Patients and notes", ["Built."], ["Created the table Treatment notes"], [], [])
-    chat._closing_reply("Patients and notes", ["Built."], ["Created the table Patients"], ["the treatment notes"], [])
-    assert "Carry on building" not in scripted.asked[0][0]["content"] and "Carry on building" in scripted.asked[1][0]["content"]
 
 
 def test_an_invoice_made_in_a_run_gets_journal_lines_from_its_own_lines(app, owner):

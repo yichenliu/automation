@@ -77,8 +77,9 @@ patches.
 BEHAVIOUR = BASE + """
 
 Now make what the app does by itself, need by need: a feature whenever one fits, a rule only for what none does. For
-each need, send the patches that make it happen (none for a need the lists already meet). Don't add lists here; add a
-field only when a rule needs one.
+each need, send the patches that make it happen in "work", or put its number in "already" if the app as it is (its
+lists, fields, features and rules) already does it. Every need is one or the other. Add a field only when a rule
+needs one.
 
 {catalog}"""
 
@@ -148,6 +149,7 @@ def _answer_schema(group, by_need=False):
 
         class Answer(BaseModel):
             work: list[Work]
+            already: list[int] = Field(default_factory=list, description="the needs the app already meets as it is (no patches)")
             reply: str = ""
     elif group == "data":
         class Answer(BaseModel):  # noqa: F811
@@ -250,8 +252,9 @@ def _suite(workspace, bp, custom):
     return lang.checks(bp) + custom + _theirs(workspace)
 
 
-def _run(workspace, bp, examples, screens=False):
+def _run(workspace, bp, examples, screens=False, asked=""):
     walked, results = trial.try_out(workspace, examples, screens=screens, blueprint=bp)
+    walked["issues"] = list(walked.get("issues", [])) + _kept_as_asked(asked, bp)  # what the owner said is kept from some people
     hard = [i for i in walked.get("issues", []) if i.get("level") == "fix"]
     return {"walked": walked, "results": results, "examples": examples, "hard": hard}
 
@@ -275,7 +278,10 @@ def _said_failing(run):
     lines = []
     for x, r in _failing(run)[:8]:
         steps = "; ".join(json.dumps(s, ensure_ascii=False) for s in x.get("steps", [])[:8])
-        lines.append(f"- “{x.get('title')}” (steps: {steps}; expects {json.dumps(x.get('expect'), ensure_ascii=False)}): {r.get('problem')}")
+        by = str(x.get("by") or "builder")
+        whose = (f"the feature {by[8:]}'s own check: change that feature (send it again with its key)" if by.startswith("feature:")
+                 else "your own worked example" if by == "builder" else "the owner's own check: the app must do what it says")
+        lines.append(f"- “{x.get('title')}” ({whose}; steps: {steps}; expects {json.dumps(x.get('expect'), ensure_ascii=False)}): {r.get('problem')}")
     lines += [f"- {i['text']}" for i in run["hard"][:6]]
     return "\n".join(lines)
 
@@ -289,6 +295,7 @@ class Turn:
         self.by = question.user_id if question else None
         self.tried, self.made = set(), set()  # the needs (by number) patches were sent for, and made for
         self.features = {}  # feature key -> the need it was made for
+        self.navigate = None  # where to show the owner afterwards: the first list the turn made or changed
         self.ruled = set()  # the needs made by rules of their own (checked by worked examples, not a feature's checks)
 
     def note(self, text):
@@ -310,8 +317,14 @@ class Turn:
         people = ", ".join(f"{engine.members().get(m_.user_id, 'someone')} ({m_.role})"
                            for m_ in Membership.query.filter_by(workspace_id=self.workspace.id) if m_.role != "portal")
         files = describe_files(self.question.files, self.workspace.id) if self.question is not None and self.question.files else ""
+        from .prompts import looking_at
+        where = looking_at(self.message.page)
+        asker = Membership.query.filter_by(workspace_id=self.workspace.id, user_id=self.by).first() if self.by else None
+        me = "owner" if asker is None or asker.role == "owner" else "admin"
         return (f"About the business: {self.workspace.about or self.workspace.name}\nToday: {schema.today_words(engine.today)}"
                 + (f"\nPeople in the app: {people}" if people else "")
+                + f"\n“Me” in what they say is the person asking: tell them as \"{me}\"."
+                + (f"\n{where}" if where else "")
                 + (f"\n\nFiles the owner attached (to design from; bring their rows in with import_rows when the owner wants their "
                    f"data in the app):\n{files}" if files else ""))
 
@@ -327,6 +340,7 @@ class Turn:
         if out.changes:
             self.message.version_after = save_version(self.workspace, out.blueprint, out.changes, "chat", self.message.id, by=self.by)
             self.changes += out.changes
+            self.navigate = self.navigate or out.navigate
             db.session.commit()
         if out.data:  # the records the owner gave, the rows of a file they attached: once the lists they go into are saved
             said, shown = _data(self.workspace, out.data, by=self.by)
@@ -456,6 +470,12 @@ def _turn(turn):
             return
         if needs:
             turn.note("What I'll make it do: " + "; ".join(n.does.rstrip(".") for n in needs[:6]))
+    asked_for = [x for x in ((mending or {}).get("found") or {}).get("missing") or [] if x.get("said")]
+    if asked_for:  # the owner's checks the app doesn't do yet: what they asked for, made now as needs of their own
+        known = {n.said.strip().lower() for n in needs}
+        needs = list(needs) + [Need(said=x["said"], does=x["said"].strip().rstrip(".")[:160]) for x in asked_for
+                               if x["said"].strip().lower() not in known]
+        turn.note("Making what your checks ask for: " + "; ".join(x["said"].rstrip(".")[:80] for x in asked_for[:3]))
     needs_text = "\n".join(f"{i}. {n.does} (from: “{n.said}”)" for i, n in enumerate(needs, start=1))
     if needs:
         _make_lists(turn, needs_text)
@@ -484,7 +504,7 @@ def _turn(turn):
     # simulate, then search
     examples = _suite(workspace, turn.bp, custom)
     turn.note(f"Trying your app out: {len(examples)} check{'s' if len(examples) != 1 else ''}")
-    best = _run(workspace, turn.bp, examples)
+    best = _run(workspace, turn.bp, examples, asked=asked)
     broken = _broken_examples(best)
     if broken:  # a worked example of the builder's that names what isn't there: corrected once, never quietly dropped
         turn.note(f"Correcting {len(broken)} check{'s' if len(broken) != 1 else ''} that couldn't be acted out")
@@ -496,7 +516,7 @@ def _turn(turn):
         custom = [{**{k: v for k, v in fixed[x.get("title")].items() if k != "need"}, "by": "builder", "need": x.get("need", "")}
                   if x.get("title") in fixed else x for x in custom]
         examples = _suite(workspace, turn.bp, custom)
-        best = _run(workspace, turn.bp, examples)
+        best = _run(workspace, turn.bp, examples, asked=asked)
     first = {"wrong": len(best["hard"]), "examples": [sum(1 for r in best["results"] if r["ok"]), len(best["results"])],
              "found": [i["text"] for i in best["hard"]][:8] + [f"{x['title']}: {r['problem']}" for x, r in _failing(best)][:8]}
     required = [x.get("title") for x in examples]
@@ -523,7 +543,7 @@ def _turn(turn):
             if not out.changes:
                 continue
             made = credited(patches, out, owners)
-            run = _run(workspace, out.blueprint, _suite(workspace, out.blueprint, custom))
+            run = _run(workspace, out.blueprint, _suite(workspace, out.blueprint, custom), asked=asked)
             passing, issues = _score(run, required)
             tried.append(((passing + len(made["needs"] & set(unmade)), issues, answer.get("_content")), out, run, patches, owners))
         if not tried:
@@ -535,6 +555,8 @@ def _turn(turn):
         turn.save(out)
         turn.credit(patches, out, owners)
         best = run
+    if asked_for and turn.changes:  # the owner's checks for them are tried again, as the owner would
+        checking.try_again_missing(workspace)
     _hand_over(turn, needs, best, reply=reply, first=first, rounds=rounds, custom=custom)
 
 
@@ -606,7 +628,20 @@ def _make_behaviour(turn, needs, needs_text):
         return _ask(BEHAVIOUR.format(catalog=catalog("behaviour")), f"{turn.about()}\n\nThe needs:\n{needs_text}\n\nThe app now:\n"
                     f"{lang.describe(turn.bp)}{extra}", _answer_schema("behaviour", by_need=by_need), turn.progress, tries, kind="behaviour")
     try:
-        sent, owners = flatten(ask())
+        answer = ask()
+        sent, owners = flatten(answer)
+        already = {int(i) for i in answer.get("already") or [] if str(i).isdigit()}
+        silent = [i for i in range(1, len(needs) + 1) if i not in set(owners.values()) | already]
+        if silent:  # a need neither made nor said to be met already: asked for once more, those alone
+            turn.note(f"Making what's still missing: {'; '.join(needs[i - 1].does.rstrip('.') for i in silent[:3])}")
+            more = ask(f"\n\nYou sent nothing for need{'s' if len(silent) != 1 else ''} {', '.join(map(str, silent))}. Send the patches that "
+                       f"make each happen (a feature whenever one fits), or put its number in \"already\" if the app as it is "
+                       f"already does it.", tries=1)
+            more_sent, more_owners = flatten(more)
+            already |= {int(i) for i in more.get("already") or [] if str(i).isdigit()}
+            owners.update({len(sent) + k: v for k, v in more_owners.items()})
+            sent = sent + more_sent
+        turn.tried |= {i for i in range(1, len(needs) + 1) if i not in already}  # what's neither made nor already met is said
     except TOO_MUCH:
         turn.note("That was too much in one go; making it one need at a time")
         sent, owners = [], {}
@@ -643,6 +678,27 @@ def _chosen(content):
     for c in ai.recording.get() or []:
         if c.get("kind") == "v2_fix" and c.get("content") == content:
             c["chosen"] = True
+
+
+KEEP_FROM = re.compile(r"\b(shouldn'?t|should not|mustn'?t|must not|can'?t|cannot|don'?t|do not|never) (be able to )?(see|know|access)\b"
+                       r"|\bonly see\b|\bhidden from\b|\bkept? .{0,40}\b(private|from)\b|\bnot (be )?visible\b", re.I)
+
+
+def _kept_as_asked(asked, bp):
+    """The owner said some people mustn't see some things ("the makers shouldn't see prices or customer details"), but
+    the design keeps nothing from anyone who can do the work: a try-out problem, said if it isn't put right."""
+    if not KEEP_FROM.search(asked or ""):
+        return []
+    teams = {tm["key"] for tm in schema.teams(bp)}
+    kept = any((t.get("access") or {}).get("teams") or (t.get("access") or {}).get("view") in ("admin", "owner") or t.get("row_access")
+               or any(f.get("access") for f in t["fields"]) or (t.get("access") or {}).get("view") in teams for t in bp.get("tables", []))
+    if kept:
+        return []
+    said = KEEP_FROM.search(asked)
+    sentence = next((x.strip() for x in re.split(r"(?<=[.!?\n])\s+", asked) if said.group(0) in x), said.group(0))[:200]
+    return [{"level": "fix", "where": "", "text": f"The owner said “{sentence}”, but the app keeps nothing from anyone who can do the work: "
+                                                  f"use set_team, set_access, own_records or a field's visible_to",
+             "plain": f"you said “{sentence}”, but everyone you invite to do the work can still see all of it"}]
 
 
 def _need_states(turn, needs, run):
@@ -696,11 +752,22 @@ def _hand_over(turn, needs, run, reply="", first=None, rounds=0, custom=(), stop
         text += "\n\nWhat your app does now:\n" + "\n".join(lines)
     if stopped:
         text += f"\n\n(The AI stopped answering before I'd finished: {stopped}. What's built is saved.)"
+    if turn.changes and message.version_before:  # said first: who can now see what, and money on what people already have
+        from ..blueprint import ops
+        from ..engine.carry import REPRICED
+        from ..models import Version
+        before = Version.query.filter_by(workspace_id=workspace.id, number=message.version_before).first()
+        seen = ops.access_changes(before.blueprint if before else {}, workspace.blueprint) if before else []
+        repriced = [c for c in turn.changes if c.startswith(REPRICED)]
+        if repriced:
+            text = ". ".join(repriced[:2]) + ".\n\n" + text
+        if seen:
+            text = f"Who can see what has changed: {'; '.join(seen[:4])}. Check that's what you want.\n\n" + text
     message.text = plain(text, workspace.blueprint, (turn.question.text if turn.question else ""))
     message.checks = {"examples": shown, "issues": issues, "fixes": rounds, "first": first or {},
                       "needs": [{"does": n.does, "said": n.said, "suggested": n.suggested, "state": s} for n, s in states]}
     message.ops = turn.log  # what was sent and what the platform said to it: for looking into a turn, and training
     message.changes = turn.changes
-    message.navigate = navigate_url(workspace, None)
+    message.navigate = navigate_url(workspace, turn.navigate)
     message.status, message.finished_at, message.next_try = "done", utcnow(), None
     db.session.commit()

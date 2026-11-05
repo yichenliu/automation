@@ -84,8 +84,33 @@ def _list(d, name, where):
     return t
 
 
+ROLE_WORDS = {"admins": "admin", "owners": "owner", "editors": "editor", "viewers": "viewer", "staff": "editor", "managers": "admin",
+              "manager": "admin", "everyone": "viewer"}
+
+
+def _role_or_team(d, name, where):
+    """A role (viewer, editor, admin, owner) or a team's key, as who may see or change something."""
+    word = ROLE_WORDS.get(schema.slug(name), schema.slug(name))
+    if word in schema.ROLE_NAMES or word in d.teams():
+        return word
+    raise Problem(f"{where}: “{name}” isn't a role (viewer, editor, admin, owner) or a team"
+                  + (f" ({', '.join(d.teams())})" if d.teams() else " (add one first with set_team)"))
+
+
 def ir_field(d, t, f, where):
     """The design's field for a language field on list t (t may be the list being made)."""
+    out = _ir_field(d, t, f, where)
+    for attr in ("show_if", "required_if"):
+        conditions = getattr(f, attr, None)
+        if conditions:
+            if not t.get("fields"):  # a list being made: its own fields aren't there to check against yet, kept as written
+                out[attr] = [{"field": c.field, "op": c.op, **({"value": c.value} if c.value is not None else {})} for c in conditions]
+            else:
+                out[attr] = ir_conditions(d, t, conditions, f"{where} › {attr}")
+    return out
+
+
+def _ir_field(d, t, f, where):
     out = {"key": schema.slug(f.key), "label": f.label}
     if isinstance(f, m.Plain):
         out["type"] = TYPE_OF.get(f.type, f.type)
@@ -96,6 +121,10 @@ def ir_field(d, t, f, where):
             out["default"] = f.default
         if f.help:
             out["help"] = f.help
+        if f.sensitive:
+            out["sensitive"] = True
+        if f.visible_to:
+            out["access"] = _role_or_team(d, f.visible_to, f"{where} › visible_to")
     elif isinstance(f, m.Choice):
         out.update(type=TYPE_OF[f.type], options=[str(o).strip() for o in f.options if str(o).strip()])
         if not out["options"]:
@@ -109,6 +138,8 @@ def ir_field(d, t, f, where):
             out["required"] = True
         if f.help:
             out["help"] = f.help
+        if f.visible_to:
+            out["access"] = _role_or_team(d, f.visible_to, f"{where} › visible_to")
     elif isinstance(f, m.Link):
         target = _list(d, f.to, where)
         out.update(type="link", table=target["key"])
@@ -207,6 +238,9 @@ def _check_formula(d, t, source, where, item=None, created=None):
             path = rest
         elif head.lower() in CONTEXT_NAMES:
             continue
+        if t is None:  # a rule started by an email or a file: there's no record yet, only what arrived
+            raise Problem(f"{where}: “{path}” isn't something an email or file rule can read (it can read email.subject, "
+                          f"email.body, email.sender, file.name, today())")
         try:
             d.path(t, path)
         except NameProblem as exc:
@@ -301,6 +335,16 @@ def _template(d, t, text, where):
 
 
 def ir_when(d, when, where):
+    if isinstance(when, m.EmailIn):  # no record yet: what arrived is what the steps read
+        trigger = {"type": "email_received"}
+        for key in ("from_contains", "subject_contains"):
+            if getattr(when, key):
+                trigger[key] = getattr(when, key)
+        if when.with_attachment:
+            trigger["has_attachment"] = True
+        return None, trigger, []
+    if isinstance(when, m.FileIn):
+        return None, {"type": "file_added", "folder": when.folder.strip("/ ")}, []
     t = _list(d, when.list, f"{where} › when")
     trigger, conditions = {"table": t["key"]}, []
     if isinstance(when, m.Added):
@@ -350,8 +394,15 @@ def _target(d, t, on, where):
     return d.list(f["table"]), ".".join(keys)
 
 
+NO_RECORD = (m.SetValues, m.AddEach, m.MakeDocument, m.PaymentLink, m.Task, m.Approval, m.Wait, m.Assign, m.Copy, m.Delete, m.RunRule, m.AiFill,
+             m.AiCheck, m.UpdateEach)
+
+
 def ir_step(d, t, s, where, made=None):
-    only = lambda: ir_conditions(d, t, s.only_if, f"{where} › only_if") if getattr(s, "only_if", None) else []  # noqa: E731
+    if t is None and isinstance(s, NO_RECORD):
+        raise Problem(f"{where}: a rule started by an email or a file has no record yet for “{s.do}”: make one first (ai_create or "
+                      f"add), then have a rule on that list do the rest")
+    only = lambda: ir_conditions(d, t, s.only_if, f"{where} › only_if") if getattr(s, "only_if", None) and t is not None else []  # noqa: E731
     if isinstance(s, m.SetValues):
         target, path = _target(d, t, s.on, where)
         out = {"type": "update_record", "values": ir_values(d, t, target, s.values, where, created=made)}
@@ -427,6 +478,41 @@ def ir_step(d, t, s, where, made=None):
         if f is None or f["type"] != "url":
             raise Problem(f"{where} › save_to: {s.save_to} isn't a web address (url) field of {t['label']}")
         out = {"type": "payment_link", "amount": s.amount, "save_to": f["key"]}
+    elif isinstance(s, (m.AiFill, m.AiExtract, m.AiCreate, m.AiCheck)):
+        out = _ai_step(d, t, s, where)
+    elif isinstance(s, m.Assign):
+        f = d.field(t, s.field) if t else None
+        if f is None or f["type"] != "user":
+            raise Problem(f"{where} › field: {s.field} isn't a person field of {(t or {}).get('label', 'the record')}")
+        among = s.among
+        if among not in schema.WHO_WORDS and among not in d.teams():
+            raise Problem(f"{where} › among: “{among}” isn't a role (editor, admin) or a team ({', '.join(d.teams()) or 'none'})")
+        out = {"type": "assign", "field": f["key"], "from": among}
+    elif isinstance(s, m.UpdateEach):
+        if t is None:
+            raise Problem(f"{where}: update_each changes the records linked to the rule's record, and an email rule has none")
+        lines = _list(d, s.list, where)
+        link = d.field(lines, s.link)
+        if link is None or link.get("type") != "link" or link.get("table") != t["key"]:
+            raise Problem(f"{where}: “link” is {lines['key']}'s link field to {t['key']}")
+        out = {"type": "update_each", "values": ir_values(d, t, lines, s.values, where, item=lines), "source": {"table": lines["key"], "via": link["key"]}}
+    elif isinstance(s, m.Copy):
+        if t is None:
+            raise Problem(f"{where}: an email rule has no record to copy")
+        out = {"type": "copy_record", "values": ir_values(d, t, t, s.values, where)}
+        if not s.lines:
+            out["lines"] = False
+    elif isinstance(s, m.Delete):
+        out = {"type": "delete_record"}
+    elif isinstance(s, m.RunRule):
+        known = [a["key"] for a in d.bp.get("automations", [])]
+        if schema.slug(s.rule) not in known:
+            raise Problem(f"{where}: there's no rule “{s.rule}” (rules: {', '.join(known) or 'none'})")
+        out = {"type": "run_automation", "automation": schema.slug(s.rule)}
+    elif isinstance(s, m.Webhook):
+        if not s.url.startswith(("https://", "http://")):
+            raise Problem(f"{where} › url: a web address starts with https://")
+        out = {"type": "webhook", "url": s.url, "method": s.method}
     else:
         raise Problem(f"{where}: unknown step")
     if getattr(s, "only_if", None):
@@ -434,9 +520,56 @@ def ir_step(d, t, s, where, made=None):
     return out, (out.get("table") and d.list(out["table"])) or made
 
 
+def _ai_step(d, t, s, where):
+    """An AI step: what it fills in, makes or checks is checked by name, like any step."""
+    def field_of(name, what, kinds=None):
+        f = d.field(t, name) if t else None
+        if f is None:
+            raise Problem(f"{where} › {what}: “{name}” isn't a field of {(t or {}).get('label', 'the record')}"
+                          + (f" (its fields: {', '.join(d.field_names(t))})" if t else ""))
+        if kinds and f["type"] not in kinds:
+            raise Problem(f"{where} › {what}: {f['key']} is {f['type']}, and this needs a {' or '.join(kinds)} field")
+        if f["type"] in schema.CALCULATED:
+            raise Problem(f"{where} › {what}: {f['key']} is worked out, so nothing fills it in")
+        return f["key"]
+    if isinstance(s, m.AiFill):
+        out = {"type": "ai_fill", "field": field_of(s.field, "field"), "instructions": s.instructions}
+        if s.read_files:
+            out["read_files"] = True
+        if s.use_knowledge:
+            out["use_knowledge"] = True
+    elif isinstance(s, m.AiExtract):
+        source = schema.slug(s.source)
+        if source not in ("email", "file"):
+            source = field_of(s.source, "source", ("file",))
+        if t is None:
+            raise Problem(f"{where}: ai_extract fills in a record's fields: in an email or file rule, use ai_create to make the record")
+        out = {"type": "ai_extract", "from": source, "fields": [field_of(x, "fields") for x in s.fields]}
+        if s.instructions:
+            out["instructions"] = s.instructions
+    elif isinstance(s, m.AiCreate):
+        target = _list(d, s.list, where)
+        out = {"type": "ai_create_record", "table": target["key"], "instructions": s.instructions}
+        if s.attach_to:
+            f = d.field(target, s.attach_to)
+            if f is None or f["type"] != "file":
+                raise Problem(f"{where} › attach_to: {s.attach_to} isn't a file field of {target['label']}")
+            out["attach_to"] = f["key"]
+    else:
+        out = {"type": "ai_check", "field": field_of(s.field, "field", ("select",)), "instructions": s.instructions}
+        if s.notes_field:
+            out["notes_field"] = field_of(s.notes_field, "notes_field", ("long_text", "text", "rich_text"))
+    if s.review != "never":
+        out.update(review=s.review, reviewer="editor")
+    return out
+
+
 def ir_rule(d, rule, where, feature=None):
     t, trigger, conditions = ir_when(d, rule.when, where)
-    conditions += ir_conditions(d, t, rule.only_if, f"{where} › only_if")
+    if t is None and rule.only_if:
+        raise Problem(f"{where} › only_if: a rule started by an email or a file has no record to check yet: narrow it with the "
+                      f"trigger's own from_contains / subject_contains instead")
+    conditions += ir_conditions(d, t, rule.only_if, f"{where} › only_if") if t is not None else []
     actions, made = [], None
     for n, s in enumerate(rule.steps, start=1):
         step, made = ir_step(d, t, s, f"{where} › step {n}", made)
@@ -493,7 +626,7 @@ def _apply_ops(out, ir_ops, where):
     """Apply design ops to the outcome's design; a refused set leaves it as it was and says why."""
     if not ir_ops:
         return True
-    result = design_ops.apply(out.blueprint, ir_ops, already=design_ops.wrong_already(out.blueprint))
+    result = design_ops.apply(out.blueprint, ir_ops, already=design_ops.wrong_already(out.blueprint), strict=True)
     if result.problems:
         out.problems.extend(f"{where}: {re.sub(r'^change \\d+ \\([^)]*\\): ', '', p)}" for p in result.problems)
         return False
@@ -587,26 +720,39 @@ def apply(bp, raw_patches, allowed=None):
             op["embedded"] = True
         if not _apply_ops(out, [op], here):
             refused.add(n)
-    # phase B and C: links, then what's worked out, in the order given
+    # phase B and C: links, then what's worked out. A worked-out field can read one another new list hasn't made yet
+    # (a quote's total sums its lines' amounts, a formula of the lines'): what can't be made is tried again once the rest
+    # is in, and only what still can't is refused, with its last problem
     for phase in ((m.Link,), (m.Lookup, m.Total, m.Formula)):
-        for n, p in lists:
-            if n in refused:
-                continue
-            for f in p.fields:
-                if not isinstance(f, phase):
-                    continue
+        waiting = [(n, p, f) for n, p in lists if n not in refused for f in p.fields if isinstance(f, phase)]
+        said = {}
+        for _ in range(4):
+            again = []
+            for n, p, f in waiting:
                 here, d = where(n, p), Design(out.blueprint)
                 t = d.list(p.key)
-                if d.field(t, f.key):
+                if t is None or d.field(t, f.key):
                     continue
+                before = len(out.problems)
                 try:
                     ir = ir_field(d, t, f, f"{here} › field {f.key}")
+                    ok = _apply_ops(out, [{"op": "add_field", "table": t["key"], "field": ir}], here)
                 except Problem as exc:
                     out.problems.append(str(exc))
-                    refused.add(n)
-                    continue
-                if not _apply_ops(out, [{"op": "add_field", "table": t["key"], "field": ir}], here):
-                    refused.add(n)
+                    ok = False
+                problems = out.problems[before:]
+                del out.problems[before:]
+                if ok:
+                    said.pop((n, f.key), None)
+                else:
+                    said[(n, f.key)] = problems
+                    again.append((n, p, f))
+            if not again or len(again) == len(waiting):
+                break
+            waiting = again
+        for (n, _), problems in said.items():
+            out.problems.extend(problems)
+            refused.add(n)
     # phase D: each new list's stage moves, and its fields in the order given
     for n, p in lists:
         d = Design(out.blueprint)
@@ -719,6 +865,48 @@ def translate(d, p, where):
             first = {"op": "update_field", "table": t["key"], "key": old["key"], "changes": {**old, "type": "select", "options": status["options"],
                                                                                              "default": status["default"]}}
         return [first, {"op": "update_table", "table": t["key"], "workflow": flow}]
+    if isinstance(p, m.AddValidation):
+        t = _list(d, p.list, where)
+        _check_formula(d, t, p.check, f"{where} › check")
+        rule = {"check": p.check, "message": p.message}
+        if p.only_if:
+            rule["when"] = ir_conditions(d, t, p.only_if, f"{where} › only_if")
+        return [{"op": "update_table", "table": t["key"], "rules": list(t.get("rules") or []) + [rule]}]
+    if isinstance(p, m.SetTeam):
+        team = {"key": schema.slug(p.key), "name": p.name}
+        if p.about:
+            team["about"] = p.about
+        return [{"op": "set_team", "team": team}]
+    if isinstance(p, m.SetAccess):
+        t = _list(d, p.list, where)
+        access, teams = {}, []
+        for action in ("view", "edit"):
+            value = getattr(p, action)
+            if value:
+                who = _role_or_team(d, value, f"{where} › {action}")
+                if who in schema.ROLE_NAMES:
+                    access[action] = who
+                else:
+                    teams.append(who)
+        if teams:
+            access["teams"] = list(dict.fromkeys(teams))
+        if not access:
+            raise Problem(f"{where}: say who may see (view) or change (edit) {t['label']}")
+        return [{"op": "update_table", "table": t["key"], "access": access}]
+    if isinstance(p, m.OwnRecords):
+        t = _list(d, p.list, where)
+        try:
+            f, _, keys = d.path(t, p.field)
+        except NameProblem as exc:
+            raise Problem(f"{where} › field: {exc}") from None
+        if f.get("type") != "user":
+            people = [x["key"] for x in t["fields"] if x["type"] == "user"]
+            raise Problem(f"{where} › field: {p.field} isn't a person field of {t['label']}" + (f" (its person fields: {', '.join(people)})" if people
+                                                                                                 else ": add one first (type person)"))
+        rows = {"field": ".".join(keys), "roles": list(p.roles)}
+        if p.see_all:
+            rows["teams"] = [_role_or_team(d, x, f"{where} › see_all") for x in p.see_all]
+        return [{"op": "update_table", "table": t["key"], "row_access": rows}]
     if isinstance(p, m.AddStage):
         t = _list(d, p.list, where)
         f = d.stage_field(t)
@@ -745,7 +933,8 @@ def translate(d, p, where):
         view = {"key": schema.slug(v.label), "label": v.label, "type": v.type}
         if v.filters:
             view["filters"] = ir_conditions(d, t, v.filters, f"{where} › filters")
-        for attr, key in (("date_field", "date_field"), ("group_by", "group_by")):
+        for attr, key in (("date_field", "start_field" if v.type == "timeline" else "date_field"), ("group_by", "group_by"),
+                          ("end_field", "end_field"), ("image_field", "image_field")):
             name = getattr(v, attr)
             if name:
                 f = d.field(t, name)

@@ -531,6 +531,24 @@ def _flow_moves_on(engine, t, record, field, later):
                for f in schema.flows(engine.bp))
 
 
+def _rule_moves_on(engine, t, field, at, later):
+    """A rule (not a button's) moves records of this list on from this stage by itself: a payment marking it paid, a
+    day passing marking it overdue, a chase escalating it. Waiting at it isn't being stuck."""
+    for a in engine.bp.get("automations", []):
+        if a["trigger"]["type"] == "button":
+            continue
+        for x in schema.steps_of(a["actions"]):
+            if x.get("type") != "update_record" or str((x.get("values") or {}).get(field, "")) not in later:
+                continue
+            own = a["trigger"].get("table") == t["key"] and not x.get("target")
+            linked = x.get("target") and (engine.tables.get(a["trigger"].get("table")) or {}) and \
+                any(f.get("type") == "link" and f.get("table") == t["key"] and f["key"] == str(x["target"]).split(".")[0]
+                    for f in engine.tables[a["trigger"]["table"]]["fields"])
+            if own or linked:
+                return True
+    return False
+
+
 def _stages(trial, engine, made, crashes):
     """Each record taken along its stages, onwards before any "no" or stop, by the first move to a stage it hasn't been
     at; what a move asks to have filled in first is filled in, as its button asks for it. A stage it can only leave by
@@ -549,7 +567,8 @@ def _stages(trial, engine, made, crashes):
             later = [s for s in names[names.index(at) + 1:] if not schema.says_no(s)] if at in names else []
             if later and not schema.says_no(at) and not schema.ENDED.search(str(at)) and not engine.waiting_for(record) \
                     and not any(not schema.says_no(m["to"]) for _, m, _ in engine.moves(record)) \
-                    and not _flow_moves_on(engine, t, record, flow["field"], later):
+                    and not _flow_moves_on(engine, t, record, flow["field"], later) \
+                    and not _rule_moves_on(engine, t, flow["field"], at, later):
                 stops = [m.get("label") or m["to"] for _, m in moves]
                 pressed = next((a for a in engine.bp.get("automations", []) if a["trigger"]["type"] == "button"
                                 and a["trigger"].get("table") == t["key"] and any(str((x.get("values") or {}).get(flow["field"], "")) in later

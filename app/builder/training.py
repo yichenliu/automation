@@ -37,7 +37,7 @@ _log = logging.getLogger(__name__)
 
 
 KINDS = ("design", "review", "fix", "examples",  # the first builder's
-         "v2_understand", "v2_data", "v2_behaviour", "v2_checks", "v2_fix", "v2_repair")  # Keel v2's, in the Keel language
+         "v2_understand", "v2_data", "v2_behaviour", "v2_checks", "v2_fix", "v2_repair", "v2_discover", "v2_learn")  # Keel v2's, in the Keel language
 GRADES = ("gold", "silver", "bronze")
 # Enough to be worth training on (docs/FINETUNE.md): fewer, or from too few businesses, and the model learns the
 # businesses rather than the platform.

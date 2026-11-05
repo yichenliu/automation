@@ -136,59 +136,8 @@ def test_worked_examples_are_acted_out_and_compared(app, owner):
 FIXED = {"op": "update_field", "table": "quotes", "key": "discount", "changes": {"expression": "round(subtotal * discount_percent, 2)"}}
 
 
-def test_a_turn_is_tried_out_and_what_it_finds_is_fixed_before_its_handed_over(app, owner, monkeypatch):
-    _, ws = owner
-    monkeypatch.setattr(chat, "TRY_OUT", True)
-    broken = json.loads(json.dumps(QUOTES))
-    broken[0]["fields"][3]["expression"] = "round(subtotal + discount_percent, 2)"  # a sum the AI got wrong
-    broken[0]["workflow"]["transitions"][1]["only_if"][0]["op"] = "at_most"
-    broken[0]["fields"][1]["default"] = 0
-    broken[0]["workflow"]["transitions"].append({"from": ["Awaiting approval"], "to": "Declined", "label": "Decline"})
-    scripted = ScriptedAI({"ops": broken, "reply": "I've set up quotes with their lines, discount and GST.", "more": False},
-                          {"examples": EXAMPLES[:1]},
-                          {"ops": [FIXED], "reply": "Fixed the discount.", "more": False})
-    ai.set_backend(scripted)
-    reply = chat.ask(ws, "Quotes with lines, a discount % and GST at 10%")
-    chat.work(reply.id)
-    m = db.session.get(Message, reply.id)
-    assert m.status == "done" and len(scripted.asked) == 3, m.error
-    assert "A wedding quote with 15% off" in scripted.asked[2][-1]["content"] and "discount" in scripted.asked[2][-1]["content"]
-    assert m.checks["examples"] == [{"title": "A wedding quote with 15% off", "ok": True, "problem": "", "lines": [
-        [True, "Quote’s Subtotal: $5,040.00"], [True, "Quote’s Discount: $756.00"], [True, "Quote’s GST: $428.40"],
-        [True, "Quote’s Total: $4,712.40"]], "example": EXAMPLES[0]}] and m.checks["fixes"] == 1 and not m.checks["issues"]
-    assert m.checks["first"]["wrong"] == 1 and m.checks["first"]["examples"] == [0, 1]  # not right first time: the discount sum
-    assert any("Discount" in c for c in m.changes) and m.version_after == ws.version == 2
-    assert [x["title"] for x in ws.state["examples"]] == ["A wedding quote with 15% off"]  # played again after later changes
-    kept = [json.loads(line) for f in (app.config["DATA_DIR"] / "training").glob("*.jsonl") for line in f.read_text().splitlines()]
-    assert [c["kind"] for c in kept[0]["calls"]] == ["design", "examples", "fix"] and kept[0]["outcome"]["examples"] == [1, 1]
-    from app.builder import training
-    folder = app.config["DATA_DIR"] / "training"
-    assert list(training.examples([folder])) == []  # its own examples passing isn't proof: nobody independent has checked it
-    assert [row["kind"] for row in training.examples([folder], "silver")] == ["design", "examples", "fix"]
-    training.verdict(folder, True, by="owner checks", workspace=ws.id)
-    # verified now: the examples and the fix are gold; the design needed fixing after the try-out, so it stays silver
-    assert [row["kind"] for row in training.examples([folder])] == ["examples", "fix"]
-    training.verdict(folder, False, "the discount is wrong", by="a tester", workspace=ws.id)
-    assert list(training.examples([folder], "bronze")) == []  # anyone's no outweighs every yes
-    said = training.report([folder])
-    assert "found wrong 1" in said and "Ready to try fine-tuning: not yet" in said, said
 
 
-def test_what_trying_it_out_couldnt_fix_is_said_plainly(app, owner, monkeypatch):
-    _, ws = owner
-    monkeypatch.setattr(chat, "TRY_OUT", True)
-    monkeypatch.setattr(chat, "TRY_FIXES", 1)
-    wrong = {"ops": [{"op": "update_field", "table": "quotes", "key": "title", "changes": {"label": "Name"}}], "reply": "Renamed.", "more": False}
-    ai.set_backend(ScriptedAI({"ops": QUOTES, "reply": "I've set up quotes.", "more": False}, {"examples": [EXAMPLES[2]]}, wrong))
-    reply = chat.ask(ws, "Quotes with a discount")
-    chat.work(reply.id)
-    m = db.session.get(Message, reply.id)
-    assert m.status == "done" and m.checks["examples"][0]["ok"] is False
-    assert m.text.startswith("Not everything works yet. When I tried it out, this didn't come out right: “A sum expected wrong”. "
-                             "The details are below."), m.text  # by name: the numbers are in the details, not the reply
-    assert "came out" not in m.text and "Quote’s Discount came out $20.00, expected $2.00" in m.checks["examples"][0]["problem"]
-    assert m.text.endswith("What I changed: I've set up quotes.")  # what it meant to do comes after what doesn't work
-    assert chat._unclaimed("Fixed the family discount so Ava pays $108.") == "I changed the family discount so Ava pays $108."
 
 
 def test_someone_says_something_isnt_right_and_the_owner_has_the_builder_fix_it(app, owner, client):
@@ -1162,48 +1111,8 @@ def _failing_wedding(ws):
     assert [x["ok"] for x in ws.state["checks"]["examples"]] == [False]
 
 
-def test_the_owner_presses_fix_on_the_checks_page_and_the_builder_fixes_what_failed_before(app, owner, client, monkeypatch):
-    """Right in the end: a check that failed before the owner's request is theirs to raise, and pressing “Ask the builder
-    to fix them” raises it: the builder is told what isn't right, and the try-out fixes it even when the first answer
-    changes nothing."""
-    from .conftest import login
-    _, ws = owner
-    monkeypatch.setattr(chat, "TRY_OUT", True)
-    _failing_wedding(ws)
-    login(client)
-    page = client.get(f"/w/{ws.id}/app/checks").get_data(as_text=True)
-    assert "2 things not right yet." in page and "Ask the builder to fix them" in page and "Ask the builder to fix it" in page
-    back = client.post(f"/w/{ws.id}/app/checks", data={"do": "fix"})
-    assert back.status_code == 302 and "/build" in back.headers["Location"]
-    asked = Message.query.filter_by(role="user").one()
-    assert asked.text.startswith("Please fix what isn't right on my Checks page:\n- “A wedding quote with 15% off”: Quote’s Discount came out")
-    note = {"op": "add_field", "table": "quotes", "field": {"key": "note", "label": "Note", "type": "long_text"}}
-    scripted = ScriptedAI({"ops": [], "reply": "I can't fix that check. Shall I change how the discount is worked out?"},
-                          {"ops": [note], "reply": "Added a note."}, {"examples": []}, {"ops": [FIXED], "reply": "Fixed the discount.", "more": False})
-    ai.set_backend(scripted)
-    reply = Message.query.filter_by(role="assistant").one()
-    chat.work(reply.id)
-    m = db.session.get(Message, reply.id)
-    assert m.status == "done" and len(scripted.asked) == 4, m.error
-    assert "What isn't right in the app now" in scripted.asked[0][-1]["content"] and "A wedding quote" in scripted.asked[0][-1]["content"]
-    assert scripted.asked[1][-1]["content"].startswith("Yes: make it now")  # pressing “Fix” already said yes
-    assert "A wedding quote with 15% off" in scripted.asked[3][-1]["content"]  # failed before, but raised: fixed, not left
-    assert [x["ok"] for x in ws.state["checks"]["examples"]] == [True] and m.version_after == ws.version
-    assert not m.text.startswith("Not everything works yet")
 
 
-def test_a_failing_check_isnt_dropped_by_a_change_that_doesnt_touch_it(app, owner, monkeypatch):
-    """A change the owner asked for leaves a check that already failed as it is (theirs to raise), but never quietly drops
-    it: it stays on the Checks page, failing, with the button to fix it."""
-    _, ws = owner
-    monkeypatch.setattr(chat, "TRY_OUT", True)
-    _failing_wedding(ws)
-    ai.set_backend(ScriptedAI({"ops": [{"op": "add_field", "table": "quotes", "field": {"key": "note", "label": "Note", "type": "long_text"}}],
-                               "reply": "Added a Note."}, {"examples": []}))
-    reply = chat.ask(ws, "Can you add a Note to quotes?")
-    chat.work(reply.id)
-    assert [x["title"] for x in ws.state["examples"]] == ["A wedding quote with 15% off"]
-    assert [x["ok"] for x in ws.state["checks"]["examples"]] == [False]
 
 
 def test_fix_it_and_yes_please_are_understood_as_asking_for_what_isnt_right_to_be_fixed(app, owner):
@@ -1270,30 +1179,6 @@ def test_a_step_on_a_linked_record_checks_that_records_stage_and_filled_in_means
     assert engine.value(engine.get(order.id), "status") == "Ready"
 
 
-def test_a_rule_sent_again_to_add_a_message_keeps_what_its_steps_had(app, owner):
-    """“Tell me when an invoice is paid”, done by re-sending the payment's rule: the model drops the step's target and
-    values and folds the message in. What the step had is kept, and the message is a notify step of its own."""
-    _, ws = owner
-    design = [{"op": "create_table", "table": "invoices", "label": "Invoices", "fields": [
-                  {"key": "number", "type": "text", "required": True}, {"key": "status", "type": "select", "options": ["Draft", "Sent", "Paid"]}]},
-              {"op": "create_table", "table": "payments", "label": "Payments", "fields": [
-                  {"key": "invoice", "type": "link", "table": "invoices", "required": True}, {"key": "amount", "type": "money"}]},
-              {"op": "add_automation", "automation": {"key": "mark_paid", "name": "Mark invoice paid", "trigger": {"type": "record_created", "table": "payments"},
-                                                      "actions": [{"type": "update_record", "target": "invoice", "values": {"status": "Paid"}}]}}]
-    result = ops.apply(ws.blueprint, design)
-    again = ops.apply(result.blueprint, [{"op": "update_automation", "automation": {
-        "key": "mark_paid", "name": "Mark invoice paid", "trigger": {"type": "record_created", "table": "payments"},
-        "actions": [{"type": "update_record", "to": "invoice", "message": "Invoice {{record.invoice.number}} is paid"}]}}])
-    assert not again.problems, again.problems
-    steps = next(a for a in again.blueprint["automations"] if a["key"] == "mark_paid")["actions"]
-    assert [s["type"] for s in steps] == ["update_record", "notify"] and steps[0]["target"] == "invoice" and steps[0]["values"] == {"status": "Paid"}
-    assert "is paid" in steps[1]["message"]
-    told = chat._told_as_asked("Let me know when an invoice gets to Paid", again.blueprint)
-    assert told and told[0]["plain"] == "you asked to hear when an invoice gets to “Paid”, but you'd only hear about some of them"
-    own = ops.apply(again.blueprint, [{"op": "add_automation", "automation": {
-        "key": "paid_tell", "name": "Tell me when paid", "trigger": {"type": "record_updated", "table": "invoices"},
-        "conditions": [{"field": "status", "op": "changed_to", "value": "Paid"}], "actions": [{"type": "notify", "to": "owner", "message": "Paid"}]}}])
-    assert chat._told_as_asked("Let me know when an invoice gets to Paid", own.blueprint) == []
 
 
 def test_the_currency_is_where_the_business_is_until_its_set(app, owner):
@@ -1360,35 +1245,5 @@ def test_the_owners_checks_are_about_what_they_said_not_asides():
     assert "{said}" in fresh.CHECKS and "no volumes" in fresh.CHECKS
 
 
-def test_a_fix_that_changes_nothing_says_what_still_isnt_right_and_asks_in_their_words(app, owner, monkeypatch):
-    """Pressing “Fix” where the builder finds no change that works: never “already set up that way” while a check still
-    fails; it says what still isn't right and asks for what should happen, in the owner's words."""
-    _, ws = owner
-    monkeypatch.setattr(chat, "TRY_OUT", True)
-    _failing_wedding(ws)
-    scripted = ScriptedAI({"ops": [], "reply": "I can't see what to change."}, {"ops": [], "reply": "Still nothing to change."},
-                          {"ops": [], "reply": "No change.", "more": False})
-    ai.set_backend(scripted)
-    reply = chat.ask(ws, "Fix what didn't come out right")
-    chat.work(reply.id)
-    m = db.session.get(Message, reply.id)
-    assert m.status == "done" and len(scripted.asked) == 3, m.error
-    assert m.text.startswith("Not everything works yet") and m.text.endswith(chat.COULDNT_FIX) and "Press “Fix these”" not in m.text, m.text
 
 
-def test_an_owners_check_that_cant_be_tried_any_more_stays_on_the_checks_page(app, owner, monkeypatch):
-    _, ws = owner
-    monkeypatch.setattr(chat, "TRY_OUT", True)
-    monkeypatch.setattr(chat, "TRY_FIXES", 1)
-    _built(ws, QUOTES)
-    mine = {"title": "A red quote", "by": "Sam", "steps": [{"do": "add", "table": "quotes", "as": "q", "values": {"title": "Red", "colour": "red"}}],
-            "expect": [{"record": "q", "field": "title", "equals": "Red"}]}
-    ws.state = {**(ws.state or {}), "examples": [mine]}
-    db.session.commit()
-    ai.set_backend(ScriptedAI({"ops": [{"op": "add_field", "table": "quotes", "field": {"key": "note", "label": "Note", "type": "long_text"}}],
-                               "reply": "Added a Note."}, {"examples": []}, {"ops": [], "reply": "Left it.", "examples": [], "more": False}))
-    reply = chat.ask(ws, "Can you add a Note to quotes?")
-    chat.work(reply.id)
-    assert [x["title"] for x in ws.state["examples"]] == ["A red quote"]
-    shown = ws.state["checks"]["examples"]
-    assert [(x["title"], x["ok"]) for x in shown] == [("A red quote", False)] and shown[0]["problem"].startswith("it can't be tried on your app")

@@ -60,7 +60,7 @@ def _space_sections(engine, space):
                 t = tables[item["table"]]
                 view = next((v for v in t.get("views", []) if v["key"] == item.get("view")), None)
                 # a view that picks out work (to pick, low on stock, waiting for approval) says how many are in it now
-                count = len(engine.query(t["key"], view["filters"])) if view and view.get("filters") else None
+                count = engine.count(t["key"], view["filters"]) if view and view.get("filters") else None  # counted by SQL
                 items.append({"kind": "table", "key": t["key"], "view": item.get("view") if view else None, "icon": t.get("icon") or "table",
                               "label": item.get("label") or (view["label"] if view and view["label"] not in ("All", t["label"]) else t["label"]),
                               "count": count})

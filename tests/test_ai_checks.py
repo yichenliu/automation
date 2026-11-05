@@ -3,7 +3,7 @@ the AI isn't sure, or never; the check itself (correct it, or turn it down); eac
 suggesting less checking once the AI has earned it (or more when it slips)."""
 from app import ai, learning, worker
 from app.blueprint import ops, schema
-from app.builder import chat, prompts
+from app.builder import chat
 from app.engine import automations
 from app.engine.records import Engine
 from app.extensions import db
@@ -173,8 +173,9 @@ def test_the_analyst_suggests_less_checking_once_the_ai_has_earned_it(app, owner
     assert "checks it first" in automations.describe(Engine(ws), ws.blueprint["automations"][0])["flow"][0]["ways"][0]["steps"][0]["text"]
 
 
-def test_the_analyst_is_told_when_the_ai_works_alone_and_when_a_person_checks(app):
-    assert "AI OR A PERSON" in prompts.SYSTEM and "when_unsure" in prompts.SYSTEM
-    assert all(kind.get("properties", {}).get("review", {"enum": schema.REVIEW_MODES})["enum"] == schema.REVIEW_MODES
-               for kind in prompts.DEFS["step"]["anyOf"])
+def test_the_builder_is_told_when_the_ai_works_alone_and_when_a_person_checks(app):
+    from app.lang import model as m, registry
+    said = registry.catalog(("step",))
+    assert "review?" in said and "whether a person checks its work first (never, when_unsure, always)" in said
+    assert all(set(cls.model_fields["review"].annotation.__args__) == set(schema.REVIEW_MODES) for cls in (m.AiFill, m.AiExtract, m.AiCreate, m.AiCheck))
     assert schema.normalize_action({"type": "ai_fill", "field": "x", "instructions": "y", "review": True})["review"] == "always"

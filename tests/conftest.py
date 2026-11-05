@@ -8,14 +8,6 @@ from app.models import Membership, User, Version, Workspace
 from app.blueprint import schema
 
 
-@pytest.fixture(autouse=True)
-def no_review(monkeypatch):
-    """Scripted turns answer exactly what they're asked: the check against the request is tested on its own."""
-    from app.builder import chat
-    monkeypatch.setattr(chat, "REVIEW_AFTER", 10 ** 6)
-    monkeypatch.setattr(chat, "TRY_OUT", False)  # trying the app out is tested on its own (test_try_out.py)
-
-
 @pytest.fixture(scope="session")
 def database_url():
     """A throwaway PostgreSQL database for the whole run (beside the platform's own: ./start.sh setup), dropped after."""
@@ -29,7 +21,7 @@ def database_url():
 
 @pytest.fixture
 def app(tmp_path, database_url):
-    app = create_app({"TESTING": True, "WORKER": False, "DATA_DIR": tmp_path, "SECRET_KEY": "test", "BUILDER": "v1",
+    app = create_app({"TESTING": True, "WORKER": False, "DATA_DIR": tmp_path, "SECRET_KEY": "test",
                       "SQLALCHEMY_DATABASE_URI": database_url, "WTF_CSRF_ENABLED": False,
                       "SQLALCHEMY_ENGINE_OPTIONS": {"pool_size": 5, "max_overflow": 10},
                       "DEFAULT_TIMEZONE": "Australia/Perth", "MICROSOFT_CLIENT_ID": "", "MICROSOFT_CLIENT_SECRET": "",

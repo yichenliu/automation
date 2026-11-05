@@ -1,15 +1,11 @@
-"""The builder chat: a turn's changes are checked, fixed by the AI when they don't fit, applied, and can be undone."""
-import copy
-
+"""The builder chat around a turn (the turn itself is the Keel v2 builder's: tests/test_lang.py)."""
 from app import ai
 from app.blueprint import schema
 from app.builder import chat
-from app.engine.records import Engine
 from app.extensions import db
-from app.models import Message, Version
+from app.models import Message
 
 from .conftest import ScriptedAI
-from .designs import CONSULTANCY
 
 
 def _turn(ws, text, page=None):
@@ -18,184 +14,24 @@ def _turn(ws, text, page=None):
     return db.session.get(Message, reply.id)
 
 
-def test_a_turn_builds_the_erp_and_can_be_undone(app, owner):
-    _, ws = owner
-    ai.set_backend(ScriptedAI({"ops": CONSULTANCY, "reply": "I've set up clients, projects and invoices."}))
-    m = _turn(ws, "I run a consultancy: clients, projects, invoices.")
-    assert m.status == "done" and m.text.startswith("I've set up") and m.version_after == 1 and ws.version == 1
-    assert any("Created the table Invoices" in c for c in m.changes)
-    assert m.navigate == f"/w/{ws.id}/app/t/clients" and m.thinking and m.progress
-    assert [t["key"] for t in ws.blueprint["tables"]] == ["clients", "projects", "invoices"]
-    chat.restore(ws, m.version_before)
-    assert ws.version == 2 and ws.blueprint["tables"] == [] and Version.query.count() == 3
 
 
-def test_changes_that_dont_fit_go_back_to_the_ai(app, owner):
-    _, ws = owner
-    bad = {"ops": [{"op": "create_table", "table": "jobs", "fields": [{"key": "customer", "type": "link", "table": "customers"}]}], "reply": "Done"}
-    good = {"ops": [{"op": "create_table", "table": "customers", "fields": [{"key": "name", "type": "text"}]},
-                    {"op": "create_table", "table": "jobs", "fields": [{"key": "customer", "type": "link", "table": "customers"}]}], "reply": "Added jobs and customers."}
-    scripted = ScriptedAI(bad, good)
-    ai.set_backend(scripted)
-    m = _turn(ws, "Track jobs for customers")
-    assert m.status == "done" and [t["key"] for t in ws.blueprint["tables"]] == ["customers", "jobs"]
-    assert "customers" in scripted.asked[1][-1]["content"] and "isn't a table" in scripted.asked[1][-1]["content"]
-
-    ai.set_backend(ScriptedAI(*[bad | {"ops": [{"op": "add_field", "table": "nope", "field": {"key": "x", "type": "text"}}]}] * 3))
-    m = _turn(ws, "add x to nope")
-    assert m.status == "failed" and "nothing was changed" in m.error and ws.version == 1 and not m.text
-    assert any("there's no table" in line for line in m.progress)
 
 
-def test_sample_data_questions_and_waiting_for_the_ai(app, owner):
-    _, ws = owner
-    ai.set_backend(ScriptedAI({"ops": CONSULTANCY, "reply": "Built."}))
-    _turn(ws, "build it")
-    ai.set_backend(ScriptedAI({"ops": [
-        {"op": "add_records", "table": "clients", "records": [{"name": "Acme", "status": "Active"}, {"name": "Bright", "status": "Lead"}]},
-        {"op": "add_records", "table": "projects", "records": [{"name": "Survey", "client": "Acme", "hours": 3, "rate": 100}]}], "reply": "Added samples."}))
-    m = _turn(ws, "add some sample data")
-    assert m.changes == ["Added 2 clients", "Added 1 project"] and m.version_after is None
-    e = Engine(ws)
-    assert e.rows("projects")[0].data["client"] == e.rows("clients")[0].id
-
-    ai.set_backend(ScriptedAI({"ops": [{"op": "find", "table": "clients", "filters": [{"field": "status", "op": "equals", "value": "Active"}]}],
-                               "reply": "One client is active."}))
-    m = _turn(ws, "which clients are active?", page=f"/w/{ws.id}/app/t/clients")
-    assert m.results["total"] == 1 and m.results["rows"][0]["cells"][0] == "Acme"
-    assert m.text == "Found 1 client where Status is “Active”."
-
-    ai.set_backend(ScriptedAI(ai.AIUnavailable("the AI at http://127.0.0.1:11434 isn't answering (ConnectTimeout)")))
-    m = _turn(ws, "add a phone field to clients")
-    assert m.status == "waiting_ai" and m.next_try is not None
-    ai.set_backend(ScriptedAI({"ops": [{"op": "add_field", "table": "clients", "field": {"key": "phone", "label": "Phone", "type": "phone"}}], "reply": "Added."}))
-    chat.work(m.id)
-    m = db.session.get(Message, m.id)
-    assert m.status == "done" and m.changes == ["Added the column “Phone” to Clients"]
 
 
-def test_a_reply_that_repeats_the_last_one_is_written_again_from_what_this_turn_changed(app, owner):
-    _, ws = owner
-    ai.set_backend(ScriptedAI({"ops": CONSULTANCY, "reply": "I've set up clients, projects and invoices. Next, I can add a form."}))
-    _turn(ws, "build it")
-    again = ScriptedAI({"ops": [{"op": "add_field", "table": "clients", "field": {"key": "phone", "label": "Phone", "type": "phone"}}],
-                        "reply": "I've set up clients, projects and invoices. Next, I can add a form."},
-                       {"reply": "I've added a Phone column to clients."})
-    ai.set_backend(again)
-    m = _turn(ws, "add a phone number to clients")
-    assert m.text == "I've added a Phone column to clients." and "Phone" in again.asked[-1][-1]["content"]  # told from what was done
 
 
-def test_let_me_know_tells_the_person_asking_not_everyone(app, owner):
-    _, ws = owner
-    ai.set_backend(ScriptedAI({"ops": CONSULTANCY, "reply": "Built."}))
-    _turn(ws, "build it")
-    rule = {"op": "add_automation", "automation": {"key": "paid", "name": "Tell when paid", "trigger": {"type": "record_updated", "table": "invoices"},
-                                                   "conditions": [], "actions": [{"type": "notify", "message": "{{record.number}} is paid"}]}}
-    ai.set_backend(ScriptedAI({"ops": [rule], "reply": "I'll tell you when an invoice is paid."}))
-    _turn(ws, "When an invoice is paid, let me know.")
-    made = next(a for a in ws.blueprint["automations"] if a["key"] == "paid")
-    assert made["actions"][0]["to"] == "owner"
-    # a rule made in the turn told everyone (by the AI or its own fix) is the owner's; one there before is left as it is
-    ops_ = [{"op": "add_automation", "automation": {"key": "new", "actions": [{"type": "notify", "to": "everyone"}]}},
-            {"op": "update_automation", "automation": {"key": "paid", "actions": [{"type": "notify", "to": "everyone"}]}}]
-    chat._to_me(ops_, "owner", {"paid"})
-    assert ops_[0]["automation"]["actions"][0]["to"] == "owner" and ops_[1]["automation"]["actions"][0]["to"] == "everyone"
 
 
-def test_let_me_know_is_made_not_asked_how(app, owner):
-    """“When an invoice gets to Paid, let me know” answered with “text, email or a pop-up?”: it has one plain reading (a
-    note in the app, to them), so the builder is told to make it, and does."""
-    _, ws = owner
-    ai.set_backend(ScriptedAI({"ops": CONSULTANCY, "reply": "Built."}))
-    _turn(ws, "build it")
-    rule = {"op": "add_automation", "automation": {"key": "paid", "name": "Tell when paid", "trigger": {"type": "record_updated", "table": "invoices"},
-                                                   "conditions": [], "actions": [{"type": "notify", "message": "{{record.number}} is paid"}]}}
-    scripted = ScriptedAI({"ops": [], "reply": "How would you like to hear? 1) A text 2) An email 3) A pop-up in the app"},
-                          {"ops": [rule], "reply": "You'll get a note in the app when an invoice is paid."})
-    ai.set_backend(scripted)
-    m = _turn(ws, "When an invoice gets to Paid, let me know.")
-    assert any(a["key"] == "paid" for a in ws.blueprint["automations"]) and "note in the app" in m.text
-    assert "without asking" in scripted.asked[1][-1]["content"]
 
 
-def test_a_change_puts_right_what_it_breaks_not_what_was_wrong_before(app, owner):
-    """The app already had something the design checks find: a small change after it isn't sent back to mend it (that
-    would change more than was asked); something this change gets wrong still is."""
-    from app.builder import checks
-    _, ws = owner
-    team = {"op": "set_team", "team": {"key": "finance", "name": "Finance"}}
-    stuck = {"op": "add_automation", "automation": {"key": "ok", "name": "Finance's OK", "trigger": {"type": "record_created", "table": "projects"},
-                                                    "actions": [{"type": "request_approval", "approver": "finance", "not_by": ["finance"]}]}}
-    ai.set_backend(ScriptedAI({"ops": CONSULTANCY + [team, stuck], "reply": "Built."}))
-    _turn(ws, "build it")
-    was = copy.deepcopy(ws.blueprint)
-    found = chat._already_found(ws, was)
-    assert any("waits for ever" in text for text in found) and found == {i["text"] for i in checks.run(Engine(ws))}
-    ai.set_backend(ScriptedAI({"ops": [{"op": "add_field", "table": "projects", "field": {"key": "note", "label": "Team note", "type": "long_text"}}],
-                               "reply": "Added a Team note."}))
-    _turn(ws, "Can you add a Team note to projects?")
-    assert any("waits for ever" in text for text in {i["text"] for i in checks.run(Engine(ws))})  # still there: said, not this turn's
-    assert chat._already_found(ws, {}) == set()  # a first build: everything found is its own
 
 
-def test_an_old_app_newer_checks_find_fault_with_still_takes_a_small_change(app, owner):
-    """A rule saved before a newer check (a person column set to a team) doesn't stop adding a column: the AI isn't sent
-    back to rewrite the old rule (it never asked to, and doing it is how a small model goes round in circles)."""
-    _, ws = owner
-    ai.set_backend(ScriptedAI({"ops": CONSULTANCY, "reply": "Built."}))
-    _turn(ws, "build it")
-    bp = copy.deepcopy(ws.blueprint)
-    next(t for t in bp["tables"] if t["key"] == "projects")["fields"].append({"key": "approved_by", "label": "Approved by", "type": "user"})
-    bp["automations"].append({"key": "ok", "name": "Mark approved", "enabled": True, "trigger": {"type": "record_created", "table": "projects"},
-                              "conditions": [], "actions": [{"type": "update_record", "values": {"approved_by": "procurement"}}]})
-    ws.blueprint = bp
-    db.session.commit()
-    scripted = ScriptedAI({"ops": [{"op": "add_field", "table": "projects", "field": {"key": "note", "label": "Team note", "type": "long_text"}}],
-                           "reply": "Added a Team note."})
-    ai.set_backend(scripted)
-    m = _turn(ws, "Can you add a Team note to projects?")
-    assert m.status == "done" and any(f["key"] == "note" for t in ws.blueprint["tables"] for f in t["fields"])
-    assert not any("couldn't apply" in (c[-1]["content"] or "") for c in scripted.asked)
 
 
-def test_a_big_request_is_built_in_parts_in_one_turn_and_undone_as_one(app, owner):
-    _, ws = owner
-    first = {"ops": CONSULTANCY[:3], "reply": "Clients and projects are set up.", "more": True, "plan": "invoices, then payroll"}
-    second = {"ops": [{"op": "create_table", "table": "payroll", "label": "Payroll", "access": {"view": "admin"},
-                       "fields": [{"key": "person", "label": "Person", "type": "text"}, {"key": "pay", "label": "Pay", "type": "money"}]}],
-              "reply": "Payroll is set up, and only admins can see it.", "more": False}
-    closing = {"reply": "Clients, projects, invoices and a private payroll are set up."}
-    scripted = ScriptedAI(first, second, closing)
-    ai.set_backend(scripted)
-    m = _turn(ws, "Set up my whole business: clients, projects, invoices and payroll that only I can see.")
-    assert m.status == "done" and m.text == closing["reply"]  # one reply for the whole turn, from what was really built
-    assert len(scripted.asked) == 3 and "Carry on with the next part of your plan: invoices, then payroll" in scripted.asked[1][-1]["content"]
-    facts = scripted.asked[2][-1]["content"]
-    assert "Created the table Payroll" in facts and "Created the table Clients" in facts and "Not built" not in facts
-    assert "Table payroll" not in scripted.asked[0][1]["content"] and "Table clients" in scripted.asked[1][1]["content"]
-    payroll = next(t for t in ws.blueprint["tables"] if t["key"] == "payroll")
-    assert payroll["access"] == {"view": "admin"}
-    assert any("Part 1 is ready" in p for p in m.progress)
-    chat.restore(ws, m.version_before)  # one undo takes back every part
-    assert ws.blueprint["tables"] == []
 
 
-def test_an_answer_that_still_has_a_problem_after_repairs_keeps_everything_that_fits(app, owner):
-    _, ws = owner
-    bad_lock = {"op": "create_table", "table": "payroll", "label": "Payroll", "access": {"view": "admin"},
-                "lock_if": [{"field": "nope", "op": "equals", "value": "x"}], "fields": [{"key": "pay", "label": "Pay", "type": "money"}]}
-    broken = {"op": "add_field", "table": "nowhere", "field": {"key": "x", "label": "X", "type": "text"}}
-    answer = {"ops": CONSULTANCY + [bad_lock, broken], "reply": "Built everything.", "more": False}
-    ai.set_backend(ScriptedAI(answer, answer, answer))
-    m = _turn(ws, "Clients, projects, invoices and payroll.")
-    assert m.status == "done" and "Not everything fitted" in m.text
-    keys = [t["key"] for t in ws.blueprint["tables"]]
-    assert keys == ["clients", "projects", "invoices", "payroll"]  # the payroll table kept, without its broken lock
-    assert "lock_if" not in ws.blueprint["tables"][-1]
-    assert ws.blueprint["tables"][-1]["access"]["view"] == "admin"  # only the broken lock goes: payroll stays private
-    assert "the new details of Nowhere" in m.text and "change 5" not in m.text  # said in the owner's words
-    assert any("when Payroll locks" in line for line in m.progress)  # the details are there for whoever wants them
 
 
 def test_row_access_can_follow_a_link_to_the_customers_rep(app, owner):
@@ -210,14 +46,6 @@ def test_row_access_can_follow_a_link_to_the_customers_rep(app, owner):
     assert orders["row_access"]["field"] == "customer.rep" and [f["key"] for f in orders["fields"]] == ["customer", "total"]
 
 
-def test_an_answer_cut_off_at_the_length_limit_is_asked_for_again_in_parts(app, owner):
-    _, ws = owner
-    smaller = {"ops": CONSULTANCY, "reply": "Here's the first part.", "more": False}
-    scripted = ScriptedAI(ai.CutOff("cut off"), smaller)
-    ai.set_backend(scripted)
-    m = _turn(ws, "Everything for my business.")
-    assert m.status == "done" and [t["key"] for t in ws.blueprint["tables"]] == ["clients", "projects", "invoices"]
-    assert "too long and got cut off" in scripted.asked[1][-1]["content"]
 
 
 def test_a_smaller_try_that_fails_too_says_so_rather_than_crashing(app, owner):
@@ -232,39 +60,6 @@ def test_a_smaller_try_that_fails_too_says_so_rather_than_crashing(app, owner):
     assert m.status == "failed" and "went wrong on our side" in m.error
 
 
-def test_left_out_parts_get_a_second_try_and_lines_copy_across_by_themselves(app, owner):
-    _, ws = owner
-    tables = [
-        {"op": "create_table", "table": "jobs", "label": "Jobs", "fields": [{"key": "title", "type": "text"},
-                                                                             {"key": "status", "type": "select", "options": ["Booked", "Done"]}]},
-        {"op": "create_table", "table": "job_lines", "label": "Job lines", "embedded": True, "fields": [
-            {"key": "job", "type": "link", "table": "jobs"}, {"key": "item", "type": "text"}, {"key": "qty", "type": "number"}]},
-        {"op": "create_table", "table": "invoices", "label": "Invoices", "fields": [{"key": "job", "type": "link", "table": "jobs"}, {"key": "title", "type": "text"}]},
-        {"op": "create_table", "table": "invoice_lines", "label": "Invoice lines", "embedded": True, "fields": [
-            {"key": "invoice", "type": "link", "table": "invoices"}, {"key": "item", "type": "text"}, {"key": "qty", "type": "number"}]}]
-    page = {"op": "add_page", "page": {"label": "Overview", "widgets": [{"type": "chart", "table": "jobs", "group_by": "created_time", "label": "Jobs by month"}]}}
-    broken = {"op": "add_automation", "automation": {"key": "bill", "name": "Bill it", "trigger": {"type": "record_updated", "table": "jobs"},
-                                                     "conditions": [{"field": "status", "op": "changed_to", "value": "Done"}],
-                                                     "actions": [{"type": "create_record", "table": "invoices", "values": {"job": "{{record}}", "nope": 1}},
-                                                                 {"type": "create_for_each", "source": {"table": "job_lines", "via": "job"}, "table": "invoice_lines"}]}}
-    fixed = {"op": "add_automation", "automation": {**broken["automation"], "actions": [
-        {"type": "create_record", "table": "invoices", "values": {"job": "{{record}}"}},
-        {"type": "create_for_each", "source": {"table": "job_lines", "via": "job"}, "table": "invoice_lines"}]}}
-    first = {"ops": tables + [page, broken], "reply": "Built jobs and invoices.", "more": False}
-    scripted = ScriptedAI(first, first, first, {"ops": [fixed], "reply": "Fixed the billing automation.", "more": False})
-    ai.set_backend(scripted)
-    m = _turn(ws, "Jobs with lines, invoiced when done.")
-    assert m.status == "done" and "Not everything fitted" not in m.text, m.text
-    assert "didn't fit and were left out" in scripted.asked[3][-1]["content"] and "nope" in scripted.asked[3][-1]["content"]
-    assert ws.blueprint["pages"][0]["widgets"][0]["group_by"] == "created_at"
-    engine = Engine(ws, by="Ethan")
-    job = engine.create("jobs", {"title": "Fit-out", "status": "Booked"})
-    engine.create("job_lines", {"job": job.id, "item": "Tap", "qty": 2})
-    engine.update(engine.get(job.id), {"status": "Done"})
-    invoice = Engine(ws).rows("invoices")[0]
-    lines = Engine(ws).rows("invoice_lines")
-    assert invoice.data["title"] == "Fit-out" and invoice.data["job"] == job.id
-    assert [(l.data["item"], l.data["qty"], l.data["invoice"]) for l in lines] == [("Tap", 2, invoice.id)]
 
 
 def test_the_ais_shorthand_is_understood_where_only_one_reading_fits(app, owner):
@@ -321,145 +116,17 @@ def test_salvage_cuts_the_one_bad_part_and_says_so_plainly(app, owner):
     assert set(salvaged.missing) == {"what the portal shows of Staff", "the field Bonus of Staff", "the Ghosts block on the page Home"}
 
 
-def test_when_the_second_try_at_a_cut_part_fails_the_rest_of_the_plan_is_still_built(app, owner):
-    _, ws = owner
-    ghost = {"op": "add_page", "page": {"key": "home", "label": "Home", "widgets": [{"type": "metric", "label": "Ghosts", "table": "ghosts"}]}}
-    first = {"ops": CONSULTANCY + [ghost], "reply": "Clients, projects and a home page.", "more": True, "plan": "payroll"}
-    second = {"ops": [{"op": "create_table", "table": "payroll", "label": "Payroll", "fields": [{"key": "pay", "label": "Pay", "type": "money"}]}],
-              "reply": "Payroll added.", "more": False}
-    closing = {"reply": "Clients, projects and payroll are set up; the home page didn't fit."}
-    scripted = ScriptedAI(first, first, first, {"ops": [ghost], "reply": "Fixed.", "more": True, "plan": "payroll"},
-                          {"ops": [ghost], "reply": "Fixed.", "more": True, "plan": "payroll"},
-                          {"ops": [ghost], "reply": "Fixed.", "more": True, "plan": "payroll"}, second, closing)
-    ai.set_backend(scripted)
-    m = _turn(ws, "Clients, projects, a home page and payroll.")
-    assert m.status == "done" and "payroll" in [t["key"] for t in ws.blueprint["tables"]]
-    assert "Carry on with the next part of your plan: payroll" in scripted.asked[6][-1]["content"]
-    assert "the page Home" in scripted.asked[7][-1]["content"]  # the closing reply is told what's still missing
-    assert m.text == closing["reply"]
 
 
-def test_a_cut_part_the_second_try_skips_is_still_reported_missing(app, owner):
-    _, ws = owner
-    shop = {"op": "add_automation", "automation": {"key": "shop", "name": "Shop orders in", "trigger": {"type": "webhook_received", "table": "ghosts"},
-                                                   "actions": [{"type": "notify", "message": "New order"}]}}
-    first = {"ops": CONSULTANCY + [shop], "reply": "Clients, projects and shop orders coming in.", "more": False}
-    retry = {"ops": [{"op": "add_field", "table": "clients", "field": {"key": "notes", "label": "Notes", "type": "long_text"}}],
-             "reply": "Fixed it.", "more": False}  # quietly leaves the automation out
-    closing = {"reply": "Clients and projects are set up; the shop orders rule isn't built yet."}
-    scripted = ScriptedAI(first, first, first, retry, closing)
-    ai.set_backend(scripted)
-    m = _turn(ws, "Clients, projects, and orders from my web shop.")
-    facts = scripted.asked[4][-1]["content"]
-    assert "Not built: the automation “Shop orders in”" in facts and "Shop orders in" not in facts.split("Not built")[0]
-    assert "Your replies while building" not in facts  # the drafts (which claim it) aren't shown
-    assert m.text == closing["reply"]
 
 
-def test_an_attached_spreadsheet_is_brought_in_once_its_tables_are_built(app, owner):
-    from app import jobs
-    from app.storage import save
-    _, ws = owner
-    sheet = save(ws.id, b"Customer,Email\nAcme Pty,ops@acme.com.au\nNew Co,hello@newco.com.au\n", "customers.csv", source="chat")
-    tables = {"ops": [{"op": "create_table", "table": "customers", "label": "Customers", "fields": [
-        {"key": "name", "type": "text"}, {"key": "email", "type": "email"}]},
-        {"op": "add_records", "table": "customers", "records": [  # the sheet typed out: left to the import, not added twice
-            {"name": "Acme Pty", "email": "ops@acme.com.au"}, {"name": "New Co", "email": "hello@newco.com.au"}]}],
-        "reply": "Customers are set up.", "more": False}
-    rows = {"ops": [{"op": "import_file", "file_id": sheet.id, "table": "customers", "mapping": {"Customer": "name", "Email": "email"}}],
-            "reply": "Bringing your customers in.", "more": False}
-    closing = {"reply": "I've set up Customers and I'm bringing your two customers in."}
-    scripted = ScriptedAI(tables, rows, closing)
-    ai.set_backend(scripted)
-    reply = chat.ask(ws, "Here's my customer list. Make it a proper system and bring the data in.", files=[sheet.id])
-    chat.work(reply.id)
-    m = db.session.get(Message, reply.id)
-    assert m.status == "done" and m.text == closing["reply"]
-    assert "customers.csv (file id" in scripted.asked[1][-1]["content"] and "import_file" in scripted.asked[1][-1]["content"]
-    assert any("Importing 2 rows into Customers" in c for c in m.changes)
-    assert "Left the attached rows to the import, so they aren't added twice" in m.progress
-    jobs.run(jobs.Job.query.filter_by(kind="import").one())
-    assert sorted(r.data["name"] for r in Engine(ws).rows("customers")) == ["Acme Pty", "New Co"]
 
 
-def test_a_big_build_is_checked_against_the_request_and_what_was_dropped_is_added(app, owner, monkeypatch):
-    monkeypatch.setattr(chat, "REVIEW_AFTER", 3)
-    _, ws = owner
-    built = {"ops": CONSULTANCY, "reply": "I've set up clients, projects and invoices.", "more": False}
-    lock = {"op": "update_table", "table": "invoices", "changes": {"lock_if": [{"field": "status", "op": "equals", "value": "Sent"}]}}
-    portal = {"op": "set_portal", "portal": {"table": "clients", "email_field": "email"}}
-    checked = {"checks": [{"asked": "Clients, projects and invoices", "built": True, "ops": [{"op": "set_theme", "theme": {"accent": "#ff0000"}}]},
-                          {"asked": "once an invoice is sent it can't be changed", "built": False, "ops": [lock]},
-                          {"asked": "a client portal for their invoices", "built": False, "ops": [portal]}],  # never asked for
-               "reply": "I've also locked invoices once they're sent."}
-    closing = {"reply": "I've set up clients, projects and invoices, locked once sent."}
-    scripted = ScriptedAI(built, checked, closing)
-    ai.set_backend(scripted)
-    m = _turn(ws, "Clients, projects and invoices; once an invoice is sent it can't be changed.")
-    assert "check it against what the owner asked for" in scripted.asked[1][-1]["content"]
-    assert "Checking nothing you asked for was missed" in m.progress
-    assert schema.table(ws.blueprint, "invoices")["lock_if"][0]["value"] == "Sent"
-    assert not schema.portals(ws.blueprint) and (ws.blueprint.get("theme") or {}).get("accent") != "#ff0000"
-    assert m.text == closing["reply"] and any("when Invoices lock" in c for c in m.changes)
 
 
-def test_a_check_that_finds_nothing_missing_leaves_the_reply_as_it_was(app, owner, monkeypatch):
-    monkeypatch.setattr(chat, "REVIEW_AFTER", 3)
-    _, ws = owner
-    scripted = ScriptedAI({"ops": CONSULTANCY, "reply": "I've set up clients, projects and invoices.", "more": False},
-                          {"checks": [{"asked": "Clients, projects and invoices", "built": True}], "reply": "Everything asked for is there."})
-    ai.set_backend(scripted)
-    m = _turn(ws, "Clients, projects and invoices.")
-    assert len(scripted.asked) == 2 and m.status == "done" and m.text == "I've set up clients, projects and invoices."
 
 
-def test_an_answer_stuck_repeating_itself_is_asked_for_again_smaller(app, owner):
-    _, ws = owner
-    stuck = ai.Stuck("The AI got stuck writing its answer (it kept repeating itself).")
-    scripted = ScriptedAI(stuck, stuck, {"ops": CONSULTANCY, "reply": "I've set up clients, projects and invoices."})  # stuck twice, as it can be
-    ai.set_backend(scripted)
-    m = _turn(ws, "I run a consultancy: clients, projects, invoices.")
-    assert m.status == "done" and [t["key"] for t in ws.blueprint["tables"]] == ["clients", "projects", "invoices"]
-    assert "stuck repeating itself" in scripted.asked[2][-1]["content"]  # asked a third time, for just the first part
 
 
-def test_a_reply_never_claims_a_change_that_didnt_happen(app, owner):
-    _, ws = owner
-    ai.set_backend(ScriptedAI({"ops": CONSULTANCY, "reply": "I've set up clients, projects and invoices."}))
-    _turn(ws, "I run a consultancy: clients, projects, invoices.")
-    same = {"ops": [{"op": "update_table", "table": "clients", "changes": {"label": "Clients"}}], "reply": "I fixed the clients list for you."}
-    ai.set_backend(ScriptedAI(same))
-    m = _turn(ws, "the clients list is wrong, fix it")
-    assert m.changes == [] and m.text.startswith("I didn't change anything this time") and "fixed" not in m.text
 
 
-def test_each_go_after_the_model_went_round_in_a_loop_is_a_little_less_fixed(app, owner, monkeypatch):
-    """Asked again with the same fixed seed and coolness, a model stuck in a loop can take the same path into it: each new
-    go after a loop is warmer and has another seed, and the next turn starts steady again."""
-    _, ws = owner
-    stuck = ai.Stuck("The AI got stuck writing its answer (it kept repeating itself).")
-    scripted = ScriptedAI(stuck, stuck, {"ops": CONSULTANCY, "reply": "I've set up clients, projects and invoices."})
-    tries = []
-
-    def backend(messages, schema_, on_progress):
-        tries.append(ai.again.get())
-        return scripted(messages, schema_, on_progress)
-    ai.set_backend(backend)
-    assert _turn(ws, "I run a consultancy: clients, projects, invoices.").status == "done" and tries == [0, 1, 2]
-    sent = []
-
-    class Done:
-        status_code = 200
-
-        def iter_lines(self):
-            yield b'{"message": {"content": "{}"}, "done": true, "done_reason": "stop"}'
-    monkeypatch.setattr(ai.requests, "post", lambda url, json=None, **kw: sent.append(json) or Done())
-    ai.set_backend(None)
-    monkeypatch.setitem(app.config, "AI_BUILDER_SEED", 7)
-    monkeypatch.setitem(app.config, "AI_BUILDER_TEMPERATURE", 0.3)
-    steady, again = ai.building.set(True), ai.again.set(2)
-    try:
-        ai.chat([{"role": "user", "content": "hi"}])
-    finally:
-        ai.building.reset(steady), ai.again.reset(again)
-    assert sent[-1]["options"]["seed"] == 9 and abs(sent[-1]["options"]["temperature"] - 0.7) < 1e-9

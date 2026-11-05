@@ -75,6 +75,11 @@ def _when(a):
         return f"button “{t.get('label')}” on {table}"
     if kind == "schedule":
         return f"every {t.get('every')} {t.get('weekday') or ''} at {t.get('at')} on {table}".replace("  ", " ")
+    if kind == "email_received":
+        narrow = [f"{k.replace('_contains', '')} has “{t[k]}”" for k in ("from_contains", "subject_contains") if t.get(k)]
+        return "email arrives" + (f" ({', '.join(narrow)})" if narrow else "") + (" with attachment" if t.get("has_attachment") else "")
+    if kind == "file_added":
+        return f"file arrives in {t.get('folder')}"
     return f"{kind} {table}".strip()
 
 
@@ -99,6 +104,28 @@ def _step(s):
         return f"task for {s.get('to')}: “{s.get('message')}”"
     if kind == "wait":
         return f"wait {s.get('days') or ''} days".strip()
+    review = f" (checked by a person: {s['review']})" if s.get("review") else ""
+    if kind == "ai_fill":
+        return f"ai_fill {s.get('field')}: “{s.get('instructions')}”{review}"
+    if kind == "ai_extract":
+        return f"ai_extract {', '.join(s.get('fields') or [])} from {s.get('from')}{review}"
+    if kind == "ai_create_record":
+        return f"ai_create {s.get('table')}: “{s.get('instructions')}”{review}"
+    if kind == "ai_check":
+        return f"ai_check into {s.get('field')}: “{s.get('instructions')}”{review}"
+    if kind == "assign":
+        return f"assign {s.get('field')} among {s.get('from')}"
+    if kind == "update_each":
+        src = s.get("source") or {}
+        return f"update_each {src.get('table')} via {src.get('via')} {json.dumps(s.get('values'), ensure_ascii=False)}"
+    if kind == "copy_record":
+        return "copy" + (" without lines" if s.get("lines") is False else "")
+    if kind == "delete_record":
+        return "delete"
+    if kind == "run_automation":
+        return f"run {s.get('automation')}"
+    if kind == "webhook":
+        return f"webhook {s.get('method', 'POST')} {s.get('url')}"
     return kind
 
 

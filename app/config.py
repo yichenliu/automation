@@ -80,7 +80,6 @@ class Config:
     S3_REGION = os.getenv("S3_REGION") or ""
     S3_ACCESS_KEY = os.getenv("S3_ACCESS_KEY") or ""
     S3_SECRET_KEY = os.getenv("S3_SECRET_KEY") or ""
-    BUILDER = os.getenv("BUILDER") or "v2"  # v2: the Keel language, features, the simulator and search (app/builder/build.py); v1: the old one
     AI_THINK_BUILDER = (os.getenv("AI_THINK_BUILDER") or os.getenv("AI_THINK") or "false").lower() == "true"
     AI_THINK_TOKENS = int(os.getenv("AI_THINK_TOKENS") or 8000)
     AI_NUM_CTX = int(os.getenv("AI_NUM_CTX") or 0)  # 0: use the context size Ollama already has loaded

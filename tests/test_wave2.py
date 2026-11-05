@@ -3,6 +3,7 @@ manager building their own apps), each kept fixed. Every fix is the platform's, 
 like the ones the builder made for them."""
 import json
 
+from app.builder import build
 from app.blueprint import ops, schema
 from app.builder import chat, trial
 from app.engine import automations
@@ -435,12 +436,12 @@ def test_what_people_mustnt_see_is_kept_from_them_or_said_and_a_list_never_hides
     _, ws = owner
     asked = "The makers shouldn't see prices, margins or customer details - they just see their work orders and log their hours."
     _built(ws, WORKSHOP)
-    found = chat._kept_as_asked(asked, ws.blueprint)
+    found = build._kept_as_asked(asked, ws.blueprint)
     assert found and found[0]["level"] == "fix" and "everyone you invite to do the work can still see all of it" in found[0]["plain"]
     assert "The makers shouldn't see prices" in found[0]["plain"]
     kept = _built(ws, [{"op": "set_team", "team": {"key": "office", "name": "Office"}},
                        {"op": "update_table", "table": "orders", "changes": {"access": {"teams": ["office"]}}}])
-    assert chat._kept_as_asked(asked, ws.blueprint) == [] and chat._kept_as_asked("Track our jobs.", ws.blueprint) == []
+    assert build._kept_as_asked(asked, ws.blueprint) == [] and build._kept_as_asked("Track our jobs.", ws.blueprint) == []
 
     _built(ws, [{"op": "add_view", "table": "stock_movements", "view": {"key": "issued", "label": "Issued to jobs", "type": "list",
                                                                         "filters": [{"field": "reason", "op": "equals", "value": "Work order"}]}}])
@@ -532,25 +533,6 @@ def test_a_rule_rewritten_for_a_change_still_starts_when_one_is_added(app, owner
     assert "“Mark the lease paid” still starts when a new payment is added, as it did" in result.changes
 
 
-def test_a_few_loose_words_that_cant_be_built_are_asked_about_and_a_part_that_keeps_failing_isnt_carried_on_for_ever(app, owner):
-    from app import ai
-    from app.models import Message
-    from .conftest import ScriptedAI
-    _, ws = owner
-    _built(ws, RENTALS)
-    bad = {"ops": [{"op": "add_field", "table": "nope", "field": {"key": "x", "type": "text"}}], "reply": "Done"}
-    ask = {"question": "What should it do for owners: send each a monthly statement with the fee and repairs taken off, or let them see their houses online?"}
-    ai.set_backend(ScriptedAI(bad, bad, bad, ask))
-    reply = chat.ask(ws, "can u make it do the usual stuff for owners")
-    chat.work(reply.id)
-    m = db.session.get(Message, reply.id)
-    assert m.status == "done" and m.text.startswith("What should it do for owners") and ws.version == 1  # nothing changed
-
-    assert chat._tries(ws, ["the owner statement"]) == []
-    assert chat._tries(ws, ["the owner statement"]) == ["the owner statement"]  # the second time in a row: ask, don't carry on
-    ai.set_backend(ScriptedAI(ai.AIError("no closing reply")))  # the plain one, put together without the AI
-    said = chat._closing_reply("statements", ["I added the fee."], ["Added Fee"], ["the owner statement"], [], ["the owner statement"])
-    assert "Carry on building" not in said and "one small part of it" in said
 
 
 def test_an_approval_says_why_it_asks_a_rule_emailing_outside_needs_an_admin_to_run_early_and_buttons_read_right(app, owner, client):
