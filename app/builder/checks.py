@@ -255,6 +255,8 @@ def left_to_others(engine):
             others = [m for m in onward if m not in anyone and m.get("only_if")]
             if not anyone or not others or not all(m.get("only_if") for m in anyone):
                 continue
+            if all(m.get("feature") for m in others):  # an approval feature's own split: over the amount it waits, as asked
+                continue
             when = "; or ".join(automations_words(engine, m["only_if"], t["key"]) for m in anyone)
             theirs = ", ".join(f"“{m.get('label') or m['to']}” ({', '.join(m['who'])})" for m in others)
             out.append(_issue("check", f"At “{stage}”, whoever raised a {t['key']} record can move it on only when {when}; otherwise only "

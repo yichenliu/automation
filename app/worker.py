@@ -29,7 +29,7 @@ from .models import Job, Message, Outbox, Run, Workspace, utcnow
 log = logging.getLogger("worker")
 KINDS = ("builder", "assistant", "jobs", "automations", "outbox", "knowledge", "scheduler")
 PAUSE = {"builder": 1.0, "assistant": 0.7, "jobs": 1.0, "automations": 2.0, "outbox": 2.0, "knowledge": 3.0, "scheduler": 5.0}
-_working = {}  # what each thread is busy with right now: {thread: message id, ("job", id) or ("run", id)}
+_working = {}  # what each thread is busy with right now: {thread id: message id, ("job", id) or ("run", id)}
 GIVE_UP_AFTER = 1800  # seconds: a turn or question that keeps stopping part-way is given up on, and says so
 UNSTICK_EVERY = 60  # seconds between looks for work a stopped process left
 RUNS_AT_ONCE = 5  # rule runs one automations tick carries out before it pauses
@@ -79,7 +79,7 @@ def unstick():
 def _work_on(item, value, fn, *args):
     """Do `fn` on an item this thread claimed, then let it go, whatever happened (work a failure left half done is put
     back in the queue by unstick, as before). `value` is what `_working` says this thread is busy with."""
-    model, item_id, me = type(item), item.id, threading.current_thread().name
+    model, item_id, me = type(item), item.id, threading.get_ident()
     _working[me] = value
     try:
         return fn(*args)
@@ -195,18 +195,26 @@ TICKS = {"builder": builder_tick, "assistant": assistant_tick, "jobs": jobs_tick
          "outbox": outbox_tick, "knowledge": knowledge_tick, "scheduler": scheduler_tick}
 
 
-def _loop(app, kind, name):
+BACKGROUND = {"outbox", "scheduler"}  # kinds the AI gateway doesn't know by their thread's name: background work too
+
+
+def _loop(app, kind):
+    from . import ai
     tick, pause = TICKS[kind], PAUSE[kind]
     while not _stop.is_set():
         busy = False
         try:
             with app.app_context():
                 try:
-                    busy = tick()
+                    if kind in BACKGROUND:
+                        with ai.asking(purpose="background", priority="background"):
+                            busy = tick()
+                    else:
+                        busy = tick()
                 finally:
                     db.session.remove()
         except Exception:
-            log.exception("Background work (%s) failed", name)
+            log.exception("Background work (%s) failed", kind)
             _stop.wait(5)
         if not busy:
             _stop.wait(pause)
@@ -233,14 +241,14 @@ def kinds_of(app):
 
 def run_threads(app, kinds):
     """Start a thread for each kind of work (BUILDER_CONCURRENCY builder threads, JOB_CONCURRENCY job threads), and the
-    heartbeat. Returns the threads."""
+    heartbeat. Returns the threads. Each thread is named by its kind of work, however many there are of it: the AI
+    gateway (app/ai.py) knows from the name what a call is for and how soon it's needed."""
     _stop.clear()
     threads = []
     for kind in kinds:
         count = {"builder": app.config.get("BUILDER_CONCURRENCY", 2), "jobs": app.config.get("JOB_CONCURRENCY", 2)}.get(kind, 1)
-        for n in range(max(1, int(count))):
-            name = kind if n == 0 else f"{kind}-{n + 1}"
-            threads.append(threading.Thread(target=_loop, args=(app, kind, name), daemon=True, name=name))
+        for _ in range(max(1, int(count))):
+            threads.append(threading.Thread(target=_loop, args=(app, kind), daemon=True, name=kind))
     threads.append(threading.Thread(target=_heartbeat, args=(app,), daemon=True, name="heartbeat"))
     for thread in threads:
         thread.start()

@@ -10,6 +10,7 @@ from flask_login import UserMixin
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import event
 from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
+from sqlalchemy.types import JSON
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from .extensions import db
@@ -166,7 +167,7 @@ class Record(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     workspace_id = db.Column(db.Integer, db.ForeignKey("workspace.id"), nullable=False)
     table = db.Column(db.String(64), nullable=False)
-    data = db.Column(JSONB, nullable=False, default=dict)  # JSONB: indexed (GIN), so records are found by what's in them
+    data = db.Column(JSON().with_variant(JSONB(), "postgresql"), nullable=False, default=dict)  # JSONB on PostgreSQL (indexed, GIN); plain JSON in the simulator
     version = db.Column(db.Integer, nullable=False, default=1, server_default="1")
     created_by = db.Column(db.String(120))
     created_by_id = db.Column(db.Integer)  # the person who added it (for "only their own" access; names can change)

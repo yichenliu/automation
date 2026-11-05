@@ -313,6 +313,8 @@ def normalize_field(raw):
         label = label_of(key)
     ftype = field_type(_first(raw, "type", "kind", "field_type", default="text"))
     field = {"key": key, "label": label, "type": ftype}
+    if raw.get("feature"):  # made by a feature of the Keel language (app/lang)
+        field["feature"] = slug(raw["feature"])
     if raw.get("required") in (True, "true", "yes", 1):
         field["required"] = True
     help_text = _first(raw, "help", "description", "hint")
@@ -658,6 +660,8 @@ def normalize_workflow(raw, label=""):
             move["not_by"] = apart
         if _yes(_first(m, "step_up", "reauthenticate", "confirm_sign_in", "second_factor")):
             move["step_up"] = True  # a fresh sign-in code first (putting a contract in force, approving a payment run)
+        if m.get("feature"):  # made by a feature of the Keel language (app/lang): an approval's own moves
+            move["feature"] = slug(m["feature"])
         moves.append(move)
     if not moves:
         raise SchemaError(f"the workflow of {label} needs \"transitions\": the moves between stages, like {{\"from\": [\"Draft\"], "
@@ -2148,8 +2152,11 @@ def normalize_automation(raw):
     actions = [a for i, a in enumerate(actions) if not (i and a["type"] in REPEATS_ARE_SLIPS and a == actions[i - 1])]
     if not actions:
         raise SchemaError(f"the automation “{name or key}” needs at least one action")
-    return {"key": key, "name": name or label_of(key), "enabled": raw.get("enabled", True) not in (False, "false", 0),
-            "trigger": trigger, "conditions": [normalize_condition(c) for c in conditions], "actions": actions}
+    out = {"key": key, "name": name or label_of(key), "enabled": raw.get("enabled", True) not in (False, "false", 0),
+           "trigger": trigger, "conditions": [normalize_condition(c) for c in conditions], "actions": actions}
+    if raw.get("feature"):  # made by a feature of the Keel language (app/lang): changed and removed with it
+        out["feature"] = slug(raw["feature"])
+    return out
 
 
 # --- checking a whole blueprint -------------------------------------------------------------------------------------
