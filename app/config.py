@@ -61,7 +61,15 @@ class Config:
     MICROSOFT_CLIENT_SECRET = os.getenv("MICROSOFT_CLIENT_SECRET") or ""
     MICROSOFT_TENANT = os.getenv("MICROSOFT_TENANT") or "organizations"
     BACKUP_KEEP = int(os.getenv("BACKUP_KEEP") or 14)  # daily backups kept in data/backups
-    WORKER = (os.getenv("WORKER") or "1") == "1"  # the background threads for AI, automations, schedules and mail
+    # The background work (AI turns, jobs, rules, mail, schedules) as threads of the web process: on (1) for one process
+    # while developing; ./start.sh runs the web with WORKER=0 and the worker as its own process (python -m app.worker)
+    WORKER = (os.getenv("WORKER") or "1") == "1"
+    # which kinds of work a worker process does (any of builder, assistant, jobs, automations, outbox, knowledge,
+    # scheduler; all of them by default), and how many builder turns and jobs it works on at once
+    WORKER_KINDS = [k.strip() for k in (os.getenv("WORKER_KINDS") or "builder,assistant,jobs,automations,outbox,knowledge,scheduler")
+                    .split(",") if k.strip()]
+    BUILDER_CONCURRENCY = int(os.getenv("BUILDER_CONCURRENCY") or 2)
+    JOB_CONCURRENCY = int(os.getenv("JOB_CONCURRENCY") or 2)
     TRUST_PROXY = (os.getenv("TRUST_PROXY") or "0") == "1"  # only when a proxy in front sets X-Forwarded-For
     WTF_CSRF_TIME_LIMIT = None
     SESSION_COOKIE_SAMESITE = "Lax"

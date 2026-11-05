@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 
 from flask_login import UserMixin
 from pgvector.sqlalchemy import Vector
+from sqlalchemy import event
 from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
 from werkzeug.security import check_password_hash, generate_password_hash
 
@@ -57,6 +58,17 @@ class Workspace(db.Model):
     settings = db.Column(db.JSON, nullable=False, default=dict)  # business details, appearance, public form tokens
     state = db.Column(db.JSON, nullable=False, default=dict)  # schedules' last runs, mailbox positions
     created_at = db.Column(db.DateTime, default=utcnow)
+    # When its schedules next need looking at (UTC), so the scheduler reads only the workspaces that are due instead of
+    # every one every half minute. Empty: look now (a new workspace, or its design or time zone just changed).
+    next_due_at = db.Column(db.DateTime, index=True)
+
+
+@event.listens_for(Workspace.blueprint, "set")
+@event.listens_for(Workspace.timezone, "set")
+def _schedules_look_again(target, value, old, initiator):
+    """A new design (or time zone) can bring a schedule, or move one: the scheduler looks at the workspace again next time
+    round instead of waiting for the time it worked out from the old one."""
+    target.next_due_at = None
 
 
 class Membership(db.Model):
@@ -126,7 +138,7 @@ class Message(db.Model):
     user_id = db.Column(db.Integer, db.ForeignKey("user.id"))
     role = db.Column(db.String(16), nullable=False)  # user | assistant
     text = db.Column(db.Text, default="")
-    status = db.Column(db.String(20), default="done")  # queued | thinking | waiting_ai | done | failed
+    status = db.Column(db.String(20), default="done", index=True)  # queued | thinking | waiting_ai | done | failed
     page = db.Column(db.String(300))  # what the person was looking at when they asked
     files = db.Column(db.JSON, default=list)  # ids of files attached to a question
     thinking = db.Column(db.Text, default="")
@@ -144,6 +156,8 @@ class Message(db.Model):
     created_at = db.Column(db.DateTime, default=utcnow)
     started_at = db.Column(db.DateTime)
     finished_at = db.Column(db.DateTime)
+    claimed_by = db.Column(db.String(120))  # the worker doing this turn (leases.py); nobody else takes it until lease_until
+    lease_until = db.Column(db.DateTime)
 
 
 class Record(db.Model):
@@ -225,13 +239,15 @@ class Run(db.Model):
     table = db.Column(db.String(64))
     trigger = db.Column(db.String(300))
     context = db.Column(db.JSON, default=dict)  # an email or file that started it; records created along the way
-    status = db.Column(db.String(20), default="queued")  # queued | running | waiting_ai | waiting_approval | done | skipped | failed
+    status = db.Column(db.String(20), default="queued", index=True)  # queued | running | waiting_ai | waiting_approval | done | skipped | failed
     steps = db.Column(db.JSON, default=list)
     error = db.Column(db.Text)
     depth = db.Column(db.Integer, default=0)
     next_try = db.Column(db.DateTime)
     created_at = db.Column(db.DateTime, default=utcnow)
     finished_at = db.Column(db.DateTime)
+    claimed_by = db.Column(db.String(120))  # the worker (or the save) carrying it out now; nobody else does until lease_until
+    lease_until = db.Column(db.DateTime)
 
 
 class FlowRun(db.Model):
@@ -343,6 +359,52 @@ class Job(db.Model):
     created_by = db.Column(db.Integer)
     created_at = db.Column(db.DateTime, default=utcnow)
     finished_at = db.Column(db.DateTime)
+    claimed_by = db.Column(db.String(120))  # the worker doing it (leases.py); nobody else takes it until lease_until
+    lease_until = db.Column(db.DateTime)
+
+
+class ScheduleRun(db.Model):
+    """A schedule's time that has come and been taken (8 am on 5 Nov for "every day at 8"). Only one row can exist for
+    each time, so however many processes look, the one whose row goes in is the one that runs it."""
+    id = db.Column(db.Integer, primary_key=True)
+    workspace_id = db.Column(db.Integer, nullable=False)
+    automation_key = db.Column(db.String(64), nullable=False)
+    slot = db.Column(db.DateTime, nullable=False)  # the schedule's own time, in the workspace's time zone
+    created_at = db.Column(db.DateTime, default=utcnow)
+    __table_args__ = (db.UniqueConstraint("workspace_id", "automation_key", "slot"),)
+
+
+class Outbox(db.Model):
+    """An email or text message a rule sends. The rule's step writes it here as it runs (in the same save), and the worker
+    delivers it, trying again a little later each time if the mailbox can't be reached; what happened is kept here and on
+    the run's step."""
+    id = db.Column(db.Integer, primary_key=True)
+    workspace_id = db.Column(db.Integer, nullable=False, index=True)
+    run_id = db.Column(db.Integer, index=True)
+    channel = db.Column(db.String(8), nullable=False, default="email")  # email | sms
+    to = db.Column(db.Text, nullable=False)
+    cc = db.Column(db.Text)
+    subject = db.Column(db.Text)
+    body = db.Column(db.Text)
+    attachments = db.Column(db.JSON, default=list)  # [{"file": id, "name"}] or a report made for it: [{"name", "mime", "data"}]
+    status = db.Column(db.String(12), nullable=False, default="queued", index=True)  # queued | sending | sent | failed
+    attempts = db.Column(db.Integer, default=0)
+    next_try = db.Column(db.DateTime, default=utcnow)
+    error = db.Column(db.Text)
+    result = db.Column(db.Text)  # what happened, in words, as the run's step says it
+    reported = db.Column(db.Boolean, default=False)  # what happened has been written on the run's step
+    claimed_by = db.Column(db.String(120))
+    lease_until = db.Column(db.DateTime)
+    created_at = db.Column(db.DateTime, default=utcnow)
+    sent_at = db.Column(db.DateTime)
+
+
+class RateHit(db.Model):
+    """Attempts counted for a rate limit (sign-ins, API calls), by short time slices, so every web process counts the
+    same ones. `key` is a fingerprint of the limit and who it's for (no addresses or emails are kept)."""
+    key = db.Column(db.String(64), primary_key=True)
+    bucket = db.Column(db.BigInteger, primary_key=True)  # when the slice starts, in seconds since 1970
+    count = db.Column(db.Integer, nullable=False, default=0)
 
 
 class Chunk(db.Model):

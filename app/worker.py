@@ -1,35 +1,66 @@
-"""The background worker: threads in the web process.
+"""The background worker: its own process (`python -m app.worker`, which ./start.sh starts beside the web), or threads
+inside the web process (WORKER=1, the default, for one process while developing).
 
-- builder: the builder chat's turns, one at a time (as a local model works);
+- builder: the builder chat's turns, BUILDER_CONCURRENCY at once (an app's own turns one after another);
 - assistant: questions to the in-ERP assistant, so they never queue behind a long design turn;
-- jobs: imports, reading a business's Microsoft 365, AI-filled fields, reading documents;
-- automations: runs waiting for the AI or an approval, schedules, watching Microsoft 365, and the daily backup;
-- knowledge: reading changed records, new documents and mail into what the AI can look up.
+- jobs: imports, reading a business's Microsoft 365, AI-filled fields, reading documents (JOB_CONCURRENCY at once);
+- automations: rule runs left to the worker (AI steps, reminders of approvals, waits), an app's runs one after another;
+- outbox: the emails and text messages rules send, with tries again when the mailbox can't be reached (outbox.py);
+- knowledge: reading changed records, new documents and mail into what the AI can look up (one process at a time);
+- scheduler: schedules, connected apps, watching Microsoft 365, the daily look and backups (one process at a time,
+  scheduler.py), and putting back work a stopped process left.
+WORKER_KINDS says which of these a process does. Every item is claimed before it's worked on (leases.py), so however
+many workers run, nothing is done twice; a process that stops leaves its work to the others once its claims run out.
 Everything is in the database, so a restart picks up where it left off.
 """
 import logging
+import signal
+import sys
 import threading
 import time
+from datetime import timedelta
 
 from sqlalchemy import and_, or_
 
+from . import leases
 from .extensions import db
-from .models import Job, Message, Run, Workspace, utcnow
+from .models import Job, Message, Outbox, Run, Workspace, utcnow
 
 log = logging.getLogger("worker")
-_working = {}  # what each thread is busy with right now: {"builder": message id, "assistant": message id, "jobs": job id}
+KINDS = ("builder", "assistant", "jobs", "automations", "outbox", "knowledge", "scheduler")
+PAUSE = {"builder": 1.0, "assistant": 0.7, "jobs": 1.0, "automations": 2.0, "outbox": 2.0, "knowledge": 3.0, "scheduler": 5.0}
+_working = {}  # what each thread is busy with right now: {thread: message id, ("job", id) or ("run", id)}
 GIVE_UP_AFTER = 1800  # seconds: a turn or question that keeps stopping part-way is given up on, and says so
-SCHEDULE_EVERY = 30  # seconds between checks for due schedules
-WATCH_EVERY = 120  # seconds between looks at Microsoft 365 for new mail and files
-_last = {"schedule": 0.0, "watch": 0.0, "backup": 0.0}
+UNSTICK_EVERY = 60  # seconds between looks for work a stopped process left
+RUNS_AT_ONCE = 5  # rule runs one automations tick carries out before it pauses
+_stop = threading.Event()
+_last = {"unstick": 0.0}
+_scheduler = None
+_knowledge = None
+
+
+def _put_back(busy=(), give_up=False):
+    """Work nobody holds any more goes back in the queue. With `give_up`, work that keeps stopping part-way is given up
+    on instead, and says so. `busy`: what this process is working on itself (left alone)."""
+    messages = [b for b in busy if isinstance(b, int)]
+    jobs_busy = [b[1] for b in busy if isinstance(b, tuple) and b[0] == "job"]
+    runs_busy = [b[1] for b in busy if isinstance(b, tuple) and b[0] == "run"]
+    if give_up:
+        leases.requeue(Message, "thinking", "failed", Message.started_at.isnot(None),
+                       Message.started_at < utcnow() - timedelta(seconds=GIVE_UP_AFTER), busy=messages,
+                       values={"finished_at": utcnow(), "error": "This stopped part-way through and couldn't be finished. Please ask again."})
+        leases.requeue(Job, "running", "failed", Job.attempts >= 3, busy=jobs_busy,
+                       values={"finished_at": utcnow(), "error": "This stopped part-way through three times and was given up on."})
+    leases.requeue(Message, "thinking", "queued", busy=messages, values={"next_try": None})
+    leases.requeue(Job, "running", "queued", busy=jobs_busy)
+    leases.requeue(Run, "running", "queued", busy=runs_busy)
+    leases.requeue(Outbox, "sending", "queued")
 
 
 def recover():
-    """After a restart, work that was mid-way starts again."""
-    Message.query.filter(Message.status == "thinking").update({"status": "queued"})
-    Run.query.filter(Run.status == "running").update({"status": "queued"})
-    Job.query.filter(Job.status == "running").update({"status": "queued"})
-    db.session.commit()
+    """When a worker starts: work that was mid-way when a process stopped, and that nobody holds now (its claim ran out),
+    starts again. Work another running process holds is left to it."""
+    _put_back()
     from . import jobs
     for workspace in Workspace.query.all():  # workspaces from before the AI could look things up: read them once
         if not (workspace.settings or {}).get("knowledge_built"):
@@ -39,40 +70,37 @@ def recover():
 
 
 def unstick():
-    """Work a failure left half done (the database busy too long, a fault of ours) goes back in the queue, as it does after
-    a restart, instead of showing "working…" for ever; work that keeps stopping part-way is given up on and says so."""
-    busy = set(_working.values())
-    for message in Message.query.filter(Message.status == "thinking").all():
-        if message.id in busy:
-            continue
-        if message.started_at and (utcnow() - message.started_at).total_seconds() > GIVE_UP_AFTER:
-            message.status, message.finished_at = "failed", utcnow()
-            message.error = "This stopped part-way through and couldn't be finished. Please ask again."
-        else:
-            message.status, message.next_try = "queued", None
-    for job in Job.query.filter(Job.status == "running").all():
-        if ("job", job.id) in busy:
-            continue
-        if (job.attempts or 0) >= 3:
-            job.status, job.finished_at = "failed", utcnow()
-            job.error = "This stopped part-way through three times and was given up on."
-        else:
-            job.status = "queued"
-    db.session.commit()
+    """Work a failure left half done (the database busy too long, a fault of ours, a process that stopped) goes back in
+    the queue, as it does after a restart, instead of showing "working…" for ever; work that keeps stopping part-way is
+    given up on and says so. What this process is working on, and what other processes hold, is left alone."""
+    _put_back(busy=set(_working.values()), give_up=True)
 
 
-def _busy(kind, value, fn, *args):
-    _working[kind] = value
+def _work_on(item, value, fn, *args):
+    """Do `fn` on an item this thread claimed, then let it go, whatever happened (work a failure left half done is put
+    back in the queue by unstick, as before). `value` is what `_working` says this thread is busy with."""
+    model, item_id, me = type(item), item.id, threading.current_thread().name
+    _working[me] = value
     try:
         return fn(*args)
     finally:
-        _working.pop(kind, None)
+        _working.pop(me, None)
+        try:
+            db.session.rollback()  # anything a failure left half written
+            leases.release(model, item_id)
+        except Exception:  # noqa: BLE001 - it's free again once its claim runs out
+            log.exception("Couldn't let go of %s %s", model.__tablename__, item_id)
+            db.session.rollback()
+            leases.untrack(model, item_id)
 
 
 def _next_message(channel):
-    return (Message.query.filter(Message.channel == channel, Message.role == "assistant", or_(
-        Message.status == "queued", and_(Message.status == "waiting_ai", Message.next_try <= utcnow())))
-        .order_by(Message.id).first())
+    """The next turn or question to work on, claimed. Its status stays "queued" (the turn's own code marks it thinking as
+    it starts, and takes only a queued one): the claim is what keeps every other worker off it."""
+    now = utcnow()
+    return leases.claim(Message, Message.channel == channel, Message.role == "assistant",
+                        or_(Message.status == "queued", and_(Message.status == "waiting_ai", Message.next_try <= now)),
+                        one_per_workspace=(lambda other: [other.channel == "builder", other.role == "assistant"]) if channel == "builder" else None)
 
 
 def builder_tick():
@@ -80,7 +108,7 @@ def builder_tick():
     message = _next_message("builder")
     if message is None:
         return False
-    _busy("builder", message.id, chat.work, message.id)
+    _work_on(message, message.id, chat.work, message.id)
     return True
 
 
@@ -89,7 +117,7 @@ def assistant_tick():
     message = _next_message("assistant")
     if message is None:
         return False
-    _busy("assistant", message.id, assistant.work, message.id)
+    _work_on(message, message.id, assistant.work, message.id)
     return True
 
 
@@ -98,99 +126,173 @@ def jobs_tick():
     job = jobs.next_job()
     if job is None:
         return False
-    _busy("jobs", ("job", job.id), jobs.run, job)
+    _work_on(job, ("job", job.id), jobs.run, job)
     return True
 
 
 def knowledge_tick():
-    from . import knowledge
+    """One process at a time reads into the AI's index (two would read the same things)."""
+    global _knowledge
+    from . import knowledge, scheduler
+    if _knowledge is None:
+        _knowledge = scheduler.Lock("knowledge")
+    if not _knowledge.held():
+        return False
     return knowledge.work()
 
 
-def automation_tick(app):
-    from . import backup
-    from .connectors import watch
+def _carry_out(run):
     from .engine import automations
     from .engine.records import Engine
-    runs = (Run.query.filter(or_(Run.status == "queued", and_(Run.status.in_(["waiting_ai", "waiting", "waiting_approval"]), Run.next_try <= utcnow())))
-            .order_by(Run.id).limit(5).all())
-    for run in runs:
-        workspace = db.session.get(Workspace, run.workspace_id)
-        automations.execute(Engine(workspace, by="automation"), run)
+    run_id = run.id
+    try:
+        automations.execute(Engine(db.session.get(Workspace, run.workspace_id), by="automation"), run)
+    except Exception:  # noqa: BLE001 - a fault of ours: the run says so instead of being tried for ever
+        log.exception("Run %s failed", run_id)
+        db.session.rollback()
+        run = db.session.get(Run, run_id)
+        run.status, run.finished_at = "failed", utcnow()
+        run.error = "Something went wrong on our side while this rule ran; it's been logged."
+        db.session.commit()
+
+
+def automation_tick(app=None):
+    """Carry out the rule runs that are due: queued for the worker, or waiting (for the AI, an approval's reminder, a
+    time) until now. Each is claimed and marked running in one go; an app's runs are done one after another."""
+    done = 0
+    while done < RUNS_AT_ONCE and not _stop.is_set():
+        now = utcnow()
+        run = leases.claim(Run, or_(Run.status == "queued", and_(Run.status.in_(["waiting_ai", "waiting", "waiting_approval"]),
+                                                                   Run.next_try <= now)),
+                           values={"status": "running"}, one_per_workspace=lambda other: [])
+        if run is None:
+            break
+        done += 1
+        _work_on(run, ("run", run.id), _carry_out, run)
+    return bool(done)
+
+
+def outbox_tick():
+    from . import outbox
+    return outbox.work()
+
+
+def scheduler_tick(app=None):
+    """The clock's work, if this process is the scheduler; and in every process, a look for work a stopped one left."""
+    global _scheduler
+    from . import scheduler
     now = time.monotonic()
-    if now - _last.get("unstick", 0) > 60:
+    if now - _last.get("unstick", 0.0) > UNSTICK_EVERY:
         _last["unstick"] = now
         unstick()
-    if now - _last["schedule"] > SCHEDULE_EVERY:
-        _last["schedule"] = now
-        for workspace in Workspace.query.all():
-            if any(a["trigger"]["type"] == "schedule" for a in (workspace.blueprint or {}).get("automations", [])):
-                automations.due(Engine(workspace, by="schedule"))
-    if now - _last.get("mail", 0) > 60:
-        _last["mail"] = now
-        automations.email_notifications()
-    if now - _last.get("apps", 0) > 60:  # what's due from connected apps (orders from the shop, payments from the books)
-        _last["apps"] = now
-        from .connectors import apps
-        for workspace in Workspace.query.all():
-            for sync in apps.due(workspace):
-                try:
-                    apps.run_sync(workspace, sync)
-                except Exception as exc:  # one app's trouble doesn't stop the others; it's kept and shown in Connections
-                    log.warning("Bringing in %s %s for workspace %s failed: %s", sync["app"], sync["pull"], workspace.id, exc)
-                    db.session.rollback()
-    if now - _last["watch"] > WATCH_EVERY:
-        _last["watch"] = now
-        for workspace in Workspace.query.all():
-            try:
-                watch.check(workspace)
-            except Exception as exc:  # one workspace's mailbox trouble doesn't stop the others
-                log.warning("Watching Microsoft 365 for workspace %s failed: %s", workspace.id, exc)
-                db.session.rollback()
-    if now - _last.get("learn", 0) > 3600:  # once a day, the analyst looks at how each ERP is being used
-        _last["learn"] = now
-        from . import jobs
-        today = utcnow().strftime("%Y-%m-%d")
-        for workspace in Workspace.query.all():
-            key = f"learn:{workspace.id}:{today}"
-            if (workspace.blueprint or {}).get("tables") and not Job.query.filter_by(dedupe=key).first():
-                jobs.enqueue("learn", {"ai": True}, workspace_id=workspace.id, dedupe=key)
-    if now - _last["backup"] > 3600:
-        _last["backup"] = now
-        latest = backup.latest()
-        if latest is None or latest.stat().st_mtime < time.time() - 86400:
-            path = backup.make()
-            log.info("Backup made: %s", path)
-    return bool(runs)
+    if _scheduler is None:
+        _scheduler = scheduler.Scheduler()
+    _scheduler.tick()
+    return False
 
 
-def _loop(app, tick, pause, name):
-    while True:
+TICKS = {"builder": builder_tick, "assistant": assistant_tick, "jobs": jobs_tick, "automations": automation_tick,
+         "outbox": outbox_tick, "knowledge": knowledge_tick, "scheduler": scheduler_tick}
+
+
+def _loop(app, kind, name):
+    tick, pause = TICKS[kind], PAUSE[kind]
+    while not _stop.is_set():
         busy = False
         try:
             with app.app_context():
                 try:
-                    busy = tick(app) if tick is automation_tick else tick()
+                    busy = tick()
                 finally:
                     db.session.remove()
         except Exception:
             log.exception("Background work (%s) failed", name)
-            time.sleep(5)
+            _stop.wait(5)
         if not busy:
-            time.sleep(pause)
+            _stop.wait(pause)
+
+
+def _heartbeat(app):
+    """Every claim this process holds is renewed while its work goes on (leases.renew)."""
+    while not _stop.wait(leases.RENEW_EVERY):
+        try:
+            with app.app_context():
+                leases.renew()
+        except Exception:  # noqa: BLE001 - the next beat tries again; the leases have time left
+            log.exception("Renewing this process's claims failed")
+
+
+def kinds_of(app):
+    """The kinds of work this process does (WORKER_KINDS), each known."""
+    asked = app.config.get("WORKER_KINDS") or KINDS
+    unknown = [k for k in asked if k not in TICKS]
+    if unknown:
+        raise ValueError(f"WORKER_KINDS has {', '.join(unknown)}, which isn't work the worker knows (it knows {', '.join(KINDS)})")
+    return list(dict.fromkeys(asked))
+
+
+def run_threads(app, kinds):
+    """Start a thread for each kind of work (BUILDER_CONCURRENCY builder threads, JOB_CONCURRENCY job threads), and the
+    heartbeat. Returns the threads."""
+    _stop.clear()
+    threads = []
+    for kind in kinds:
+        count = {"builder": app.config.get("BUILDER_CONCURRENCY", 2), "jobs": app.config.get("JOB_CONCURRENCY", 2)}.get(kind, 1)
+        for n in range(max(1, int(count))):
+            name = kind if n == 0 else f"{kind}-{n + 1}"
+            threads.append(threading.Thread(target=_loop, args=(app, kind, name), daemon=True, name=name))
+    threads.append(threading.Thread(target=_heartbeat, args=(app,), daemon=True, name="heartbeat"))
+    for thread in threads:
+        thread.start()
+    return threads
 
 
 def start(app):
+    """The worker as threads of the web process (WORKER=1)."""
     if app.extensions.get("worker_started"):
         return
     app.extensions["worker_started"] = True
+    kinds = kinds_of(app)
     with app.app_context():
         recover()
-        try:  # the platform may have been updated since each app's checks last ran: run them again in the background
-            from .builder import checking
-            checking.after_platform_update()
-        except Exception:
-            log.exception("Couldn't queue the apps' checks after an update")
-    for name, tick, pause in (("builder", builder_tick, 1.0), ("assistant", assistant_tick, 0.7), ("jobs", jobs_tick, 1.0),
-                              ("automations", automation_tick, 2.0), ("knowledge", knowledge_tick, 3.0)):
-        threading.Thread(target=_loop, args=(app, tick, pause, name), daemon=True, name=name).start()
+    run_threads(app, kinds)
+
+
+def stop(threads=(), wait=25):
+    """Ask every loop to stop after what it's doing, wait up to `wait` seconds for them, and give up the scheduler."""
+    _stop.set()
+    deadline = time.monotonic() + wait
+    for thread in threads:
+        thread.join(timeout=max(0.0, deadline - time.monotonic()))
+    for lock in (_scheduler.lock if _scheduler is not None else None, _knowledge):
+        if lock is not None:
+            lock.release()
+
+
+def main(argv=None):
+    """`python -m app.worker`: the worker as its own process, until it's stopped (Ctrl-C, or ./start.sh stop)."""
+    from . import create_app, database
+    if (database.folder() / "PG_VERSION").exists():  # the platform's own PostgreSQL (./start.sh starts it first)
+        database.start()
+    app = create_app({"WORKER": False})  # (WORKER=1 would start the threads inside create_app too)
+    try:
+        kinds = kinds_of(app)
+    except ValueError as exc:
+        print(f"The worker didn't start: {exc}", file=sys.stderr)
+        return 2
+    with app.app_context():
+        recover()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        signal.signal(sig, lambda *_: _stop.set())
+    threads = run_threads(app, kinds)
+    print(f"{app.config['PLATFORM_NAME']}'s worker is running: {', '.join(kinds)}", flush=True)
+    while not _stop.is_set():
+        _stop.wait(1)
+    print("The worker is stopping: finishing what it's doing (work left half done is picked up when it starts again).", flush=True)
+    stop(threads)
+    return 0
+
+
+if __name__ == "__main__":  # run through the module's own name, so there's one copy of its state
+    from app import worker
+    sys.exit(worker.main(sys.argv[1:]))
