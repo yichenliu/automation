@@ -134,15 +134,30 @@ Only 1 was the model's own judgment.
 | # | Work | Status |
 |---|------|--------|
 | 1 | Simulation database: the engine runs on in-memory SQLite (models portable, migrations PG-only) | done (90700d5) |
-| 2 | Keel language: models, patches, compiler to the design, decompiler, static and whole-app checks | |
-| 3 | Patterns, each with its own checks; the registry, the generated catalog and schema, and the guard test | |
-| 4 | Checks language (given/when/then) and runner on the simulator; snapshots | |
-| 5 | Builder pipeline: needs → data → behaviour → compile → simulate → search → hand over; the chat turn moves onto it | |
-| 6 | Runtime: worker processes, SKIP LOCKED, scheduler leader, outbox, rule index | |
-| 7 | Queries in SQL: filters, sorts, search, paging, totals, unique and limit checks, imports | |
-| 8 | AI gateway: providers, priorities, fairness, deadlines | |
-| 9a | Core free of Flask: SQLAlchemy 2 sessions, settings object, context variables (engine, builder, lang, sim, runtime) | |
-| 9b | FastAPI: pages, sessions, CSRF, typed tools, MCP and REST v2, streaming; routes moved over one by one | |
-| 9c | Flask removed (Flask, Flask-Login, Flask-WTF, Flask-SQLAlchemy out of requirements) | |
+| 2 | Keel language: models, patches, compiler to the design, the app as the builder reads it, name and path checks | done (fa11576) |
+| 3 | Features with their own checks; the registry, generated catalog and schema, and the guard test | done: 12 features (fa11576, a83c605) |
+| 4 | Checks: told and not-equals expectations, numbers as arithmetic the platform works out, today+N dates, unsaved designs tried | done; snapshots not used yet |
+| 5 | Builder: needs → data → behaviour → checks → simulate → best of several fixes → need-by-need handover (default) | done (fa11576, b9040d7, a83c605); files attached still use the old builder |
+| 6 | Runtime: worker processes, SKIP LOCKED, scheduler leader, outbox, rule index | in progress |
+| 7 | Queries in SQL: filters, sorts, search, paging, totals, unique and limit checks, imports | in progress |
+| 8 | AI gateway: providers, priorities, fairness, deadlines | done (0ae4c76) |
+| 9a | Core free of Flask: SQLAlchemy 2 sessions, settings object, context variables | after 6 and 7 land |
+| 9b | FastAPI: pages, sessions, CSRF, typed tools, MCP and REST v2, streaming | tools done and on MCP (7385153); FastAPI front next |
+| 9c | Flask removed | |
 | 10 | Tenancy: row-level security, vector filtering, object storage | |
 | 11 | Evals on the new builder | |
+
+## Adding a feature
+
+1. Write its class in `app/lang/patterns.py`:
+   - decorate it with `@register("feature", <an example>)`;
+   - give it `do: Literal["<name>"]` and its parameters;
+   - write a docstring saying in one or two sentences what it does for a business. The AI reads exactly this.
+2. Write `build(d, where)`. It returns a `Made`: the fields, rules and design ops it needs. Raise `Problem` with what's
+   wrong and what's there instead.
+3. Write `checks(d)`: worked examples, in the try-out's format, that prove it works.
+4. Run `pytest tests/test_lang.py`. The guard test applies your example to a sample app that has every list, runs its
+   checks in the simulator, and fails if anything is missing or wrong.
+
+Nothing else is needed. The builder's catalog, the output schema and the MCP tools pick the feature up on the next
+run.
