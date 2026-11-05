@@ -53,8 +53,9 @@ wrong if anything is).
 
 UNDERSTAND = BASE + """
 
-Read what the owner says and list what the app must do: their needs. Each need is one plain sentence of what the app
-will do ("does"), with the owner's own words it comes from ("said"). Only what they asked for. For an app made from
+Read what the owner says and list what the app must do: their needs. Each need says what the app will do ("does": under
+12 plain words, starting with a verb, as "Tells you when an invoice is paid"), with the owner's own words it comes
+from ("said"). Only what they asked for. For an app made from
 nothing, when they've said little, add what a business like theirs needs at its core (a few needs, "suggested": true).
 For a change to an app in use, only what this message asks for.
 Ask a question only when nothing at all can be built without its answer; otherwise choose sensibly and build.
