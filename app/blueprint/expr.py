@@ -316,6 +316,8 @@ def _attr(value, name):
         return getter(name)
     if isinstance(value, dict):
         return value.get(name)
+    if name == "days" and isinstance(value, (int, float)) and not isinstance(value, bool):
+        return value  # one date take another is already a number of days: (today() - due_date).days is that number
     raise ExprError(f"“.{name}” only works on a linked record")
 
 

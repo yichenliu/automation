@@ -130,16 +130,106 @@ def _sample(d, f, n, alias):
     return f"Sample {f.get('label') or f['key']} {alias}"
 
 
-def adding(d, t, alias, values=None, by=None, depth=0, made=None, through=()):
+def _wanted(d, t, keep=()):
+    """What the list's rules (add_validation) ask of a record, where it can be said simply: [(path, value)], a path being
+    the field's key, or a link's key then the linked record's ("quote.status == 'Approved'": (["quote", "status"],
+    "Approved")). `keep`: more of the same, asked by whoever adds it."""
+    import ast
+    out = list(keep)
+
+    def path(node):
+        if isinstance(node, ast.Name):
+            return [node.id]
+        if isinstance(node, ast.Attribute):
+            head = path(node.value)
+            return head + [node.attr] if head else None
+        return None
+
+    def const(node):
+        if isinstance(node, ast.Constant):
+            return node.value
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub) and isinstance(node.operand, ast.Constant):
+            return -node.operand.value
+        if isinstance(node, ast.Name) and node.id in ("True", "False", "true", "false"):
+            return node.id.lower() == "true"
+        if isinstance(node, (ast.List, ast.Tuple)) and node.elts and isinstance(node.elts[0], ast.Constant):
+            return [e.value for e in node.elts if isinstance(e, ast.Constant)]
+        return KeyError  # not a constant
+
+    turned = {ast.Gt: ast.Lt, ast.Lt: ast.Gt, ast.GtE: ast.LtE, ast.LtE: ast.GtE, ast.Eq: ast.Eq, ast.NotEq: ast.NotEq}
+
+    def walk(node):
+        if isinstance(node, ast.BoolOp) and isinstance(node.op, ast.And):
+            for v in node.values:
+                walk(v)
+        elif isinstance(node, ast.Compare) and len(node.ops) == 1:
+            left, op, right = node.left, type(node.ops[0]), node.comparators[0]
+            if path(left) is None or const(right) is KeyError:
+                left, right, op = right, left, turned.get(op)
+            p, v = path(left), const(right)
+            if p is None or v is KeyError or op is None:
+                return
+            if op is ast.Eq:
+                out.append((p, v))
+            elif op is ast.In and isinstance(v, list) and v:
+                out.append((p, v[0]))
+            elif op in (ast.GtE, ast.LtE) and isinstance(v, (int, float)):
+                out.append((p, v))
+            elif op is ast.Gt and isinstance(v, (int, float)):
+                out.append((p, v + 1))
+            elif op is ast.Lt and isinstance(v, (int, float)):
+                out.append((p, v - 1))
+            elif op is ast.NotEq:
+                out.append((p, ("not", v)))
+    for rule in t.get("rules") or []:
+        if str(rule.get("check") or "").strip().lower() in ("", "false"):
+            continue
+        try:
+            walk(expr.parse(schema.percents_fixed(t, rule["check"])).body)
+        except Exception:  # noqa: BLE001 - a rule that can't be read simply: left to the record's own values
+            continue
+    return out
+
+
+def _keeping(d, f, value):
+    """A value of the field that keeps to what a rule asks (("not", x): anything but x)."""
+    if isinstance(value, tuple) and value[:1] == ("not",):
+        if f["type"] == "select":
+            return next((o for o in f.get("options") or [] if str(o).lower() != str(value[1]).lower()), None)
+        if f["type"] == "checkbox":
+            return not bool(value[1])
+        if d.kind(f) == "number" and isinstance(value[1], (int, float)):
+            return value[1] + 1
+        return None
+    if f["type"] == "select":
+        return d.choice(f, str(value)) or value
+    return value
+
+
+def adding(d, t, alias, values=None, by=None, depth=0, made=None, through=(), keep=()):
     """Steps that add a valid record of t as `alias`: its required fields filled in (a record it must link to added
-    first, and one it links to `through` even if it needn't: the customer an email goes to), and these values."""
+    first, and one it links to `through` even if it needn't: the customer an email goes to), what the list's rules ask
+    of it (a job's quote Approved: that quote added so), and these values. `keep`: more such asks, from the record that
+    links to it."""
     steps, values = [], dict(values or {})
     made = made if made is not None else {}
     flow_field = (t.get("workflow") or {}).get("field")
+    asked, onward = {}, {}  # its own fields' values the rules ask for; and, by link, what they ask of the linked record
+    for p, v in _wanted(d, t, keep):
+        f = d.field(t, p[0])
+        if f is None or f["key"] in values:
+            continue
+        if len(p) == 1 and f["type"] in schema.STORED and f["type"] != "link":
+            got = _keeping(d, f, v)
+            if got is not None:
+                asked.setdefault(f["key"], got)
+        elif len(p) > 1 and f["type"] == "link" and not f.get("multiple"):
+            onward.setdefault(f["key"], []).append((p[1:], v))
+    values.update(asked)
     for i, f in enumerate(t.get("fields", [])):
         if f["key"] in values or f["type"] in schema.CALCULATED | schema.FILES or f["key"] == flow_field:
             continue
-        if not f.get("required") and not (f["type"] == "link" and f["key"] in through):
+        if not f.get("required") and not (f["type"] == "link" and (f["key"] in through or f["key"] in onward)):
             if f["type"] == "email":  # an address to send to, so what emails it can be seen to
                 values[f["key"]] = f"{alias}@example.com"
             continue
@@ -147,19 +237,23 @@ def adding(d, t, alias, values=None, by=None, depth=0, made=None, through=()):
             other = d.list(f.get("table"))
             if other is None or depth > 2:
                 continue
-            if other["key"] in made:
+            if other["key"] in made and f["key"] not in onward:
                 values[f["key"]] = made[other["key"]]
                 continue
             other_alias = f"{alias}_{other['key'][:8]}"
-            steps += adding(d, other, other_alias, depth=depth + 1, made=made)
-            made[other["key"]] = other_alias
+            steps += adding(d, other, other_alias, depth=depth + 1, made=made, keep=onward.get(f["key"], ()))
+            made.setdefault(other["key"], other_alias)
             values[f["key"]] = other_alias
         else:
             values[f["key"]] = _sample(d, f, i, alias)
+    start = (t.get("workflow") or {}).get("start") or next(iter(d.stages(t) or []), None) if flow_field else None
+    staged = asked.get(flow_field) if flow_field in asked and asked.get(flow_field) != start else None
+    if staged is not None:  # a record starts at its first stage: taken to the one asked for by its buttons, as people would
+        values.pop(flow_field, None)
     step = {"do": "add", "table": t["key"], "as": alias, "values": values}
     if by:
         step["by"] = by
-    return steps + [step]
+    return steps + [step] + ([{"do": "move", "record": alias, "to": staged}] if staged is not None else [])
 
 
 def holding(d, f, c, yes):
@@ -508,16 +602,17 @@ class Overdue(Feature):
                                "conditions": [{"field": f["key"], "op": "changed_to", "value": froms[0]}],
                                "actions": [{"type": "update_record", "values": {df["key"]: "{{today()}}"}}]})
         late = d.choice(f, self.to_stage)
-        options = [o for o in f.get("options") or [] if o != late]
-        at = max(options.index(s) for s in froms) + 1
-        placed = options[:at] + [late or self.to_stage.strip()] + options[at:]  # the late stage, straight after the ones it comes from
-        if placed != list(f.get("options") or []):
-            late = late or self.to_stage.strip()
-            made.ops.append({"op": "update_field", "table": t["key"], "key": f["key"], "changes": {**f, "options": placed}})
-            made.undo = {"options": {t["key"]: f.get("options")}}
+        entry = next((e for e in d.bp.get("features", []) if e["key"] == self.feature_key()), None)
+        if late is None or entry is None:  # placed when it's made: after that, where the owner puts the stages is kept
+            options = [o for o in f.get("options") or [] if o != late]
+            at = max(options.index(s) for s in froms) + 1
+            placed = options[:at] + [late or self.to_stage.strip()] + options[at:]  # straight after the ones it comes from
+            if placed != list(f.get("options") or []):
+                late = late or self.to_stage.strip()
+                made.ops.append({"op": "update_field", "table": t["key"], "key": f["key"], "changes": {**f, "options": placed}})
+                made.undo = {"options": {t["key"]: f.get("options")}}
         flow = copy.deepcopy(t.get("workflow") or {})
         if flow.get("transitions"):  # a late one moves on as the ones it came from do (an overdue invoice can still be paid)
-            entry = next((e for e in d.bp.get("features", []) if e["key"] == self.feature_key()), None)
             original = (entry or {}).get("undo", {}).get("workflow", {}).get(t["key"]) or flow["transitions"]
             moves = copy.deepcopy(original)
             for mv in moves:
@@ -888,15 +983,23 @@ class SendDocument(Feature):
         actions = [{"type": "generate_document", "document": key},
                    {"type": "send_email", "to": to, "subject": self.subject or f"{t['singular']} {_title(t)}",
                     "body": self.body or f"Please find your {t['singular'].lower()} {_title(t)} attached.", "attach": [key]}]
-        if self.then_stage:  # the move to the stage is the button; getting there (however) sends it
+        if self.then_stage:  # the move to the stage is the button, called as asked; getting there (however) sends it
             f, stage = _stage(d, t, self.then_stage, where)
             flow = copy.deepcopy(t.get("workflow") or {"field": f["key"], "transitions": []})
-            if not any(mv["to"] == stage for mv in flow.get("transitions", [])):
+            entry = _entry(d.bp, self.feature_key())
+            original = copy.deepcopy(((entry or {}).get("undo") or {}).get("workflow", {}).get(t["key"], flow.get("transitions") or []))
+            moves = copy.deepcopy(original)
+            into = [mv for mv in moves if mv["to"] == stage]
+            for mv in into:  # “Send delivery note” is the button people press to get there
+                mv["label"] = self.button[:60]
+            if not into:
                 options = list(f.get("options") or [])
                 before = options[options.index(stage) - 1] if options.index(stage) > 0 else None
-                flow.setdefault("transitions", []).append({"from": [before] if before else [], "to": stage, "label": self.button[:60],
-                                                           "feature": self.feature_key()})
-                made.ops.append({"op": "update_table", "table": t["key"], "workflow": flow})
+                moves.append({"from": [before] if before else [], "to": stage, "label": self.button[:60], "feature": self.feature_key()})
+            if moves != (t.get("workflow") or {}).get("transitions"):
+                made.ops.append({"op": "update_table", "table": t["key"], "workflow": {**flow, "transitions": moves}})
+            if t.get("workflow"):  # kept over the list's moves when they're laid out anew, and given back when it's taken away
+                made.undo = {"workflow": {t["key"]: original}}
             made.rules.append({"key": self.feature_key(), "name": f"Send the {t['singular'].lower()} when it's {stage}",
                                "trigger": {"type": "record_created_or_updated", "table": t["key"]},
                                "conditions": [{"field": f["key"], "op": "changed_to", "value": stage}], "actions": actions})
@@ -1100,6 +1203,7 @@ class Gate(Feature):
         conditions = ir_conditions(d, t, self.only_if, f"{where} › only_if") if self.only_if else []
         blocked = ir_conditions(d, t, self.blocked_if, f"{where} › blocked_if") if self.blocked_if else []
         allowed = conditions + ([_turned(blocked, f"{where} › blocked_if")] if blocked else [])
+        allowed = [c for i, c in enumerate(allowed) if c not in allowed[:i]]  # only_if and blocked_if saying the same: said once
         entry = next((e for e in d.bp.get("features", []) if e["key"] == self.feature_key()), None)
         mine = ((entry or {}).get("made") or {}).get("rules") or {}
         made = Made()

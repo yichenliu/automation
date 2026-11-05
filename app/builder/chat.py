@@ -382,7 +382,8 @@ def _mending(workspace, question):
     before = Message.query.filter(Message.workspace_id == workspace.id, Message.channel == "builder", Message.id < question.id,
                                   Message.role == "assistant").order_by(Message.id.desc()).first()
     answering = before is not None and (before.text or "").startswith("Not everything works yet")  # what it said doesn't work, answered
-    every = bool(answering or (FIX_IT.search(text) and len(text.split()) <= 25) or text.startswith("Please fix what isn't right"))
+    asked = bool((FIX_IT.search(text) and len(text.split()) <= 25) or text.startswith("Please fix what isn't right"))
+    every = asked or answering
     if not (every or named):
         return None
     if not every:
@@ -396,7 +397,10 @@ def _mending(workspace, question):
               "move, a rule, a field) or correct what's wrong. Don't ask whether to, and never change a check of the owner's to "
               "expect less. Where a number or a name only the owner knows is needed, use a sensible one and say which in the "
               "reply, so they can change it.")
-    return {"all": every, "titles": [x["title"] for x in found["failing"]], "found": found, "text": said}
+    # only answering (no “fix it”, no check named): it may be about what isn't right, or something new (“tell me when
+    # one is paid”); the builder reads which before taking any of it on
+    return {"all": every, "titles": [x["title"] for x in found["failing"]], "found": found, "text": said,
+            "maybe": answering and not asked and not named}
 
 
 def work(message_id):

@@ -219,7 +219,8 @@ class Reaches(Base):
 
 @register("when", {"on": "button", "list": "quotes", "label": "Send quote"})
 class Button(Base):
-    """A button on each record of the list; only_if of the rule says when it shows."""
+    """A button on each record of the list; only_if of the rule says when it can be pressed (until then it's refused,
+    saying what it waits for: "can't send specs until the design is approved" is a button with only_if)."""
     on: Literal["button"]
     list: str
     label: Words
@@ -621,12 +622,22 @@ class AddValidation(Base):
     """A rule every record of a list must keep when it's added or changed, so what breaks it is refused ("can't book
     unless…", "never more than…"): check is a formula that must be true (end_date >= start_date; a linked record's
     field through its link: student.deposit_paid >= 50), message what people are told when it isn't; only_if: only
-    while these hold. Holding a record back from a stage is a gate."""
+    while these hold. Sent again with the same check, it replaces that rule. Holding a record back from a stage is a
+    gate."""
     do: Literal["add_validation"]
     list: str
     check: str
     message: str
     only_if: list[Condition] = Field(default_factory=list)
+
+
+@register("patch", {"do": "remove_validation", "list": "payments", "check": "amount <= invoice.total"}, "behaviour")
+class RemoveValidation(Base):
+    """Take away a rule a list's records must keep (one add_validation made), named by its check or its message, as
+    the app shows it."""
+    do: Literal["remove_validation"]
+    list: str
+    check: str
 
 
 @register("patch", {"do": "set_team", "key": "finance", "name": "Finance", "about": "Pays the bills and chases what's owed"}, "data")

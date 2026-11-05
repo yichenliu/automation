@@ -816,6 +816,7 @@ details.card.fold:not([open]) > summary { border-bottom: 0; }
 .next-step .moves input[type="text"] { width: 200px; }
 .next-step .fill-first { display: flex; flex-direction: column; gap: 2px; }
 .next-step .fill-first input, .next-step .fill-first select { min-width: 160px; }
+.held-button { display: inline-flex; flex-direction: column; gap: 2px; max-width: 260px; }
 .calc.icon-only { padding: 0 2px; background: none; border: 0; cursor: help; }
 .calc.icon-only .i { width: 12px; height: 12px; color: var(--faint); }
 .list-row .grow, .list-row .ellipsis { min-width: 0; }

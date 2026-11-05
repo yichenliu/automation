@@ -85,7 +85,8 @@ lists, fields, features and rules) already does it. Every need is one or the oth
 needs one.
 - What must be stopped ("can't", "prevent", "unless", "only once", "never more than") is refused by the app, not
   only told: a gate holds a record back from a stage or a choice; add_validation refuses adding or saving a record
-  that breaks it (a job whose quote isn't approved: quote.status = 'Approved'); a limit caps how many share something.
+  that breaks it (a job whose quote isn't approved: quote.status = 'Approved'); a limit caps how many share something;
+  a button's only_if holds the button back until it's met (no specs sent until the design is approved).
 
 {catalog}"""
 
@@ -134,6 +135,8 @@ class Understood(BaseModel):
     needs: list[Need]
     question: str = ""
     reply: str = ""
+    about: list[int] = Field(default_factory=list, description="the numbers of what isn't right (if listed) that this "
+                                                                "message is about: explains, or asks to be put right")
 
 
 def _patches(group):
@@ -280,15 +283,16 @@ def _broken_examples(run):
     return [(x, r) for x, r in zip(run["examples"], run["results"]) if r.get("kind") == "example" and x.get("by") == "builder"]
 
 
-def _said_failing(run):
+def _said_failing(run, failing=None, hard=None):
     lines = []
-    for x, r in _failing(run)[:8]:
+    failing = _failing(run) if failing is None else failing
+    for x, r in failing[:8]:
         steps = "; ".join(json.dumps(s, ensure_ascii=False) for s in x.get("steps", [])[:8])
         by = str(x.get("by") or "builder")
         whose = (f"the feature {by[8:]}'s own check: change that feature (send it again with its key)" if by.startswith("feature:")
                  else "your own worked example" if by == "builder" else "the owner's own check: the app must do what it says")
         lines.append(f"- “{x.get('title')}” ({whose}; steps: {steps}; expects {json.dumps(x.get('expect'), ensure_ascii=False)}): {r.get('problem')}")
-    lines += [f"- {i['text']}" for i in run["hard"][:6]]
+    lines += [f"- {i['text']}" for i in (run["hard"] if hard is None else hard)[:6]]
     return "\n".join(lines)
 
 
@@ -468,18 +472,29 @@ def _turn(turn):
     asked = (question.text if question else "") or ""
     changing = bool(turn.bp.get("tables"))
     mending = _mending(workspace, question) if changing else None
+    before = checking.not_right(workspace) if changing else {"failing": [], "issues": [], "missing": []}
     needs, custom = [], [x for x in _kept(workspace) if x.get("by") == "builder"]
     reply = ""
     if not (mending and only_fixing(asked)):  # anything more than "fix it" is read: a change, or what should happen
         turn.note("Working out what you need")
-        understood = _understand(turn, asked)
+        listed = _listed(mending["found"]) if mending and mending.get("maybe") else []
+        understood = _understand(turn, asked, [said for _, _, said in listed])
         needs, reply = understood.needs, understood.reply
+        if listed:  # after "Not everything works yet": only what this message is about is taken on
+            picked = [listed[i - 1] for i in dict.fromkeys(understood.about) if 0 < i <= len(listed)]
+            mending = {**mending, "found": {k: [x for kind, x, _ in picked if kind == k] for k in ("failing", "issues", "missing")}} if picked else None
         if understood.question and not needs:
             turn.message.text, turn.message.status, turn.message.finished_at = understood.question, "done", utcnow()
             db.session.commit()
             return
         if needs:
             turn.note("What I'll make it do: " + "; ".join(n.does.rstrip(".") for n in needs[:6]))
+    # what wasn't right before this turn, and isn't what it's asked to put right, stays for the owner's Fix: a change
+    # does what was asked, and never more (an unasked change to who sees what, to put an old check right)
+    if mending:
+        before = {"failing": [x for x in before["failing"] if x not in mending["found"]["failing"]],
+                  "issues": [i for i in before["issues"] if i not in mending["found"]["issues"]]}
+    old_titles, old_issues = {x["title"] for x in before["failing"]}, set(before["issues"])
     asked_for = [x for x in ((mending or {}).get("found") or {}).get("missing") or [] if x.get("said")]
     if asked_for:  # the owner's checks the app doesn't do yet: what they asked for, made now as needs of their own
         known = {n.said.strip().lower() for n in needs}
@@ -535,15 +550,17 @@ def _turn(turn):
     required = [x.get("title") for x in examples]
     rounds = 0
     for rounds in range(1, SEARCH_ROUNDS + 1 + (1 if mending else 0)):
-        failing, unmade = _failing(best), sorted(turn.tried - turn.made)
-        if not failing and not best["hard"] and not unmade:
+        failing = [(x, r) for x, r in _failing(best) if x.get("title") not in old_titles]
+        hard = [i for i in best["hard"] if i.get("plain") not in old_issues]
+        unmade = sorted(turn.tried - turn.made)
+        if not failing and not hard and not unmade:
             rounds -= 1
             break
-        n = len(failing) + len(best["hard"]) + len(unmade)
+        n = len(failing) + len(hard) + len(unmade)
         turn.note(f"Putting right {n} thing{'s' if n != 1 else ''} that didn't come out right or aren't made yet (trying {CANDIDATES} ways)")
         user = (f"{turn.about()}\n\nThe owner's latest message: {asked}\n\nThe needs:\n{needs_text or '(as the app is)'}\n\n"
                 f"The app now:\n{lang.describe(turn.bp)}\n\n"
-                + (f"Didn't come out right:\n{_said_failing(best)}\n\n" if failing or best["hard"] else "")
+                + (f"Didn't come out right:\n{_said_failing(best, failing, hard)}\n\n" if failing or hard else "")
                 + (f"Not made yet: {', '.join(f'need {i}' for i in unmade)} (what was sent for them was refused)\n" if unmade else ""))
         answers = _ask_many(FIX.format(catalog=catalog("all")), user, _answer_schema("all", by_need=True), CANDIDATES)
         tried = []
@@ -576,10 +593,21 @@ def _turn(turn):
 TOO_MUCH = (ai.CutOff, ai.Stuck)
 
 
-def _understand(turn, asked):
+def _listed(found):
+    """What isn't right, one by one, as the understand step is shown it: [(kind, item, words)]."""
+    return ([("failing", x, f"the check “{x['title']}” doesn't come out right: {x['why']}") for x in found.get("failing") or []]
+            + [("issues", i, f"trying the app out found: {i}") for i in found.get("issues") or []]
+            + [("missing", x, f"the owner's check “{x['said']}” isn't something the app does yet") for x in found.get("missing") or []])[:12]
+
+
+def _understand(turn, asked, open_items=()):
     """The owner's needs: asked once, then again a little differently, then for fewer, if the answer runs away (a model
-    repeating itself, or writing more than fits)."""
-    user = (f"{turn.about()}\n\nThe app now:\n{lang.describe(turn.bp)}\n\nEarlier:\n{turn.history() or '(nothing yet)'}\n\n"
+    repeating itself, or writing more than fits). `open_items`: what isn't right now, for "about" to say which this
+    message is about."""
+    shown = ("\n\nWhat isn't right in the app now:\n" + "\n".join(f"{i}. {x}" for i, x in enumerate(open_items, start=1))
+             + "\nIn \"about\", put the numbers of those this message is about (it says what should happen there, or asks for "
+               "it to be put right); none when it asks for something else. Its needs are only what the message asks.") if open_items else ""
+    user = (f"{turn.about()}\n\nThe app now:\n{lang.describe(turn.bp)}\n\nEarlier:\n{turn.history() or '(nothing yet)'}{shown}\n\n"
             f"The owner says: {asked}")
     for tries, extra in ((0, ""), (1, ""), (2, "\n\n(Keep it short: at most six needs, one sentence each.)")):
         try:

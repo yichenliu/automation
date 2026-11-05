@@ -351,7 +351,8 @@ def walk(trial, screens=True):
         record = engine.get(made[table]) if table and made.get(table) else None
         try:
             if a["trigger"]["type"] == "button" and record is not None:
-                automations.press(engine, a, engine.get(record.id), engine.by)
+                if not automations.button_held(engine, a, engine.get(record.id)):  # one not offered yet isn't pressed
+                    automations.press(engine, a, engine.get(record.id), engine.by)
             elif a["trigger"]["type"] == "schedule":
                 automations.run_schedule(engine, a, "Tried out")
         except Exception as exc:  # noqa: BLE001
@@ -856,12 +857,14 @@ def _act(trial, engine, step, names, hold=False):
         t = _table(engine, step.get("table"))
         names["_adding"] = step.get("as")
         try:
-            record = engine.create(t["key"], _values(engine, t, step.get("values"), names), ai=False, automations=not hold)
+            given = _values(engine, t, step.get("values"), names)
+            record = engine.create(t["key"], given, ai=False, automations=not hold)
         finally:
             names.pop("_adding", None)
         if step.get("as"):
             names[step["as"]] = record.id
         names.setdefault("_added", []).append((t["key"], record.id))
+        names.setdefault("_given", {}).setdefault(record.id, set()).update(given)  # what the example says, never filled over
         return
     if do == "wait":  # days pass: reminders fall due, approvals get chased, things get overdue
         days = int(to_number(step.get("days")) or 1)
@@ -902,6 +905,7 @@ def _act(trial, engine, step, names, hold=False):
                 staff.update(theirs, values)
                 return
         engine.update(record, values)
+        names.setdefault("_given", {}).setdefault(record.id, set()).update(values)
     elif do == "move":
         wanted = str(step.get("to") or "").strip().lower()
         if not t.get("workflow"):  # no buttons: people set its Status themselves
@@ -913,21 +917,29 @@ def _act(trial, engine, step, names, hold=False):
             return
         if wanted not in [s.lower() for s in schema.stages(t)]:
             raise ExampleWrong(f"{t['key']} has no stage “{step.get('to')}” (stages: {', '.join(schema.stages(t))})")
+        given = names.setdefault("_given", {}).setdefault(record.id, set())
         if step.get("values"):  # filled in on the button's form
-            engine.update(record, _values(engine, t, step["values"], names))
+            filled = _values(engine, t, step["values"], names)
+            engine.update(record, filled)
+            given.update(filled)
             engine.reset()
             record = engine.get(record.id)
         if not step.get("refused"):  # what its button asks for, filled in as the person would (a stop for it left empty is
             # shown with "refused")
-            _fill_asked(trial, engine, record, t, lambda m: m["to"].lower() == wanted)
+            _fill_asked(trial, engine, record, t, lambda m: m["to"].lower() == wanted, given)
             record = engine.get(record.id)
         if not _press_move(engine, record, t, lambda m: m["to"].lower() == wanted):
-            _take_along(engine, record, t, step.get("to"), None if step.get("refused") else trial)
+            _take_along(engine, record, t, step.get("to"), trial, last=not step.get("refused"), given=given)
     elif do == "press":
         wanted = str(step.get("button") or "").strip().lower()
         a = next((a for a in engine.bp.get("automations", []) if a["trigger"]["type"] == "button"
                   and wanted in (a["key"].lower(), a["name"].lower(), str(a["trigger"].get("label") or "").lower())), None)
         doc = next((d for d in t.get("documents", []) if wanted in (d["key"].lower(), str(d.get("label") or "").lower())), None)
+        move = next((m for m in (t.get("workflow") or {}).get("transitions") or [] if str(m.get("label") or "").strip().lower() == wanted),
+                    None) if a is None and doc is None else None
+        if move is not None:  # a stage's button (“Send delivery note”), pressed as the person would: the move it makes
+            _act(trial, engine, {**step, "do": "move", "to": move["to"]}, names, hold)
+            return
         if a is None and doc is not None:  # its document's button (Make the invoice PDF), as the person would press it
             from ..documents import produce
             produce(engine, record, doc["key"], by=engine.by)
@@ -1012,9 +1024,11 @@ def _unchanged(engine, t, record, key, value):
     return str(value if value is not None else "") == str((record.data or {}).get(key) if (record.data or {}).get(key) is not None else "")
 
 
-def _take_along(engine, record, t, target, trial=None):
+def _take_along(engine, record, t, target, trial=None, last=True, given=()):
     """“Move it to Invoiced” from New: taken along the stages between by their buttons, as the person would (a rule may
-    carry it on by itself), filling in what each button asks (with `trial`). Raises FieldErrors where it can't go on."""
+    carry it on by itself), filling in what each button asks (with `trial`): on the way, always; at the target too
+    unless not `last` (a move meant to be refused is tried as it stands). `given`: the fields the example set itself,
+    never filled over. Raises FieldErrors where it can't go on."""
     field, began = t["workflow"]["field"], None
     for _ in range(len(schema.stages(t)) + 1):
         engine.reset()
@@ -1028,8 +1042,8 @@ def _take_along(engine, record, t, target, trial=None):
             open_ = [m["to"] for _, m, _ in engine.moves(record)]
             raise FieldErrors({"_": f"from {at} there's no way to move it to {target} (it can go to: {', '.join(open_) or 'nowhere'})"})
         try:
-            if trial is not None:
-                _fill_asked(trial, engine, record, t, lambda m: m["to"].lower() == way[0].lower())
+            if trial is not None and (last or way[0].lower() != str(target).lower()):
+                _fill_asked(trial, engine, record, t, lambda m: m["to"].lower() == way[0].lower(), given)
                 record = engine.get(record.id)
             pressed = _press_move(engine, record, t, lambda m: m["to"].lower() == way[0].lower())
         except FieldErrors as exc:
@@ -1040,14 +1054,18 @@ def _take_along(engine, record, t, target, trial=None):
     raise FieldErrors({"_": f"it went round its stages without reaching {target}"})
 
 
-def _fill_asked(trial, engine, record, t, pick):
+def _fill_asked(trial, engine, record, t, pick, given=()):
     """Fill in what the button of the first move `pick` likes asks for (the Check out button's Checked out by), as the
-    person pressing it would, with ordinary values."""
+    person pressing it would, with ordinary values; and what it waits for (“once the deposit is Received”), unless the
+    example set that field itself (`given`): what it says stands, and the move then says if it's stopped."""
     move = next((m for _, m, _ in engine.moves(record) if pick(m)), None)
     if move is None:
         return
     asked = [f for f in engine.to_fill(t, record, move) if engine.kind(f) not in schema.FILES]
     needs = {f["key"]: v for f in asked for v in [sample_value(engine, t, f, trial.owner_id, {}, 300, 0)] if v is not None}
+    if move.get("only_if") and not engine.matches(record, move["only_if"]):  # “once the clearance date is filled in”
+        meet = _meeting(trial, engine, record, t, move["only_if"], given)
+        needs = {**needs, **meet}  # what it waits for wins over an ordinary value
     dates = [f for f in asked if engine.kind(f) in ("date", "datetime") and f["key"] in needs]
     own = [v for g in t["fields"] if engine.kind(g) in ("date", "datetime") and g["key"] not in needs
            for v in [(record.data or {}).get(g["key"])] if v]  # a pickup date like the hire's own dates, not just today
@@ -1064,6 +1082,42 @@ def _fill_asked(trial, engine, record, t, pick):
             for f in dates:
                 tries = own + _others(engine, f, 0)
                 needs[f["key"]] = tries[attempt % len(tries)] if tries else needs[f["key"]]
+
+
+def _meeting(trial, engine, record, t, conditions, given=()):
+    """Values for the record's own fields that a move's conditions ask for (“once the deposit is Received”, “once the
+    clearance date is filled in”), as the person told so would fill them in. A field the example set itself (`given`)
+    is the example's to say, and is never changed."""
+    out = {}
+    for c in conditions or []:
+        if not isinstance(c, dict) or "." in str(c.get("field") or ""):
+            continue
+        f = schema.field(t, c.get("field") or "")
+        if f is None or f["type"] not in schema.STORED or f["type"] in schema.FILES or f["key"] in given:
+            continue
+        if engine.matches(record, [c]):  # this one holds already
+            continue
+        op, v = c.get("op"), c.get("value")
+        kind = engine.kind(f)
+        number = to_number(v)
+        today = engine.today
+        value = None
+        if op == "equals" or (op == "one_of" and isinstance(v, list) and v):
+            value = v[0] if isinstance(v, list) else v
+        elif op == "not_equals" and f["type"] == "select":
+            value = next((o for o in f.get("options") or [] if str(o).lower() != str(v).lower()), None)
+        elif op == "not_equals" and f["type"] == "checkbox":
+            value = not (v in (True, "true", "yes", 1))
+        elif op == "not_empty":
+            value = sample_value(engine, t, f, trial.owner_id, {}, 300, 0)
+        elif kind == "number" and number is not None and op in ("greater_than", "at_least", "less_than", "at_most"):
+            value = {"greater_than": number + 1, "at_least": number, "less_than": number - 1, "at_most": number}[op]
+        elif kind == "date" and op in ("before_today", "after_today", "more_than_days_ago"):
+            gone = {"before_today": 1, "after_today": -1, "more_than_days_ago": int(number or 0) + 1}[op]
+            value = (today - timedelta(days=gone)).isoformat()
+        if value is not None:
+            out[f["key"]] = value
+    return out
 
 
 def _press_move(engine, record, t, pick):

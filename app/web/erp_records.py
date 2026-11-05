@@ -583,8 +583,18 @@ def record(wid, table, rid):
                 found = schema.step_at(a["actions"], step["at"]) if a and step.get("at") else None
                 ai_work.append({"run": run, "step": step, "title": automations.ai_title(engine, a, found) if found else step["action"].split(" — ")[0]})
     member = Membership.query.filter_by(workspace_id=ws.id, user_id=current_user.id).first()
-    buttons = [a for a in engine.bp.get("automations", []) if a.get("enabled", True) and a["trigger"]["type"] == "button"
-               and a["trigger"].get("table") == t["key"] and engine.matches(r, a["conditions"])]
+    # its buttons: one for another stage isn't shown (as a stage's moves aren't); one waiting for something else is shown,
+    # greyed, with what it waits for, so nobody wonders where it went
+    flow_field = (t.get("workflow") or {}).get("field")
+    buttons = []
+    for a in engine.bp.get("automations", []):
+        if not (a.get("enabled", True) and a["trigger"]["type"] == "button" and a["trigger"].get("table") == t["key"]):
+            continue
+        held = automations.button_held(engine, a, r)
+        staged = [c for c in a.get("conditions") or [] if isinstance(c, dict) and c.get("field") == flow_field]
+        if held and staged and not engine.matches(r, staged):
+            continue
+        buttons.append((a, held))
     approvals = Approval.query.filter_by(workspace_id=ws.id, record_id=r.id, status="pending").order_by(Approval.id).all()
     decisions = (Approval.query.filter(Approval.workspace_id == ws.id, Approval.record_id == r.id, Approval.status.in_(["approved", "rejected", "done"]))
                  .order_by(Approval.id.desc()).limit(20).all())
@@ -1219,7 +1229,11 @@ def press(wid, table, rid, key):
     automation = next((a for a in engine.bp.get("automations", []) if a["key"] == key and a["trigger"]["type"] == "button"), None)
     if automation is None or not automation.get("enabled", True):
         abort(404)
-    automations.press(engine, automation, r, current_user.display)
+    try:
+        automations.press(engine, automation, r, current_user.display)
+    except FieldErrors as exc:  # it isn't ready to be pressed yet (the page was open from before): said why
+        flash("; ".join(exc.errors.values()), "error")
+        return redirect(url_for("app.record", wid=wid, table=t["key"], rid=r.id))
     _ran(engine)
     return redirect(url_for("app.record", wid=wid, table=t["key"], rid=r.id))
 

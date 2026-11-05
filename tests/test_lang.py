@@ -108,7 +108,8 @@ def test_each_patch_example_applies_on_an_app_that_has_what_it_names():
     bp = everything()
     bp = lang.apply(bp, [{"do": "add_rule", "rule": {"key": "job_done_invoice", "name": "Invoice", "when": {"on": "reaches", "list": "jobs", "stage": "Done"},
                                                      "steps": [{"do": "notify", "message": "Done"}]}},
-                         {"do": "stage_alert", "list": "invoices", "stage": "Paid", "key": "alert_invoices_paid"}]).blueprint
+                         {"do": "stage_alert", "list": "invoices", "stage": "Paid", "key": "alert_invoices_paid"},
+                         m.AddValidation.__keel_example__]).blueprint  # what remove_validation's example takes away
     for cls in registry.items("patch"):
         if cls in (m.AddList,):
             continue
@@ -841,3 +842,169 @@ def test_a_total_over_another_new_lists_formula_is_made_whichever_list_comes_fir
             {"type": "formula", "key": "amount", "label": "Amount", "formula": "quantity * unit_price", "shows": "money"}]}])
     assert not out.problems, out.problems
     assert {"subtotal", "total"} <= {f["key"] for f in schema.table(out.blueprint, "quotes")["fields"]}
+
+
+# --- round 34: what a change, a check and a button do ---------------------------------------------------------------
+
+def _stages_of(bp, key):
+    t = schema.table(bp, key)
+    return next(f for f in t["fields"] if f["key"] == t["workflow"]["field"])["options"]
+
+
+def test_a_feature_taken_away_and_sent_again_in_one_answer_is_made_afresh():
+    """“remove_feature X”, then X as it should be: X is there as sent the second time, never made and then taken away."""
+    bp = lang.apply(everything(), [{"do": "overdue", "list": "invoices", "date_field": "due_date", "from_stages": ["Sent"], "days_after": 30}]).blueprint
+    out = lang.apply(bp, [{"do": "remove_feature", "feature": "overdue_invoices"},
+                          {"do": "overdue", "list": "invoices", "date_field": "due_date", "from_stages": ["Sent"], "days_after": 0}])
+    assert not out.problems, out.problems
+    entry = next(e for e in out.blueprint["features"] if e["key"] == "overdue_invoices")
+    assert entry["params"]["days_after"] == 0
+    assert any(a["key"] == "overdue_invoices" for a in out.blueprint["automations"])
+
+
+def test_a_stage_put_after_the_one_an_overdue_stage_comes_from_stays_where_it_was_put():
+    bp = lang.apply(everything(), [{"do": "overdue", "list": "invoices", "date_field": "due_date", "from_stages": ["Sent"]}]).blueprint
+    assert _stages_of(bp, "invoices")[:3] == ["Draft", "Sent", "Overdue"]  # placed when it's made
+    out = lang.apply(bp, [{"do": "add_stage", "list": "invoices", "stage": "On hold", "after": "Sent"}])
+    assert not out.problems, out.problems
+    assert _stages_of(out.blueprint, "invoices")[:4] == ["Draft", "Sent", "On hold", "Overdue"]
+    assert any(c.startswith("Kept on the new stages") for c in out.changes)
+
+
+def test_sending_a_document_at_a_stage_names_the_button_that_gets_there(app):
+    send = {"do": "send_document", "list": "invoices", "button": "Email the invoice", "email_to": "customer.email", "then_stage": "Sent"}
+    bp = lang.apply(everything(), [send]).blueprint
+    into = lambda b: [mv["label"] for mv in schema.table(b, "invoices")["workflow"]["transitions"] if mv["to"] == "Sent"]  # noqa: E731
+    assert into(bp) == ["Email the invoice"]
+    ws = _workspace(app, bp)
+    pressed = {"title": "Emailing it sends it", "steps": [
+        {"do": "add", "table": "customers", "as": "c1", "values": {"name": "Ann", "email": "ann@example.com"}},
+        {"do": "add", "table": "invoices", "as": "i1", "values": {"customer": "c1", "total": 100}},
+        {"do": "press", "record": "i1", "button": "Email the invoice"}],
+        "expect": [{"record": "i1", "field": "status", "equals": "Sent"}, {"told": True, "record": "i1"}]}
+    _, (result,) = trial.try_out(ws, [pressed], screens=False)
+    assert result["ok"], result
+    assert into(lang.apply(bp, [{"do": "remove_feature", "feature": "send_invoices"}]).blueprint) == ["Send"]  # given back
+
+
+def test_a_number_of_days_read_with_days_is_that_number(app):
+    from datetime import timedelta
+    from app.blueprint import expr
+    from app.engine.records import Engine, RecordContext
+    ws = _workspace(app, everything())
+    engine = Engine(ws)
+    r = engine.create("invoices", {"due_date": (engine.today - timedelta(days=3)).isoformat()})
+    assert expr.evaluate("max(0, (today() - due_date).days)", RecordContext(engine, r)) == 3
+
+
+def test_the_builder_reads_a_lists_rules_and_can_change_or_take_one_away():
+    from app.lang import read
+    bp = lang.apply(everything(), [m.AddValidation.__keel_example__]).blueprint
+    assert "must keep amount <= invoice.total" in read.describe(bp)
+    again = lang.apply(bp, [{**m.AddValidation.__keel_example__, "message": "Never more than the invoice"}]).blueprint
+    assert [r["message"] for r in schema.table(again, "payments")["rules"]] == ["Never more than the invoice"]  # replaced, not twice
+    gone = lang.apply(again, [{"do": "remove_validation", "list": "payments", "check": "amount<=invoice.total"}])
+    assert not gone.problems, gone.problems
+    assert not schema.table(gone.blueprint, "payments").get("rules")
+
+
+def test_a_features_own_checks_keep_to_the_rules_of_the_lists_they_add_to(app):
+    """A job needs an accepted quote: the convert feature's own check adds its job with one, so it's tried, not refused."""
+    out = lang.apply(everything(), [
+        {"do": "add_field", "list": "jobs", "field": {"type": "link", "key": "quote", "label": "Quote", "to": "quotes"}},
+        {"do": "add_validation", "list": "jobs", "check": "quote.status == 'Accepted'", "message": "A job needs an accepted quote"},
+        {"do": "convert", "from_list": "jobs", "to_list": "invoices", "when_stage": "Done", "button": "Invoice job"}])
+    assert not out.problems, out.problems
+    ws = _workspace(app, out.blueprint)
+    _, results = trial.try_out(ws, patterns.checks(out.blueprint), screens=False)
+    assert all(r["ok"] for r in results), [(r["title"], r.get("problem")) for r in results if not r["ok"]]
+
+
+def test_a_button_waiting_for_something_is_refused_saying_what_it_waits_for(app):
+    from app.engine import automations
+    from app.engine.records import Engine, FieldErrors
+    bp = lang.apply(everything(), [{"do": "add_rule", "rule": {
+        "key": "order_parts", "name": "Order parts", "when": {"on": "button", "list": "jobs", "label": "Order parts"},
+        "only_if": [{"field": "billable", "op": "equals", "value": True}], "steps": [{"do": "notify", "message": "Parts for {{title}}"}]}}])
+    assert not bp.problems, bp.problems
+    ws = _workspace(app, bp.blueprint)
+    engine = Engine(ws)
+    job = engine.create("jobs", {"title": "Fence", "billable": False})
+    rule = next(a for a in bp.blueprint["automations"] if a["key"] == "order_parts")
+    with pytest.raises(FieldErrors) as refused:
+        automations.press(engine, rule, job, "Olive")
+    assert "You can press “Order parts” once" in str(refused.value.errors)
+    stopped = {"title": "Parts aren't ordered for a job that isn't billable", "steps": [
+        {"do": "add", "table": "jobs", "as": "j1", "values": {"title": "Gate", "billable": False}},
+        {"do": "press", "record": "j1", "button": "Order parts", "refused": True}], "expect": [{"record": "j1", "field": "title", "equals": "Gate"}]}
+    _, (result,) = trial.try_out(ws, [stopped], screens=False)
+    assert result["ok"], result
+
+
+def test_gates_on_stages_one_after_another_each_pass_their_own_checks(app):
+    """Getting to the second gate's stage goes through the first's, filled in as its button asks."""
+    out = lang.apply(everything(), [
+        {"do": "add_field", "list": "orders", "field": {"type": "date", "key": "cleared_on", "label": "Cleared on"}},
+        {"do": "add_field", "list": "orders", "field": {"type": "yes_no", "key": "paid", "label": "Paid"}},
+        {"do": "gate", "list": "orders", "stage": "In fitting", "blocked_if": [{"field": "cleared_on", "op": "is_empty"}]},
+        {"do": "gate", "list": "orders", "stage": "Ready", "needs": ["paid"]},
+        {"do": "stage_alert", "list": "orders", "stage": "Ready"}])
+    assert not out.problems, out.problems
+    ws = _workspace(app, out.blueprint)
+    _, results = trial.try_out(ws, patterns.checks(out.blueprint), screens=False)
+    assert all(r["ok"] for r in results), [(r["title"], r.get("problem")) for r in results if not r["ok"]]
+
+
+def _after_not_everything_works(app, understood):
+    """A turn asked right after the builder said “Not everything works yet”, with a check of the owner's the app doesn't
+    do yet. Returns (the reply, the model)."""
+    ws = _workspace(app, everything())
+    ws.state = {"refused_checks": [{"said": "Overdue invoices get a reminder", "why": "nothing reminds anyone", "missing": True, "by": "owner"}]}
+    db.session.add(Message(workspace_id=ws.id, channel="builder", role="assistant", status="done",
+                           text="Not everything works yet. Press “Fix these” and I'll have another go, or tell me what should happen."))
+    db.session.commit()
+    model = Model({"understand": understood, "data": {"patches": []},
+                   "behaviour": {"work": [{"need": 1, "patches": [{"do": "stage_alert", "list": "invoices", "stage": "Paid"}]}], "already": [2]}})
+    ai.set_backend(model)
+    q = Message(workspace_id=ws.id, channel="builder", user_id=ws.owner_id, role="user", text="When an invoice gets to Paid, let me know.")
+    a = Message(workspace_id=ws.id, channel="builder", role="assistant", status="queued")
+    db.session.add_all([q, a])
+    db.session.commit()
+    from app.builder import chat
+    chat.work(a.id)
+    return db.session.get(Message, a.id), model
+
+
+def test_after_not_everything_works_a_new_request_is_only_that(app):
+    """“Let me know when one's paid” after “Not everything works yet” is a new request: the owner's check the app doesn't
+    do yet stays on the Checks page for Fix, not taken on (nor anything changed for it) unasked."""
+    a, _ = _after_not_everything_works(app, {"needs": [{"said": "let me know", "does": "Tells you when an invoice is paid"}], "reply": "OK.", "about": []})
+    assert a.status == "done", a.error
+    assert [n["does"] for n in a.checks["needs"]] == ["Tells you when an invoice is paid"]
+    assert not any(p.startswith("Making what your checks ask for") for p in a.progress or [])
+
+
+def test_after_not_everything_works_what_the_message_is_about_is_taken_on(app):
+    a, _ = _after_not_everything_works(app, {"needs": [{"said": "remind them", "does": "Reminds about overdue invoices"}], "reply": "OK.", "about": [1]})
+    assert a.status == "done", a.error
+    assert "Overdue invoices get a reminder" in [n["said"] for n in a.checks["needs"]]
+
+
+def test_a_check_whose_example_needs_a_rule_the_app_hasnt_got_is_one_it_doesnt_do_yet(app):
+    """Looked at twice and still needing a rule the app doesn't have: the owner hears their app doesn't do it yet (and
+    can ask the builder for it), not that it couldn't be turned into a check."""
+    from app.builder import checking
+    ws = _workspace(app, everything())
+    example = {"title": "x", "steps": [{"do": "add", "table": "invoices", "as": "i1", "values": {"total": 100}},
+                                       {"do": "wait", "days": 8}, {"do": "run", "rule": "chase_overdue_invoices"}],
+               "expect": [{"record": "i1", "field": "status", "equals": "Sent"}]}
+
+    def model(messages, schema=None, on_progress=None):
+        again = len(messages) > 2  # the second look: it says its example was the slip, and sends one needing the same rule
+        return json.dumps({"verdict": "example", "missing": "", "examples": [example]} if again else {"examples": [example]}), ""
+    ai.set_backend(model)
+    result = checking.add_and_tell(ws, "Invoices a week overdue get chased", by="owner")
+    assert result["kind"] == "missing", result
+    assert result["plain"].startswith("your app doesn't do this yet: it has no rule that does it")
+    kept = db.session.get(Workspace, ws.id).state["refused_checks"]
+    assert kept[0]["missing"] and kept[0]["said"] == "Invoices a week overdue get chased"

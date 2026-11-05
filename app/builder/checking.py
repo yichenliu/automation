@@ -10,6 +10,7 @@ update of the platform itself), whoever runs the app is told what and why, with 
 """
 import hashlib
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -153,15 +154,30 @@ def _again(workspace, engine, convo, said, example, result):
     finally:
         ai.building.reset(steady)
     fixed = [x for x in answer.get("examples") or [] if isinstance(x, dict) and x.get("steps")][:1]
+    missing = str(answer.get("missing") or "").strip().rstrip(".")
     if answer.get("verdict") == "example" and fixed:
         corrected = {**fixed[0], "title": example["title"], "by": example["by"]}
         with trial.copy_of(workspace) as copy:
-            return corrected, {**trial.play(copy, corrected), "looked_again": "example"}
-    missing = str(answer.get("missing") or "").strip().rstrip(".")
+            again = {**trial.play(copy, corrected), "looked_again": "example"}
+        if again["kind"] == "example" and ABSENT.search(again.get("problem") or ""):  # still needs what isn't there: it isn't
+            return corrected, {**again, "kind": "missing", "plain": f"your app doesn't do this yet: {missing or _absent(again)}"}
+        return corrected, again
+    if result["kind"] == "example" and ABSENT.search(result.get("problem") or "") and answer.get("verdict") != "example":
+        return example, {**result, "kind": "missing", "plain": f"your app doesn't do this yet: {missing or _absent(result)}", "looked_again": "app"}
     if answer.get("verdict") == "app" and missing and (result["kind"] == "example" or _nothing_stops(result)):
         # it isn't in the app at all: it doesn't do it (not “should have been stopped”: nothing there could stop it)
         return example, {**result, "kind": "missing", "plain": f"your app doesn't do this yet: {missing}", "looked_again": "app"}
     return example, {**result, "looked_again": answer.get("verdict") or ""}
+
+
+ABSENT = re.compile(r"there's no (automation|button) “")
+
+
+def _absent(result):
+    """Said plainly: the rule or button an example of the check needs, which the app hasn't got."""
+    found = re.search(r"there's no (automation|button) “([^”]*)”", result.get("problem") or "")
+    what = "rule" if found and found.group(1) == "automation" else "button"
+    return f"it has no {what} that does it" + (f" (“{found.group(2).replace('_', ' ')}”)" if found and found.group(2) else "")
 
 
 def _nothing_stops(result):

@@ -26,6 +26,28 @@ class Problem(Exception):
     pass
 
 
+def _same_check(text):
+    """A rule's check (or message) as compared: its words, spaces and quotes aside ("quote.status == 'Approved'" is
+    quote.status=="Approved")."""
+    return re.sub(r"[\s'\"]+", "", str(text or "")).lower()
+
+
+def _own_patch(name):
+    """For a design_op naming what the language has a patch for (set_stages, add_list) or nearly (update_stages): that
+    patch, sent as it is, with its example, so the next try is the patch itself rather than another wrapping of it."""
+    import difflib
+    import json
+    from . import registry
+    pieces = {str(c.__keel_example__.get("do")): c for kind in ("patch", "feature") for c in registry.items(kind)
+              if isinstance(getattr(c, "__keel_example__", None), dict)}
+    found = pieces.get(name) or pieces.get(next(iter(difflib.get_close_matches(name, list(pieces), n=1, cutoff=0.6)), ""))
+    if found is None:
+        return "lists, fields, stages and rules are made with add_list, add_field, set_stages, add_rule or a feature"
+    do = found.__keel_example__["do"]
+    said = "is a patch of its own" if do == name else f"isn't one; the patch for it is “{do}”"
+    return f"“{name}” {said}: send it by itself (not inside a design_op), as {json.dumps(found.__keel_example__, ensure_ascii=False)}"
+
+
 @dataclass
 class Outcome:
     blueprint: dict
@@ -684,9 +706,12 @@ def apply(bp, raw_patches, allowed=None):
     made_here = {schema.slug(p.key) for _, p in lists}
     lists.sort(key=lambda np: 1 if np[1].inside and schema.slug(np[1].inside) in made_here else 0)  # what holds lines first
     order = (m.ChangeList, m.RemoveList, m.AddField, m.ChangeField, m.RemoveField, m.RenameChoice, m.SetStages, m.DesignOp)
+    # a feature taken away goes first: one sent again in the same answer ("remove_feature X", then X as it should be)
+    # is made afresh, never made and then taken away
     rest = sorted([(n, p) for n, p in parsed if not isinstance(p, m.AddList)],
-                  key=lambda np: (0 if isinstance(np[1], order) else 1 if isinstance(np[1], patterns.ALL) else
-                                  2 if isinstance(np[1], (m.AddRule, m.ChangeRule, m.RemoveRule, m.RemoveFeature)) else 3, np[0]))
+                  key=lambda np: (-1 if isinstance(np[1], m.RemoveFeature) else 0 if isinstance(np[1], order) else
+                                  1 if isinstance(np[1], patterns.ALL) else
+                                  2 if isinstance(np[1], (m.AddRule, m.ChangeRule, m.RemoveRule)) else 3, np[0]))
     # phase A: each new list, its plain fields and its stage field
     for n, p in lists:
         here, d = where(n, p), Design(out.blueprint)
@@ -896,7 +921,18 @@ def translate(d, p, where):
         rule = {"check": p.check, "message": p.message}
         if p.only_if:
             rule["when"] = ir_conditions(d, t, p.only_if, f"{where} › only_if")
-        return [{"op": "update_table", "table": t["key"], "rules": list(t.get("rules") or []) + [rule]}]
+        same = _same_check(p.check)
+        kept = [r for r in t.get("rules") or [] if r.get("check") == "false" or _same_check(r.get("check")) != same]
+        return [{"op": "update_table", "table": t["key"], "rules": kept + [rule]}]  # sent again: it replaces the one it was
+    if isinstance(p, m.RemoveValidation):
+        t = _list(d, p.list, where)
+        wanted = _same_check(p.check)
+        mine = [r for r in t.get("rules") or [] if r.get("check") != "false"]
+        gone = [r for r in mine if wanted in (_same_check(r.get("check")), _same_check(r.get("message")))]
+        if not gone:
+            raise Problem(f"{where}: {t['label']} has no rule “{p.check}” (its rules: "
+                          + ("; ".join(f"{r['check']} (“{r.get('message')}”)" for r in mine) or "none") + ")")
+        return [{"op": "update_table", "table": t["key"], "rules": [r for r in t.get("rules") or [] if r not in gone]}]
     if isinstance(p, m.SetTeam):
         team = {"key": schema.slug(p.key), "name": p.name}
         if p.about:
@@ -1038,8 +1074,7 @@ def translate(d, p, where):
         name = schema.slug(str(p.op.get("op") or ""))
         if name not in ESCAPE:
             raise Problem(f"{where}: “{name or 'no op'}” can't be sent as a design_op: design_op is only for "
-                          f"{', '.join(sorted(ESCAPE))}; lists, fields, stages and rules are made with add_list, add_field, "
-                          f"set_stages, add_rule or a feature")
+                          f"{', '.join(sorted(ESCAPE))}; {_own_patch(name)}")
         if name == "update_table":
             other = set(p.op) - POLICY_KEYS
             if other:

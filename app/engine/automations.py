@@ -224,8 +224,22 @@ def hook_url(workspace_id, key):
 
 
 def press(engine, automation, record, by):
-    """Someone clicked an automation's button on a record."""
+    """Someone clicked an automation's button on a record. While its conditions don't hold it isn't pressed: it's
+    refused (FieldErrors), saying what it waits for, as the record's page says beside it."""
+    held = button_held(engine, automation, record)
+    if held:
+        raise FieldErrors({"_": held})
     return start(engine, automation, record, f"{by} clicked “{automation['trigger'].get('label') or automation['name']}”")
+
+
+def button_held(engine, automation, record):
+    """What a button waits for before it can be pressed on this record (“You can press “Send specs to supplier” once
+    the design's Approval status is Approved”), or None when it can be."""
+    plain = [c for c in automation.get("conditions") or [] if not (isinstance(c, dict) and c.get("op") in ("changed", "changed_to"))]
+    if record is None or not plain or engine.matches(record, plain):
+        return None
+    label = automation["trigger"].get("label") or automation["name"]
+    return f"You can press “{label}” once {automations_words(engine, plain, record.table)}"
 
 
 def start_from(engine, automation, kind, item, trigger):

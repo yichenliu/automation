@@ -314,3 +314,33 @@ def test_it_runs_on_postgresql_only(tmp_path):
     from app import create_app
     with pytest.raises(RuntimeError, match="PostgreSQL only"):
         create_app({"WORKER": False, "DATA_DIR": tmp_path, "SQLALCHEMY_DATABASE_URI": f"sqlite:///{tmp_path / 'x.db'}"})
+
+
+def test_a_button_waiting_for_something_shows_what_it_waits_for_and_isnt_pressed(client, app, owner):
+    """A button whose rule only does its work once something holds is shown greyed beside what it waits for (not hidden,
+    so nobody wonders where it went); pressed anyway (a page open from before), it says why and nothing runs. A button
+    for another stage isn't shown at all, as that stage's moves aren't."""
+    _, ws = owner
+    result = ops.apply(ws.blueprint, [
+        {"op": "create_table", "table": "jobs", "label": "Jobs", "fields": [
+            {"key": "title", "label": "Title", "type": "text", "required": True}, {"key": "approved", "label": "Design approved", "type": "checkbox"},
+            {"key": "status", "label": "Status", "type": "select", "options": ["New", "Building", "Done"], "default": "New"}],
+         "workflow": {"field": "status", "transitions": [{"from": ["New"], "to": "Building", "label": "Start"},
+                                                        {"from": ["Building"], "to": "Done", "label": "Finish"}]}},
+        {"op": "add_automation", "automation": {"key": "send_specs", "name": "Send specs", "trigger": {"type": "button", "table": "jobs", "label": "Send specs"},
+                                                "conditions": [{"field": "approved", "op": "equals", "value": True}],
+                                                "actions": [{"type": "notify", "to": "owner", "message": "Specs sent"}]}},
+        {"op": "add_automation", "automation": {"key": "invoice_job", "name": "Invoice job", "trigger": {"type": "button", "table": "jobs", "label": "Invoice job"},
+                                                "conditions": [{"field": "status", "op": "equals", "value": "Done"}],
+                                                "actions": [{"type": "notify", "to": "owner", "message": "Invoiced"}]}}])
+    assert not result.problems, result.problems
+    chat.save_version(ws, result.blueprint, result.changes, "chat")
+    login(client)
+    job = Engine(ws).create("jobs", {"title": "Kitchen"})
+    base = f"/w/{ws.id}/app/t/jobs/{job.id}"
+    page = client.get(base).get_data(as_text=True)
+    assert "Send specs" in page and "You can press “Send specs” once Design approved is yes" in page
+    assert "Invoice job" not in page  # for the Done stage: not shown at New
+    r = client.post(f"{base}/press/send_specs")
+    assert r.status_code == 302 and not Run.query.filter_by(automation="send_specs").count()
+    assert "You can press “Send specs” once" in client.get(base).get_data(as_text=True)

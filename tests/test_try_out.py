@@ -339,7 +339,8 @@ def test_an_example_expecting_what_the_ai_drafts_hears_when_its_waiting_to_be_ch
 
 def test_an_example_moving_a_record_several_stages_on_takes_it_through_the_stages_between(app, owner):
     """“Move the order to Invoiced” from New goes by Picking and Delivered, as the person would, and the rules on the way
-    run; where the way is blocked, it says at which stage and why."""
+    run; what a button waits for that the example left alone is filled in on the way (“once Tracking is filled in”), as
+    the person told so would; where the example's own values block the way, it says at which stage and why."""
     _, ws = owner
     _built(ws, [{"op": "create_table", "table": "orders", "label": "Orders", "fields": [
         {"key": "title", "type": "text", "required": True}, {"key": "tracking", "type": "text"}, {"key": "delivered_on", "type": "date"},
@@ -356,12 +357,17 @@ def test_an_example_moving_a_record_several_stages_on_takes_it_through_the_stage
         {"do": "add", "table": "orders", "as": "o1", "values": {"title": "Flour", "tracking": "TRK1"}},
         {"do": "move", "record": "o1", "to": "Invoiced"}],
         "expect": [{"record": "o1", "field": "status", "equals": "Invoiced"}, {"record": "o1", "field": "delivered_on", "equals": "non-empty"}]}
+    filled = {"title": "Tracking filled in on the way", "steps": [
+        {"do": "add", "table": "orders", "as": "o3", "values": {"title": "Salt"}},
+        {"do": "move", "record": "o3", "to": "Invoiced"}],
+        "expect": [{"record": "o3", "field": "status", "equals": "Invoiced"}, {"record": "o3", "field": "tracking", "equals": "non-empty"}]}
     blocked = {"title": "No tracking", "steps": [
-        {"do": "add", "table": "orders", "as": "o2", "values": {"title": "Sugar"}},
+        {"do": "add", "table": "orders", "as": "o2", "values": {"title": "Sugar", "tracking": ""}},
         {"do": "move", "record": "o2", "to": "Invoiced"}],
         "expect": [{"record": "o2", "field": "status", "equals": "Invoiced"}]}
-    _, (went, stuck) = trial.try_out(ws, [along, blocked], screens=False)
+    _, (went, along_filled, stuck) = trial.try_out(ws, [along, filled, blocked], screens=False)
     assert went["ok"], went
+    assert along_filled["ok"], along_filled
     assert not stuck["ok"] and "on its way from New to Invoiced" in stuck["problem"] and "from Picking to Delivered" in stuck["problem"]
 
 

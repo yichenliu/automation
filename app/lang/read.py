@@ -45,6 +45,15 @@ def _conds(conditions, joined=" and "):
     return joined.join(out)
 
 
+def _rule(bp, t, rule):
+    """A rule the list's records must keep: "must keep quote.status == 'Approved' “A job can't be…”", or one a gate made
+    to refuse a choice ("refused when …"), with the feature that made it."""
+    by = next((e["key"] for e in bp.get("features") or [] if rule in ((e.get("made") or {}).get("rules") or {}).get(t["key"], [])), None)
+    when = f" while {_conds(rule['when'])}" if rule.get("when") else ""
+    said = f"refused when {_conds(rule.get('when'))}" if str(rule.get("check")).strip().lower() == "false" else f"must keep {rule.get('check')}{when}"
+    return f"{said} “{rule.get('message')}”" + (f" (by {by})" if by else " (add_validation; remove_validation takes it away)")
+
+
 def _moves(flow):
     out = []
     for mv in flow.get("transitions") or []:
@@ -149,6 +158,8 @@ def describe(bp, with_rules=True):
             lines.append(f"    limits: " + "; ".join(f"max {x.get('max')} per {','.join(x.get('per') or [])}" for x in t["limits"]))
         if t.get("lock_if"):
             lines.append(f"    locked when {_conds(t['lock_if'])}")
+        for rule in t.get("rules") or []:  # what's refused on saving: every example and change must keep to it
+            lines.append("    " + _rule(bp, t, rule))
         if t.get("documents"):
             lines.append(f"    documents: {', '.join(x['key'] for x in t['documents'])}")
     features = bp.get("features") or []

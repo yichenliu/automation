@@ -461,6 +461,8 @@ def fixed_up(ws, owner, scenario, result):
             said, pressed = fresh.explain(scenario["fresh"], told, last.text or "", before["still"]), "said in their own words"
         else:
             said, pressed = checking.fix_request(ws), "Ask the builder to fix them (Checks page)"
+        if not said and last is not None and last.status == "done" and (last.text or "").startswith("Not everything works yet"):
+            said, pressed = "Fix what didn't come out right", "Fix these (the builder's reply)"  # what wasn't made: its own button
         if not said:
             out["nothing_to_press"] = True  # not right, but nothing on the screen says what or offers a way on
             break
@@ -482,7 +484,8 @@ def fixed_up(ws, owner, scenario, result):
         found = checking.not_right(ws)
         shown = {x["title"] for x in (ws.state.get("checks") or {}).get("examples") or []}
         still = ([f"fails: {x['title']}: {x['why']}" for x in found["failing"]] + [f"wrong: {i}" for i in found["issues"]]
-                 + [f"doesn't do yet: {x['said']}" for x in found["missing"]] + [f"no longer tried: {t}" for t in sorted(must - shown)])
+                 + [f"doesn't do yet: {x['said']}" for x in found["missing"]] + [f"no longer tried: {t}" for t in sorted(must - shown)]
+                 + [f"not made: {n['does']}" for n in (reply.checks or {}).get("needs") or [] if n.get("state") == "unmade"])
         if reply.status != "done":
             still.insert(0, f"the turn {reply.status}: {reply.error or ''}"[:200])
         if result.get("stories"):
@@ -542,6 +545,9 @@ def handed_over(result):
     failed = [e["title"] for e in (last.get("tried") or {}).get("examples") or [] if not e["ok"]]
     if failed:
         why.append(f"its own examples failed: {', '.join(failed[:3])}")
+    unmade = [n["does"] for n in (last.get("tried") or {}).get("needs") or [] if n.get("state") == "unmade"]
+    if unmade:  # it said so ("not made yet"): honest, but not what was asked
+        why.append(f"not made: {', '.join(unmade[:3])}")
     x = result["tryout"]
     if x["fix"]:
         why.append(f"trying it out found {len(x['fix'])} thing(s) wrong")
