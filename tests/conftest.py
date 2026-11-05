@@ -43,6 +43,14 @@ def app(tmp_path, database_url):
         for key in ("_login_user", "ws", "member", "engine"):
             g.pop(key, None)
 
+    @app.teardown_request
+    def done_request(exc=None):
+        # and the test carries on as no request: its own reads aren't one workspace's (row-level security)
+        for key in ("ws", "member", "engine"):
+            g.pop(key, None)
+        from app.core import tenancy
+        tenancy.forget(db.session)
+
     from app import security
     security.sign_ins.hits.clear()
     security.form_posts.hits.clear()

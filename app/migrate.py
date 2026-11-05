@@ -12,6 +12,7 @@ from contextlib import contextmanager
 
 from sqlalchemy import inspect, text
 
+from .core import tenancy
 from .extensions import db
 
 SQLITE_STEPS = 15  # the steps taken on SQLite, before PostgreSQL (each database made since has them already)
@@ -38,6 +39,7 @@ ALWAYS = [
     "CREATE INDEX IF NOT EXISTS ix_record_data ON record USING gin (data jsonb_path_ops)",
     "CREATE INDEX IF NOT EXISTS ix_record_ws_table_live ON record (workspace_id, \"table\") WHERE deleted_at IS NULL",
 ]
+ALWAYS += tenancy.policies()  # row-level security on the tenant tables (app/core/tenancy.py)
 
 
 UPGRADING = 7_301_221  # the advisory lock held while a process brings the database up to date

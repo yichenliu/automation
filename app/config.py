@@ -72,6 +72,7 @@ class Config:
     AI_THINK = (os.getenv("AI_THINK") or "false").lower() == "true"
     # The builder's own reasoning-heavy work (designing, fixing what the try-out found, writing worked examples) thinks
     # first when this is on, whatever AI_THINK says for the quick jobs; AI_THINK_TOKENS is the room for that thinking.
+    TENANCY_RLS = (os.getenv("TENANCY_RLS") or "true").lower() != "false"  # PostgreSQL row-level security behind the workspace filters
     FILES_BACKEND = (os.getenv("FILES_BACKEND") or "local").lower()  # local (the data folder) or s3 (S3-compatible object storage)
     S3_BUCKET = os.getenv("S3_BUCKET") or ""
     S3_PREFIX = os.getenv("S3_PREFIX") or ""

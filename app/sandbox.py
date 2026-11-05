@@ -25,6 +25,12 @@ def test_copy_of(live):
 
 def make(live, user):
     """A fresh test copy (an earlier one is replaced)."""
+    from .core import tenancy
+    with tenancy.wide(db.session):  # from one workspace (the live app) into another (its copy): rightly both
+        return _make(live, user)
+
+
+def _make(live, user):
     old = test_copy_of(live)
     if old is not None:
         _remove(old)
@@ -153,6 +159,12 @@ def _n(n, t):
 
 def publish(live, test_copy, user):
     """The test copy's design, as the live app's next version (undoable like any other). Its records stay where they are."""
+    from .core import tenancy
+    with tenancy.wide(db.session):  # asked from the test copy, it changes the live app: rightly both
+        return _publish(live, test_copy, user)
+
+
+def _publish(live, test_copy, user):
     from . import studio
     from .builder import chat
     said = changes(live.blueprint or {}, test_copy.blueprint or {})

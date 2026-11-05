@@ -37,3 +37,28 @@ def test_a_small_workspace_finds_its_passages_by_meaning_in_an_index_a_big_one_f
     member = Membership.query.filter_by(workspace_id=small.id, user_id=owner.id).first()
     hits = knowledge.search(Engine(small, by="Olive", member=member), "money back")
     assert "Small's refund note" in [h["title"] for h in hits]
+
+
+def test_inside_one_workspace_postgres_itself_keeps_another_workspaces_records_out(app):
+    import pytest
+    from sqlalchemy.exc import DBAPIError
+
+    from app.core.actor import acting
+    from app.models import Record
+    owner = User(email="o2@example.com", name="Olive")
+    owner.set_password("x" * 12)
+    db.session.add(owner)
+    db.session.flush()
+    mine, theirs = _ws("Mine", owner), _ws("Theirs", owner)
+    db.session.add_all([Record(workspace_id=mine.id, table="t", data={"n": 1}), Record(workspace_id=theirs.id, table="t", data={"n": 2})])
+    db.session.commit()
+    with acting(workspace_id=mine.id):
+        db.session.commit()  # a new transaction, told whose it is
+        assert Record.query.count() == 1  # even a query that forgets its workspace filter
+        assert Record.query.filter_by(workspace_id=theirs.id).count() == 0
+        db.session.add(Record(workspace_id=theirs.id, table="t", data={"n": 3}))
+        with pytest.raises(DBAPIError):  # and nothing can be written into another workspace
+            db.session.flush()
+        db.session.rollback()
+    db.session.commit()
+    assert Record.query.count() == 2  # work across workspaces (the scheduler) sees them all

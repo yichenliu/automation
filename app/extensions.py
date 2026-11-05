@@ -1,6 +1,7 @@
 from flask_login import LoginManager
 from flask_wtf import CSRFProtect
 
+from .core import tenancy  # noqa: F401 (each transaction told whose it is: row-level security)
 from .core.database import Database
 
 db = Database()  # plain SQLAlchemy 2, the same API Flask-SQLAlchemy gave (app/core/database.py)

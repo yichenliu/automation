@@ -38,8 +38,16 @@ def _from_flask():
     if has_app_context():
         ws = g.get("ws") or getattr(g.get("engine"), "ws", None)
         if ws is not None:
-            out["workspace_id"] = ws.id
+            out["workspace_id"] = _identity(ws)
     return out
+
+
+def _identity(obj):
+    """A stored object's id without touching the database (it may be asked while a session is starting a transaction)."""
+    from sqlalchemy import inspect
+    state = inspect(obj, raiseerr=False)
+    key = state.identity if state is not None else None
+    return key[0] if key else obj.__dict__.get("id")
 
 
 def _now():
