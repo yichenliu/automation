@@ -736,8 +736,9 @@ Steps ("do"):
 - AI steps aren't asked in a try-out: one answers with what the example expects of the detail it fills (a price check
   "Pass"), so say it, and what should follow; "equals": "non-empty" when any value will do (a drafted letter).
 - "wait": let "days" pass (for reminders, chasing, anything overdue or so many days old); then "run" a scheduled
-  automation to have it look. After a wait, today is that many days later, and so is "this week". Work expected dates out
-  from the example's own: 30 days after 3 November is 3 December, not the 4th. Only a scheduled one: a rule that starts when something is added, changed or moved has
+  automation to have it look. After a wait, today is that many days later, and so is "this week". Write dates as
+  "today" or "today+N" (in values and in what's expected), counted on the example's own calendar: after a 14-day wait,
+  a rule that stamps today's date is expected to give "today", and one due 3 days after that "today+3". Only a scheduled one: a rule that starts when something is added, changed or moved has
   already run by itself, so running it too would do it twice.
 - "run": run the scheduled automation "rule" (its key) as if its time had come.
 Add "refused": true to a step the app should NOT allow (a move whose condition isn't met, approving your own request).

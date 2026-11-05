@@ -453,12 +453,12 @@ class Overdue(Feature):
             froms.append(found)
         made = Made()
         late = d.choice(f, self.to_stage)
-        if late is None:  # the late stage, put after the stages it comes from
-            options = list(f.get("options") or [])
-            at = max(options.index(s) for s in froms) + 1
-            late = self.to_stage.strip()
-            options.insert(at, late)
-            made.ops.append({"op": "update_field", "table": t["key"], "key": f["key"], "changes": {**f, "options": options}})
+        options = [o for o in f.get("options") or [] if o != late]
+        at = max(options.index(s) for s in froms) + 1
+        placed = options[:at] + [late or self.to_stage.strip()] + options[at:]  # the late stage, straight after the ones it comes from
+        if placed != list(f.get("options") or []):
+            late = late or self.to_stage.strip()
+            made.ops.append({"op": "update_field", "table": t["key"], "key": f["key"], "changes": {**f, "options": placed}})
             made.undo = {"options": {t["key"]: f.get("options")}}
         flow = copy.deepcopy(t.get("workflow") or {})
         if flow.get("transitions"):  # a late one moves on as the ones it came from do (an overdue invoice can still be paid)

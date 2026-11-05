@@ -33,16 +33,16 @@ def _field(d, f):
     return " ".join(bits)
 
 
-def _conds(conditions):
+def _conds(conditions, joined=" and "):
     out = []
     for c in conditions or []:
         if "any" in c or "all" in c:
             word = "any" if "any" in c else "all"
-            out.append(f"{word}({_conds(c[word])})")
+            out.append(f"({_conds(c[word], ' or ' if word == 'any' else ' and ')})")
             continue
         value = c.get("value")
         out.append(f"{c.get('field')} {c.get('op')}" + ("" if value is None else f" {json.dumps(value, ensure_ascii=False)}"))
-    return " and ".join(out)
+    return joined.join(out)
 
 
 def _moves(flow):

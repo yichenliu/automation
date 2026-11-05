@@ -2079,6 +2079,10 @@ def looks_like_sum(engine, table, value):
 def humanize(engine, value, table=None):
     """A value with {{ }} as words. On its own: {{record}} → this Project, {{record.amount}} → its Amount.
     Inside text: "Invoice {{record.number}} is overdue" → “Invoice ‹Invoice number› is overdue”."""
+    if value is None or value == []:
+        return "empty"  # never “null” to someone who doesn't write code
+    if isinstance(value, bool):
+        return "yes" if value else "no"
     if not isinstance(value, str):
         return json.dumps(value) if not isinstance(value, (int, float)) else str(value)
     t = engine.tables.get(table)

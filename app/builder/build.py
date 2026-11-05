@@ -92,6 +92,7 @@ Steps:
 - "by": "staff" on a step someone other than the owner does; "refused": true on a step the app must stop.
 Expect:
 - {{"record": q1, "field": key, "equals": value}}: a number written as its arithmetic ("=2*100+50"), never your own sum;
+  a date as "today" or "today+N" on the example's calendar (after a wait, today has moved on by those days);
 - {{"table": key, "count": n}}; {{"told": true, "record": q1}} when someone must be told or emailed.
 {when_none}"""
 
@@ -190,15 +191,25 @@ def _patch_lines(classes):
 
 # --- asking ---------------------------------------------------------------------------------------------------------
 
-def _ask(system, user, schema_, progress=None, tries=0):
-    """One call to the model: the answer as a dict. Each `tries` asks a little differently (another seed, warmer)."""
+def _ask(system, user, schema_, progress=None, tries=0, kind=None):
+    """One call to the model: the answer as a dict. Each `tries` asks a little differently (another seed, warmer). The
+    call is kept tagged with its step and the language it was written in (training.py keeps the turns that came out
+    right, so the builder's own verified work is what it learns from)."""
     token = ai.again.set(tries)
+    messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
     try:
-        content, _ = ai.chat([{"role": "system", "content": system}, {"role": "user", "content": user}], schema=schema_,
-                             on_progress=progress, think=settings().get("AI_THINK_BUILDER"), purpose="builder")
+        content, _ = ai.chat(messages, schema=schema_, on_progress=progress, think=settings().get("AI_THINK_BUILDER"), purpose="builder")
     finally:
         ai.again.reset(token)
-    return ai.parse_json(content) or {}
+    calls = ai.recording.get()
+    if calls is not None and kind:
+        mine = next((c for c in reversed(calls) if c.get("messages") == messages and c.get("content") == content), None)
+        if mine is not None:
+            mine.update(kind=f"v2_{kind}", language=registry.fingerprint())
+    answer = ai.parse_json(content) or {}
+    if isinstance(answer, dict):
+        answer["_content"] = content
+    return answer
 
 
 def _ask_many(system, user, schema_, n):
@@ -208,7 +219,7 @@ def _ask_many(system, user, schema_, n):
     def one(k):
         def run():
             with app.app_context():
-                return _ask(system, user, schema_, tries=k + 1)
+                return _ask(system, user, schema_, tries=k + 1, kind="fix")
         return contextvars.copy_context().run(run)
 
     out = []
@@ -350,7 +361,7 @@ class Turn:
                     + "\n".join((f"(need {need}) " if need else "") + json.dumps(p, ensure_ascii=False)[:1500] for p, need in refused)
                     + "\n\nWhy:\n- " + "\n- ".join(out.problems[:12]))
             by_need = group == "behaviour"
-            answer = _ask(REPAIR.format(catalog=catalog(group)), user, _answer_schema(group, by_need=by_need), self.progress)
+            answer = _ask(REPAIR.format(catalog=catalog(group)), user, _answer_schema(group, by_need=by_need), self.progress, kind="repair")
             sent, owners = flatten(answer) if by_need else (answer.get("patches") or [], {})
             if not sent:
                 break
@@ -437,7 +448,7 @@ def _turn(turn):
         turn.note("Working out what you need")
         understood = Understood.model_validate(_ask(
             UNDERSTAND, f"{turn.about()}\n\nThe app now:\n{lang.describe(turn.bp)}\n\nEarlier:\n{turn.history() or '(nothing yet)'}\n\n"
-                        f"The owner says: {asked}", Understood.model_json_schema(), turn.progress))
+                        f"The owner says: {asked}", Understood.model_json_schema(), turn.progress, kind="understand"))
         needs, reply = understood.needs, understood.reply
         if understood.question and not needs:
             turn.message.text, turn.message.status, turn.message.finished_at = understood.question, "done", utcnow()
@@ -459,7 +470,7 @@ def _turn(turn):
             wanted = "\n".join(f"{i}. {needs[i - 1].does}" for i in by_rule if 0 < i <= len(needs))
             try:
                 found = _ask(CHECKS.format(when_none=""), f"{turn.about()}\n\nThe needs to check:\n{wanted}\n\nThe app:\n{lang.describe(turn.bp)}",
-                             EXAMPLE_SCHEMA, turn.progress).get("examples") or []
+                             EXAMPLE_SCHEMA, turn.progress, kind="checks").get("examples") or []
             except (ai.CutOff, ai.Stuck):  # no worked examples this time: those needs are said as not tried out
                 found = []
             titles = {x.get("title") for x in custom}
@@ -480,7 +491,7 @@ def _turn(turn):
         said = "\n".join(f"- “{x.get('title')}”: {json.dumps({k: x.get(k) for k in ('steps', 'expect')}, ensure_ascii=False)[:1500]}\n  why: {r.get('problem')}"
                          for x, r in broken)
         found = _ask(CHECKS.format(when_none=""), f"{turn.about()}\n\nThe app:\n{lang.describe(turn.bp)}\n\nThese examples couldn't be acted out. "
-                     f"Send each corrected, with the same title (need 0):\n{said}", EXAMPLE_SCHEMA, turn.progress).get("examples") or []
+                     f"Send each corrected, with the same title (need 0):\n{said}", EXAMPLE_SCHEMA, turn.progress, kind="checks").get("examples") or []
         fixed = {x.get("title"): x for x in found if isinstance(x, dict) and x.get("steps") and x.get("expect")}
         custom = [{**{k: v for k, v in fixed[x.get("title")].items() if k != "need"}, "by": "builder", "need": x.get("need", "")}
                   if x.get("title") in fixed else x for x in custom]
@@ -514,12 +525,13 @@ def _turn(turn):
             made = credited(patches, out, owners)
             run = _run(workspace, out.blueprint, _suite(workspace, out.blueprint, custom))
             passing, issues = _score(run, required)
-            tried.append(((passing + len(made["needs"] & set(unmade)), issues), out, run, patches, owners))
+            tried.append(((passing + len(made["needs"] & set(unmade)), issues, answer.get("_content")), out, run, patches, owners))
         if not tried:
             break
-        score, out, run, patches, owners = max(tried, key=lambda x: x[0])
-        if score <= _score(best, required):  # nothing tried did better: what there is stands
+        score, out, run, patches, owners = max(tried, key=lambda x: x[0][:2])
+        if score[:2] <= _score(best, required):  # nothing tried did better: what there is stands
             break
+        _chosen(score[2])
         turn.save(out)
         turn.credit(patches, out, owners)
         best = run
@@ -545,7 +557,7 @@ def _make_lists(turn, needs_text):
 
     def ask(extra="", tries=0):
         return _ask(DATA.format(catalog=catalog("data")), f"{turn.about()}\n\nThe needs:\n{needs_text}\n\nThe app now:\n"
-                    f"{lang.describe(turn.bp, with_rules=False)}{extra}", _answer_schema("data"), turn.progress, tries)
+                    f"{lang.describe(turn.bp, with_rules=False)}{extra}", _answer_schema("data"), turn.progress, tries, kind="data")
     turn.note("Making the lists")
     try:
         data = ask()
@@ -575,7 +587,7 @@ def _make_behaviour(turn, needs, needs_text):
     """(patches, {index: need}) for what the app does: all needs at once, or one need at a time if that's too much."""
     def ask(extra="", by_need=True, tries=0):
         return _ask(BEHAVIOUR.format(catalog=catalog("behaviour")), f"{turn.about()}\n\nThe needs:\n{needs_text}\n\nThe app now:\n"
-                    f"{lang.describe(turn.bp)}{extra}", _answer_schema("behaviour", by_need=by_need), turn.progress, tries)
+                    f"{lang.describe(turn.bp)}{extra}", _answer_schema("behaviour", by_need=by_need), turn.progress, tries, kind="behaviour")
     try:
         sent, owners = flatten(ask())
     except TOO_MUCH:
@@ -607,6 +619,13 @@ def _not_yet_said(wrong, issues, unmade):
         parts.append(f"I couldn't make {'this' if len(unmade) == 1 else 'these'} yet: " + "; ".join(unmade) + ".")
     return ("Not everything works yet. " + " ".join(parts) + " Press “Fix these” and I'll have another go, or tell me what "
             "should happen.")
+
+
+def _chosen(content):
+    """The candidate fix that was kept, marked among the turn's calls (the others weren't the builder's best)."""
+    for c in ai.recording.get() or []:
+        if c.get("kind") == "v2_fix" and c.get("content") == content:
+            c["chosen"] = True
 
 
 def _need_states(turn, needs, run):

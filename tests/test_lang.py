@@ -444,3 +444,33 @@ def test_a_limit_per_stage_is_refused_saying_how_to_count_only_some_stages():
 def test_only_a_plain_fix_request_skips_reading_what_the_owner_says(said, only):
     from app.builder.build import only_fixing
     assert only_fixing(said) is only
+
+
+def test_an_overdue_stage_the_list_has_is_put_straight_after_the_stages_it_comes_from():
+    bp = lang.apply(everything(), [{"do": "set_stages", "list": "bookings", "stages": {"stages": ["Booked", "Done", "Late"]}}]).blueprint
+    out = lang.apply(bp, [{"do": "add_field", "list": "bookings", "field": {"type": "date", "key": "due", "label": "Due"}},
+                          {"do": "overdue", "list": "bookings", "date_field": "due", "from_stages": ["Booked"], "to_stage": "Late"}])
+    assert not out.problems, out.problems
+    assert schema.field(schema.table(out.blueprint, "bookings"), "status")["options"] == ["Booked", "Late", "Done"]
+
+
+def test_a_move_tried_by_staff_and_then_by_the_owner_means_staff_are_stopped(app):
+    bp = lang.apply(everything(), [{"do": "approval", "list": "quotes", "stage": "Sent", "by": "owner"}]).blueprint
+    ws = _workspace(app, bp)
+    example = {"title": "Only I send quotes", "steps": [
+        {"do": "add", "table": "quotes", "as": "q1", "values": {"total": 100}},
+        {"do": "move", "as": "q1", "to": "Sent", "by": "staff"}, {"do": "move", "as": "q1", "to": "Sent", "by": "owner"}],
+        "expect": [{"record": "q1", "field": "status", "equals": "Sent"}]}
+    _, results = trial.try_out(ws, [example], screens=False)
+    assert results[0]["ok"], results[0].get("problem")
+
+
+def test_an_expected_date_can_be_today_on_the_examples_own_calendar(app):
+    bp = lang.apply(everything(), [{"do": "chase", "list": "invoices", "stage": "Sent", "days": 14}]).blueprint
+    ws = _workspace(app, bp)
+    example = {"title": "Chased and dated", "steps": [
+        {"do": "add", "table": "invoices", "as": "i1", "values": {}}, {"do": "move", "record": "i1", "to": "Sent"},
+        {"do": "wait", "days": 14}, {"do": "run", "rule": "chase_invoices_sent"}],
+        "expect": [{"record": "i1", "field": "chased_sent", "equals": "today"}, {"record": "i1", "field": "sent_on", "equals": "today-14"}]}
+    _, results = trial.try_out(ws, [example], screens=False)
+    assert results[0]["ok"], results[0].get("problem")

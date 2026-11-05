@@ -1243,6 +1243,9 @@ def _expect(engine, c, names):
         return True, plain.replace(" came out ", " is ").replace(", expected ", ", not "), said
     if "equals" in c:
         c = {**c, "equals": _worked_out(c["equals"])}
+        if isinstance(c["equals"], str) and RELATIVE.match(c["equals"].strip()):  # "today+3" on the example's own calendar
+            n = int((RELATIVE.match(c["equals"].strip()).group(1) or "0").replace(" ", ""))
+            c = {**c, "equals": (date.today() + timedelta(days=n + int(names.get("_waited") or 0))).isoformat()}
     if c.get("count") is not None or (c.get("table") and not c.get("record")):
         t = _table(engine, c.get("table"))
         n = len(engine.rows(t["key"]))
@@ -1520,16 +1523,23 @@ def _both(example):
 
 
 def _meant_refused(engine, example, step, names):
-    """Someone else tries a move (“by”: "staff") and the example expects the record to stay at the stage it's at: it
-    shows them being stopped, though it doesn't say "refused"."""
-    if step.get("do") != "move" or not step.get("by") or not step.get("record") or step["record"] not in names:
+    """Someone else tries a move (“by”: "staff") that the example shows them being stopped at, though it doesn't say
+    "refused": it expects the record to stay at the stage it's at, or the same move is made again later by someone else
+    (staff can't send it; the owner then does)."""
+    alias = step.get("record") or (step.get("as") if step.get("as") in names else None)
+    if step.get("do") != "move" or not step.get("by") or not alias or alias not in names:
         return False
-    record = engine.get(names[step["record"]])
+    steps = [s for s in example.get("steps") or [] if isinstance(s, dict)]
+    later = steps[steps.index(step) + 1:] if step in steps else []
+    if any(s.get("do") == "move" and (s.get("record") or s.get("as")) == alias and str(s.get("to") or "").lower() == str(step.get("to") or "").lower()
+           and str(s.get("by") or "owner").lower() != str(step.get("by")).lower() for s in later):
+        return True
+    record = engine.get(names[alias])
     flow = (engine.tables.get(record.table) or {}).get("workflow") if record is not None else None
     if not flow:
         return False
     now = str((record.data or {}).get(flow["field"]) or "").strip().lower()
-    return any(isinstance(c, dict) and c.get("record") == step["record"] and c.get("field") == flow["field"]
+    return any(isinstance(c, dict) and c.get("record") == alias and c.get("field") == flow["field"]
                and str(c.get("equals") or "").strip().lower() == now for c in example.get("expect") or [])
 
 
