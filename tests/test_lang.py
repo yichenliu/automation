@@ -578,3 +578,29 @@ def test_asking_for_a_fix_makes_what_an_owners_check_said_the_app_doesnt_do_yet(
     ws = db.session.get(Workspace, ws.id)
     assert any(e["do"] == "stage_alert" for e in ws.blueprint["features"])
     assert Job.query.filter_by(workspace_id=ws.id, kind="check_add").count() == 1  # and the owner's check is tried again
+
+
+def test_an_email_rule_and_the_ai_steps_compile_with_their_names_checked():
+    bp = lang.apply(everything(), [
+        {"do": "add_field", "list": "jobs", "field": {"type": "choice", "key": "check", "label": "Check", "options": ["Pass", "Issues"]}},
+        {"do": "add_field", "list": "jobs", "field": {"type": "long_text", "key": "notes", "label": "Notes"}}]).blueprint
+    out = lang.apply(bp, [
+        {"do": "add_rule", "rule": {"key": "bills_by_email", "name": "Bills from suppliers' emails",
+                                    "when": {"on": "email", "subject_contains": "invoice", "with_attachment": True},
+                                    "steps": [{"do": "ai_create", "list": "invoices", "instructions": "The supplier's bill", "review": "when_unsure",
+                                               "attach_to": "pdf"},
+                                              {"do": "notify", "who": "owner", "message": "A bill came in: {{email.subject}}"}]}},
+        {"do": "add_rule", "rule": {"key": "summarise", "name": "Summarise", "when": {"on": "added", "list": "jobs"},
+                                    "steps": [{"do": "ai_fill", "field": "title", "instructions": "A short title"},
+                                              {"do": "ai_check", "field": "check", "instructions": "Pass if it has a customer", "notes_field": "notes"},
+                                              {"do": "assign", "field": "assigned_to", "among": "editor"}]}},
+        {"do": "add_rule", "rule": {"key": "bad", "name": "Bad", "when": {"on": "email"}, "steps": [{"do": "set", "values": [{"field": "x", "to": 1}]}]}},
+        {"do": "add_rule", "rule": {"key": "bad2", "name": "Bad2", "when": {"on": "added", "list": "jobs"},
+                                    "steps": [{"do": "ai_check", "field": "title", "instructions": "x"}]}}])
+    assert out.refused == [3, 4], out.problems
+    assert "has no record yet" in out.problems[0] and "needs a select field" in out.problems[1]
+    rules = {a["key"]: a for a in out.blueprint["automations"]}
+    assert rules["bills_by_email"]["trigger"] == {"type": "email_received", "subject_contains": "invoice", "has_attachment": True}
+    assert rules["bills_by_email"]["actions"][0] == {"type": "ai_create_record", "table": "invoices", "instructions": "The supplier's bill",
+                                                     "attach_to": "pdf", "review": "when_unsure", "reviewer": "editor"}
+    assert [x["type"] for x in rules["summarise"]["actions"]] == ["ai_fill", "ai_check", "assign"]

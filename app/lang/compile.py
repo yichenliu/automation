@@ -207,6 +207,9 @@ def _check_formula(d, t, source, where, item=None, created=None):
             path = rest
         elif head.lower() in CONTEXT_NAMES:
             continue
+        if t is None:  # a rule started by an email or a file: there's no record yet, only what arrived
+            raise Problem(f"{where}: “{path}” isn't something an email or file rule can read (it can read email.subject, "
+                          f"email.body, email.sender, file.name, today())")
         try:
             d.path(t, path)
         except NameProblem as exc:
@@ -301,6 +304,16 @@ def _template(d, t, text, where):
 
 
 def ir_when(d, when, where):
+    if isinstance(when, m.EmailIn):  # no record yet: what arrived is what the steps read
+        trigger = {"type": "email_received"}
+        for key in ("from_contains", "subject_contains"):
+            if getattr(when, key):
+                trigger[key] = getattr(when, key)
+        if when.with_attachment:
+            trigger["has_attachment"] = True
+        return None, trigger, []
+    if isinstance(when, m.FileIn):
+        return None, {"type": "file_added", "folder": when.folder.strip("/ ")}, []
     t = _list(d, when.list, f"{where} › when")
     trigger, conditions = {"table": t["key"]}, []
     if isinstance(when, m.Added):
@@ -350,8 +363,15 @@ def _target(d, t, on, where):
     return d.list(f["table"]), ".".join(keys)
 
 
+NO_RECORD = (m.SetValues, m.AddEach, m.MakeDocument, m.PaymentLink, m.Task, m.Approval, m.Wait, m.Assign, m.Copy, m.Delete, m.RunRule, m.AiFill,
+             m.AiCheck, m.UpdateEach)
+
+
 def ir_step(d, t, s, where, made=None):
-    only = lambda: ir_conditions(d, t, s.only_if, f"{where} › only_if") if getattr(s, "only_if", None) else []  # noqa: E731
+    if t is None and isinstance(s, NO_RECORD):
+        raise Problem(f"{where}: a rule started by an email or a file has no record yet for “{s.do}”: make one first (ai_create or "
+                      f"add), then have a rule on that list do the rest")
+    only = lambda: ir_conditions(d, t, s.only_if, f"{where} › only_if") if getattr(s, "only_if", None) and t is not None else []  # noqa: E731
     if isinstance(s, m.SetValues):
         target, path = _target(d, t, s.on, where)
         out = {"type": "update_record", "values": ir_values(d, t, target, s.values, where, created=made)}
@@ -427,6 +447,41 @@ def ir_step(d, t, s, where, made=None):
         if f is None or f["type"] != "url":
             raise Problem(f"{where} › save_to: {s.save_to} isn't a web address (url) field of {t['label']}")
         out = {"type": "payment_link", "amount": s.amount, "save_to": f["key"]}
+    elif isinstance(s, (m.AiFill, m.AiExtract, m.AiCreate, m.AiCheck)):
+        out = _ai_step(d, t, s, where)
+    elif isinstance(s, m.Assign):
+        f = d.field(t, s.field) if t else None
+        if f is None or f["type"] != "user":
+            raise Problem(f"{where} › field: {s.field} isn't a person field of {(t or {}).get('label', 'the record')}")
+        among = s.among
+        if among not in schema.WHO_WORDS and among not in d.teams():
+            raise Problem(f"{where} › among: “{among}” isn't a role (editor, admin) or a team ({', '.join(d.teams()) or 'none'})")
+        out = {"type": "assign", "field": f["key"], "from": among}
+    elif isinstance(s, m.UpdateEach):
+        if t is None:
+            raise Problem(f"{where}: update_each changes the records linked to the rule's record, and an email rule has none")
+        lines = _list(d, s.list, where)
+        link = d.field(lines, s.link)
+        if link is None or link.get("type") != "link" or link.get("table") != t["key"]:
+            raise Problem(f"{where}: “link” is {lines['key']}'s link field to {t['key']}")
+        out = {"type": "update_each", "values": ir_values(d, t, lines, s.values, where, item=lines), "source": {"table": lines["key"], "via": link["key"]}}
+    elif isinstance(s, m.Copy):
+        if t is None:
+            raise Problem(f"{where}: an email rule has no record to copy")
+        out = {"type": "copy_record", "values": ir_values(d, t, t, s.values, where)}
+        if not s.lines:
+            out["lines"] = False
+    elif isinstance(s, m.Delete):
+        out = {"type": "delete_record"}
+    elif isinstance(s, m.RunRule):
+        known = [a["key"] for a in d.bp.get("automations", [])]
+        if schema.slug(s.rule) not in known:
+            raise Problem(f"{where}: there's no rule “{s.rule}” (rules: {', '.join(known) or 'none'})")
+        out = {"type": "run_automation", "automation": schema.slug(s.rule)}
+    elif isinstance(s, m.Webhook):
+        if not s.url.startswith(("https://", "http://")):
+            raise Problem(f"{where} › url: a web address starts with https://")
+        out = {"type": "webhook", "url": s.url, "method": s.method}
     else:
         raise Problem(f"{where}: unknown step")
     if getattr(s, "only_if", None):
@@ -434,9 +489,56 @@ def ir_step(d, t, s, where, made=None):
     return out, (out.get("table") and d.list(out["table"])) or made
 
 
+def _ai_step(d, t, s, where):
+    """An AI step: what it fills in, makes or checks is checked by name, like any step."""
+    def field_of(name, what, kinds=None):
+        f = d.field(t, name) if t else None
+        if f is None:
+            raise Problem(f"{where} › {what}: “{name}” isn't a field of {(t or {}).get('label', 'the record')}"
+                          + (f" (its fields: {', '.join(d.field_names(t))})" if t else ""))
+        if kinds and f["type"] not in kinds:
+            raise Problem(f"{where} › {what}: {f['key']} is {f['type']}, and this needs a {' or '.join(kinds)} field")
+        if f["type"] in schema.CALCULATED:
+            raise Problem(f"{where} › {what}: {f['key']} is worked out, so nothing fills it in")
+        return f["key"]
+    if isinstance(s, m.AiFill):
+        out = {"type": "ai_fill", "field": field_of(s.field, "field"), "instructions": s.instructions}
+        if s.read_files:
+            out["read_files"] = True
+        if s.use_knowledge:
+            out["use_knowledge"] = True
+    elif isinstance(s, m.AiExtract):
+        source = schema.slug(s.source)
+        if source not in ("email", "file"):
+            source = field_of(s.source, "source", ("file",))
+        if t is None:
+            raise Problem(f"{where}: ai_extract fills in a record's fields: in an email or file rule, use ai_create to make the record")
+        out = {"type": "ai_extract", "from": source, "fields": [field_of(x, "fields") for x in s.fields]}
+        if s.instructions:
+            out["instructions"] = s.instructions
+    elif isinstance(s, m.AiCreate):
+        target = _list(d, s.list, where)
+        out = {"type": "ai_create_record", "table": target["key"], "instructions": s.instructions}
+        if s.attach_to:
+            f = d.field(target, s.attach_to)
+            if f is None or f["type"] != "file":
+                raise Problem(f"{where} › attach_to: {s.attach_to} isn't a file field of {target['label']}")
+            out["attach_to"] = f["key"]
+    else:
+        out = {"type": "ai_check", "field": field_of(s.field, "field", ("select",)), "instructions": s.instructions}
+        if s.notes_field:
+            out["notes_field"] = field_of(s.notes_field, "notes_field", ("long_text", "text", "rich_text"))
+    if s.review != "never":
+        out.update(review=s.review, reviewer="editor")
+    return out
+
+
 def ir_rule(d, rule, where, feature=None):
     t, trigger, conditions = ir_when(d, rule.when, where)
-    conditions += ir_conditions(d, t, rule.only_if, f"{where} › only_if")
+    if t is None and rule.only_if:
+        raise Problem(f"{where} › only_if: a rule started by an email or a file has no record to check yet: narrow it with the "
+                      f"trigger's own from_contains / subject_contains instead")
+    conditions += ir_conditions(d, t, rule.only_if, f"{where} › only_if") if t is not None else []
     actions, made = [], None
     for n, s in enumerate(rule.steps, start=1):
         step, made = ir_step(d, t, s, f"{where} › step {n}", made)

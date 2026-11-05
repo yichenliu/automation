@@ -221,6 +221,23 @@ class Deleted(Base):
     list: str
 
 
+@register("when", {"on": "email", "subject_contains": "invoice", "with_attachment": True})
+class EmailIn(Base):
+    """When an email arrives in the connected mailbox (from_contains, subject_contains, with_attachment narrow it):
+    its steps read it as email.subject, email.body, email.sender."""
+    on: Literal["email"]
+    from_contains: str | None = None
+    subject_contains: str | None = None
+    with_attachment: bool = False
+
+
+@register("when", {"on": "file", "folder": "Invoices/Incoming"})
+class FileIn(Base):
+    """When a file arrives in a connected OneDrive folder: its steps read it as file.name."""
+    on: Literal["file"]
+    folder: str
+
+
 When = union("when")
 
 
@@ -318,6 +335,105 @@ class PaymentLink(Base):
     do: Literal["payment_link"]
     amount: str
     save_to: str
+
+
+REVIEW = Literal["never", "when_unsure", "always"]
+
+
+@register("step", {"do": "ai_fill", "field": "summary", "instructions": "Summarise the job in one sentence for the crew.", "review": "never"})
+class AiFill(Base):
+    """The AI fills in one field of the record from what the record (and, with read_files, its attached files) says.
+    review: whether a person checks its work first (never, when_unsure, always)."""
+    do: Literal["ai_fill"]
+    field: str
+    instructions: str
+    review: REVIEW = "never"
+    read_files: bool = False
+    use_knowledge: bool = False
+    only_if: list[Condition] = Field(default_factory=list)
+
+
+@register("step", {"do": "ai_extract", "source": "email", "fields": ["supplier", "amount", "due_date"]})
+class AiExtract(Base):
+    """The AI reads a document (a file field of the record, or "email"/"file" for what started the rule) and fills in
+    these fields from it."""
+    do: Literal["ai_extract"]
+    source: str
+    fields: list[str]
+    instructions: str | None = None
+    review: REVIEW = "never"
+
+
+@register("step", {"do": "ai_create", "list": "bills", "instructions": "A bill from the supplier's email: supplier, amount, due date.",
+                   "review": "when_unsure"})
+class AiCreate(Base):
+    """The AI makes a record of a list from what started the rule (an email, a file), filling in what it can;
+    attach_to keeps the email's files on it."""
+    do: Literal["ai_create"]
+    list: str
+    instructions: str
+    attach_to: str | None = None
+    review: REVIEW = "never"
+
+
+@register("step", {"do": "ai_check", "field": "check_result", "instructions": "Pass if the quote has a price for every line.",
+                   "notes_field": "check_notes"})
+class AiCheck(Base):
+    """The AI checks the record against instructions and puts its verdict in a choice field (and what it found in a
+    notes field)."""
+    do: Literal["ai_check"]
+    field: str
+    instructions: str
+    notes_field: str | None = None
+    review: REVIEW = "never"
+
+
+@register("step", {"do": "assign", "field": "assigned_to", "among": "editor"})
+class Assign(Base):
+    """Give the record to someone, taking turns among a role or a team (fills a person field)."""
+    do: Literal["assign"]
+    field: str
+    among: str = "editor"
+
+
+@register("step", {"do": "update_each", "list": "job_lines", "link": "job", "values": [{"field": "description", "formula": "description + ' (done)'"}]})
+class UpdateEach(Base):
+    """Change each record of a list that links to the rule's record (every line of a job); values read the record
+    being changed as item.x."""
+    do: Literal["update_each"]
+    list: str
+    link: str
+    values: list[Value]
+    only_if: list[Condition] = Field(default_factory=list)
+
+
+@register("step", {"do": "copy", "values": [{"field": "status", "to": "Draft"}], "lines": True})
+class Copy(Base):
+    """A copy of the record (and its lines): a new revision, a repeat order; values change what's different."""
+    do: Literal["copy"]
+    values: list[Value] = Field(default_factory=list)
+    lines: bool = True
+
+
+@register("step", {"do": "delete"})
+class Delete(Base):
+    """Delete the record the rule is about."""
+    do: Literal["delete"]
+
+
+@register("step", {"do": "run", "rule": "send_invoice"})
+class RunRule(Base):
+    """Run another rule on this record."""
+    do: Literal["run"]
+    rule: str
+
+
+@register("step", {"do": "webhook", "url": "https://hooks.example.com/new-job", "method": "POST"})
+class Webhook(Base):
+    """Send the record to another system's web address."""
+    do: Literal["webhook"]
+    url: str
+    method: Literal["POST", "PUT", "PATCH", "GET"] = "POST"
 
 
 Step = union("step")
