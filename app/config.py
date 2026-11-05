@@ -29,9 +29,46 @@ class Config:
     PLATFORM_NAME = os.getenv("PLATFORM_NAME") or "Keel"
     PORT = int(os.getenv("PORT") or 5050)
     BASE_URL = (os.getenv("BASE_URL") or f"http://localhost:{os.getenv('PORT') or 5050}").rstrip("/")
+    # The AI (app/ai.py) runs on model servers the platform runs itself; nothing reaches a cloud model unless its address
+    # is put here. AI_PROVIDER=ollama: Ollama on this computer (development, one business on one machine).
+    # AI_PROVIDER=openai: any OpenAI-compatible server (vLLM, SGLang, llama.cpp's server, LM Studio) at AI_BASE_URL, with
+    # AI_API_KEY if it asks for one: the GPU servers production serves many customers from.
+    AI_PROVIDER = (os.getenv("AI_PROVIDER") or "ollama").strip().lower()
     OLLAMA_URL = (os.getenv("OLLAMA_URL") or "http://127.0.0.1:11434").rstrip("/")
-    OLLAMA_MODEL = os.getenv("OLLAMA_MODEL") or "qwen3.8:27b-dflash2-nvfp4"
-    OLLAMA_EMBED_MODEL = os.getenv("OLLAMA_EMBED_MODEL", "bge-m3")  # finds documents and records by meaning; "" for words only
+    AI_BASE_URL = (os.getenv("AI_BASE_URL") or (OLLAMA_URL if AI_PROVIDER == "ollama" else "http://127.0.0.1:8000/v1")).rstrip("/")
+    AI_API_KEY = os.getenv("AI_API_KEY") or ""
+    AI_MODEL = os.getenv("AI_MODEL") or os.getenv("OLLAMA_MODEL") or "qwen3.8:27b-dflash2-nvfp4"
+    OLLAMA_MODEL = AI_MODEL  # the older name, still read by some
+    # One deployment can send each purpose to its own model, and its own server: the builder to a big one, quick jobs to
+    # a small one. Each falls back to the plain setting above when it isn't set.
+    AI_MODEL_BUILDER = os.getenv("AI_MODEL_BUILDER") or ""
+    AI_MODEL_FAST = os.getenv("AI_MODEL_FAST") or ""
+    AI_PROVIDER_BUILDER = (os.getenv("AI_PROVIDER_BUILDER") or "").strip().lower()
+    AI_PROVIDER_FAST = (os.getenv("AI_PROVIDER_FAST") or "").strip().lower()
+    AI_BASE_URL_BUILDER = (os.getenv("AI_BASE_URL_BUILDER") or "").rstrip("/")
+    AI_BASE_URL_FAST = (os.getenv("AI_BASE_URL_FAST") or "").rstrip("/")
+    AI_API_KEY_BUILDER = os.getenv("AI_API_KEY_BUILDER") or ""
+    AI_API_KEY_FAST = os.getenv("AI_API_KEY_FAST") or ""
+    # The embedding model finds documents and records by meaning ("" for words only). vLLM serves one model per server,
+    # so an embedding model there has a server of its own (AI_BASE_URL_EMBED); Ollama serves both from one.
+    OLLAMA_EMBED_MODEL = os.getenv("AI_MODEL_EMBED") or os.getenv("OLLAMA_EMBED_MODEL", "bge-m3")
+    AI_PROVIDER_EMBED = (os.getenv("AI_PROVIDER_EMBED") or "").strip().lower()
+    AI_BASE_URL_EMBED = (os.getenv("AI_BASE_URL_EMBED") or "").rstrip("/")
+    AI_API_KEY_EMBED = os.getenv("AI_API_KEY_EMBED") or ""
+    # The gateway in front of each model server (one queue per process; see app/ai.py). AI_CONCURRENCY: calls at once to
+    # one server, 0 for the provider's own default (2 for Ollama, which answers one or two at a time well; 8 for vLLM or
+    # SGLang, which batch them). AI_DEADLINE: seconds a whole call may take, its wait for a turn included.
+    # AI_READ_TIMEOUT: seconds with nothing from the server before it's taken as gone. AI_RETRIES and AI_BACKOFF: how many
+    # times a call is asked again when the server can't be reached or is busy, and the first wait (doubling each time).
+    AI_CONCURRENCY = int(os.getenv("AI_CONCURRENCY") or 0)
+    AI_DEADLINE = float(os.getenv("AI_DEADLINE") or 900)
+    AI_READ_TIMEOUT = float(os.getenv("AI_READ_TIMEOUT") or 600)
+    AI_RETRIES = int(os.getenv("AI_RETRIES") or 3)
+    AI_BACKOFF = float(os.getenv("AI_BACKOFF") or 1.0)
+    # vLLM started with --scheduling-policy priority (or SGLang with priority scheduling) can order requests from every
+    # process by how soon they're needed: true sends each call's priority along. Off by default: a vLLM server
+    # without that policy refuses requests that carry one.
+    AI_SERVER_PRIORITY = (os.getenv("AI_SERVER_PRIORITY") or "false").lower() == "true"
     AI_THINK = (os.getenv("AI_THINK") or "false").lower() == "true"
     # The builder's own reasoning-heavy work (designing, fixing what the try-out found, writing worked examples) thinks
     # first when this is on, whatever AI_THINK says for the quick jobs; AI_THINK_TOKENS is the room for that thinking.

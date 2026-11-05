@@ -17,7 +17,8 @@ brew install postgresql@18 pgvector    once: the database (PostgreSQL, with pgve
 ```
 
 Settings live in `.env` (see `.env.example`): the database's address (`DATABASE_URL`, written by `./start.sh setup`),
-the Ollama address and model, timezone and currency, and the Microsoft 365 app's details.
+the AI's model servers (Ollama on this computer, or vLLM or SGLang on GPU servers), timezone and currency, and the
+Microsoft 365 app's details.
 
 ## The database
 

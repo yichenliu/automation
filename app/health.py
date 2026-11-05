@@ -66,12 +66,16 @@ def report(ws):
     from . import ai, backup
     from .models import Job, Run, utcnow
     out = []
+    described = ai.describe()
     try:
         ai.check()
-        out.append({"name": "The AI", "ok": True, "said": f"{ai.describe()['model']} is answering on this computer"})
+        out.append({"name": "The AI", "ok": True, "said": f"{described['model']} is answering {described['where']}"})
     except ai.AIUnavailable as exc:
         out.append({"name": "The AI", "ok": False, "said": str(exc),
-                    "do": "Start Ollama (or restart the computer it runs on). Work that needs the AI waits and carries on by itself."})
+                    "do": ("Start Ollama (or restart the computer it runs on)." if described["provider"] == "ollama" else
+                           f"Start the model server at {described['url']} (vLLM or SGLang), or check AI_BASE_URL.")
+                          + " Work that needs the AI waits and carries on by itself."})
+    out.extend(_asked(ai.stats()))
     day = utcnow() - timedelta(days=1)
     waiting = Job.query.filter(Job.workspace_id == ws.id, Job.status.in_(["queued", "running", "waiting_ai"])).all()
     failed_jobs = Job.query.filter(Job.workspace_id == ws.id, Job.status == "failed", Job.created_at >= day).count()
@@ -123,6 +127,25 @@ def report(ws):
                 "do": "" if age is not None and age < timedelta(days=2) else
                       "Backups are made every night while the app runs; make one now under Settings › Data and backups, and keep a copy off this computer."})
     return out
+
+
+def _asked(stats):
+    """What this process has asked the AI since it started (app/ai.py counts it): how many, how many went wrong, how long
+    an answer takes and how long a question waits for its turn. Nothing until it's been asked."""
+    calls = [c for c in stats["calls"] if c["purpose"] != "embed"]
+    asked = sum(c["calls"] for c in calls)
+    if not asked:
+        return []
+    failed, answered = sum(c["failures"] for c in calls), sum(c["answered"] for c in calls)
+    took = sum(c["seconds"] for c in calls) / answered if answered else 0
+    waited = sum(c["waited"] for c in calls) / asked
+    tokens_in, tokens_out = sum(c["tokens_in"] for c in calls), sum(c["tokens_out"] for c in calls)
+    return [{"name": "Asking the AI", "ok": failed <= asked * 0.1 and waited < 60,
+             "said": f"{asked} asked since the app started, {failed} went wrong; an answer takes {took:.0f} s on average, "
+                     f"after {waited:.0f} s waiting for a turn" + (f"; {tokens_in:,} tokens read, {tokens_out:,} written" if tokens_in or tokens_out else ""),
+             "do": "Many questions to the AI went wrong: the log in data/logs says why." if failed > asked * 0.1 else
+                   "Questions wait long for the AI: raise AI_CONCURRENCY if its server has room, or give the builder a server of "
+                   "its own (AI_BASE_URL_BUILDER)." if waited >= 60 else ""}]
 
 
 def _ago(delta):
