@@ -32,6 +32,7 @@ PLAN_SCHEMA = {"type": "object", "required": ["queries", "search", "proposals", 
     "proposals": {"type": "array", "items": {"type": "object", "required": ["action", "table", "values", "why"], "properties": {
         "action": {"type": "string", "enum": ["create", "update"]}, "table": {"type": "string"}, "record_id": {"type": "integer"},
         "values": {"type": "object"}, "why": {"type": "string"}}}},
+    "app_change": {"type": "string"},
     "reply": {"type": "string"}}}
 ANSWER_SCHEMA = {"type": "object", "required": ["reply"], "properties": {"reply": {"type": "string"}}}
 
@@ -52,6 +53,8 @@ Answer in JSON: {{"queries": [...], "search": [...], "proposals": [...], "reply"
 - proposals: changes the person asked for, prepared for them to confirm: {{"action": "create"|"update", "table",
   "record_id" (update only), "values": {{field key: value}}, "why"}}. For link fields give the linked record's name.
   Only propose what they asked for.
+- app_change: when they ask to change how the system itself works (a new detail to keep, a reminder, an approval, a
+  rule, a new list or report), their request in their own words; the builder makes it. Leave it out otherwise.
 - reply: if you made queries or searches, leave it empty (you'll write it after seeing the results). Otherwise answer
   briefly; when the passages below answer it, say so and cite them like [1].
 Use only the tables and fields below. Never invent records, numbers or policies. Be brief and plain, in everyday words
@@ -196,6 +199,18 @@ def _proposal(engine, raw):
     return item
 
 
+def _hand_to_builder(ws, user, member, change):
+    """An app change asked of the assistant: started in the builder for someone who runs the app; for anyone else,
+    who to ask. Returns what to say."""
+    if member.role not in ("owner", "admin"):
+        owner = db.session.get(User, ws.owner_id)
+        return (f"Changing how the app works is for whoever runs it{' (' + owner.display + ')' if owner else ''}: ask them to "
+                f"add “{change[:200]}”.")
+    from .builder import chat
+    chat.ask(ws, change[:4000], page=None, user=user)
+    return f"I've asked the builder for that: “{change[:200]}”. You can follow it, and try it out, in Change my app."
+
+
 def work(message_id):
     message = db.session.get(Message, message_id)
     if message is None or message.status not in ("queued", "waiting_ai"):
@@ -260,6 +275,9 @@ def work(message_id):
         db.session.commit()
         return
     proposals = [p for p in (_proposal(engine, raw) for raw in plan.get("proposals") or []) if p]
+    change = str(plan.get("app_change") or "").strip()
+    if change:  # how the system works, not a record: the builder (the same AI, building) makes it, for whoever may change it
+        reply = _hand_to_builder(ws, user, member, change)
     message.text = str(reply).strip() or ("Here's what I'd do; confirm below." if proposals else "I couldn't find an answer to that.")
     cited = {int(n) for n in re.findall(r"\[(\d{1,2})\]", str(reply))}
     sources = [{k: h[k] for k in ("n", "source", "title", "link")} for h in passages if h["n"] in cited]

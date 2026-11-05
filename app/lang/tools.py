@@ -38,7 +38,8 @@ def _examples(ws, bp):
 def _tried(ws, bp):
     from ..builder import trial
     walked, results = trial.try_out(ws, _examples(ws, bp), screens=False, blueprint=bp)
-    return {"checks": [{"title": r["title"], "ok": r["ok"], "what": r.get("plain") or r.get("problem") or ""} for r in results],
+    return {"checks": [{"title": r["title"], "ok": r["ok"], "what": r.get("plain") or r.get("problem") or "",
+                        **({"why": r["why"]} if r.get("why") else {})} for r in results],
             "found": [i["plain"] for i in walked.get("issues", []) if i.get("level") == "fix"]}  # what walking the app found wrong
 
 

@@ -30,7 +30,7 @@ from ..engine.records import Engine
 from ..extensions import db
 from ..lang import model as m, registry
 from ..models import Membership, Message, Workspace, utcnow
-from . import checking, trial
+from . import checking, recipes, trial
 from ..core.settings import settings
 from ..core.context import current_app
 
@@ -547,8 +547,12 @@ def _turn(turn):
     needs_text = "\n".join(f"{i}. {n.does} (from: “{n.said}”)" for i, n in enumerate(needs, start=1))
     if needs:
         _make_lists(turn, needs_text)
+        # how each need that's more than keeping records will be tried, written before what makes it: the builder then
+        # makes what those examples need (refused when it's added, not only when it's moved on), not its own idea of it
+        doing = [i for i, n in enumerate(needs, start=1) if not KEEPS_RECORDS.match(n.does.strip())]
+        early = _examples_for(turn, needs, doing, "Writing how I'll check what it does") if doing else []
         turn.note("Making what it does")
-        sent, owners = _make_behaviour(turn, needs, needs_text)
+        sent, owners = _make_behaviour(turn, needs, needs_text, early)
         # worked examples for the needs met by rules (a feature writes its own checks)
         by_rule = sorted({owners[i] for i, p in enumerate(sent) if isinstance(p, dict) and owners.get(i) in turn.made
                           and (p.get("do") in ("add_rule", "change_rule", "add_validation") or _formula_kept(p))}
@@ -556,18 +560,15 @@ def _turn(turn):
                          # tried out as well, never taken on its word
                          | {i for i in turn.already if 0 < i <= len(needs) and not KEEPS_RECORDS.match(needs[i - 1].does.strip())})
         turn.ruled |= set(by_rule)
-        if by_rule:
-            turn.note("Writing checks for what isn't a ready-made feature")
-            wanted = "\n".join(f"{i}. {needs[i - 1].does}" for i in by_rule if 0 < i <= len(needs))
-            try:
-                found = _ask(CHECKS.format(when_none=""), f"{turn.about()}\n\nThe needs to check:\n{wanted}\n\nThe app:\n{lang.describe(turn.bp)}",
-                             EXAMPLE_SCHEMA, turn.progress, kind="checks").get("examples") or []
-            except (ai.CutOff, ai.Stuck):  # no worked examples this time: those needs are said as not tried out
-                found = []
-            titles = {x.get("title") for x in custom}
-            custom += [{**{k: v for k, v in x.items() if k != "need"}, "by": "builder",
-                        "need": needs[x["need"] - 1].does if 0 < (x.get("need") or 0) <= len(needs) else ""}
-                       for x in found if isinstance(x, dict) and x.get("steps") and x.get("expect") and x.get("title") not in titles][:6]
+        # the examples written first, for what a rule makes (a feature proves itself); written now for any not covered
+        found = [x for x in early if x.get("need") in by_rule]
+        later = [i for i in by_rule if i not in {x.get("need") for x in found}]
+        if later:
+            found += _examples_for(turn, needs, later, "Writing checks for what isn't a ready-made feature")
+        titles = {x.get("title") for x in custom}
+        custom += [{**{k: v for k, v in x.items() if k != "need"}, "by": "builder",
+                    "need": needs[x["need"] - 1].does if 0 < (x.get("need") or 0) <= len(needs) else ""}
+                   for x in found if x.get("title") not in titles][:6]
     if not turn.changes and not mending and not needs:
         turn.message.text, turn.message.status, turn.message.finished_at = reply or "Tell me what you'd like your app to do.", "done", utcnow()
         db.session.commit()
@@ -604,10 +605,13 @@ def _turn(turn):
             break
         n = len(failing) + len(hard) + len(unmade)
         turn.note(f"Putting right {n} thing{'s' if n != 1 else ''} that didn't come out right or aren't made yet (trying {CANDIDATES} ways)")
+        about = [needs[i - 1].does for i in unmade if 0 < i <= len(needs)] + [str(x.get("need") or x.get("title") or "") for x, _ in failing]
+        shown = recipes.said(recipes.for_needs(about))
         user = (f"{turn.about()}\n\nThe owner's latest message: {asked}\n\nThe needs:\n{needs_text or '(as the app is)'}\n\n"
                 f"The app now:\n{lang.describe(turn.bp)}\n\n"
                 + (f"Didn't come out right:\n{_said_failing(best, failing, hard)}\n\n" if failing or hard else "")
-                + (f"Not made yet: {', '.join(f'need {i}' for i in unmade)} (what was sent for them was refused)\n" if unmade else ""))
+                + (f"Not made yet: {', '.join(f'need {i}' for i in unmade)} (what was sent for them was refused)\n" if unmade else "")
+                + (f"\n{shown}\n" if shown else ""))
         answers = _ask_many(FIX.format(catalog=catalog("all")), user, _answer_schema("all", by_need=True), CANDIDATES)
         tried = []
         for answer in answers:
@@ -776,11 +780,36 @@ KEEPS_RECORDS = re.compile(r"(records?|tracks?|lists?|stores?|shows?|keeps?|logs
                            r"captures?|saves?|notes?|links?)\b", re.I)
 
 
-def _make_behaviour(turn, needs, needs_text):
+def _examples_for(turn, needs, which, note):
+    """Worked examples for these needs (their numbers), on the app as it is now: [{title, steps, expect, need}]."""
+    turn.note(note)
+    wanted = "\n".join(f"{i}. {needs[i - 1].does}" for i in which if 0 < i <= len(needs))
+    try:
+        found = _ask(CHECKS.format(when_none=""), f"{turn.about()}\n\nThe needs to check:\n{wanted}\n\nThe app:\n{lang.describe(turn.bp)}",
+                     EXAMPLE_SCHEMA, turn.progress, kind="checks").get("examples") or []
+    except (ai.CutOff, ai.Stuck):  # no worked examples this time: those needs are said as not tried out
+        return []
+    return [x for x in found if isinstance(x, dict) and x.get("steps") and x.get("expect") and isinstance(x.get("need"), int)]
+
+
+def _targets(examples):
+    """The examples written before the behaviour, as the behaviour step is shown them."""
+    if not examples:
+        return ""
+    lines = [f"- need {x['need']}: “{x.get('title')}”: " + "; ".join(json.dumps(st, ensure_ascii=False) for st in x["steps"][:8])
+             + f" → expects {json.dumps(x['expect'], ensure_ascii=False)}" for x in examples[:8]]
+    return ("\n\nOnce it's made, each need will be tried like this, so make what these need (a step with \"refused\": true "
+            "must be stopped by the app, however it's done):\n" + "\n".join(lines))
+
+
+def _make_behaviour(turn, needs, needs_text, early=()):
     """(patches, {index: need}) for what the app does: all needs at once, or one need at a time if that's too much."""
+    shown = recipes.said(recipes.for_needs([n.does for n in needs]))  # how needs like these are made, known to work
+    shown = (f"\n\n{shown}" if shown else "") + _targets(list(early))
+
     def ask(extra="", by_need=True, tries=0):
         return _ask(BEHAVIOUR.format(catalog=catalog("behaviour")), f"{turn.about()}\n\nThe needs:\n{needs_text}\n\nThe app now:\n"
-                    f"{lang.describe(turn.bp)}{extra}", _answer_schema("behaviour", by_need=by_need), turn.progress, tries, kind="behaviour")
+                    f"{lang.describe(turn.bp)}{shown}{extra}", _answer_schema("behaviour", by_need=by_need), turn.progress, tries, kind="behaviour")
     try:
         answer = ask()
         sent, owners = flatten(answer)

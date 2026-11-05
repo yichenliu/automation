@@ -253,7 +253,7 @@ def test_a_turn_of_the_new_builder_works_out_the_needs_builds_them_and_proves_th
     chat.work(a.id)
     a = db.session.get(Message, a.id)
     assert a.status == "done", a.error
-    assert model.asked[:3] == ["understand", "data", "behaviour"]
+    assert model.asked[:4] == ["understand", "data", "checks", "behaviour"]  # how it'll be tried, written before what makes it
     assert "fix" not in model.asked  # it came out right: nothing to search for
     titles = {x["title"]: x["ok"] for x in a.checks["examples"]}
     assert titles and all(titles.values()), titles
@@ -1346,3 +1346,37 @@ def test_a_vague_new_app_gets_a_few_quick_questions_to_click_once(app, owner):
     chat.work(again.id)
     again = db.session.get(Message, again.id)
     assert again.status == "done" and again.version_after and not again.proposals  # asked once: now it builds
+
+
+def test_the_checks_written_first_are_shown_to_the_behaviour_step_with_recipes(app):
+    """How a need will be tried is written before it's made, and the behaviour step is shown it, with how needs like it
+    are made in other apps (known to work)."""
+    ws = _workspace(app, None)
+    shown = []
+    model = Model({
+        "understand": {"needs": [{"said": "no bookings for customers who owe", "does": "Refuses a new booking for a customer who owes on an overdue invoice"}],
+                       "reply": "OK."},
+        "data": {"patches": [EVERYTHING[0], _invoices(), {"do": "add_list", "key": "bookings", "label": "Bookings", "singular": "Booking", "fields": [
+            {"type": "link", "key": "customer", "label": "Customer", "to": "customers"}, {"type": "date", "key": "date", "label": "Date"}]}]},
+        "checks": {"examples": [{"need": 1, "title": "No booking while owing", "steps": [
+            {"do": "add", "table": "customers", "as": "c1", "values": {"name": "Ann"}},
+            {"do": "add", "table": "invoices", "as": "i1", "values": {"customer": "c1", "due_date": "today-40"}},
+            {"do": "add", "table": "bookings", "as": "b1", "values": {"customer": "c1", "date": "today"}, "refused": True}],
+            "expect": [{"table": "bookings", "count": 0}]}]},
+        "behaviour": lambda messages: shown.append(messages[-1]["content"]) or {"work": [{"need": 1, "patches": [
+            {"do": "add_validation", "list": "bookings", "message": "This customer owes on an overdue invoice",
+             "check": "count(customer.invoices where status != 'Paid' and days_since(due_date) > 30) == 0"}]}]},
+    })
+    ai.set_backend(model)
+    q = Message(workspace_id=ws.id, channel="builder", user_id=ws.owner_id, role="user", text="No bookings for customers who owe")
+    a = Message(workspace_id=ws.id, channel="builder", role="assistant", status="queued")
+    db.session.add_all([q, a])
+    db.session.commit()
+    from app.builder import chat
+    chat.work(a.id)
+    a = db.session.get(Message, a.id)
+    assert a.status == "done", a.error
+    assert "each need will be tried like this" in shown[0] and "No booking while owing" in shown[0]
+    assert "How needs like these are made" in shown[0] and "days_since(due_date)" in shown[0]
+    assert all(x["ok"] for x in a.checks["examples"]), a.checks["examples"]
+    assert model.asked.count("checks") == 1  # written once, before: not again after

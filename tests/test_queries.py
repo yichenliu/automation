@@ -249,3 +249,31 @@ def test_a_check_that_comes_out_wrong_says_why_in_the_apps_own_terms(app):
     _, (first, second) = trial.try_out(ws, [allowed, stays], screens=False)
     assert not first["ok"] and any("Not for Sam" in w and "held" in w for w in first["why"]), first
     assert not second["ok"] and any("start_when_paid" in w and "didn't run" in w and "notes" in w for w in second["why"]), second
+
+
+def test_asking_the_assistant_to_change_the_app_hands_it_to_the_builder(app):
+    """The assistant inside the app and the builder are one AI at work: “remind me when an invoice is 30 days overdue”
+    asked in the app starts the builder for whoever runs it, and tells anyone else who can."""
+    from app import ai, assistant
+    from app.models import Message
+    from tests.conftest import ScriptedAI
+    ws = _workspace(_app([]))
+    owner = User.query.first()
+    plan = {"queries": [], "search": [], "proposals": [], "reply": "", "app_change": "Remind me when an invoice is 30 days overdue"}
+    ai.set_backend(ScriptedAI(plan))
+    asked = assistant.ask(ws, owner, "can you remind me when invoices are 30 days late")
+    assistant.work(asked.id)
+    assert "asked the builder" in db.session.get(Message, asked.id).text
+    started = Message.query.filter_by(workspace_id=ws.id, channel="builder", role="user").first()
+    assert started is not None and "30 days overdue" in started.text
+    staff = User(email="sam@example.com", name="Sam")
+    staff.set_password("x" * 12)
+    db.session.add(staff)
+    db.session.flush()
+    db.session.add(Membership(workspace_id=ws.id, user_id=staff.id, role="editor"))
+    db.session.commit()
+    ai.set_backend(ScriptedAI(plan))
+    theirs = assistant.ask(ws, staff, "remind me about late invoices")
+    assistant.work(theirs.id)
+    assert "whoever runs it" in db.session.get(Message, theirs.id).text
+    assert Message.query.filter_by(workspace_id=ws.id, channel="builder", role="user").count() == 1
