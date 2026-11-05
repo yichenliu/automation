@@ -150,6 +150,33 @@ rule stopped on a must-have it couldn't know (10 apps); stages nothing could rea
 - Apps made before are made again on the next platform update (`patterns.refresh`): their gates become rules, and
   their unreachable stages get buttons.
 
+**D13. AI-first and embedded: one language, one AI, and the reasons why.** The platform is built for an AI that lives
+inside it and builds there, not for a chat feature on the side.
+- **One way to change an app.** The Keel language is how apps change, for every editor: the builder, the App map, the
+  analyst that suggests improvements, ready-made modules, and outside agents (REST v2, and MCP for an owner's or admin's
+  key: `keel_describe`, `keel_what_if`, `keel_apply`, `keel_test`, `keel_undo`). Keel makes small changes as well as
+  large ones (set_field, order_fields, remove_stage, order_stages, add_move, change_move, remove_move, remove_stages,
+  add_step, change_step, remove_step, move_step, change_rule enabled). Where the App map already had tested logic for a
+  change, Keel compiles to it, so a click and a patch do the same thing. The design is what Keel compiles to.
+- **One AI with different jobs.** The builder makes and changes the app. The in-app assistant answers about records,
+  and when someone asks it to change how the app works, it hands the request to the builder for someone who runs the
+  app, or says who can. The analyst suggests improvements in Keel.
+- **The AI can ask why.** A check that comes out wrong carries a trace in the app's own terms: the rules on the list
+  and what each found, or which rule sets the field and what it was waiting for, with the record's values. The fix step
+  and the tools are given it.
+- **It starts from what works.** Recipes (app/builder/recipes.py) give owners' common needs, each with the Keel that
+  makes it, and every recipe compiles in the tests. Builds verified by the owner's own checks are added to them. The
+  builder is shown the closest few, matched by meaning.
+- **It builds to how it will be tried.** How each need beyond keeping records will be tried is written before what makes
+  it, and the behaviour step is shown it.
+- **What it builds scales with the business.** A formula that looks across a list is answered by the database where it
+  can be: narrowed by SQL, counted and added up there, with every record counted whoever is saving. Open: SQL that can
+  use indexes on large lists needs values normalised when they're saved (a typed copy of each field rules filter on).
+  The planner's exact JSON tests can't use an index today.
+- **The web layer is invisible to the AI.** FastAPI on Starlette serves the screens, REST and MCP. The tool schemas come
+  from the same Pydantic models as the language. The Flask-shaped kit (app/webkit) only exists so the old views kept
+  their code; moving those views onto FastAPI routes would remove it.
+
 **D10. Tenancy and cells.**
 - Row-level security as a second lock behind the code's workspace filters.
 - Per-tenant filtering in the vector index.
