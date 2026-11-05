@@ -8,9 +8,10 @@ change with one click. The AI runs on this computer through Ollama, so your reco
 ```
 brew install postgresql@18 pgvector    once: the database (PostgreSQL, with pgvector for the AI)
 ./start.sh setup      once: the platform's own PostgreSQL in data/postgres (port 5433), its address put in .env
-./start.sh            start it (http://localhost:5050), and its PostgreSQL; logs in data/logs
-./start.sh install    start it automatically when you log in to this Mac, and restart it if it stops
-./start.sh status | stop | backup | uninstall
+./start.sh            start it (http://localhost:5050), and its PostgreSQL: the web, and the worker beside it; logs in data/logs
+./start.sh install    start it automatically when you log in to this Mac, and restart it if it stops (one process)
+./start.sh status | restart | stop | backup | uninstall
+.venv/bin/python -m app.worker                               a worker of its own (as many as you like, on any computer)
 .venv/bin/python -m app.database import-sqlite data/erp.db   bring an app made before PostgreSQL across (once)
 .venv/bin/python -m app.tools reset-link you@example.com    a link to choose a new password
 .venv/bin/python -m pytest -q
@@ -130,10 +131,23 @@ complete list (36 field types, 8 views, 16 widgets, 9 triggers, 15 automation st
   combine both rankings, keep to what the person asking may see, and fall back to words alone if the embedding model is
   away. Fields kept to admins never go into the index, and when the design changes how records read (a field renamed,
   or kept from some people) they're read again.
-- **Automations, jobs and the worker:** one process runs the web server (waitress) and background threads for builder
-  turns, the assistant, jobs (imports, reading documents, discovery, AI fields), indexing for the AI, automations,
-  schedules, watching Microsoft 365, and daily backups. All work is in the database, and if the AI can't be reached, work waits and
+- **Automations, jobs and the worker:** the web (waitress) and the worker run as processes of their own, and more of
+  either can run at once (`./start.sh` starts one of each; `python run.py` alone, with `WORKER=1`, runs the worker's
+  threads inside the web for development). The worker does builder turns, the assistant, jobs (imports, reading
+  documents, discovery, AI fields), rule runs, the email and text outbox, indexing for the AI, and the scheduler's work
+  (schedules, connected apps, watching Microsoft 365, daily backups); `WORKER_KINDS`, `BUILDER_CONCURRENCY` and
+  `JOB_CONCURRENCY` say which and how many. All work is in the database, and if the AI can't be reached, work waits and
   retries (`app/worker.py`, `app/jobs.py`, `app/engine/automations.py`).
+  - Each item is claimed before it's worked on (`SELECT … FOR UPDATE SKIP LOCKED`, with a lease the worker renews while
+    it works), so nothing is done twice, and a process that stops leaves its work to the others once the lease runs out
+    (`app/leases.py`).
+  - Only the process holding a PostgreSQL advisory lock is the scheduler; if it stops, another takes over. Each
+    schedule's time is taken by one row in `schedule_run`, so it runs once, and only workspaces whose schedules are due
+    are read (`app/scheduler.py`).
+  - Emails and text messages a rule sends go into an outbox in the rule's own save; the worker delivers them, trying
+    again later if the mailbox can't be reached, and the run's history says what happened (`app/outbox.py`).
+  - The rules a save starts are found in an index of the design's rules (by list and trigger, per design version), and
+    sign-in and API rate limits are counted in PostgreSQL, so every web process shares them.
 - **Security:**
   - passwords hashed, and sign-ins limited after repeated wrong passwords (behind a proxy, set `TRUST_PROXY=1` so
     the limit counts the real address; otherwise forwarded addresses are ignored);
@@ -159,5 +173,4 @@ waiting on each other, and finding by meaning goes through an HNSW index rather 
 steps are:
 
 - moving filtering and sorting into the database (records are JSONB with a GIN index ready for it);
-- storing calculated values instead of working them out on each view;
-- running more worker processes.
+- storing calculated values instead of working them out on each view.

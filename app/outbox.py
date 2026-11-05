@@ -121,7 +121,7 @@ def _send_sms(ws, item):
         if callable(getattr(app, "send_sms", None)) and apps.connected(ws, app.key):
             app.send_sms(apps.creds(apps.connection(ws, app.key)), item.to, item.body or "")
             return _words(item, "sent")
-    raise OutboxProblem("no texting service is connected (Settings › Connections)")
+    raise OutboxProblem("no texting service is connected: connect one under Settings › Connections")
 
 
 SENDERS = {"email": _send_email, "sms": _send_sms}

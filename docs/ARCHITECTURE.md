@@ -138,7 +138,7 @@ Only 1 was the model's own judgment.
 | 3 | Patterns, each with its own checks; the registry, the generated catalog and schema, and the guard test | |
 | 4 | Checks language (given/when/then) and runner on the simulator; snapshots | |
 | 5 | Builder pipeline: needs → data → behaviour → compile → simulate → search → hand over; the chat turn moves onto it | |
-| 6 | Runtime: worker processes, SKIP LOCKED, scheduler leader, outbox, rule index | |
+| 6 | Runtime: worker processes, SKIP LOCKED, scheduler leader, outbox, rule index | done (`app/worker.py`, `leases.py`, `scheduler.py`, `outbox.py`); SMS waits for a `send_sms` step in the language and a texting service |
 | 7 | Queries in SQL: filters, sorts, search, paging, totals, unique and limit checks, imports | |
 | 8 | AI gateway: providers, priorities, fairness, deadlines | |
 | 9a | Core free of Flask: SQLAlchemy 2 sessions, settings object, context variables (engine, builder, lang, sim, runtime) | |
