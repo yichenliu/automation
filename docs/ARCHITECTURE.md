@@ -133,19 +133,20 @@ Only 1 was the model's own judgment.
 
 | # | Work | Status |
 |---|------|--------|
-| 1 | Simulation database: the engine runs on in-memory SQLite (models portable, migrations PG-only) | done (90700d5) |
-| 2 | Keel language: models, patches, compiler to the design, the app as the builder reads it, name and path checks | done (fa11576) |
-| 3 | Features with their own checks; the registry, generated catalog and schema, and the guard test | done: 12 features (fa11576, a83c605) |
-| 4 | Checks: told and not-equals expectations, numbers as arithmetic the platform works out, today+N dates, unsaved designs tried | done; snapshots not used yet |
-| 5 | Builder: needs → data → behaviour → checks → simulate → best of several fixes → need-by-need handover (default) | done (fa11576, b9040d7, a83c605); files attached still use the old builder |
-| 6 | Runtime: worker processes, SKIP LOCKED, scheduler leader, outbox, rule index | done (`app/worker.py`, `leases.py`, `scheduler.py`, `outbox.py`); SMS waits for a `send_sms` step in the language and a texting service |
+| 1 | Simulation database: the engine runs on in-memory SQLite (models portable, migrations PG-only) | done |
+| 2 | Keel language: models, patches, compiler to the design, the app as the builder reads it, name and path checks | done |
+| 3 | Features with their own checks; the registry, generated catalog and schema, and the guard test | done: 13 features (gate added) |
+| 4 | Checks: told and not-equals expectations, numbers as arithmetic, today±N dates in values and expectations, unsaved designs tried, a move tried by staff then made by the approver read as staff being stopped | done |
+| 5 | Builder: needs → data → behaviour → checks → simulate → best of several fixes → need-by-need handover | done, the default for every turn (files and records included); recovers from answers that run away; its calls are kept for training |
+| 6 | Runtime: worker processes, SKIP LOCKED, scheduler leader, outbox, rule index | done; SMS waits for a `send_sms` step and a texting service |
 | 7 | Queries in SQL: filters, sorts, search, paging, totals, unique and limit checks, imports | in progress |
-| 8 | AI gateway: providers, priorities, fairness, deadlines | done (0ae4c76) |
-| 9a | Core free of Flask: SQLAlchemy 2 sessions, settings object, context variables | after 6 and 7 land |
-| 9b | FastAPI: pages, sessions, CSRF, typed tools, MCP and REST v2, streaming | tools done and on MCP (7385153); FastAPI front next |
-| 9c | Flask removed | |
-| 10 | Tenancy: row-level security, vector filtering, object storage | |
-| 11 | Evals on the new builder | |
+| 8 | AI gateway: providers, priorities, fairness, deadlines | done |
+| 9a | Core free of Flask: plain SQLAlchemy 2 sessions (`core/database.py`), settings (`core/settings.py`), who is acting (`core/actor.py`) | done |
+| 9b | FastAPI: typed tools, MCP and REST v2, streaming | done; the pages are moving onto a Starlette web kit |
+| 9c | Flask removed | in progress, with 9b's pages |
+| 10 | Tenancy: row-level security (`core/tenancy.py`), per-workspace vector search, files in object storage | done; cells: an enterprise runs as a deployment of its own (its own database, workers and model servers), the same code |
+| 11 | Evals on the new builder | round 32 running on the same twelve businesses the old builder had |
+| 12 | Delete the old builder (`chat._work`, `prompts.SYSTEM`) | after the evals confirm the new one |
 
 ## Adding a feature
 
