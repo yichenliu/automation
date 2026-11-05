@@ -173,6 +173,35 @@ def test_the_analyst_suggests_less_checking_once_the_ai_has_earned_it(app, owner
     assert "checks it first" in automations.describe(Engine(ws), ws.blueprint["automations"][0])["flow"][0]["ways"][0]["steps"][0]["text"]
 
 
+def test_less_checking_of_one_of_a_rules_own_ai_steps_is_a_keel_change(app, owner):
+    _, ws = owner
+    _built(ws, COMPLAINTS + [{"op": "add_automation", "automation": {
+        "key": "sort", "name": "Sort complaints", "trigger": {"type": "record_created", "table": "complaints"},
+        "actions": [{"type": "update_record", "values": {"status": "New"}},
+                    {"type": "ai_fill", "field": "category", "instructions": "Which kind?", "review": "always", "reviewer": "admin",
+                     "only_if": [{"field": "customer", "op": "not_empty"}]}]}}])
+    run = Run(workspace_id=ws.id, automation="sort", name="Sort complaints", trigger="test", status="done", steps=[])
+    db.session.add(run)
+    db.session.flush()
+    for n in range(24):
+        db.session.add(Approval(workspace_id=ws.id, run_id=run.id, kind="review", step="1", status="done" if n else "rejected",
+                                proposal={"outcome": "right"}, message="Check"))
+    db.session.commit()
+    learning.TRUST_LOWER = 0.8
+    try:
+        learning.learn(ws, with_ai=False)
+    finally:
+        learning.TRUST_LOWER = 0.9
+    suggestion = Suggestion.query.filter_by(kind="ai_trust").one()
+    assert suggestion.ops == [{"do": "change_step", "rule": "sort", "at": 2, "step": {
+        "do": "ai_fill", "field": "category", "instructions": "Which kind?", "reviewer": "admin",
+        "only_if": [{"field": "customer", "op": "not_empty"}], "review": "when_unsure"}}]
+    before = ws.blueprint["automations"][0]
+    learning.apply(ws, suggestion, "Ethan")
+    after = ws.blueprint["automations"][0]
+    assert after["actions"][1] == {**before["actions"][1], "review": "when_unsure"} and after["actions"][0] == before["actions"][0]
+
+
 def test_the_builder_is_told_when_the_ai_works_alone_and_when_a_person_checks(app):
     from app.lang import model as m, registry
     said = registry.catalog(("step",))

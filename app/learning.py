@@ -111,7 +111,7 @@ def unused_fields(engine, history):
                     f"It's filled in on {filled} of the {len(rows)} {schema.lc(t['label'])} added since it was made, so it's only "
                     f"making the form longer. Its values are kept and it comes back if you undo.",
                     [f"Filled in on {filled} of {len(rows)} {schema.lc(t['label'])}"],
-                    [{"op": "remove_field", "table": t["key"], "key": f["key"]}]))
+                    [{"do": "remove_field", "list": t["key"], "field": f["key"]}]))
     return out
 
 
@@ -140,7 +140,7 @@ def text_to_choices(engine, history):
                    if any(len(c) > 1 for c in spellings.values()) else "")
                 + ". Picking from a list is quicker and keeps reports tidy.",
                 [f"{o}: {counts[o.lower()]} times" for o in options],
-                [{"op": "update_field", "table": t["key"], "key": f["key"], "changes": {"type": "select", "options": options}}],
+                [{"do": "change_field", "list": t["key"], "field": {"type": "choice", "key": f["key"], "label": f["label"], "options": options}}],
                 {"summary": f"These {len(options)} choices cover all {len(values)} values typed so far.", "fired": len(values), "matched": len(values)}))
     return out
 
@@ -175,7 +175,7 @@ def defaults(engine, history):
                     f"People chose “{shown}” on {n} of the {made[table]} {schema.lc(t['label'])} they added. Starting there saves "
                     f"a click every time; it can still be changed.",
                     [f"“{shown}” on {n} of {made[table]} new {schema.lc(t['label'])}"],
-                    [{"op": "update_field", "table": table, "key": key, "changes": {"default": json.loads(value)}}],
+                    [{"do": "set_field", "list": table, "field": key, "settings": {"default": json.loads(value)}}],
                     {"summary": f"Right for {n} of the last {made[table]} {schema.lc(t['label'])} ({round(100 * n / made[table])}%).",
                      "fired": made[table], "matched": n}))
     return out
@@ -230,7 +230,7 @@ def follow_ups(engine, history):
         if hits < 3 or hits / total < 0.6 or _has_automation(bp, table, key, value, creates=other):
             continue
         t, o = engine.tables[table], engine.tables[other]
-        values = {link: "{{record}}"}
+        values = [{"field": link, "formula": "record"}]
         for x in o["fields"]:  # what people copied from the record, or always typed: learnt from what they did
             if x["key"] == link or x["type"] not in schema.STORED or x["type"] == "autonumber":
                 continue
@@ -240,15 +240,17 @@ def follow_ups(engine, history):
                 copied = sum(1 for (c, _), v in zip(pairs, typed)
                              if v not in (None, "") and str(v) == str(((engine.get(c.record_id) or Record(data={})).data or {}).get(x["key"])))
                 if copied / len(pairs) >= 0.8:
-                    values[x["key"]] = f"{{{{record.{x['key']}}}}}"
+                    values.append({"field": x["key"], "formula": f"record.{x['key']}"})
                     continue
             common, n = Counter(json.dumps(v) for v in typed).most_common(1)[0]
-            if common != "null" and n / len(pairs) >= 0.8:
-                values[x["key"]] = json.loads(common)
-        f = schema.field(t, key)
-        automation = {"key": schema.slug(f"{t['singular']} {value} makes {o['singular']}")[:40].rstrip("_"), "name": f"{t['singular']} {value.lower()} → new {schema.lc(o['singular'])}",
-                      "trigger": {"type": "record_updated", "table": table}, "conditions": [{"field": key, "op": "changed_to", "value": value}],
-                      "actions": [{"type": "create_record", "table": other, "values": values}]}
+            if common != "null" and n / len(pairs) >= 0.8 and _plain(json.loads(common)):
+                values.append({"field": x["key"], "to": json.loads(common)})
+        patch = _rule(schema.slug(f"{t['singular']} {value} makes {o['singular']}")[:40].rstrip("_"),
+                      f"{t['singular']} {value.lower()} → new {schema.lc(o['singular'])}", {"on": "changed", "list": table, "field": key, "to": value},
+                      [{"do": "add", "list": other, "values": values}])
+        automation = _made(engine, patch)
+        if automation is None:
+            continue
         proof = backtest(engine, automation, history)
         out.append(Finding(
             "follow_up", f"makes:{table}.{key}={value}->{other}",
@@ -256,7 +258,7 @@ def follow_ups(engine, history):
             f"When a {schema.lc(t['singular'])} became {value}, someone created its {schema.lc(o['singular'])} by hand within half an hour "
             f"{hits} of {total} times. This does it for them, filled in the same way.",
             [f"{hits} of {total} times by hand", "Usually by " + ", ".join(sorted({c.by for c, _ in pairs})[:3])],
-            [{"op": "add_automation", "automation": automation}], proof))
+            [patch], proof))
     for (table, key, value, other_key), seen in filled.items():
         total = totals[(table, key, value)]
         common, n = Counter(json.dumps(s) for s in seen).most_common(1)[0]
@@ -265,17 +267,41 @@ def follow_ups(engine, history):
         t = engine.tables[table]
         f, g = schema.field(t, key), schema.field(t, other_key)
         new = json.loads(common)
-        automation = {"key": schema.slug(f"{t['singular']} {value} sets {g['label']}")[:40].rstrip("_"), "name": f"{t['singular']} {value.lower()} → {schema.lc(g['label'])}",
-                      "trigger": {"type": "record_updated", "table": table}, "conditions": [{"field": key, "op": "changed_to", "value": value}],
-                      "actions": [{"type": "update_record", "values": {other_key: new}}]}
+        if not _plain(new):
+            continue
+        patch = _rule(schema.slug(f"{t['singular']} {value} sets {g['label']}")[:40].rstrip("_"),
+                      f"{t['singular']} {value.lower()} → {schema.lc(g['label'])}", {"on": "changed", "list": table, "field": key, "to": value},
+                      [{"do": "set", "values": [{"field": other_key, "formula": "today()"} if new == "{{today()}}" else {"field": other_key, "to": new}]}])
+        automation = _made(engine, patch)
+        if automation is None:
+            continue
         what = "today's date" if new == "{{today()}}" else f"“{engine.display(g, new)}”"
         out.append(Finding(
             "follow_up", f"sets:{table}.{key}={value}->{other_key}",
             f"Fill in {g['label']} automatically when a {schema.lc(t['singular'])} becomes {value}",
             f"Straight after setting a {schema.lc(t['singular'])} to {value}, people set {g['label']} to {what} {n} of {total} times.",
-            [f"{n} of {total} times by hand"], [{"op": "add_automation", "automation": automation}],
-            backtest(engine, automation, history)))
+            [f"{n} of {total} times by hand"], [patch], backtest(engine, automation, history)))
     return out
+
+
+def _plain(value):
+    """A value a rule's step can fill in as it is (not a list of several choices)."""
+    return value is None or isinstance(value, (str, int, float, bool))
+
+
+def _rule(key, name, when, steps, only_if=None):
+    """A Keel language patch adding a rule."""
+    rule = {"key": key, "name": name, "when": when, "steps": steps}
+    if only_if:
+        rule["only_if"] = only_if
+    return {"do": "add_rule", "rule": rule}
+
+
+def _made(engine, patch):
+    """The rule an add_rule patch makes, as the design writes it (to try against what's happened), or None if it doesn't
+    fit the app as it is."""
+    key = schema.slug(patch["rule"]["key"])
+    return next((a for a in _new_rules(engine, [patch]) if a["key"] == key), None)
 
 
 def stuck(engine, history):
@@ -293,12 +319,12 @@ def stuck(engine, history):
         if len(quiet) < 5 or len(quiet) < 0.2 * len(rows):
             continue
         person = next((f for f in t["fields"] if f["type"] == "user" and not f.get("multiple")), None)
-        automation = {"key": schema.slug(f"nudge {t['label']}")[:40].rstrip("_"), "name": f"Nudge {schema.lc(t['label'])} that have gone quiet",
-                      "trigger": {"type": "schedule", "every": "day", "at": "08:00", "table": t["key"]},
-                      "conditions": [{"field": status["key"], "op": "one_of", "value": open_},
-                                     {"field": "updated_at", "op": "more_than_days_ago", "value": 7}],
-                      "actions": [{"type": "notify", "to": person["key"] if person else "admin",
-                                   "message": f"{{{{record}}}} has been {{{{record.{status['key']}}}}} for over a week with nothing happening"}]}
+        patch = _rule(schema.slug(f"nudge {t['label']}")[:40].rstrip("_"), f"Nudge {schema.lc(t['label'])} that have gone quiet",
+                      {"on": "every", "list": t["key"], "period": "day", "at": "08:00"},
+                      [{"do": "notify", "who": person["key"] if person else "admin",
+                        "message": f"{{{{record}}}} has been {{{{record.{status['key']}}}}} for over a week with nothing happening"}],
+                      only_if=[{"field": status["key"], "op": "one_of", "value": open_},
+                               {"field": "updated_at", "op": "more_than_days_ago", "value": 7}])
         worst = sorted(quiet, key=lambda r: r.updated_at or r.created_at)[:3]
         out.append(Finding(
             "stuck", f"stuck:{t['key']}",
@@ -306,7 +332,7 @@ def stuck(engine, history):
             f"{_plural(len(quiet), schema.lc(t['singular']), schema.lc(t['label']))} have sat in an open stage for over two weeks "
             f"without a change. A morning reminder after a week stops them being forgotten.",
             [f"{engine.title(r)}: {engine.display(status, (r.data or {}).get(status['key']))} since {(r.updated_at or r.created_at):%-d %b}" for r in worst],
-            [{"op": "add_automation", "automation": automation}],
+            [patch],
             {"summary": f"It would remind about {_plural(len(quiet), schema.lc(t['singular']), schema.lc(t['label']))} today.", "fired": len(quiet), "matched": len(quiet)}))
     return out
 
@@ -344,17 +370,67 @@ def ai_trust(engine, history):
             what = automations.describe_action(engine, a, {k: v for k, v in step.items() if k not in ("review", "reviewer")})
             record = f"Checked {r['checked']} times: right {r['right']}, corrected {r['corrected']}, wrong {r['wrong']}"
             if mode == "always" and r["checked"] >= TRUST_AFTER and r["lower"] >= TRUST_LOWER:
-                out.append(Finding("ai_trust", f"ai_trust:{a['key']}:{at}:when_unsure", f"Let the AI work on its own in “{a['name']}” when it's sure",
-                                   f"People have checked its work {r['checked']} times and it was right {r['right']} times "
-                                   f"({round(100 * r['share'])}%). It would still ask a person whenever it isn't sure, and a person would "
-                                   f"still check 1 in 10 of the rest.", [what, record],
-                                   [{"op": "update_automation", "automation": automations.with_review(a, at, "when_unsure")}]))
+                change = _checking(engine.bp, a, at, "when_unsure")
+                if change:
+                    out.append(Finding("ai_trust", f"ai_trust:{a['key']}:{at}:when_unsure", f"Let the AI work on its own in “{a['name']}” when it's sure",
+                                       f"People have checked its work {r['checked']} times and it was right {r['right']} times "
+                                       f"({round(100 * r['share'])}%). It would still ask a person whenever it isn't sure, and a person would "
+                                       f"still check 1 in 10 of the rest.", [what, record], change))
             elif mode != "always" and r["checked"] >= 10 and r["share"] < 0.8:
-                out.append(Finding("ai_trust", f"ai_trust:{a['key']}:{at}:always", f"Have a person check everything the AI does in “{a['name']}”",
-                                   f"Of the {r['checked']} times people checked its work, they had to fix {r['checked'] - r['right']}. "
-                                   f"Until it does better, a person should check every one.", [what, record],
-                                   [{"op": "update_automation", "automation": automations.with_review(a, at, "always")}]))
+                change = _checking(engine.bp, a, at, "always")
+                if change:
+                    out.append(Finding("ai_trust", f"ai_trust:{a['key']}:{at}:always", f"Have a person check everything the AI does in “{a['name']}”",
+                                       f"Of the {r['checked']} times people checked its work, they had to fix {r['checked'] - r['right']}. "
+                                       f"Until it does better, a person should check every one.", [what, record], change))
     return out
+
+
+AI_SAID = {"ai_fill": "ai_fill", "ai_extract": "ai_extract", "ai_create_record": "ai_create", "ai_check": "ai_check"}
+
+
+def _said_step(step, mode):
+    """An AI step of a rule as the Keel language says it, its work checked by a person as `mode` says."""
+    kind = step["type"]
+    if kind == "ai_fill":
+        out = {"field": step["field"], "instructions": step["instructions"]}
+        out.update({k: True for k in ("read_files", "use_knowledge") if step.get(k)})
+        if step.get("reviewer") and mode != "never":
+            out["reviewer"] = step["reviewer"]
+    elif kind == "ai_extract":
+        out = {"source": step["from"], "fields": step.get("fields") or []}
+    elif kind == "ai_create_record":
+        out = {"list": step["table"], "instructions": step.get("instructions") or ""}
+    else:
+        out = {"field": step["field"], "instructions": step["instructions"]}
+    for k in ("instructions", "attach_to", "notes_field"):
+        if step.get(k) and k not in out:
+            out[k] = step[k]
+    if step.get("only_if"):
+        out["only_if"] = [c["formula"] if "formula" in c else {k: c[k] for k in ("field", "op", "value") if k in c} for c in step["only_if"]]
+    return {"do": AI_SAID[kind], **out, "review": mode}
+
+
+def _checking(bp, a, at, mode):
+    """The change that has a person check an AI step's work as `mode` says. A Keel change_step whenever the language says
+    the step exactly as it is; an AI step it can't reach (inside a branch or an approval's "if turned down", in a rule an
+    email starts) or that has settings it has no words for (what else it reads, a team checking an extraction) is changed
+    by the design's own update_automation: the one change the analyst still makes outside the language."""
+    from .engine import automations
+    from .lang import apply as apply_patches
+    wanted = automations.with_review(a, at, mode)
+    if wanted is None:
+        return None
+    step = schema.step_at(a["actions"], at)
+    if str(at).isdigit() and step is not None and step["type"] in AI_SAID:
+        try:
+            patch = {"do": "change_step", "rule": a["key"], "at": int(at) + 1, "step": _said_step(step, mode)}
+        except KeyError:
+            patch = None
+        if patch is not None:
+            made = apply_patches(bp, [patch])
+            if not made.problems and next((x for x in made.blueprint.get("automations", []) if x["key"] == a["key"]), None) == wanted:
+                return [patch]
+    return [{"op": "update_automation", "automation": wanted}]
 
 
 def questions(engine, days=60):
@@ -654,13 +730,20 @@ def learn(workspace, with_ai=True):
     return fresh
 
 
+OLD_FORM = "it was worked out before your analyst wrote its suggestions in the Keel language"
+
+
 def _fitted(bp, changes):
-    """A suggestion's changes applied to a design (not saved): the analyst's are Keel language patches, the platform's
-    own detectors' design ops. Either way, the result's blueprint, changes and problems."""
-    if any(isinstance(x, dict) and "do" in x for x in changes or []):
-        from .lang import apply as apply_patches
-        return apply_patches(bp or {}, changes)
-    return ops.apply(bp, changes)
+    """A suggestion's changes applied to a design (not saved): Keel language patches, the analyst's and its detectors'
+    alike. The one exception is how much a person checks an AI step the language can't reach (see _checking): that is the
+    design's own update_automation, applied exactly. Either way, the result's blueprint, changes and problems."""
+    from .lang import Outcome, apply as apply_patches
+    changes = list(changes or [])
+    if changes and all(isinstance(x, dict) and x.get("op") == "update_automation" for x in changes):
+        return ops.apply(bp, changes, already=ops.wrong_already(bp), strict=True)
+    if not all(isinstance(x, dict) and "do" in x for x in changes):  # kept from before: worked out again on the next look
+        return Outcome(blueprint=bp, problems=[OLD_FORM])
+    return apply_patches(bp or {}, changes)
 
 
 def apply(workspace, suggestion, by):
@@ -671,6 +754,8 @@ def apply(workspace, suggestion, by):
     if result.problems:
         suggestion.status = "stale"
         db.session.commit()
+        if result.problems == [OLD_FORM]:
+            raise ValueError("This was worked out the old way, so it's been put aside; if it still fits, your analyst will suggest it again on its next look.")
         raise ValueError("The design has changed since this was suggested, so it no longer fits: " + "; ".join(result.problems[:3]))
     number = chat.save_version(workspace, result.blueprint, result.changes, "improvement", by=by)
     suggestion.status, suggestion.version_after, suggestion.decided_at = "applied", number, utcnow()

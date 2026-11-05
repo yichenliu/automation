@@ -61,17 +61,18 @@ def test_the_analyst_learns_from_how_the_erp_is_used(busy):
     fax = by["unused:jobs.fax"]
     assert "0 of the 24 jobs" in fax.why
     region = by["choices:jobs.region"]
-    assert region.ops[0]["changes"]["options"] == ["North", "South", "East"] and "spelt differently" in region.why
+    assert region.ops[0]["field"]["options"] == ["North", "South", "East"] and "spelt differently" in region.why
+    assert all("do" in s.ops[0] for s in fresh)  # every suggestion is written in the Keel language
     priority = by['default:jobs.priority="Normal"']
     assert "21 of the 24" in priority.why or "of the 24" in priority.why
     invoice = by["makes:jobs.status=Done->invoices"]
     assert "by hand within half an hour 10 of 12 times" in invoice.why
     assert invoice.proof["fired"] == 12 and invoice.proof["matched"] == 10
-    automation = invoice.ops[0]["automation"]
-    assert automation["actions"][0]["values"]["job"] == "{{record}}" and automation["actions"][0]["values"]["amount"] == "{{record.amount}}"
-    assert automation["actions"][0]["values"]["status"] == "Draft"  # always made as a draft by hand
+    values = {v["field"]: v for v in invoice.ops[0]["rule"]["steps"][0]["values"]}
+    assert values["job"] == {"field": "job", "formula": "record"} and values["amount"] == {"field": "amount", "formula": "record.amount"}
+    assert values["status"] == {"field": "status", "to": "Draft"}  # always made as a draft by hand
     paid = by["sets:jobs.paid=Paid->paid_on"]
-    assert paid.ops[0]["automation"]["actions"][0]["values"] == {"paid_on": "{{today()}}"}
+    assert paid.ops[0]["rule"]["steps"][0]["values"] == [{"field": "paid_on", "formula": "today()"}]
     stuck = by["stuck:jobs"]
     assert "8 jobs have sat" in stuck.why
     assert Notification.query.filter(Notification.text.contains("new suggestion")).count() == 1

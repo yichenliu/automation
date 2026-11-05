@@ -4,10 +4,11 @@ import json
 
 import pytest
 
-from app.blueprint import modules, ops, schema
+from app.blueprint import modules, schema
 from app.builder import trial
 from app.engine.records import Engine
 from app.models import FlowRun, Workspace
+from app.web.workspaces import with_parts
 
 from .conftest import login
 from .test_wave2 import _as, _person
@@ -16,7 +17,8 @@ from .test_wave2 import _as, _person
 @pytest.mark.parametrize("keys", [["inventory"], ["orders"], ["procurement"], ["production"], list(modules.MODULES)])
 def test_each_part_alone_and_together_is_sound_and_tried_out(app, owner, keys):
     _, ws = owner
-    result = ops.apply(ws.blueprint, modules.ops_for(keys))
+    assert all("do" in p for p in modules.ops_for(keys))  # written in the Keel language
+    result = with_parts(ws.blueprint, keys)
     assert not result.problems, result.problems
     ws.blueprint = result.blueprint
     walked, _ = trial.try_out(ws, [], screens=True)
@@ -73,7 +75,7 @@ def test_stock_moves_through_buying_selling_making_and_counting(app, client, own
 
 def test_parts_are_added_to_an_app_that_has_some_already(app, client, owner):
     user, ws = owner
-    result = ops.apply(ws.blueprint, modules.ops_for(["orders"]))
+    result = with_parts(ws.blueprint, ["orders"])
     from app.builder import chat
     chat.save_version(ws, result.blueprint, result.changes, "parts", by=user.id)
     login(client)
@@ -84,3 +86,14 @@ def test_parts_are_added_to_an_app_that_has_some_already(app, client, owner):
     assert {"count_done", "shipped_takes_stock", "return_received"} <= keys  # what joins them comes too
     assert "on_hand" in {f["key"] for f in schema.table(ws.blueprint, "products")["fields"]}
     assert not schema.check(ws.blueprint)
+
+
+def test_a_big_purchase_order_is_approved_by_someone_else_and_goes_back_to_draft_if_turned_down(app, owner):
+    _, ws = owner
+    bp = with_parts(ws.blueprint, ["procurement"]).blueprint
+    ask = next(a for a in bp["automations"] if a["key"] == "approve_po")["actions"][0]
+    assert ask["type"] == "request_approval" and ask["not_by"] == ["creator"]
+    assert ask["if_rejected"] == [{"type": "update_record", "values": {"status": "Draft"}}]
+    moves = schema.table(bp, "purchase_orders")["workflow"]["transitions"]
+    assert not any(mv["to"] == "Approved" for mv in moves)  # only the approval puts it there, never a button
+    assert schema.table(bp, "po_lines")["title_field"] == "purchase_order" and schema.table(bp, "purchase_orders")["views"][0]["columns"][:2] == ["number", "supplier"]
