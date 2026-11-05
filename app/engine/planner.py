@@ -614,6 +614,25 @@ class Planner:
         test = _sure(_any(and_(v.string(), _any(named, v.foreign(), nameless)), _not(v.string())))
         return db.session.query(Record).filter(*live(self.e, self.table), test).order_by(Record.id).all()
 
+    def coded(self, codes, wanted):
+        """A test finding at least every record one of whose codes (a barcode, a number such as INV-0042) may read as
+        `wanted`, as Engine.by_code reads them: kept as text, or shown with what goes before and after it."""
+        tests = []
+        for f in codes:
+            if not KEY.match(f["key"]) or f.get("sensitive"):
+                return True
+            v = self.value(f["key"])
+            before, after = (f.get("before") or "").lower(), (f.get("after") or "").lower()
+            said = {wanted}
+            if (before or after) and wanted.startswith(before) and wanted.endswith(after) and len(wanted) >= len(before) + len(after):
+                said.add(wanted[len(before):len(wanted) - len(after)])  # what's kept, when it's shown as "SKU-" + it
+            numbers = [n for n in (to_number(s) for s in said) if n is not None]
+            tests.append(_any(and_(v.string(), _any(v.norm().in_(sorted(said)), v.low().in_(sorted(said)), v.foreign())),
+                              _all(v.number(), v.num.in_(numbers)) if numbers else False,
+                              v.boolean() if said & {"true", "false"} else False,
+                              _any(v.array(), v.object()) if any(s[:1] in ("[", "{") and s for s in said) else False))
+        return _sure(_any(*tests))
+
     # --- who sees which records ---------------------------------------------------------------------------------------
     def access(self):
         """(yes, maybe) for the records this person may see (Engine.visible_rows), or None when only Python can tell (a

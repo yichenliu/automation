@@ -287,7 +287,7 @@ class Engine:
         self.base_currency = (money.get("base") or "").upper() or currency_for(str(tz))  # unset: the one where the business is
         self.rates = {str(k).upper(): float(v) for k, v in (money.get("rates") or {}).items() if to_number(v)}
         self._rows, self._by_id, self._memo, self._index, self._computing, self._seals = {}, {}, {}, {}, set(), {}
-        self._kids, self._near, self._titled, self._misses = {}, {}, {}, {}  # lines fetched per parent, the records being shown
+        self._kids, self._near, self._titled, self._misses, self._queried = {}, {}, {}, {}, {}  # lines per parent, what is shown
         self.started = []  # automation runs this engine started (so a screen can say what ran)
         self._members, self._files, self._sources = None, {}, None
         self._depth, self._after, self._touched, self._failed = 0, [], set(), False
@@ -440,7 +440,9 @@ class Engine:
             if t.get("embedded"):
                 continue
             codes = [f for f in t["fields"] if f["type"] in ("barcode", "autonumber")]
-            for r in self.visible_rows(t["key"]):
+            if not codes and not names:
+                continue  # nothing here it could be
+            for r in self._coded(t, codes, wanted, names):
                 said = {str((r.data or {}).get(f["key"]) or "").strip().lower() for f in codes} | \
                     {self.display(f, (r.data or {}).get(f["key"])).lower() for f in codes} | ({self.title(r).strip().lower()} if names else set())
                 if wanted in said:
@@ -448,6 +450,23 @@ class Engine:
             if len(found) > 1:
                 return None
         return found[0] if found else None
+
+    def _coded(self, t, codes, wanted, names):
+        """The records of t this person may see whose code (or with `names`, name) may be `wanted`: found by SQL, a
+        superset by_code checks one by one; the whole table when SQL can't read it."""
+        plan = self._sql_plan(t["key"])
+        if plan is None or plan.access is None:
+            return self.visible_rows(t["key"])
+        from .planner import _sql
+        test = _sql(plan.planner.coded(codes, wanted))
+        rows = {r.id: r for r in db.session.query(Record).filter(*plan.where, test).order_by(Record.id)}
+        if names:  # its name has what was typed in it (stripped, it may be all of it)
+            seen = plan.planner.access()[1]
+            rows.update({r.id: r for r in plan.planner.titled(wanted, True) if seen is True or self.allowed(r)})
+        found = [rows[i] for i in sorted(rows)]
+        for r in found:
+            self._by_id[r.id] = r
+        return found
 
     def visible_rows(self, table):
         rows = self.rows(table)
@@ -462,7 +481,7 @@ class Engine:
     def reset(self):
         self._rows, self._by_id, self._memo, self._index, self._files = {}, {}, {}, {}, {}
         self._seals, self._asked_ids = {}, None
-        self._kids, self._near, self._titled, self._misses, self._dirty = {}, {}, {}, {}, set()
+        self._kids, self._near, self._titled, self._misses, self._queried, self._dirty = {}, {}, {}, {}, {}, set()
 
     def _forget(self, tables):
         """After a write that isn't committed yet (inside atomic()): only what was read from the tables written is read
@@ -476,7 +495,7 @@ class Engine:
                     del kept[key]
             for key in [k for k in self._titled if k[0] == table]:
                 del self._titled[key]
-        self._memo, self._files, self._seals, self._asked_ids = {}, {}, {}, None
+        self._memo, self._files, self._seals, self._asked_ids, self._queried = {}, {}, {}, None, {}
         self._dirty = set()
 
     def _sql_plan(self, table, filters=None, q=None, sort=None):
@@ -508,7 +527,12 @@ class Engine:
         from .planner import UNSURE
         plan = self._sql_plan(table, filters, q)
         got = plan.total(aggregate, key) if plan is not None else UNSURE
-        return self.aggregate(self.query(table, filters, q=q), aggregate, key) if got is UNSURE else got
+        if got is not UNSURE:
+            return got
+        asked = (table, repr(filters), q)  # a list's worked-out columns totalled one after another: its records read once
+        if asked not in self._queried:
+            self._queried[asked] = self.query(table, filters, q=q)
+        return self.aggregate(self._queried[asked], aggregate, key)
 
     def neighbours(self, table, record):
         """The records before and after this one among those this person may see, in the order they were added, and where

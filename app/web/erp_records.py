@@ -156,7 +156,17 @@ def table(wid, table):
     if request.args.get("sort") and schema.field(t, request.args["sort"]) or request.args.get("sort") in ("created_at", "updated_at"):
         sort = {"field": request.args["sort"], "dir": "desc" if request.args.get("dir") == "desc" else "asc"}
     q = request.args.get("q", "")
-    rows = engine.query(t["key"], filters, q=q, sort=sort)
+    kind = view["type"]
+    listing = kind not in ("board", "calendar", "gallery", "timeline", "map", "tree", "inbox", "sheet")
+    group_field = schema.field(t, request.args.get("group") or view.get("group_by") or "") if listing else None
+    page = max(int(request.args.get("page", 1)) if str(request.args.get("page", "1")).isdigit() else 1, 1)
+    first = PAGE_SIZE if listing else {"gallery": 200, "inbox": 300, "sheet": 500}.get(kind)
+    if first and group_field is None:  # a page of a list: only what's shown is read (engine.page), the count from SQL
+        offset = (page - 1) * PAGE_SIZE if listing else 0
+        rows, total = engine.page(t["key"], filters, q=q, sort=sort, offset=offset, limit=first)
+    else:  # a board, a calendar, a map, a grouped list: every record has its place
+        rows = engine.query(t["key"], filters, q=q, sort=sort)
+        total = len(rows)
     filterable = [f for f in t["fields"] if f["type"] in ("select", "link", "checkbox", "user")][:4]
     choices = {}
     for f in filterable:
@@ -167,13 +177,12 @@ def table(wid, table):
         elif f["type"] == "user":
             choices[f["key"]] = [(n, n) for n in engine.members().values()]
         else:
-            choices[f["key"]] = [(engine.title(r), engine.title(r)) for r in engine.visible_rows(f["table"])][:300]
+            choices[f["key"]] = [(engine.title(r), engine.title(r)) for r in engine.page(f["table"], limit=300)[0]]
     from ..models import SavedView
     mine = SavedView.query.filter_by(workspace_id=ws.id, user_id=current_user.id, table=t["key"]).order_by(SavedView.id).all()
-    common = dict(ws=ws, e=engine, t=t, views=views, view=view, total=len(rows), quick=quick, q=q, filterable=filterable, mine=mine,
+    common = dict(ws=ws, e=engine, t=t, views=views, view=view, total=total, quick=quick, q=q, filterable=filterable, mine=mine,
                   here_query=request.query_string.decode()[:1000],
                   choices=choices, args={"view": view["key"], "q": q or None, **{f"f_{k}": v for k, v in quick.items()}})
-    kind = view["type"]
     if kind == "board":
         group = schema.field(t, view["group_by"])
         lanes = [{"value": o, "label": o, "rows": []} for o in group["options"]] + [{"value": "", "label": f"No {schema.lc(group['label'])}", "rows": []}]
@@ -189,7 +198,7 @@ def table(wid, table):
     if kind == "gallery":
         image = schema.field(t, view.get("image_field") or "") or next((f for f in t["fields"] if f["type"] == "image"), None)
         card_fields = [f for f in columns(t, view) if f["key"] != t.get("title_field") and f["type"] not in schema.FILES][:4]
-        return render_template("app/gallery.html", rows=rows[:200], image=image, card_fields=card_fields, **common)
+        return render_template("app/gallery.html", rows=rows, image=image, card_fields=card_fields, **common)
     if kind == "timeline":
         return render_template("app/timeline.html", **common, **_timeline(engine, t, view, rows))
     if kind == "map":
@@ -197,21 +206,22 @@ def table(wid, table):
     if kind == "tree":
         return render_template("app/tree.html", **common, **_tree(engine, t, view, rows))
     if kind == "inbox":  # the list beside the open record, worked through one after another
-        shown = rows[:300]
+        shown = rows
         wanted = request.args.get("open", "")
         opened = next((r for r in shown if str(r.id) == wanted), shown[0] if shown else None)
         line = [f for f in columns(t, view) if f["key"] != t.get("title_field") and f["type"] not in schema.FILES][:2]
         stage = schema.field(t, (t.get("workflow") or {}).get("field") or "")
-        return render_template("app/inbox.html", rows=shown, opened=opened, line=line, stage=stage, more=max(len(rows) - 300, 0), **common)
+        return render_template("app/inbox.html", rows=shown, opened=opened, line=line, stage=stage, more=max(total - 300, 0), **common)
     if kind == "sheet":
         cols = [f for f in columns(t, view) if f["type"] not in schema.FILES]
-        return render_template("app/sheet.html", rows=rows[:500], columns=cols, editable=SHEET, more=max(len(rows) - 500, 0),
+        return render_template("app/sheet.html", rows=rows, columns=cols, editable=SHEET, more=max(total - 500, 0),
                                options=_options(engine, t), **common)
-    page = max(int(request.args.get("page", 1)) if str(request.args.get("page", "1")).isdigit() else 1, 1)
-    shown = rows[(page - 1) * PAGE_SIZE: page * PAGE_SIZE]
+    shown = rows
     cols = columns(t, view)
-    totals = {f["key"]: engine.aggregate(rows, "sum", f["key"]) for f in cols if engine.summable(f)}
-    group_field = schema.field(t, request.args.get("group") or view.get("group_by") or "")
+    if group_field is None:  # the whole list's totals: SQL's sums of kept amounts, worked-out ones added up here
+        totals = {f["key"]: engine.total(t["key"], "sum", f["key"], filters, q=q) for f in cols if engine.summable(f)}
+    else:
+        totals = {f["key"]: engine.aggregate(rows, "sum", f["key"]) for f in cols if engine.summable(f)}
     groups = None
     if group_field is not None:  # grouped under headings, each with its count and subtotals
         from .erp_pages import _label
@@ -226,7 +236,7 @@ def table(wid, table):
     return render_template("app/table.html", rows=shown, columns=cols, sort=sort, page=page, totals=totals, groups=groups,
                            group_field=group_field, groupable=[f for f in t["fields"] if f["type"] in ("select", "link", "user", "checkbox", "date", "multi_select", "tags")],
                            tints={r.id: engine.colours(t, r) for r in shown} if t.get("colors") else {},
-                           pages=max(1, -(-len(rows) // PAGE_SIZE)), inline=INLINE, **common)
+                           pages=max(1, -(-total // PAGE_SIZE)), inline=INLINE, **common)
 
 
 def _map(engine, t, view, rows):
@@ -589,7 +599,7 @@ def record(wid, table, rid):
         if need and all(f["type"] in FILLABLE and engine.sees(f) for f in need) and not engine.move_problem(t, r, m, filled=True):
             fills[i] = [{"f": f, "options": (engine.choices(t, f, r) if f.get("options_by") else f.get("options")) if f["type"] == "select"
                          else list(engine.members().items()) if f["type"] == "user"
-                         else [(x.id, engine.title(x)) for x in engine.visible_rows(f["table"])[:500]] if f["type"] == "link" else None}
+                         else [(x.id, engine.title(x)) for x in engine.page(f["table"], limit=500)[0]] if f["type"] == "link" else None}
                         for f in need]
     moves = sorted(((i, m, None if i in fills else problem) for i, m, problem in moves), key=lambda x: schema.says_no(x[1]["to"]))
     hidden = engine.sealed_from_me(r)
@@ -602,10 +612,7 @@ def record(wid, table, rid):
     locked = engine.locked(r)
     from ..models import Follow
     following = Follow.query.filter_by(user_id=current_user.id, record_id=r.id).first() is not None
-    order = [x.id for x in engine.visible_rows(t["key"])]
-    at = order.index(r.id) if r.id in order else -1
-    neighbours = {"prev": order[at - 1] if at > 0 else None, "next": order[at + 1] if 0 <= at < len(order) - 1 else None,
-                  "at": at + 1, "of": len(order)}
+    neighbours = engine.neighbours(t["key"], r)  # the one before and after it, from SQL
     live = [p for p in schema.portals(engine.bp) if p.get("enabled", True)]
     own = next((p for p in live if p["table"] == t["key"]), None)  # a client: who of theirs is in the client portal
     portal = own or next((p for p in live if t.get("portal") and schema.portal_shows(engine.tables, t, p["table"])), None)
@@ -812,7 +819,7 @@ def _options(engine, t, extra_tables=()):
         for f in table_["fields"]:
             if f["type"] == "link" and f["table"] in engine.tables and f["key"] not in out:
                 target = engine.tables[f["table"]]
-                rows = engine.query(f["table"], sort={"field": schema.title_field(target), "dir": "asc"})[:1000]
+                rows = engine.page(f["table"], sort={"field": schema.title_field(target), "dir": "asc"}, limit=1000)[0]
                 out[f["key"]] = [(x.id, engine.title(x)) for x in rows]
                 parent = next((g for g in table_["fields"] if g["type"] == "link" and not (engine.tables.get(g["table"]) or {}).get("embedded")), None)
                 fills = schema.fill_from(table_, f, target) if table_.get("embedded") and f is not parent else {}

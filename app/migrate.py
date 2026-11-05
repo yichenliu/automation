@@ -18,8 +18,15 @@ STEPS = [
 ALWAYS = [
     "CREATE EXTENSION IF NOT EXISTS vector",
     "CREATE INDEX IF NOT EXISTS ix_chunk_words ON chunk USING gin (words)",
-    "CREATE INDEX IF NOT EXISTS ix_record_data ON record USING gin (data jsonb_path_ops)",
+    # records found by what's in them: containment (data @> '{"customer": 12}') for a record's lines and the like, with
+    # the default jsonb_ops (it also answers "has this key"). The jsonb_path_ops index of that name, which no query used,
+    # is dropped if it's still there (only then: a GIN index over millions of records isn't remade at every start).
+    "DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'ix_record_data' AND indexdef LIKE '%jsonb_path_ops%') "
+    "THEN DROP INDEX IF EXISTS ix_record_data; END IF; END $$",
+    "CREATE INDEX IF NOT EXISTS ix_record_data ON record USING gin (data)",
     "CREATE INDEX IF NOT EXISTS ix_record_ws_table_live ON record (workspace_id, \"table\") WHERE deleted_at IS NULL",
+    # a page of a list in the order records were added (LIMIT/OFFSET), and the record before and after one
+    "CREATE INDEX IF NOT EXISTS ix_record_ws_table_id_live ON record (workspace_id, \"table\", id) WHERE deleted_at IS NULL",
 ]
 
 

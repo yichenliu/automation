@@ -7,6 +7,8 @@ in", a sum). As a source record is added, changed, deleted or brought back, its 
 combined list like any other (views, filters, charts, totals, exports, the API) but never change it by hand: they change
 the lists it comes from. Each combined record remembers where it came from ("_from": "<arm>:<table>:<id>").
 """
+import json
+
 from flask import current_app
 
 from ..extensions import db
@@ -37,8 +39,14 @@ def _maker(engine):
 
 
 def _one(ws_id, table, tag):
-    return (Record.query.filter(Record.workspace_id == ws_id, Record.table == table, Record.deleted_at.is_(None),
-                                Record.data[FROM].as_string() == tag).first())
+    """The combined record made from a source record, found by its "_from" tag. On PostgreSQL by containment, which the
+    GIN index on record data answers without reading the whole combined list; the simulator compares the tag itself."""
+    found = Record.data[FROM].as_string() == tag
+    if db.session.get_bind().dialect.name == "postgresql":
+        from sqlalchemy import cast, literal
+        from sqlalchemy.dialects.postgresql import JSONB
+        found = Record.data.op("@>")(cast(literal(json.dumps({FROM: tag})), JSONB))
+    return Record.query.filter(Record.workspace_id == ws_id, Record.table == table, Record.deleted_at.is_(None), found).first()
 
 
 def _values(engine, arm, record):

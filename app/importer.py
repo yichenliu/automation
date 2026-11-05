@@ -15,6 +15,7 @@ from .models import File, Workspace
 from .storage import path_of
 
 IMPORTABLE = schema.STORED - {"autonumber"}
+BATCH = 200  # rows committed together: a lot at a time, not row by row (each row still goes in whole or not at all)
 
 
 def _norm(text):
@@ -117,49 +118,51 @@ def _run(job):
             value = (r.data or {}).get(match_on)
             if value not in (None, ""):
                 existing[str(value).strip().lower()] = r
-    for number, row in enumerate(rows, start=2):
-        cell = lambda i: row[i] if i < len(row) and row[i] not in (None, "") else None  # noqa: E731
-        data = {key: cell(i) for i, key in columns if cell(i) is not None}
-        if not data:
-            continue
-        try:
-            with engine.atomic():  # a row's order, its new customer and its line go in together or not at all
-                for key, parts in linked.items():  # the customer named on the row: found, or added with its details
-                    if data.get(key) is not None:
-                        data[key], new = _linked(engine, engine.field(table, key), data[key], {k: cell(i) for i, k in parts if cell(i) is not None})
-                        if new is not None:
-                            made_linked.add((new.table, new.id))
-                group = str(data.get(match_on) or data.get(title) or "").strip().lower() if lines else ""
-                parent = parents.get(group) if group else None  # a sheet with a row per line: one order, several lines
-                found = existing.get(str(data.get(match_on, "")).strip().lower()) if match_on and data.get(match_on) not in (None, "") else None
-                if parent is not None:
-                    pass
-                elif found is not None:
-                    parent = found
-                    if engine.update(found, data, automations=False):
-                        updated += 1
-                else:
-                    parent = engine.create(table, data, automations=False, ai=False, keep_numbers=True)
-                    if match_on and data.get(match_on) not in (None, ""):
-                        existing[str(data[match_on]).strip().lower()] = parent
-                    added += 1
-                if group:
-                    parents[group] = parent
-                for child, (via, parts) in lines.items():
-                    values = {k: cell(i) for i, k in parts if cell(i) is not None}
-                    for k in list(values):  # the product on the line: found, or added
-                        f = engine.field(child, k)
-                        if f is not None and f["type"] == "link" and not f.get("multiple"):
-                            values[k], new = _linked(engine, f, values[k], {})
+    def progress():
+        jobs.stage(job, f"Imported {added + updated} of {total} rows", 10 + 85 * (added + updated + len(errors)) / max(total, 1))
+
+    with engine.batch(BATCH, committed=progress):  # committed a lot at a time, what's been read kept from row to row
+        for number, row in enumerate(rows, start=2):
+            cell = lambda i: row[i] if i < len(row) and row[i] not in (None, "") else None  # noqa: E731
+            data = {key: cell(i) for i, key in columns if cell(i) is not None}
+            if not data:
+                continue
+            try:
+                with engine.atomic():  # a row's order, its new customer and its line go in together or not at all (a savepoint)
+                    for key, parts in linked.items():  # the customer named on the row: found, or added with its details
+                        if data.get(key) is not None:
+                            data[key], new = _linked(engine, engine.field(table, key), data[key], {k: cell(i) for i, k in parts if cell(i) is not None})
                             if new is not None:
                                 made_linked.add((new.table, new.id))
-                    if values:
-                        engine.create(child, {**values, via: parent.id}, automations=False, ai=False)
-                        line_count += 1
-        except FieldErrors as exc:
-            errors.append({"row": number, "problem": "; ".join(f"{(engine.field(table, k) or {'label': k})['label']}: {v}" for k, v in exc.errors.items())})
-        if (added + updated + len(errors)) % 25 == 0:
-            jobs.stage(job, f"Imported {added + updated} of {total} rows", 10 + 85 * (added + updated + len(errors)) / max(total, 1))
+                    group = str(data.get(match_on) or data.get(title) or "").strip().lower() if lines else ""
+                    parent = parents.get(group) if group else None  # a sheet with a row per line: one order, several lines
+                    found = existing.get(str(data.get(match_on, "")).strip().lower()) if match_on and data.get(match_on) not in (None, "") else None
+                    if parent is not None:
+                        pass
+                    elif found is not None:
+                        parent = found
+                        if engine.update(found, data, automations=False):
+                            updated += 1
+                    else:
+                        parent = engine.create(table, data, automations=False, ai=False, keep_numbers=True)
+                        if match_on and data.get(match_on) not in (None, ""):
+                            existing[str(data[match_on]).strip().lower()] = parent
+                        added += 1
+                    if group:
+                        parents[group] = parent
+                    for child, (via, parts) in lines.items():
+                        values = {k: cell(i) for i, k in parts if cell(i) is not None}
+                        for k in list(values):  # the product on the line: found, or added
+                            f = engine.field(child, k)
+                            if f is not None and f["type"] == "link" and not f.get("multiple"):
+                                values[k], new = _linked(engine, f, values[k], {})
+                                if new is not None:
+                                    made_linked.add((new.table, new.id))
+                        if values:
+                            engine.create(child, {**values, via: parent.id}, automations=False, ai=False)
+                            line_count += 1
+            except FieldErrors as exc:
+                errors.append({"row": number, "problem": "; ".join(f"{(engine.field(table, k) or {'label': k})['label']}: {v}" for k, v in exc.errors.items())})
     t = engine.tables[table]
     from .engine import automations
     also = [f"{line_count} line{'s' if line_count != 1 else ''}" if line_count else "",
