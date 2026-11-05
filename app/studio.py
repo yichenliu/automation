@@ -840,6 +840,7 @@ def rule_ops(bp, change):
         trigger = change.get("trigger") or {}
         step = change.get("step") or {"type": "notify", "message": f"{name}: {{{{record}}}}", "to": "admin"}
         made = schema.normalize_automation({"key": key, "name": name, "trigger": trigger, "conditions": change.get("conditions") or [], "actions": [_step(step)]})
+        key = made["key"]  # the key it's saved under, which the map then opens
         same = next((a for a in bp.get("automations", []) if (a["trigger"], a["conditions"], a["actions"]) == (made["trigger"], made["conditions"], made["actions"])), None)
         if same:  # pressed twice, or made before: one is enough
             raise SchemaError(f"There's a rule that does exactly this already: “{same['name']}”")

@@ -233,7 +233,7 @@ def adding(d, t, alias, values=None, by=None, depth=0, made=None, through=(), ke
     for i, f in enumerate(t.get("fields", [])):
         if f["key"] in values or f["type"] in schema.CALCULATED | schema.FILES or f["key"] == flow_field:
             continue
-        if not f.get("required") and not (f["type"] == "link" and (f["key"] in through or f["key"] in onward)):
+        if not f.get("required") and not f.get("required_if") and not (f["type"] == "link" and (f["key"] in through or f["key"] in onward)):
             if f["type"] == "email":  # an address to send to, so what emails it can be seen to
                 values[f["key"]] = f"{alias}@example.com"
             continue
@@ -515,6 +515,9 @@ class Chase(Feature):
     def build(self, d, where):
         t = _t(d, self.list, where)
         f, stage = _stage(d, t, self.stage, where)
+        if self.days < 1 or (self.every_days is not None and self.every_days < 1):
+            raise Problem(f"{where} › days: a chase counts whole days, 1 or more (it looks once a day); to tell someone "
+                          f"straight away when a record gets to {stage}, use stage_alert")
         made, key = Made(), self.feature_key()
         if self.since:
             sf = d.field(t, self.since)
@@ -884,6 +887,117 @@ class Limit(Feature):
         return f"allows at most {self.max} {self.list}" + (f" per {', '.join(self.per)}" if self.per else " at a time")
 
 
+@register("feature", {"do": "no_overlap", "list": "appointments", "per": ["client"], "starts": "starts_on"})
+class NoOverlap(Feature):
+    """No double-booking: no two records at overlapping times among those with the same per (a stylist booked once at
+    a time: per stylist, starts starts_at, length duration; a room once a night: per room, starts check_in, ends
+    check_out; per left empty: none may overlap at all). starts: a date, date-and-time or time field; then ends: the
+    field it ends at, or length: a duration field of how long each takes (neither: each takes its day or moment). The
+    day one ends, the next can start. only_if: the ones that count (status not_equals Cancelled)."""
+    do: Literal["no_overlap"] = "no_overlap"
+    list: str
+    per: list[str] = Field(default_factory=list)
+    starts: str
+    ends: str | None = None
+    length: str | None = None
+    only_if: list[Condition] = Field(default_factory=list)
+    message: str | None = None
+
+    def default_key(self):
+        return f"no_overlap_{self.list}" + "".join(f"_{p}" for p in self.per)
+
+    def _timed(self, d, t, name, what, kinds, where):
+        f = d.field(t, name)
+        if f is None or f["type"] not in kinds:
+            have = [x["key"] for x in t["fields"] if x["type"] in kinds]
+            raise Problem(f"{where} › {what}: {name} isn't a {' or '.join(kinds)} field of {t['label']}"
+                          + (f" (its {' or '.join(kinds)} fields: {', '.join(have)})" if have else f": add one first"))
+        return f["key"]
+
+    def build(self, d, where):
+        t = _t(d, self.list, where)
+        per = []
+        for name in self.per:
+            f = d.field(t, name)
+            if f is None:
+                raise Problem(f"{where} › per: {name} isn't a field of {t['label']} (its fields: {', '.join(d.field_names(t))})")
+            per.append(f["key"])
+        if self.ends and self.length:
+            raise Problem(f"{where}: give ends (when each ends) or length (how long each takes), not both")
+        overlap = {"start": self._timed(d, t, self.starts, "starts", ("date", "datetime", "time"), where)}
+        if self.ends:
+            overlap["end"] = self._timed(d, t, self.ends, "ends", ("date", "datetime", "time"), where)
+        if self.length:
+            overlap["length"] = self._timed(d, t, self.length, "length", ("duration",), where)
+        limit = {"per": per, "overlap": overlap}
+        if self.only_if:
+            limit["where"] = ir_conditions(d, t, self.only_if, f"{where} › only_if")
+        named = " and ".join(schema.lc((d.field(t, k) or {}).get("label") or k) for k in per)
+        limit["message"] = self.message or (f"That time overlaps another {schema.lc(t['singular'])}"
+                                            + (f" for the same {named}" if named else "") + ": pick another time")
+        entry = next((e for e in d.bp.get("features", []) if e["key"] == self.feature_key()), None)
+        mine = (entry or {}).get("made", {}).get("limit")
+        others = [x for x in t.get("limits") or [] if x != mine]
+        made = Made()
+        made.ops.append({"op": "update_table", "table": t["key"], "limits": others + [limit]})
+        made.undo = {"made": {"limit": limit}}
+        return made
+
+    def checks(self, d):
+        t = d.list(self.list)
+        stage = d.stage_field(t)
+        start = ((t.get("workflow") or {}).get("start") or (stage.get("options") or [None])[0]) if stage else None
+        same, counted, first = {}, None, []
+        for i, name in enumerate(self.per):
+            f = d.field(t, name)
+            if f["type"] == "link":  # the one they're all booked with, added first
+                other = d.list(f.get("table"))
+                if other is None:
+                    return []
+                first += adding(d, other, f"same_{other['key'][:8]}")
+                same[f["key"]] = f"same_{other['key'][:8]}"
+            elif f["type"] in schema.STORED:
+                same[f["key"]] = _sample(d, f, i, "same")
+            else:
+                return []
+        for c in self.only_if:  # the ones counted: a stage they're moved to, or a value
+            if stage is not None and schema.slug(c.field) == stage["key"]:
+                stages = [s for s in (c.value if isinstance(c.value, list) else [c.value]) if s] if c.op in ("equals", "one_of") else \
+                    [s for s in stage.get("options") or [] if s != c.value] if c.op == "not_equals" else []
+                if start not in stages and stages:
+                    counted = d.choice(stage, stages[0])
+            elif c.op == "equals":
+                same[schema.slug(c.field)] = c.value
+        kind = d.field(t, self.starts)["type"]
+
+        def at(day):
+            values = {d.field(t, self.starts)["key"]: "10:00" if kind == "time" else f"today+{day}"}
+            if self.ends:
+                values[d.field(t, self.ends)["key"]] = "11:00" if kind == "time" else f"today+{day + 1}"
+            if self.length:
+                values[d.field(t, self.length)["key"]] = 1  # an hour
+            return values
+        steps, made = list(first), {}
+        for alias, day in (("b1", 5), ("b2", 5), ("b3", 8)):
+            if kind == "time" and alias == "b3":
+                continue  # a time of day: any other day is told apart by per
+            added = adding(d, t, alias, {**same, **at(day)}, made=made)
+            steps += added
+            if counted:
+                steps.append({"do": "move", "record": alias, "to": counted})
+            if alias == "b2":
+                (steps[-1] if counted else next(s for s in reversed(steps) if s.get("as") == "b2"))["refused"] = True
+        named = [schema.lc((d.field(t, n) or {}).get("label") or n) for n in self.per]
+        what = f" for the same {' and '.join(named)}" if named else ""
+        adds = sum(1 for s in steps if s.get("do") == "add" and s.get("table") == t["key"])
+        expect = [{"record": "b2", "field": stage["key"], "not_equals": counted}] if counted else \
+            [{"table": t["key"], "count": adds - 1}]
+        return [{"title": f"Two {t['label'].lower()} at the same time{what} aren't allowed", "steps": steps, "expect": expect}]
+
+    def said(self, d):
+        return f"no two {self.list} at overlapping times" + (f" per {', '.join(self.per)}" if self.per else "")
+
+
 @register("feature", {"do": "convert", "from_list": "quotes", "to_list": "jobs", "when_stage": "Accepted", "from_lines": "quote_lines", "to_lines": "job_lines"})
 class Convert(Feature):
     """Make a record of another list from a record, linked back, with the fields they share copied (and its lines
@@ -1168,7 +1282,9 @@ class Gate(Feature):
     filled in (a yes/no field: ticked; a linked record's through dots, job.deposit_paid), only while only_if all hold,
     and never while blocked_if all hold. "Can't
     assign a unit until the ID is checked": needs. "A steer under 450kg can't be signed off": blocked_if type equals
-    Steer and weight less_than 450. "Only once the deposit is at least $50": only_if deposit at_least 50."""
+    Steer and weight less_than 450. "Only once the deposit is at least $50": only_if deposit at_least 50. "Not while
+    the client owes on an invoice over 30 days": blocked_if client.overdue_invoices greater_than 0, a total field on
+    clients counting their invoices only those unpaid with due_date more_than_days_ago 30."""
     do: Literal["gate"] = "gate"
     list: str
     stage: str

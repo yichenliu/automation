@@ -1692,8 +1692,9 @@ class Engine:
             shown = self.shown(t, f, draft)
             needed = f.get("required") or (f.get("required_if") and self.matches(draft, f["required_if"]))
             if needed and shown and value in (None, "", []) and (creating or key in data or f.get("required_if")):
-                if unfinished and creating and key not in data and f.get("required"):
-                    self.left_unfilled.append(f["label"])  # for people to fill in: the rule couldn't know it
+                if unfinished and creating and data.get(key) in (None, "", []) and f.get("required"):
+                    # for people to fill in: the rule couldn't know it, or what it copies from was left empty
+                    self.left_unfilled.append(f["label"])
                     continue
                 errors[key] = f"{f['label']} is required" + (" here" if f.get("required_if") and not f.get("required") else "")
             if f.get("readonly") and key in values and self.role is not None and not self._at_least("admin") \
@@ -1781,14 +1782,24 @@ class Engine:
                   and (not limit.get("where") or self.matches(r, limit["where"]))]
         labels = " and ".join(self.field(t["key"], k)["label"].lower() for k in limit["per"] if self.field(t["key"], k))
         if limit.get("overlap"):
-            def span(data):
-                start = str(data.get(limit["overlap"]["start"]) or "").replace(" ", "T")
-                end = str(data.get(limit["overlap"].get("end") or "") or "").replace(" ", "T") or start
-                return start, max(end, start)
+            ov = limit["overlap"]
+
+            def moment(value):  # a date, a date and time, or a time of day ("09:00")
+                at = expr.to_datetime(value)
+                clock = expr._clock(value) if at is None else None
+                return datetime(2000, 1, 1) + timedelta(minutes=clock) if clock is not None else at
+
+            def span(data):  # from its start to its end, or to its start and how long it takes (a 1h 30m appointment)
+                start = moment(data.get(ov["start"]))
+                if start is None:
+                    return None
+                end = moment(data.get(ov.get("end") or "")) if ov.get("end") else \
+                    start + timedelta(hours=to_number(data.get(ov["length"])) or 0) if ov.get("length") else None
+                return start, max(end or start, start)
             mine = span(merged)
-            if not mine[0]:
+            if mine is None:
                 return None
-            clash = next((r for r in others if span(r.data or {})[0] and _overlap(mine, span(r.data or {}))), None)
+            clash = next((r for r in others if span(r.data or {}) is not None and _overlap(mine, span(r.data or {}))), None)
             if clash is None:
                 return None
             return limit.get("message") or f"{t['singular']} “{self.title(clash)}” already has {('this ' + labels) if labels else 'that time'} then"
@@ -1831,6 +1842,21 @@ class Engine:
         if t is None or not self.can(t, "edit"):
             return False
         return any(self.is_who(who, record) for who in move.get("who") or []) or not move.get("who")
+
+    def _who_words(self, who):
+        """“the owner”, “someone in Finance or its manager”: who a move is for, in plain words."""
+        teams = {tm["key"]: tm.get("name") or tm["key"] for tm in schema.teams(self.bp)}
+        words = []
+        for w in who or []:
+            if w in ROLES:
+                words.append({"owner": "the owner", "admin": "someone who runs the app", "editor": "someone on the team"}.get(w, "someone"))
+            elif w in teams:
+                words.append(f"someone in {teams[w]}")
+            elif w == "creator":
+                words.append("whoever added it")
+            else:
+                words.append(f"its {str(w).replace('_', ' ').replace('.', '’s ')}")
+        return " or ".join(dict.fromkeys(words)) or "someone else"
 
     def is_who(self, who, record):
         """Whether this person is `who` for a record: has the role, is in the team, added the record, or is named on it
@@ -1936,6 +1962,14 @@ class Engine:
         if missing:
             return f"Fill in {', '.join(missing[:-1]) + ' and ' + missing[-1] if len(missing) > 1 else missing[0]} first, then you can {what[:1].lower() + what[1:]}"
         if move.get("only_if") and not self.matches(record, move["only_if"]):
+            # the same button for others when it doesn't hold (only the owner approves over 200 cups): said so, not "once"
+            twin = next((m for m in (t.get("workflow") or {}).get("transitions") or [] if m is not move and m["to"] == move["to"]
+                         and (m.get("label") or m["to"]) == (move.get("label") or move["to"])
+                         and (not m["from"] or not move["from"] or set(m["from"]) & set(move["from"]))
+                         and (not m.get("only_if") or self.matches(record, m["only_if"])) and not self.may_move(record, m)), None)
+            if twin is not None:
+                when = f" when {automations_words(self, twin['only_if'], t['key'])}" if twin.get("only_if") else ""
+                return f"Only {self._who_words(twin.get('who'))} can {what[:1].lower() + what[1:]}{when}"
             return f"You can {what[:1].lower() + what[1:]} once {automations_words(self, move['only_if'], t['key'])}"
         apart = self.kept_from(record, move.get("not_by"))
         if apart:

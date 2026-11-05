@@ -240,7 +240,7 @@ def test_the_try_out_also_fills_in_only_what_is_required(app, owner):
 
 def test_a_rule_that_stops_half_way_leaves_nothing_half_made(app, owner):
     """Each accepted plan left an empty $0 invoice behind when its lines couldn't be made: it goes in the bin, and the
-    owner is told so."""
+    owner is told so. (A line whose must-have it copies was left empty is added for people to finish, not a stop.)"""
     user, ws = owner
     _built(ws, [
         {"op": "create_table", "table": "jobs", "label": "Jobs", "fields": [
@@ -250,18 +250,22 @@ def test_a_rule_that_stops_half_way_leaves_nothing_half_made(app, owner):
         {"op": "create_table", "table": "invoices", "label": "Invoices", "fields": [{"key": "job", "type": "text"}]},
         {"op": "create_table", "table": "invoice_lines", "label": "Invoice lines", "embedded": True, "fields": [
             {"key": "invoice", "type": "link", "table": "invoices", "required": True},
-            {"key": "description", "type": "text", "required": True}]},
+            {"key": "description", "type": "text", "required": True}, {"key": "hours", "type": "number"}]},
         {"op": "add_automation", "automation": {
             "key": "bill", "name": "Invoice a won job", "trigger": {"type": "record_updated", "table": "jobs"},
             "conditions": [{"field": "status", "op": "changed_to", "value": "Won"}],
             "actions": [{"type": "create_record", "table": "invoices", "values": {"job": "{{record.title}}"}},
-                        {"type": "create_record", "table": "invoice_lines", "values": {"invoice": "{{created}}", "description": "{{record.notes}}"}}]}}])
+                        {"type": "create_record", "table": "invoice_lines", "values": {
+                            "invoice": "{{created}}", "description": "{{record.notes}}", "hours": "{{record.title}}"}}]}}])
     e = Engine(ws, by="Ethan")
     job = e.create("jobs", {"title": "Rewire"})
     e.move(Engine(ws).get(job.id), 0)
     run = Run.query.one()
     assert run.status == "failed" and "was put in the bin" in run.error, run.error
     assert Engine(ws).rows("invoices") == []
+    later = e.create("jobs", {"title": "12"})  # hours it can read; the description it copies left empty: for people to finish
+    e.move(Engine(ws).get(later.id), 0)
+    assert len(Engine(ws).rows("invoices")) == 1 and len(Engine(ws).rows("invoice_lines")) == 1
 
 
 def test_a_notification_opens_the_page_it_is_about(app, owner, client):

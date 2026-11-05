@@ -246,7 +246,7 @@ def follow_ups(engine, history):
             if common != "null" and n / len(pairs) >= 0.8:
                 values[x["key"]] = json.loads(common)
         f = schema.field(t, key)
-        automation = {"key": schema.slug(f"{t['singular']} {value} makes {o['singular']}")[:40], "name": f"{t['singular']} {value.lower()} → new {schema.lc(o['singular'])}",
+        automation = {"key": schema.slug(f"{t['singular']} {value} makes {o['singular']}")[:40].rstrip("_"), "name": f"{t['singular']} {value.lower()} → new {schema.lc(o['singular'])}",
                       "trigger": {"type": "record_updated", "table": table}, "conditions": [{"field": key, "op": "changed_to", "value": value}],
                       "actions": [{"type": "create_record", "table": other, "values": values}]}
         proof = backtest(engine, automation, history)
@@ -265,7 +265,7 @@ def follow_ups(engine, history):
         t = engine.tables[table]
         f, g = schema.field(t, key), schema.field(t, other_key)
         new = json.loads(common)
-        automation = {"key": schema.slug(f"{t['singular']} {value} sets {g['label']}")[:40], "name": f"{t['singular']} {value.lower()} → {schema.lc(g['label'])}",
+        automation = {"key": schema.slug(f"{t['singular']} {value} sets {g['label']}")[:40].rstrip("_"), "name": f"{t['singular']} {value.lower()} → {schema.lc(g['label'])}",
                       "trigger": {"type": "record_updated", "table": table}, "conditions": [{"field": key, "op": "changed_to", "value": value}],
                       "actions": [{"type": "update_record", "values": {other_key: new}}]}
         what = "today's date" if new == "{{today()}}" else f"“{engine.display(g, new)}”"
@@ -293,7 +293,7 @@ def stuck(engine, history):
         if len(quiet) < 5 or len(quiet) < 0.2 * len(rows):
             continue
         person = next((f for f in t["fields"] if f["type"] == "user" and not f.get("multiple")), None)
-        automation = {"key": schema.slug(f"nudge {t['label']}")[:40], "name": f"Nudge {schema.lc(t['label'])} that have gone quiet",
+        automation = {"key": schema.slug(f"nudge {t['label']}")[:40].rstrip("_"), "name": f"Nudge {schema.lc(t['label'])} that have gone quiet",
                       "trigger": {"type": "schedule", "every": "day", "at": "08:00", "table": t["key"]},
                       "conditions": [{"field": status["key"], "op": "one_of", "value": open_},
                                      {"field": "updated_at", "op": "more_than_days_ago", "value": 7}],

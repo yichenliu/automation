@@ -746,9 +746,10 @@ def _guess(engine, names, alias, table=None):
     if not isinstance(alias, str) or not alias.strip():
         return alias
     engine.reset()
-    if any(engine.title(r).strip().lower() == alias.strip().lower() for key in ([table] if table else engine.tables)
-           for r in engine.rows(key)):
-        return alias  # a record's own name (the "Wages" account): it means that record, not a guess
+    named = _titled(engine, names, alias, table)
+    if named is not None:  # a record's own name or number (the "Wages" account, ORD-1): that record, not a guess
+        names[alias] = named
+        return alias
     added = names.get("_added", [])
     head = alias.strip().lower().split("_")[0].rstrip("0123456789")
     like = lambda key: key.startswith(head) or "".join(w[:1] for w in key.split("_")) == head  # noqa: E731  ("il" for invoice_lines)
@@ -763,6 +764,33 @@ def _guess(engine, names, alias, table=None):
     if fits and not any(alias.strip().lower() == engine.title(engine.get(rid)).lower() for _, rid in added if engine.get(rid)):
         names[alias] = fits[0][1]
     return alias
+
+
+def _number(text):
+    """("ord", 1) for "ORD-1", "ord-0001" or "ORD 1": a number as people write it, whatever its zeros."""
+    found = re.fullmatch(r"([a-z]*)[\s#_-]*0*(\d+)", str(text or "").strip().lower())
+    return (found.group(1), int(found.group(2))) if found else None
+
+
+def _titled(engine, names, alias, table=None):
+    """The record an example names by what it's called or its number ("Ethiopia Yirgacheffe", "ORD-1" for ORD-0001),
+    as a person points at the one in front of them: the latest the example added, else the latest the app has."""
+    wanted, number = alias.strip().lower(), _number(alias)
+    keys = [table] if table else list(engine.tables)
+
+    def called(r):
+        if engine.title(r).strip().lower() == wanted:
+            return True
+        t = engine.tables.get(r.table) or {}
+        return number is not None and any(f["type"] == "autonumber" and _number((r.data or {}).get(f["key"])) == number
+                                          for f in t.get("fields", []))
+
+    for key, rid in reversed(names.get("_added", [])):
+        r = engine.get(rid)
+        if r is not None and key in keys and called(r):
+            return rid
+    found = [r for key in keys if key in engine.tables for r in engine.rows(key) if called(r)]
+    return found[-1].id if found else None
 
 
 def _the_one_meant(engine, step, names):
@@ -1450,7 +1478,7 @@ def _rollup_reads(engine, record, f, names, deeper=True):
     what = f"the {f.get('aggregate', 'sum')} of {f['table']}" + (f".{f['field']}" if f.get("field") else "")
     if not rows and linked and f.get("filters"):  # why none count: they're linked, but not the ones it adds up
         theirs = []
-        for c in schema.condition_leaves(f["filters"])[:2]:
+        for c in list(schema.condition_leaves(f["filters"]))[:2]:
             h = engine.field(f["table"], str(c.get("field") or "").split(".")[0]) if f["table"] in engine.tables else None
             if h is not None:
                 theirs.append(f"{h['key']}: " + ", ".join(sorted({engine.display(h, engine.value(r, h['key'])) or "empty" for r in linked})[:4]))
@@ -1702,7 +1730,7 @@ def _play(trial, engine, example, names, out):
         if step.get("refused"):
             owner = "" if step.get("by") else (" (the owner did it, who may do nearly anything: if only some people should, such as "
                                                 "the owner, have \"by\": \"staff\" try it)")
-            out.update(problem=f"step {n} ({said}) should have been refused, but the app allowed it{owner}", kind="app",
+            out.update(problem=f"step {n} ({said}) should have been refused, but the app allowed it{owner}{_scheduled(engine, example)}", kind="app",
                        plain=f"{_plain_step(engine, step, names)} should have been stopped, but wasn't")
             return out
     flush()
@@ -1720,7 +1748,7 @@ def _play(trial, engine, example, names, out):
     out["ok"] = bool(out["lines"]) and all(ok for ok, _ in out["lines"]) and not stopped
     if not out["ok"]:
         out["kind"] = "app"
-        out["problem"] = "; ".join(out["detail"] + [i["text"] for i in stopped]) or "it expected nothing"
+        out["problem"] = ("; ".join(out["detail"] + [i["text"] for i in stopped]) or "it expected nothing") + _scheduled(engine, example)
         out["plain"] = "; ".join([p for ok, p in out["lines"] if not ok] + [i["plain"] for i in stopped])
         if by_hand:
             out["problem"] += (f" (the example's own steps added {', '.join(by_hand)} by hand after it happened; they were left out, "
@@ -1729,6 +1757,19 @@ def _play(trial, engine, example, names, out):
                                f"record them themselves, an example that says so in its title)")
             out["plain"] += f" (the app didn't add the {', '.join(schema.lc(x) for x in by_hand)} itself)"
     return out
+
+
+def _scheduled(engine, example):
+    """What to say of an example that came out wrong without running any of the app's rules that run on a schedule
+    (marking invoices overdue each day): dates in the past don't run them, and an example runs one only by saying so."""
+    if any(isinstance(s, dict) and s.get("do") == "run" for s in example.get("steps") or []):
+        return ""
+    timed = [a for a in engine.bp.get("automations", []) if a["trigger"]["type"] == "schedule" and a.get("enabled", True)]
+    if not timed:
+        return ""
+    return (" (the app's rules that run on a schedule act in an example only after {\"do\": \"wait\", \"days\": n} then "
+            "{\"do\": \"run\", \"rule\": its key}, even for dates in the past: " +
+            ", ".join(f"{a['key']} (every {a['trigger'].get('every') or 'day'})" for a in timed[:6]) + ")")
 
 
 def _not_by_hand(engine, example):

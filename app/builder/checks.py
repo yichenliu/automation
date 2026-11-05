@@ -22,11 +22,33 @@ def run(engine):
     return (choices(engine) + impossible(engine) + unreachable(engine) + gaps(engine) + asked_on_no(engine) + left_to_others(engine)
             + out_of_reach(engine) + needs_rates(engine) + left_unfilled(engine) + made_only_sometimes(engine) + ai_doing_sums(engine)
             + approval_without_stages(engine) + skips_approvals(engine) + runs_while_true(engine) + wrong_kind(engine)
-            + nobody_may_answer(engine) + nobody_asked(engine) + never_late(engine))
+            + nobody_may_answer(engine) + nobody_asked(engine) + never_late(engine) + two_statuses(engine))
 
 
 STAGE_WORDS = re.compile(r"^(status|stage|state)$", re.I)
 ONCE = ("create_record", "create_for_each", "copy_record", "request_approval", "task", "send_email", "send_sms", "webhook")
+
+
+def two_statuses(engine):
+    """Two choice fields of a list with the same choices, one of them its status (a Payment status and a Status, both
+    Unpaid, Partially paid, Paid): people don't know which to set, and rules, stages and changes land on different ones."""
+    out = []
+    for t in engine.tables.values():
+        flow = (t.get("workflow") or {}).get("field")
+        picks = [f for f in t["fields"] if f["type"] == "select" and len(f.get("options") or []) >= 2]
+        for f, g in itertools.combinations(picks, 2):
+            same = {o.lower() for o in f["options"]} == {o.lower() for o in g["options"]}
+            status = [x for x in (f, g) if x["key"] == flow or STAGE_WORDS.match(x["key"]) or re.search(r"\b(status|stage)\b", x["label"], re.I)]
+            if not same or len(status) < 1 or f.get("feature") or g.get("feature"):
+                continue
+            keep = next((x for x in (f, g) if x["key"] == flow), None) or status[0]
+            drop = g if keep is f else f
+            out.append(_issue("fix", f"{t['key']} has two fields with the same choices, {f['key']} and {g['key']}: keep {keep['key']} "
+                                     f"and remove_field {drop['key']}, pointing whatever used {drop['key']} (rules, features, views, "
+                                     f"formulas) at {keep['key']}",
+                              f"{t['label']} has both {f['label']} and {g['label']}, with the same choices: people won't know which "
+                              f"to set", t["key"]))
+    return out
 
 
 def approval_without_stages(engine):
@@ -172,7 +194,16 @@ def left_unfilled(engine):
                 origin = schema.field(whose, copied.group(2)) if whose else None
                 skipped = whose is item and any(c.get("field") == origin["key"] and c.get("op") not in ("is_empty", "not_equals")
                                                 for c in act.get("where") or [] if origin is not None)  # only lines that have it
-                if origin is not None and not origin.get("required") and origin["type"] in schema.STORED and not skipped:
+                if origin is not None and not origin.get("required") and origin["type"] in schema.STORED and not skipped and kind == "create_record":
+                    # added all the same, for people to finish
+                    out.append(_issue("check", f"Rule {a['key']} fills {t['key']}.{f['key']} (which must be filled in) from "
+                                               f"{whose['key']}.{origin['key']}, which people may leave empty: then it's added for "
+                                               f"people to finish (they're told to fill it in). Make {whose['key']}.{origin['key']} "
+                                               f"required if it must always be known",
+                                      f"“{a['name']}” adds {_a(schema.lc(t['singular']))} without its {schema.lc(f['label'])} when "
+                                      f"{_a(schema.lc(whose['singular']))}'s {schema.lc(origin['label'])} is left empty: you'll be "
+                                      f"asked to fill it in then", t["key"]))
+                elif origin is not None and not origin.get("required") and origin["type"] in schema.STORED and not skipped:
                     out.append(_issue("check", f"Rule {a['key']} fills {t['key']}.{f['key']} (which must be filled in) from "
                                                f"{whose['key']}.{origin['key']}, which people may leave empty: then the rule stops. "
                                                f"Make {whose['key']}.{origin['key']} required, or a move that starts the rule require it",

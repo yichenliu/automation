@@ -1,6 +1,7 @@
 """The Keel language (app/lang): patches compile to the design, every name is checked, features make their parts and
 prove themselves in the simulator, and every piece the registry has is one the AI can use (the guard)."""
 import json
+from datetime import date, timedelta
 
 import pytest
 from pydantic import TypeAdapter
@@ -8,6 +9,7 @@ from pydantic import TypeAdapter
 from app import ai, lang
 from app.blueprint import schema
 from app.builder import trial
+from app.engine.records import Engine, FieldErrors
 from app.extensions import db
 from app.lang import model as m, patterns, registry
 from app.models import Membership, Message, User, Workspace
@@ -1150,3 +1152,172 @@ def test_a_step_meant_to_be_refused_that_only_the_owner_could_do_is_tried_as_sta
     result = checking.add(ws, "Only I can send a quote", by="owner")
     assert result["ok"], result
     assert result["example"]["steps"][1].get("by") == "staff"
+
+
+@pytest.mark.parametrize("timing", [{"length": "takes"}, {"ends": "ends_at"}, {}])
+def test_no_double_booking_refuses_an_overlapping_time_for_the_same_one_and_checks_itself(app, timing):
+    """“No double-booking a stylist”: an appointment whose time overlaps another for the same stylist is refused; one
+    at another time, or for another stylist, isn't. Its own check acts that out."""
+    out = lang.apply(everything(), [
+        {"do": "add_list", "key": "stylists", "label": "Stylists", "singular": "Stylist", "fields": [{"type": "text", "key": "name", "label": "Name"}]},
+        {"do": "add_list", "key": "visits", "label": "Visits", "singular": "Visit", "fields": [
+            {"type": "link", "key": "stylist", "label": "Stylist", "to": "stylists", "required": True},
+            {"type": "datetime", "key": "starts_at", "label": "Starts at", "required": True},
+            {"type": "datetime", "key": "ends_at", "label": "Ends at"}, {"type": "duration", "key": "takes", "label": "Takes"}],
+         "stages": {"stages": ["Booked", "Done", "Cancelled"]}},
+        {"do": "no_overlap", "list": "visits", "per": ["stylist"], "starts": "starts_at", **timing,
+         "only_if": [{"field": "status", "op": "not_equals", "value": "Cancelled"}]}])
+    assert not out.problems, out.problems
+    ws = _workspace(app, out.blueprint)
+    _, results = trial.try_out(ws, patterns.checks(out.blueprint), screens=False)
+    mine = [r for x, r in zip(patterns.checks(out.blueprint), results) if "same time" in x["title"]]
+    assert mine and all(r["ok"] for r in mine), [r.get("problem") for r in mine]
+    engine = Engine(ws)
+    sam, kim = engine.create("stylists", {"name": "Sam"}), engine.create("stylists", {"name": "Kim"})
+    first = {"stylist": sam.id, "starts_at": "2030-01-07 10:00", "ends_at": "2030-01-07 11:00", "takes": "1h"}
+    engine.create("visits", first)
+    with pytest.raises(FieldErrors) as refused:  # the same moment; or, with an end or a length, half an hour in
+        engine.create("visits", {**first, "starts_at": "2030-01-07 10:30" if timing else "2030-01-07 10:00", "ends_at": "2030-01-07 11:30"})
+    assert "overlaps another visit for the same stylist" in str(refused.value.errors)
+    engine.create("visits", {**first, "stylist": kim.id})  # another stylist
+    engine.create("visits", {**first, "starts_at": "2030-01-08 10:00", "ends_at": "2030-01-08 11:00"})  # another day
+    if timing:  # it ends before the next starts
+        engine.create("visits", {**first, "starts_at": "2030-01-07 11:00", "ends_at": "2030-01-07 12:00"})
+
+
+def test_a_record_named_by_what_its_called_or_its_number_is_that_record(app):
+    """The builder's example says “ORD-1” or “Ethiopia Yirgacheffe” instead of a short name it gave: the one called
+    that, as a person points at the record in front of them."""
+    ws = _workspace(app, everything())
+    example = {"title": "An invoice is sent", "steps": [
+        {"do": "add", "table": "customers", "values": {"name": "Ethiopia Yirgacheffe"}},
+        {"do": "add", "table": "invoices", "values": {"customer": "Ethiopia Yirgacheffe", "total": 10}},
+        {"do": "move", "record": "INV-1", "to": "Sent"}],
+        "expect": [{"record": "INV-1", "field": "status", "equals": "Sent"},
+                   {"record": "Ethiopia Yirgacheffe", "field": "name", "equals": "Ethiopia Yirgacheffe"}]}
+    with trial.copy_of(ws) as copy:
+        result = trial.play(copy, example)
+    assert result["ok"], result.get("problem")
+
+
+def test_a_features_check_fills_in_what_must_be_filled_in_while_it_applies():
+    """A field required unless cancelled (required_if) is filled in by a feature's own check, as one always required."""
+    out = lang.apply(everything(), [{"do": "add_field", "list": "jobs", "field": {
+        "type": "number", "key": "area", "label": "Area", "required_if": [{"field": "status", "op": "not_equals", "value": "Done"}]}},
+        {"do": "approval", "list": "jobs", "stage": "Done", "by": "owner"}])
+    assert not out.problems, out.problems
+    adds = [s for x in patterns.checks(out.blueprint) for s in x["steps"] if s.get("do") == "add" and s.get("table") == "jobs"]
+    assert adds and all("area" in s["values"] for s in adds)
+
+
+def test_a_formula_can_make_a_date_from_a_year_month_and_day():
+    from app.blueprint import expr
+    ctx = expr.Context(today=date(2026, 11, 6))
+    assert expr.evaluate("date(year(today()), month(today()), 5)", ctx) == date(2026, 11, 5)
+    assert expr.evaluate("date(2026, 13, 1)", ctx) == date(2027, 1, 1)
+    assert expr.evaluate("eomonth(today(), 0)", ctx) == date(2026, 11, 30)
+    with pytest.raises(expr.ExprError) as wrong:
+        expr.evaluate("days_between(today())", ctx)
+    assert "positional" not in str(wrong.value)
+
+
+def test_a_record_a_rule_adds_from_a_value_left_empty_is_added_for_people_to_finish(app):
+    """A reminder's due date copied from the enquiry's reply-by date, which people left empty: the reminder is added
+    all the same, and people are told what to fill in, as when the rule couldn't know it at all."""
+    bp = lang.apply(everything(), [
+        {"do": "add_list", "key": "reminders", "label": "Reminders", "singular": "Reminder", "fields": [
+            {"type": "text", "key": "what", "label": "What", "required": True},
+            {"type": "date", "key": "due_on", "label": "Due on", "required": True}]},
+        {"do": "add_rule", "rule": {"key": "remind", "name": "Remind about the job", "when": {"on": "added", "list": "jobs"},
+                                    "steps": [{"do": "add", "list": "reminders", "values": [{"field": "what", "formula": "title"},
+                                                                                         {"field": "due_on", "formula": "scheduled_for"}]}]}}])
+    assert not bp.problems, bp.problems
+    ws = _workspace(app, bp.blueprint)
+    engine = Engine(ws)
+    engine.create("jobs", {"title": "Fix the gate"})
+    reminders = engine.rows("reminders")
+    assert len(reminders) == 1 and (reminders[0].data or {}).get("what") == "Fix the gate"
+
+
+def test_a_staff_member_refused_a_move_only_the_owner_makes_over_an_amount_is_told_so(app):
+    """Approving a quote over $1,000 is the owner's: a staff member pressing Approve on one is told only the owner can,
+    when it's over $1,000, and not that they can once it's under."""
+    out = lang.apply(everything(), [{"do": "approval", "list": "quotes", "stage": "Accepted", "by": "owner", "over": {"field": "total", "amount": 1000}}])
+    assert not out.problems, out.problems
+    ws = _workspace(app, out.blueprint)
+    staff = User(email="sam@example.com", name="Sam")
+    staff.set_password("x" * 12)
+    db.session.add(staff)
+    db.session.flush()
+    member = Membership(workspace_id=ws.id, user_id=staff.id, role="editor")
+    db.session.add(member)
+    db.session.commit()
+    quote = Engine(ws).create("quotes", {"total": 2500, "status": "Sent"})
+    theirs = Engine(ws, by="Sam", member=member)
+    said = [problem for _, m, problem in theirs.moves(theirs.get(quote.id)) if m["to"] == "Accepted"]
+    assert said and said[0].startswith("Only the owner can") and "more than" in said[0].lower(), said
+
+
+def test_a_total_that_came_out_wrong_because_its_linked_records_dont_count_says_why_without_failing(app):
+    out = lang.apply(everything(), [{"do": "add_field", "list": "invoices", "field": {
+        "type": "total", "key": "paid_in", "label": "Paid in", "of": "payments", "link": "invoice", "how": "sum", "field": "amount",
+        "only": [{"field": "amount", "op": "greater_than", "value": 1000}]}}])
+    assert not out.problems, out.problems
+    ws = _workspace(app, out.blueprint)
+    example = {"title": "Payments add up", "steps": [{"do": "add", "table": "invoices", "as": "i1", "values": {"total": 100}},
+                                                     {"do": "add", "table": "payments", "as": "p1", "values": {"invoice": "i1", "amount": 50}}],
+               "expect": [{"record": "i1", "field": "paid_in", "equals": 50}]}
+    with trial.copy_of(ws) as copy:
+        result = trial.play(copy, example)
+    assert result["kind"] == "app" and not result["ok"] and "only those where" in result["problem"], result
+
+
+def test_refusing_while_a_customer_owes_is_a_count_of_their_overdue_invoices_used_through_the_link(app):
+    """“No new quote, and no job started, for a customer with an invoice unpaid over 30 days”: a total counting their
+    overdue invoices, read through the link by a rule every save keeps and by a gate. And a formula reaching into other
+    records (count(...)) is refused saying so."""
+    out = lang.apply(everything(), [
+        {"do": "add_field", "list": "customers", "field": {"type": "total", "key": "overdue_invoices", "label": "Overdue invoices",
+                                                           "of": "invoices", "link": "customer", "how": "count",
+                                                           "only": [{"field": "status", "op": "not_equals", "value": "Paid"},
+                                                                    {"field": "due_date", "op": "more_than_days_ago", "value": 30}]}},
+        {"do": "add_validation", "list": "quotes", "check": "customer.overdue_invoices == 0",
+         "message": "This customer has an invoice unpaid over 30 days: clear it first"},
+        {"do": "gate", "list": "jobs", "stage": "In progress", "blocked_if": [{"field": "customer.overdue_invoices", "op": "greater_than", "value": 0}]}])
+    assert not out.problems, out.problems
+    ws = _workspace(app, out.blueprint)
+    e = Engine(ws)
+    acme = e.create("customers", {"name": "Acme"})
+    e.create("quotes", {"customer": acme.id, "total": 10})
+    job = e.create("jobs", {"title": "Fit-out", "customer": acme.id})
+    e.create("invoices", {"customer": acme.id, "due_date": (date.today() - timedelta(days=45)).isoformat(), "total": 5})
+    with pytest.raises(FieldErrors):
+        e.create("quotes", {"customer": acme.id, "total": 10})
+    started = [problem for _, m, problem in e.moves(e.get(job.id)) if m["to"] == "In progress"]
+    assert started and started[0], started
+    wrong = lang.apply(everything(), [{"do": "add_validation", "list": "quotes", "check": "count(invoices, customer = record.customer) == 0",
+                                       "message": "x"}])
+    assert wrong.problems and "add a total field" in wrong.problems[0]
+
+
+def test_a_rule_with_a_long_name_made_on_the_app_map_is_opened_by_the_key_it_is_saved_under():
+    from app import studio
+    name = "When an invoice reaches Partially paid, tell the owner"
+    made, key = studio.rule_ops(everything(), {"do": "add_rule", "name": name, "trigger": {"type": "record_updated", "table": "invoices"},
+                                               "step": {"type": "notify", "to": "owner", "message": "{{record}} is now Partially paid"}})
+    from app.blueprint import ops as bp_ops
+    result = bp_ops.apply(everything(), made)
+    assert not result.problems, result.problems
+    assert key == schema.slug(key) and not key.endswith("_")
+    assert any(a["key"] == key for a in result.blueprint.get("automations", []))
+
+
+def test_two_status_fields_with_the_same_choices_are_a_mistake_to_put_right(app):
+    from app.builder import checks
+    bp = lang.apply(everything(), [{"do": "add_field", "list": "invoices", "field": {
+        "type": "choice", "key": "payment_status", "label": "Payment status", "options": ["Draft", "Sent", "Part paid", "Paid"]}}]).blueprint
+    ws = _workspace(app, bp)
+    found = checks.two_statuses(Engine(ws))
+    assert found and found[0]["level"] == "fix" and "payment_status" in found[0]["text"] and "remove_field payment_status" in found[0]["text"]
+    ws.blueprint = everything()
+    assert not checks.two_statuses(Engine(ws))

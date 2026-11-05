@@ -41,6 +41,16 @@ TRADES = [
     "mobile vet for farm animals", "trophy and engraving shop", "party supplies and balloon decorator", "tiling contractor",
     "home builder doing six houses a year", "secondhand furniture store", "seafood wholesaler", "art framing shop",
     "vending machine operator", "self-storage facility",
+    # and more again (round 36 used the last of the above)
+    "mobile hairdresser for aged care homes", "commercial fishing boat selling to co-ops", "gym equipment repairer",
+    "hearing clinic", "bookkeeper for tradies", "caravan park", "nursery growing plants for landscapers", "car rental with 30 cars",
+    "solar battery retailer", "mobile tyre fitter", "farm machinery dealer", "swimming school", "cake decorator taking orders",
+    "dance studio", "IT recruitment contractor agency", "office fit-out company", "electrician doing test and tag",
+    "small winery with a cellar door", "boat hire on a lake", "podiatry clinic", "courier company with eight vans",
+    "home cleaning franchise", "lawn mowing round", "corporate catering kitchen", "bicycle courier", "audio-visual hire for events",
+    "school holiday camp operator", "charity op shop with volunteers", "ceramics studio running classes", "sign language interpreters",
+    "food truck", "real estate sales agency", "conveyancing firm", "chimney sweep", "window cleaning company",
+    "hydraulic hose repair van", "cattle vet practice", "pet boarding kennels", "removal of asbestos", "uniform embroidery shop",
 ]
 
 STYLES = ("plain", "plain", "vague")

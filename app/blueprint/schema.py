@@ -249,7 +249,7 @@ def slug(text, fallback=""):
     key = re.sub(r"[^a-z0-9]+", "_", str(text or "").strip().lower()).strip("_")
     if key and key[0].isdigit():
         key = f"f_{key}"
-    return key[:48] or fallback
+    return key[:48].rstrip("_") or fallback  # cut, then tidied: a key made again from itself is the same key
 
 
 ACRONYMS = {"gst", "abn", "acn", "id", "po", "sku", "vat", "url", "pdf", "crm", "erp", "kpi", "ytd", "qty", "abn", "bsb", "eta",
@@ -1218,7 +1218,9 @@ def normalize_limit(raw, table_label=""):
         overlap = {"start": overlap[0], "end": overlap[1] if len(overlap) > 1 else None}
     if isinstance(overlap, dict) and _first(overlap, "start", "from", "begins"):
         end = _first(overlap, "end", "to", "until", "ends")
-        limit["overlap"] = {"start": slug(_first(overlap, "start", "from", "begins")), **({"end": slug(end)} if end else {})}
+        length = _first(overlap, "length", "duration", "takes")  # how long each takes (a duration field), when no end is kept
+        limit["overlap"] = {"start": slug(_first(overlap, "start", "from", "begins")), **({"end": slug(end)} if end else {}),
+                            **({"length": slug(length)} if length and not end else {})}
     elif most is not None and to_number_or_path(most) is not None:
         limit["max"] = to_number_or_path(most)
     else:
@@ -2741,6 +2743,9 @@ def _check_table(t, tables, modules, problems):
             k = (limit.get("overlap") or {}).get(end)
             if k and (k not in keys or keys[k]["type"] not in ("date", "datetime", "time") and keys[k].get("format") not in ("date", "datetime", "time")):
                 problems.append(f"{where}: its {end}, “{k}”, isn't a date or time field of {t['label']}")
+        k = (limit.get("overlap") or {}).get("length")
+        if k and (k not in keys or keys[k]["type"] != "duration"):
+            problems.append(f"{where}: how long each takes, “{k}”, isn't a duration field of {t['label']}")
         _check_conditions(limit.get("where"), t, where, problems, tables)
     held = t.get("approve_changes")
     if held:

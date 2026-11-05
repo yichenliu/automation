@@ -229,15 +229,27 @@ def _paths(source):
     return out
 
 
+# a formula that reaches into other records (count(...), EXISTS, SELECT ... WHERE, any(...)): a formula reads only its
+# own record and the ones its links lead to; what's among other records is a total field's
+OVER_OTHERS = re.compile(r"\b(count|countif|countifs|exists|any|all|filter|select|where|sumif|sumifs|lookup|vlookup)\s*\(|\bselect\b.+\bfrom\b|"
+                         r"\bwhere\b", re.I)
+OTHER_RECORDS = ("; a formula reads only its own record's fields and those its links lead to (customer.email). To count or add "
+                 "up other records (a client's unpaid invoices over 30 days, a stylist's other bookings), add a total field to the "
+                 "list they link to, with how: count and only: the conditions (\"op\": \"more_than_days_ago\" for dates), then "
+                 "use it through the link (client.overdue_invoices equals 0), in a gate's only_if or blocked_if, or a rule. For "
+                 "no two at overlapping times, use no_overlap")
+
+
 def _check_formula(d, t, source, where, item=None, created=None):
     """Every name a formula reads is a field (or a linked one) of the record it's worked out on."""
     try:
         paths = _paths(source)
         unknown = expr.unknown_calls(source)
     except expr.ExprError as exc:
-        raise Problem(f"{where}: {exc}") from None
+        raise Problem(f"{where}: {exc}" + (OTHER_RECORDS if OVER_OTHERS.search(str(source)) else "")) from None
     if unknown:
-        raise Problem(f"{where}: there's no function {', '.join(unknown)} (functions: {', '.join(sorted(expr.KNOWN))[:400]})")
+        raise Problem(f"{where}: there's no function {', '.join(unknown)} (functions: {', '.join(sorted(expr.KNOWN))[:400]})"
+                      + (OTHER_RECORDS if OVER_OTHERS.search(str(source)) else ""))
     for path in paths:
         head, _, rest = path.partition(".")
         if head in ("item",) and item is not None:

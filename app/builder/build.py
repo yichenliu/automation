@@ -307,6 +307,7 @@ class Turn:
         self.features = {}  # feature key -> the need it was made for
         self.navigate = None  # where to show the owner afterwards: the first list the turn made or changed
         self.ruled = set()  # the needs made by rules of their own (checked by worked examples, not a feature's checks)
+        self.already = set()  # the needs it said the app already met: one that does more than keep records is tried too
 
     def note(self, text):
         self.notes.append(text)
@@ -320,6 +321,13 @@ class Turn:
     @property
     def bp(self):
         return self.workspace.blueprint or schema.empty(self.workspace.name)
+
+    def theirs(self):
+        """The owner's own words: what they said, and the app's names (a fire alarm firm's “Trigger point” stays)."""
+        bp = self.bp or {}
+        return " ".join([self.question.text or "" if self.question is not None else ""]
+                        + [t["label"] for t in bp.get("tables", [])]
+                        + [str(x) for t in bp.get("tables", []) for f in t["fields"] for x in [f["label"], *(f.get("options") or [])]])
 
     def about(self):
         from .chat import describe_files
@@ -371,6 +379,7 @@ class Turn:
     def apply(self, patches, group, needs_text, owners=None):
         """Apply patches; send the refused ones back to be corrected, twice at most. The outcome as finally saved."""
         owners = owners or {}
+        patches = worded(patches, self.theirs())
         out = lang.apply(self.bp, patches)
         self.log.append({"step": group, "patches": patches, "problems": out.problems})
         self.save(out)
@@ -395,6 +404,7 @@ class Turn:
             sent, owners = flatten(answer) if by_need else (answer.get("patches") or [], {})
             if not sent:
                 break
+            sent = worded(sent, self.theirs())
             out = lang.apply(self.bp, sent)
             self.log.append({"step": f"{group} corrected", "patches": sent, "problems": out.problems})
             self.save(out)
@@ -510,7 +520,10 @@ def _turn(turn):
         sent, owners = _make_behaviour(turn, needs, needs_text)
         # worked examples for the needs met by rules (a feature writes its own checks)
         by_rule = sorted({owners[i] for i, p in enumerate(sent) if isinstance(p, dict) and p.get("do") in ("add_rule", "change_rule")
-                          and owners.get(i) in turn.made})
+                          and owners.get(i) in turn.made}
+                         # said to be met already, but more than keeping records (“needs my approval”, “pauses bookings”):
+                         # tried out as well, never taken on its word
+                         | {i for i in turn.already if 0 < i <= len(needs) and not KEEPS_RECORDS.match(needs[i - 1].does.strip())})
         turn.ruled |= set(by_rule)
         if by_rule:
             turn.note("Writing checks for what isn't a ready-made feature")
@@ -570,6 +583,7 @@ def _turn(turn):
             patches, owners = flatten(answer)
             if not patches:
                 continue
+            patches = worded(patches, turn.theirs())
             out = lang.apply(turn.bp, patches)
             turn.log.append({"step": f"fix {rounds}", "patches": patches, "problems": out.problems})
             if not out.changes:
@@ -684,6 +698,40 @@ def _make_lists(turn, needs_text):
         turn.apply(more["patches"], "data", needs_text)
 
 
+# what people read in the app that the builder writes (a field's label and help, a message, an email), in the app's
+# words: a restock level that "sets off" an alert, never one that "triggers" it, unless that's the owner's own word
+WORDED = {"label", "singular", "help", "message", "subject", "body", "name", "description"}
+
+
+def worded(patches, theirs=""):
+    from .chat import OURS
+    words = {k: v for k, v in OURS.items() if k not in ("table", "tables", "field", "fields")}  # "Field visit" is a word too
+    kept = {w for w in words if re.search(rf"\b{re.sub(r'(s|ed|ing)$', '', w)}", theirs or "", re.I)}  # any form of their word
+    found = re.compile(r"\b(" + "|".join(words) + r")\b", re.I)
+
+    def said(m):
+        word = m.group(0)
+        if word.lower() in kept:
+            return word
+        new = words[word.lower()]
+        return new[:1].upper() + new[1:] if word[:1].isupper() else new
+
+    def walk(x, key=None, when=False):
+        if isinstance(x, dict):
+            return {k: walk(v, k, when or k == "when") for k, v in x.items()}
+        if isinstance(x, list):
+            return [walk(v, key, when) for v in x]
+        if isinstance(x, str) and key in WORDED and not when:  # the words around a {{ }}, never inside it
+            return "".join(part if part.startswith("{{") else found.sub(said, part) for part in re.split(r"(\{\{.*?\}\})", x))
+        return x
+    return [walk(p) for p in patches]
+
+
+# a need that's met by keeping records in lists ("Records bookings", "Shows which invoices are unpaid"): the lists are it
+KEEPS_RECORDS = re.compile(r"(records?|tracks?|lists?|stores?|shows?|keeps?|logs?|holds?|manages?|lets?|views?|sees?|organi[sz]es?|"
+                           r"captures?|saves?|notes?|links?)\b", re.I)
+
+
 def _make_behaviour(turn, needs, needs_text):
     """(patches, {index: need}) for what the app does: all needs at once, or one need at a time if that's too much."""
     def ask(extra="", by_need=True, tries=0):
@@ -707,6 +755,7 @@ def _make_behaviour(turn, needs, needs_text):
             owners.update({len(sent) + k: v for k, v in more_owners.items()})
             sent = sent + more_sent
         turn.tried |= {i for i in range(1, len(needs) + 1) if i not in already}  # what's neither made nor already met is said
+        turn.already |= already
     except TOO_MUCH:
         turn.note("That was too much in one go; making it one need at a time")
         sent, owners = [], {}

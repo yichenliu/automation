@@ -515,7 +515,8 @@ def owner_checks(ws, scenario, folder):
         try:
             r = checking.add_and_tell(ws, text, by="owner")  # as the Checks page does: one it doesn't do yet stays in view
         except Exception as exc:  # noqa: BLE001
-            out.append({"check": text, "result": f"crash: {type(exc).__name__}"})
+            import traceback
+            out.append({"check": text, "result": f"crash: {type(exc).__name__}", "why": traceback.format_exc()[-1500:]})
             continue
         out.append({"check": text, "result": "couldn't check" if r is None or r["kind"] in ("example", "crash") else "pass" if r["ok"] else "fail",
                     "why": (r or {}).get("plain") or (r or {}).get("problem") or "", "looked_again": (r or {}).get("looked_again") or "",

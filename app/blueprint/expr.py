@@ -136,6 +136,29 @@ def _add_months(d, n):
     return date(year, month, day)
 
 
+def _date(*parts):
+    """date("2026-11-05") reads a date; date(2026, 11, 5) makes one as a spreadsheet's DATE does (month 13 is next
+    January, day 0 the month before's last)."""
+    if len(parts) == 1:
+        return to_date(parts[0])
+    if len(parts) != 3:
+        raise ExprError(f"date() takes a date, or a year, month and day, not {len(parts)} values")
+    year, month, day = (to_number(p) for p in parts)
+    if None in (year, month, day):
+        return None
+    months = int(year) * 12 + int(month) - 1
+    return date(months // 12, months % 12 + 1, 1) + timedelta(days=int(day) - 1)
+
+
+def _end_of_month(d, n=0):
+    """The last day of the month a date is in, or n months on (a spreadsheet's EOMONTH)."""
+    d = to_date(d)
+    if d is None:
+        return None
+    months = d.year * 12 + d.month + int(_num(n))
+    return date(months // 12, months % 12 + 1, 1) - timedelta(days=1)
+
+
 def _text(v):
     if v is None:
         return ""
@@ -206,7 +229,8 @@ FUNCTIONS = {
     "lower": lambda s: _text(s).lower(),
     "text": _text,
     "number": to_number,
-    "date": to_date,
+    "date": _date,
+    "end_of_month": _end_of_month,
     "coalesce": lambda *a: next((x for x in a if x not in (None, "")), None),
     "is_empty": lambda x: x in (None, "", []),
     "len": lambda x: len(x) if x is not None else 0,
@@ -217,7 +241,8 @@ FUNCTIONS = {
     "cents": lambda x: int(round((to_number(x) or 0) * 100)),
     "format_date": lambda d, f="%d%m%y": to_date(d).strftime(str(f)) if to_date(d) else "",
 }
-ALIASES = {"if": "iif", "datediff": "days_between", "dateadd": "add_days", "edate": "add_months", "today": "today", "now": "now"}
+ALIASES = {"if": "iif", "datediff": "days_between", "dateadd": "add_days", "edate": "add_months", "eomonth": "end_of_month",
+           "today": "today", "now": "now"}
 RECORD_FUNCTIONS = ("convert", "workday", "add_workdays", "workdays_between", "networkdays")  # a record's context gives these
 KNOWN = set(FUNCTIONS) | set(ALIASES) | {"iif", "today", "now"} | set(RECORD_FUNCTIONS)
 
@@ -450,6 +475,8 @@ def _eval(node, ctx):
             return fn(*args)
         except ExprError:
             raise
+        except TypeError as exc:  # said in the formula's words, never the code's ("to_date() takes 1 positional argument")
+            raise ExprError(f"{node.func.id}() can't take {len(args)} value{'s' if len(args) != 1 else ''} like that") from exc
         except Exception as exc:
             raise ExprError(f"{node.func.id}() couldn't work with those values ({exc})") from exc
     raise ExprError("unsupported expression")
