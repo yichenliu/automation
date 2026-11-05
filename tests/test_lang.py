@@ -519,3 +519,14 @@ def test_a_stage_added_after_another_leads_on_where_that_one_did_and_nothing_els
     moves = {(tuple(mv["from"]), mv["to"]) for mv in t["workflow"]["transitions"]}
     assert (("Sent",), "On hold") in moves and (("Sent", "On hold"), "Accepted") in moves and (("Sent", "On hold"), "Declined") in moves
     assert (("Draft",), "Sent") in moves
+
+
+def test_a_gate_on_a_condition_keeps_a_record_from_a_stage_until_it_holds(app):
+    out = lang.apply(everything(), [{"do": "gate", "list": "jobs", "stage": "In progress",
+                                     "only_if": [{"field": "scheduled_for", "op": "within_next_days", "value": 2}]}])
+    assert not out.problems, out.problems
+    examples = patterns.checks(out.blueprint)
+    assert len(examples) == 2
+    ws = _workspace(app, out.blueprint)
+    _, results = trial.try_out(ws, examples, screens=False)
+    assert all(r["ok"] for r in results), [r.get("problem") for r in results]

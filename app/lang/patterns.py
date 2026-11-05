@@ -162,6 +162,44 @@ def adding(d, t, alias, values=None, by=None, depth=0, made=None, through=()):
     return steps + [step]
 
 
+def holding(d, f, c, yes):
+    """A value of a field people fill in that keeps to the condition (yes) or doesn't, for a check to write; None when
+    it can't be said for sure."""
+    if f is None or f["type"] not in schema.STORED:
+        return None
+    kind, op, v = d.kind(f), c.op, c.value
+    if op in ("is_empty", "not_empty"):
+        filled = _sample(d, f, 0, "x") if kind != "date" else "today"
+        return "" if (op == "is_empty") == yes else filled  # "": left empty
+    if kind == "date":
+        n = int(v or 0) if isinstance(v, (int, float)) or str(v or "").lstrip("-").isdigit() else 0
+        table = {"before_today": ("today-1", "today+1"), "after_today": ("today+1", "today-1"), "today": ("today", "today+3"),
+                 "within_next_days": ("today+1", f"today+{n + 5}"), "within_last_days": ("today-1", f"today-{n + 5}"),
+                 "more_than_days_ago": (f"today-{n + 2}", "today")}
+        pair = table.get(op)
+        return pair[0 if yes else 1] if pair else None
+    if kind == "number":
+        try:
+            n = float(v)
+        except (TypeError, ValueError):
+            return None
+        table = {"greater_than": (n + 1, n - 1), "less_than": (n - 1, n + 1), "at_least": (n, n - 1), "at_most": (n, n + 1),
+                 "equals": (n, n + 1), "not_equals": (n + 1, n)}
+        pair = table.get(op)
+        return pair[0 if yes else 1] if pair else None
+    if kind == "yes_no" and op in ("equals", "not_equals"):
+        want = v in (True, "true", "yes", 1)
+        return want if (op == "equals") == yes else (not want)
+    if kind == "choice" and op in ("equals", "not_equals", "one_of"):
+        values = v if isinstance(v, list) else [v]
+        others = [o for o in f.get("options") or [] if o not in values]
+        inside = d.choice(f, values[0]) if values else None
+        if op == "not_equals":
+            return (others[0] if others else None) if yes else inside
+        return inside if yes else (others[0] if others else None)
+    return None
+
+
 def _through(path):
     """The link an email path goes through ("customer" for customer.email), for a check to fill it in."""
     return (str(path or "").split(".")[0],) if "." in str(path or "") else ()
@@ -933,12 +971,14 @@ class Recurring(Feature):
 
 @register("feature", {"do": "gate", "list": "jobs", "stage": "In progress", "needs": ["assigned_to", "billable"]})
 class Gate(Feature):
-    """A record can't move into a stage until these fields are filled in (a yes/no field: ticked): a unit can't be
-    assigned until the ID is checked and the agreement signed; a job can't start until it has someone on it."""
+    """A record can't move into a stage until these fields are filled in (a yes/no field: ticked), and only_if these
+    hold: a unit can't be assigned until the ID is checked and the agreement signed; a service can't be signed off
+    within 2 days of the ceremony (only_if ceremony_date not within_next_days 2: write it as more_than... or after...)."""
     do: Literal["gate"] = "gate"
     list: str
     stage: str
-    needs: list[str]
+    needs: list[str] = Field(default_factory=list)
+    only_if: list[Condition] = Field(default_factory=list)
 
     def default_key(self):
         return f"gate_{self.list}_{self.stage}"
@@ -959,8 +999,11 @@ class Gate(Feature):
         original = (entry or {}).get("undo", {}).get("workflow", {}).get(t["key"]) or flow.get("transitions") or []
         if not any(mv["to"] == stage for mv in original):
             raise Problem(f"{where}: no move takes {_a(t['singular'].lower())} to {stage} by hand, so there's nothing to hold back; add one (set_stages)")
+        if not fields and not self.only_if:
+            raise Problem(f"{where}: say what must be done first: needs (fields filled in or ticked) and/or only_if (what must hold)")
         ticks = [nf["key"] for nf in fields if nf["type"] == "checkbox"]
         filled = [nf["key"] for nf in fields if nf["type"] != "checkbox"]
+        conditions = ir_conditions(d, t, self.only_if, f"{where} › only_if") if self.only_if else []
         moves = copy.deepcopy(original)
         for mv in moves:
             if mv["to"] != stage:
@@ -968,8 +1011,8 @@ class Gate(Feature):
             mv["feature"] = self.feature_key()
             if filled:
                 mv["requires"] = list(dict.fromkeys(list(mv.get("requires") or []) + filled))
-            if ticks:
-                mv["only_if"] = list(mv.get("only_if") or []) + [{"field": k, "op": "equals", "value": True} for k in ticks]
+            if ticks or conditions:
+                mv["only_if"] = list(mv.get("only_if") or []) + [{"field": k, "op": "equals", "value": True} for k in ticks] + conditions
         flow["transitions"] = moves
         made = Made()
         made.ops.append({"op": "update_table", "table": t["key"], "workflow": flow})
@@ -992,6 +1035,14 @@ class Gate(Feature):
         for i, name in enumerate(self.needs):
             nf = d.field(t, name)
             full[nf["key"]] = True if nf["type"] == "checkbox" else ("today" if d.kind(nf) == "date" else _sample(d, nf, i, "r2"))
+        for c in self.only_if:  # one that keeps to each condition, and (for the first) one that doesn't
+            nf = d.field(t, c.field)
+            yes, no = holding(d, nf, c, True), holding(d, nf, c, False)
+            if nf is None or yes is None or (not self.needs and no is None):
+                return []  # what keeps to it can't be written for sure (a linked record's field, a worked-out one)
+            full[nf["key"]] = yes
+            if no is not None:
+                empty[nf["key"]] = no
         steps1 = adding(d, t, "r1", empty) + [{**s, "record": "r1"} for s in lead] + [{"do": "move", "record": "r1", "to": stage, "refused": True}]
         steps2 = adding(d, t, "r2", full) + [{**s, "record": "r2"} for s in lead] + [{"do": "move", "record": "r2", "to": stage}]
         for s_ in steps1[:-1]:  # what the gate needs is left out of the first, whatever adding() would have filled in
@@ -1000,9 +1051,11 @@ class Gate(Feature):
                     nf = d.field(t, name)
                     if nf["type"] != "checkbox":
                         s_["values"].pop(nf["key"], None)
-        return [{"title": f"{_a(t['singular'])} can't move to {stage} until {', '.join(self.needs)} {'is' if len(self.needs) == 1 else 'are'} done",
+        what = " and ".join(([f"{', '.join(self.needs)} {'is' if len(self.needs) == 1 else 'are'} done"] if self.needs else [])
+                            + (["it's time"] if self.only_if else []))
+        return [{"title": f"{_a(t['singular'])} can't move to {stage} until {what}",
                  "steps": steps1, "expect": [{"record": "r1", "field": d.stage_field(t)["key"], "not_equals": stage}]},
-                {"title": f"Once {', '.join(self.needs)} {'is' if len(self.needs) == 1 else 'are'} done, it can move to {stage}",
+                {"title": f"Once {what}, it can move to {stage}",
                  "steps": steps2, "expect": [{"record": "r2", "field": d.stage_field(t)["key"], "equals": stage}]}]
 
     def said(self, d):

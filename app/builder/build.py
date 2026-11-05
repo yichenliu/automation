@@ -46,6 +46,7 @@ wrong if anything is).
 - Use the owner's own words for lists, fields, stages and choices. Never invent what they didn't say: no extra choices,
   stages, tiers or rules. Where something needs a number or name they didn't give, use a sensible one.
 - Keys are snake_case (invoice_lines). A list's key is plural; its singular names one record.
+- A column, field, box or detail the owner asks for is a field on the list it belongs to (add_field), never a list.
 - In a rule, every name is read from the record the rule is about; reach linked records through dots (order.status).
 - Whenever a FEATURE does what's needed, use it: it is made right every time and checks itself. Write a rule only for
   what no feature does."""
