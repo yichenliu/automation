@@ -41,12 +41,8 @@ def save(workspace_id, data, name, *, source="upload", record_id=None, field="",
     now = utcnow()
     relative = Path("files") / str(workspace_id) / f"{now:%Y}" / f"{now:%m}" / f"{uuid.uuid4().hex[:12]}_{name}"
     backend().put(str(relative), content, mimetypes.guess_type(name)[0] or "application/octet-stream")
-    uploader = None
-    try:
-        from flask_login import current_user
-        uploader = current_user.id if current_user and current_user.is_authenticated else None
-    except Exception:  # outside a request (the worker, an email arriving)
-        uploader = None
+    from .core import actor
+    uploader = actor.user_id()  # none outside a person's request (the worker, an email arriving)
     record = File(workspace_id=workspace_id, record_id=record_id, field=field or "", name=name, size=len(content), uploaded_by_id=uploader,
                   mime=mimetypes.guess_type(name)[0] or ("application/pdf" if mime == "application/pdf" else "application/octet-stream"),
                   sha256=hashlib.sha256(content).hexdigest(), path=str(relative), source=source, by=by)

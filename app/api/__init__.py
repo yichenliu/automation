@@ -74,10 +74,12 @@ def create(flask_app=None):
 
     def on_app(who, fn, *args):
         def run():
+            from ..core.actor import acting
             from ..extensions import db
             from ..models import Workspace
             ws = db.session.get(Workspace, who.workspace_id)
-            return fn(ws, *args)
+            with acting(workspace_id=ws.id):  # the AI's turns are this app's, the audit log says it was this key
+                return fn(ws, *args)
         return within(run)
 
     class Patches(BaseModel):

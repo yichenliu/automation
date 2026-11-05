@@ -48,7 +48,6 @@ import time
 from collections import deque, namedtuple
 
 import requests
-from flask import g, has_app_context
 from .core.settings import settings
 
 log = logging.getLogger("ai")
@@ -145,9 +144,9 @@ def _who(purpose=None, priority=None, workspace_id=None):
     priority = priority or said.get("priority") or (thread[1] if thread else None) or PRIORITY_OF[purpose]
     if workspace_id is None:
         workspace_id = said.get("workspace_id")
-    if workspace_id is None and has_app_context():
-        ws = g.get("ws") or getattr(g.get("engine"), "ws", None)
-        workspace_id = getattr(ws, "id", None)
+    if workspace_id is None:
+        from .core import actor
+        workspace_id = actor.workspace_id()
     return purpose, priority, workspace_id
 
 

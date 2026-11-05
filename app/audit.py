@@ -7,11 +7,10 @@ import logging
 import hashlib
 import json
 
-from flask import has_request_context, request
-from flask_login import current_user
 
 from .extensions import db
 from .models import AuditEvent, utcnow
+from .core import actor
 
 _log = logging.getLogger(__name__)
 
@@ -28,12 +27,11 @@ def log(workspace_id, action, detail="", user=None, by=None):
     """Add an entry, chained to the last one of its workspace (or of the platform's own, for sign-ins before one is
     chosen). Never fails the thing being done: a log that can't be written is itself logged by the app."""
     try:
-        who = user if user is not None else (current_user if has_request_context() and current_user.is_authenticated else None)
+        who = user if user is not None else actor.user()
         last = AuditEvent.query.filter_by(workspace_id=workspace_id).order_by(AuditEvent.id.desc()).first()
         entry = AuditEvent(workspace_id=workspace_id, user_id=getattr(who, "id", None), at=utcnow(),
                            by=(by or getattr(who, "display", None) or "the app")[:200], action=action[:32], detail=str(detail or "")[:1000],
-                           ip=(request.headers.get("X-Forwarded-For", request.remote_addr or "").split(",")[0].strip()[:64]
-                               if has_request_context() else None))
+                           ip=actor.ip())
         entry.previous = last.fingerprint if last else ""
         entry.fingerprint = _fingerprint(entry)
         db.session.add(entry)
