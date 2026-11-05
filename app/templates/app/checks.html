@@ -34,7 +34,7 @@
 <div class="card">{% for c in kept %}{% set r = c.result %}
   <details class="list-row check-row {{ 'bad' if r and not r.ok }}" {{ 'open' if r and not r.ok }}>
     <summary>{{ icon('circle-check' if r and r.ok else 'circle-x' if r else 'clock') }}<span class="grow">{{ c.title }}</span>
-      <span class="faint tiny">{{ 'yours' if c.by != 'builder' else 'from the builder' }}</span></summary>
+      <span class="faint tiny">{{ 'from the builder' if c.by == 'builder' or (c.by or '').startswith('feature:') else 'yours' }}</span></summary>
     <div class="check-detail">{% if r %}<ul>{% for ok, line in r.lines %}<li class="{{ '' if ok else 'bad' }}">{{ line }}</li>{% endfor %}
       {% if r.problem and not r.ok and not (r.lines|rejectattr(0)|list) %}<li class="bad">{{ r.problem }}</li>{% endif %}</ul>{% else %}<p class="faint small">Not tried yet.</p>{% endif %}
       <div class="row">{% if r and not r.ok %}<form method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="do" value="fix"><input type="hidden" name="only" value="{{ c.title }}">

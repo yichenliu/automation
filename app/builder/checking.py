@@ -40,6 +40,12 @@ def platform_version():
     return _PLATFORM["v"]
 
 
+def theirs(check):
+    """Whether a check is the owner's own (written from what they said), not the builder's or a feature's."""
+    by = str((check or {}).get("by") or "builder")
+    return by != "builder" and not by.startswith("feature:")
+
+
 def examples(workspace):
     return [x for x in (workspace.state or {}).get("examples") or [] if isinstance(x, dict) and x.get("steps")]
 

@@ -240,7 +240,7 @@ def _kept(workspace):
 
 def _theirs(workspace):
     """The owner's own checks: never changed, never dropped, always acted out."""
-    return [x for x in _kept(workspace) if x.get("by", "builder") not in ("builder",) and not str(x.get("by", "")).startswith("feature:")]
+    return [x for x in _kept(workspace) if checking.theirs(x)]
 
 
 def _suite(workspace, bp, custom):

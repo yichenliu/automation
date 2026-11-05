@@ -445,7 +445,7 @@ def fixed_up(ws, owner, scenario, result):
         return {"right_after": 0, "asks": []}
     checking.check(ws, "you asked")  # as the owner sees it now: their checks, after the handover's own
     state = ws.state or {}
-    owners = {x["title"] for x in checking.examples(ws) if x.get("by", "builder") != "builder"}
+    owners = {x["title"] for x in checking.examples(ws) if checking.theirs(x)}
     failing = {x["title"] for x in (state.get("checks") or {}).get("examples") or [] if not x["ok"]}
     must = owners | failing  # never quietly gone: the owner's checks, and the builder's that didn't work
     out = {"right_after": None, "asks": []}
