@@ -138,7 +138,7 @@ Only 1 was the model's own judgment.
 | 3 | Features with their own checks; the registry, generated catalog and schema, and the guard test | done: 12 features (fa11576, a83c605) |
 | 4 | Checks: told and not-equals expectations, numbers as arithmetic the platform works out, today+N dates, unsaved designs tried | done; snapshots not used yet |
 | 5 | Builder: needs → data → behaviour → checks → simulate → best of several fixes → need-by-need handover (default) | done (fa11576, b9040d7, a83c605); files attached still use the old builder |
-| 6 | Runtime: worker processes, SKIP LOCKED, scheduler leader, outbox, rule index | in progress |
+| 6 | Runtime: worker processes, SKIP LOCKED, scheduler leader, outbox, rule index | done (`app/worker.py`, `leases.py`, `scheduler.py`, `outbox.py`); SMS waits for a `send_sms` step in the language and a texting service |
 | 7 | Queries in SQL: filters, sorts, search, paging, totals, unique and limit checks, imports | in progress |
 | 8 | AI gateway: providers, priorities, fairness, deadlines | done (0ae4c76) |
 | 9a | Core free of Flask: SQLAlchemy 2 sessions, settings object, context variables | after 6 and 7 land |
