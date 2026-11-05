@@ -411,9 +411,12 @@ def test_a_change_to_who_can_see_something_is_said_first(app, owner):
     user, ws = owner
     _built(ws, [{"op": "create_table", "table": "notes", "label": "Clinical notes", "access": {"view": "admin", "edit": "admin"},
                  "fields": [{"key": "patient", "type": "text", "required": True}, {"key": "diagnosis", "type": "long_text"}]}])
-    opened = {"ops": [{"op": "update_table", "table": "notes", "access": {"view": "editor", "edit": "editor"}}],
-              "reply": "Dentists can now see and write clinical notes while receptionists cannot.", "more": False}
-    ai.set_backend(ScriptedAI(opened))
+    from .test_lang import Model
+    opened = {"work": [{"need": 1, "patches": [{"do": "set_access", "list": "notes", "view": "editor", "edit": "editor"}]}],
+              "reply": "Dentists can now see and write clinical notes while receptionists cannot."}
+    ai.set_backend(Model({"understand": {"needs": [{"said": "All dentists must see clinical notes", "does": "Lets dentists see clinical notes"}],
+                                         "reply": "Dentists can now see and write clinical notes while receptionists cannot."},
+                          "data": {"lists": ["notes"], "patches": []}, "behaviour": opened}))
     reply = chat.ask(ws, "All dentists must see clinical notes. Receptionists must never see them.")
     chat.work(reply.id)
     m = db.session.get(Message, reply.id)

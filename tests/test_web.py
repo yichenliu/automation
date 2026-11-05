@@ -54,6 +54,44 @@ QUOTING = [
 ]
 
 
+# the same app as the builder writes it, in the Keel language (the data step's patches, then the behaviour step's)
+QUOTING_DATA = [
+    {"do": "add_list", "key": "customers", "label": "Customers", "singular": "Customer", "fields": [
+        {"type": "text", "key": "name", "label": "Name", "required": True, "unique": True}, {"type": "email", "key": "email", "label": "Email"},
+        {"type": "choices", "key": "tags", "label": "Tags", "options": ["VIP", "Trade"]}, {"type": "rating", "key": "rating", "label": "Rating"},
+        {"type": "image", "key": "logo", "label": "Logo"}, {"type": "person", "key": "owner", "label": "Account manager"},
+        {"type": "rich_text", "key": "notes", "label": "Notes"}]},
+    {"do": "add_list", "key": "quotes", "label": "Quotes", "singular": "Quote", "fields": [
+        {"type": "auto_number", "key": "number", "label": "Quote", "prefix": "Q-"},
+        {"type": "link", "key": "customer", "label": "Customer", "to": "customers", "required": True},
+        {"type": "lookup", "key": "customer_email", "label": "Customer email", "path": "customer.email"},
+        {"type": "date", "key": "issue_date", "label": "Date", "default": "today"}, {"type": "date", "key": "valid_until", "label": "Valid until"},
+        {"type": "choice", "key": "status", "label": "Status", "options": ["Draft", "Sent", "Accepted", "Declined"], "default": "Draft"},
+        {"type": "text", "key": "reason", "label": "Why declined", "show_if": [{"field": "status", "op": "equals", "value": "Declined"}]},
+        {"type": "total", "key": "subtotal", "label": "Subtotal", "of": "quote_lines", "link": "quote", "how": "sum", "field": "amount"},
+        {"type": "formula", "key": "gst", "label": "GST", "formula": "round(subtotal * 0.1, 2)", "shows": "money"},
+        {"type": "formula", "key": "total", "label": "Total", "formula": "subtotal + gst", "shows": "money"},
+        {"type": "file", "key": "pdf", "label": "PDF"}]},
+    {"do": "add_list", "key": "quote_lines", "label": "Quote lines", "singular": "Quote line", "inside": "quotes", "fields": [
+        {"type": "link", "key": "quote", "label": "Quote", "to": "quotes", "required": True},
+        {"type": "text", "key": "description", "label": "Description", "required": True},
+        {"type": "number", "key": "quantity", "label": "Qty", "default": 1}, {"type": "money", "key": "unit_price", "label": "Unit price"},
+        {"type": "formula", "key": "amount", "label": "Amount", "formula": "quantity * unit_price", "shows": "money"}]},
+    {"do": "add_view", "list": "quotes", "view": {"type": "calendar", "label": "Calendar", "date_field": "issue_date"}},
+    {"do": "add_view", "list": "quotes", "view": {"type": "timeline", "label": "Timeline", "date_field": "issue_date", "end_field": "valid_until"}},
+    {"do": "add_view", "list": "customers", "view": {"type": "gallery", "label": "Cards", "image_field": "logo"}},
+]
+QUOTING_BEHAVIOUR = [
+    {"do": "design_op", "op": next(op for op in QUOTING if op.get("table") == "quotes" and op["op"] == "create_table")["documents"][0] | {}},
+    {"do": "add_rule", "rule": {"key": "big_quotes", "name": "Big quotes need approval", "when": {"on": "button", "list": "quotes", "label": "Send"},
+                                "steps": [{"do": "approval", "who": "admin", "message": "Send {{number}} for {{total}}?",
+                                           "only_if": [{"field": "total", "op": "greater_than", "value": 1000}]},
+                                          {"do": "document", "document": "quote_pdf", "save_to": "pdf"},
+                                          {"do": "set", "values": [{"field": "status", "to": "Sent"}]}]}},
+] + [{"do": "design_op", "op": op} for op in QUOTING if op["op"] in ("set_public_form", "set_theme", "add_page")]
+QUOTING_BEHAVIOUR[0] = {"do": "design_op", "op": {"op": "add_document", "table": "quotes", "document": QUOTING_BEHAVIOUR[0]["op"]}}
+
+
 def _build(ws):
     result = ops.apply(ws.blueprint, QUOTING)
     assert not result.problems, result.problems
@@ -82,7 +120,10 @@ def test_sign_up_start_an_erp_and_invite_someone(client, app):
 def test_build_by_chat_then_use_every_screen(client, app, owner):
     user, ws = owner
     login(client)
-    ai.set_backend(ScriptedAI({"ops": QUOTING, "reply": "Built customers and quotes."}))
+    from .test_lang import Model
+    ai.set_backend(Model({"understand": {"needs": [{"said": "We quote customers", "does": "Keeps customers and quotes"}], "reply": "Built customers and quotes."},
+                          "data": {"lists": ["customers", "quotes", "quote_lines"], "patches": QUOTING_DATA},
+                          "behaviour": {"work": [{"need": 1, "patches": QUOTING_BEHAVIOUR}]}}))
     sent = client.post(f"/w/{ws.id}/chat", data={"text": "We quote customers", "page": f"/w/{ws.id}/app",
                                                 "files": (io.BytesIO(b"name,email\nAcme,a@acme.com\n"), "customers.csv")},
                        content_type="multipart/form-data").get_json()

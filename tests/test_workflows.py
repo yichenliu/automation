@@ -326,20 +326,6 @@ def test_an_automation_runs_another_for_the_record_it_made_and_failures_are_told
     assert Notification.query.filter(Notification.text.like("The rule “Broken” stopped: Text is required%"), Notification.kind == "error").count() == 1
 
 
-def test_the_grammar_defines_conditions_and_steps_once_and_lets_them_nest_three_deep(app):
-    """Steps nest a branch, an approval in it, what its no does: three deep, each kind holding only what it can (a notify
-    has no paths to wander into), so a model can't go round nesting for ever."""
-    schema_ = prompts.ANSWER_SCHEMA
-    assert set(schema_["$defs"]) == {"condition", "step", "inner", "leaf"}
-    assert schema_["$defs"]["condition"]["properties"]["any"]["items"] == {"$ref": "#/$defs/condition"}
-    kinds = {tuple(k["properties"]["type"]["enum"]): k["properties"] for k in schema_["$defs"]["step"]["anyOf"]}
-    branch, approval = kinds[("branch",)], kinds[("request_approval",)]
-    other = next(v for k, v in kinds.items() if "notify" in k)
-    assert branch["paths"]["items"]["properties"]["steps"]["items"] == {"$ref": "#/$defs/inner"}
-    assert approval["if_rejected"]["items"] == {"$ref": "#/$defs/inner"} and "approvers" in approval and "mode" in approval
-    assert not {"paths", "otherwise", "if_rejected"} & set(other) and not {"paths", "otherwise", "if_rejected"} & set(schema_["$defs"]["leaf"]["properties"])
-    assert list(approval).index("approvers") > list(approval).index("approver")  # one approver first, as it's usually written
-    assert prompts.REVIEW_SCHEMA["$defs"] is prompts.DEFS
 
 
 def test_a_move_that_needs_a_file_can_be_made_once_the_file_is_attached(app, owner):

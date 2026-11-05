@@ -164,8 +164,6 @@ def test_the_whole_procurement_design_fits_the_kit_and_says_what_it_does(app, ow
     assert "the .aba file Bank file, made in its own layout" in said and "copies it with its lines, linked back by Previous version" in said
     flow = automations.describe(Engine(ws), ws.blueprint["automations"][0])["flow"][0]["text"]
     assert flow == "Ask the request's approver to approve it, and wait for their answer (never the person who asked for it)"
-    assert "PROCUREMENT AND FINANCE CONTROLS" in prompts.system("Suppliers bid in tenders and we pay in payment runs")
-    assert "PROCUREMENT AND FINANCE CONTROLS" not in prompts.system("We're a solo cleaner who invoices clients")  # not copied into builds that didn't ask
     outline = prompts.outline(ws.blueprint, {})
     assert "Teams: finance \"Finance\", procurement \"Procurement\"" in outline and "person of the approval_limits found by conditions" in outline
 

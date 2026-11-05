@@ -84,8 +84,33 @@ def _list(d, name, where):
     return t
 
 
+ROLE_WORDS = {"admins": "admin", "owners": "owner", "editors": "editor", "viewers": "viewer", "staff": "editor", "managers": "admin",
+              "manager": "admin", "everyone": "viewer"}
+
+
+def _role_or_team(d, name, where):
+    """A role (viewer, editor, admin, owner) or a team's key, as who may see or change something."""
+    word = ROLE_WORDS.get(schema.slug(name), schema.slug(name))
+    if word in schema.ROLE_NAMES or word in d.teams():
+        return word
+    raise Problem(f"{where}: “{name}” isn't a role (viewer, editor, admin, owner) or a team"
+                  + (f" ({', '.join(d.teams())})" if d.teams() else " (add one first with set_team)"))
+
+
 def ir_field(d, t, f, where):
     """The design's field for a language field on list t (t may be the list being made)."""
+    out = _ir_field(d, t, f, where)
+    for attr in ("show_if", "required_if"):
+        conditions = getattr(f, attr, None)
+        if conditions:
+            if not t.get("fields"):  # a list being made: its own fields aren't there to check against yet, kept as written
+                out[attr] = [{"field": c.field, "op": c.op, **({"value": c.value} if c.value is not None else {})} for c in conditions]
+            else:
+                out[attr] = ir_conditions(d, t, conditions, f"{where} › {attr}")
+    return out
+
+
+def _ir_field(d, t, f, where):
     out = {"key": schema.slug(f.key), "label": f.label}
     if isinstance(f, m.Plain):
         out["type"] = TYPE_OF.get(f.type, f.type)
@@ -96,6 +121,10 @@ def ir_field(d, t, f, where):
             out["default"] = f.default
         if f.help:
             out["help"] = f.help
+        if f.sensitive:
+            out["sensitive"] = True
+        if f.visible_to:
+            out["access"] = _role_or_team(d, f.visible_to, f"{where} › visible_to")
     elif isinstance(f, m.Choice):
         out.update(type=TYPE_OF[f.type], options=[str(o).strip() for o in f.options if str(o).strip()])
         if not out["options"]:
@@ -109,6 +138,8 @@ def ir_field(d, t, f, where):
             out["required"] = True
         if f.help:
             out["help"] = f.help
+        if f.visible_to:
+            out["access"] = _role_or_team(d, f.visible_to, f"{where} › visible_to")
     elif isinstance(f, m.Link):
         target = _list(d, f.to, where)
         out.update(type="link", table=target["key"])
@@ -689,26 +720,39 @@ def apply(bp, raw_patches, allowed=None):
             op["embedded"] = True
         if not _apply_ops(out, [op], here):
             refused.add(n)
-    # phase B and C: links, then what's worked out, in the order given
+    # phase B and C: links, then what's worked out. A worked-out field can read one another new list hasn't made yet
+    # (a quote's total sums its lines' amounts, a formula of the lines'): what can't be made is tried again once the rest
+    # is in, and only what still can't is refused, with its last problem
     for phase in ((m.Link,), (m.Lookup, m.Total, m.Formula)):
-        for n, p in lists:
-            if n in refused:
-                continue
-            for f in p.fields:
-                if not isinstance(f, phase):
-                    continue
+        waiting = [(n, p, f) for n, p in lists if n not in refused for f in p.fields if isinstance(f, phase)]
+        said = {}
+        for _ in range(4):
+            again = []
+            for n, p, f in waiting:
                 here, d = where(n, p), Design(out.blueprint)
                 t = d.list(p.key)
-                if d.field(t, f.key):
+                if t is None or d.field(t, f.key):
                     continue
+                before = len(out.problems)
                 try:
                     ir = ir_field(d, t, f, f"{here} › field {f.key}")
+                    ok = _apply_ops(out, [{"op": "add_field", "table": t["key"], "field": ir}], here)
                 except Problem as exc:
                     out.problems.append(str(exc))
-                    refused.add(n)
-                    continue
-                if not _apply_ops(out, [{"op": "add_field", "table": t["key"], "field": ir}], here):
-                    refused.add(n)
+                    ok = False
+                problems = out.problems[before:]
+                del out.problems[before:]
+                if ok:
+                    said.pop((n, f.key), None)
+                else:
+                    said[(n, f.key)] = problems
+                    again.append((n, p, f))
+            if not again or len(again) == len(waiting):
+                break
+            waiting = again
+        for (n, _), problems in said.items():
+            out.problems.extend(problems)
+            refused.add(n)
     # phase D: each new list's stage moves, and its fields in the order given
     for n, p in lists:
         d = Design(out.blueprint)
@@ -821,6 +865,48 @@ def translate(d, p, where):
             first = {"op": "update_field", "table": t["key"], "key": old["key"], "changes": {**old, "type": "select", "options": status["options"],
                                                                                              "default": status["default"]}}
         return [first, {"op": "update_table", "table": t["key"], "workflow": flow}]
+    if isinstance(p, m.AddValidation):
+        t = _list(d, p.list, where)
+        _check_formula(d, t, p.check, f"{where} › check")
+        rule = {"check": p.check, "message": p.message}
+        if p.only_if:
+            rule["when"] = ir_conditions(d, t, p.only_if, f"{where} › only_if")
+        return [{"op": "update_table", "table": t["key"], "rules": list(t.get("rules") or []) + [rule]}]
+    if isinstance(p, m.SetTeam):
+        team = {"key": schema.slug(p.key), "name": p.name}
+        if p.about:
+            team["about"] = p.about
+        return [{"op": "set_team", "team": team}]
+    if isinstance(p, m.SetAccess):
+        t = _list(d, p.list, where)
+        access, teams = {}, []
+        for action in ("view", "edit"):
+            value = getattr(p, action)
+            if value:
+                who = _role_or_team(d, value, f"{where} › {action}")
+                if who in schema.ROLE_NAMES:
+                    access[action] = who
+                else:
+                    teams.append(who)
+        if teams:
+            access["teams"] = list(dict.fromkeys(teams))
+        if not access:
+            raise Problem(f"{where}: say who may see (view) or change (edit) {t['label']}")
+        return [{"op": "update_table", "table": t["key"], "access": access}]
+    if isinstance(p, m.OwnRecords):
+        t = _list(d, p.list, where)
+        try:
+            f, _, keys = d.path(t, p.field)
+        except NameProblem as exc:
+            raise Problem(f"{where} › field: {exc}") from None
+        if f.get("type") != "user":
+            people = [x["key"] for x in t["fields"] if x["type"] == "user"]
+            raise Problem(f"{where} › field: {p.field} isn't a person field of {t['label']}" + (f" (its person fields: {', '.join(people)})" if people
+                                                                                                 else ": add one first (type person)"))
+        rows = {"field": ".".join(keys), "roles": list(p.roles)}
+        if p.see_all:
+            rows["teams"] = [_role_or_team(d, x, f"{where} › see_all") for x in p.see_all]
+        return [{"op": "update_table", "table": t["key"], "row_access": rows}]
     if isinstance(p, m.AddStage):
         t = _list(d, p.list, where)
         f = d.stage_field(t)
@@ -847,7 +933,8 @@ def translate(d, p, where):
         view = {"key": schema.slug(v.label), "label": v.label, "type": v.type}
         if v.filters:
             view["filters"] = ir_conditions(d, t, v.filters, f"{where} › filters")
-        for attr, key in (("date_field", "date_field"), ("group_by", "group_by")):
+        for attr, key in (("date_field", "start_field" if v.type == "timeline" else "date_field"), ("group_by", "group_by"),
+                          ("end_field", "end_field"), ("image_field", "image_field")):
             name = getattr(v, attr)
             if name:
                 f = d.field(t, name)

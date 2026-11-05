@@ -28,14 +28,15 @@ class Base(BaseModel):
 
 # --- fields ---------------------------------------------------------------------------------------------------------
 
-PLAIN_TYPES = ("text", "long_text", "email", "phone", "url", "address", "barcode", "tags", "number", "money", "percent",
+PLAIN_TYPES = ("text", "long_text", "rich_text", "email", "phone", "url", "address", "barcode", "tags", "number", "money", "percent",
                "duration", "rating", "date", "datetime", "time", "yes_no", "person", "file", "image", "signature")
 
 
 @register("field", {"type": "date", "key": "due_date", "label": "Due date", "required": True})
 class Plain(Base):
-    """A field people fill in."""
-    type: Literal["text", "long_text", "email", "phone", "url", "address", "barcode", "tags", "number", "money", "percent",
+    """A field people fill in. visible_to: only this role (admin, owner) or team sees it (prices kept from the makers);
+    sensitive: kept encrypted and shown masked (a bank account, a tax number)."""
+    type: Literal["text", "long_text", "rich_text", "email", "phone", "url", "address", "barcode", "tags", "number", "money", "percent",
                   "duration", "rating", "date", "datetime", "time", "yes_no", "person", "file", "image", "signature"]
     key: str
     label: str
@@ -43,6 +44,10 @@ class Plain(Base):
     default: Scalar = None
     help: str | None = None
     unique: bool = False
+    visible_to: str | None = None
+    sensitive: bool = False
+    show_if: list["Condition"] = Field(default_factory=list, description="shown only while these hold (a reason, when declined)")
+    required_if: list["Condition"] = Field(default_factory=list, description="must be filled in while these hold")
 
 
 @register("field", {"type": "choice", "key": "priority", "label": "Priority", "options": ["Standard", "Urgent"]})
@@ -55,6 +60,9 @@ class Choice(Base):
     required: bool = False
     default: str | None = None
     help: str | None = None
+    visible_to: str | None = None
+    show_if: list["Condition"] = Field(default_factory=list)
+    required_if: list["Condition"] = Field(default_factory=list)
 
 
 @register("field", {"type": "link", "key": "customer", "label": "Customer", "to": "customers", "required": True})
@@ -67,6 +75,8 @@ class Link(Base):
     many: bool = False
     required: bool = False
     help: str | None = None
+    show_if: list["Condition"] = Field(default_factory=list)
+    required_if: list["Condition"] = Field(default_factory=list)
 
 
 @register("field", {"type": "auto_number", "key": "number", "label": "Invoice number", "prefix": "INV-"})
@@ -451,11 +461,14 @@ class Rule(Base):
 # --- views ----------------------------------------------------------------------------------------------------------
 
 class View(Base):
-    """Another way to see a list: a board (by stage), a calendar (by a date field), a filtered list."""
+    """Another way to see a list: a board (by stage), a calendar (by a date field), a timeline (date_field to
+    end_field), a gallery (of image_field), a filtered list."""
     type: Literal["list", "board", "calendar", "gallery", "timeline", "map"]
     label: str
     filters: list[Condition] = Field(default_factory=list)
     date_field: str | None = None
+    end_field: str | None = None
+    image_field: str | None = None
     group_by: str | None = None
 
 
@@ -591,6 +604,47 @@ class AddRecords(Base):
     records: list[dict]
 
 
+@register("patch", {"do": "add_validation", "list": "invoices", "check": "total >= 0", "message": "A total can't be below zero"}, "data")
+class AddValidation(Base):
+    """A rule every saved record of a list must keep: check is a formula that must be true (end_date >= start_date),
+    message what people are told when it isn't; only_if: only while these hold."""
+    do: Literal["add_validation"]
+    list: str
+    check: str
+    message: str
+    only_if: list[Condition] = Field(default_factory=list)
+
+
+@register("patch", {"do": "set_team", "key": "finance", "name": "Finance", "about": "Pays the bills and chases what's owed"}, "data")
+class SetTeam(Base):
+    """A team people can be put in (Finance, Makers): lists, fields, moves and tasks can be for a team."""
+    do: Literal["set_team"]
+    key: str
+    name: str
+    about: str | None = None
+
+
+@register("patch", {"do": "set_access", "list": "invoices", "view": "finance", "edit": "finance"}, "data")
+class SetAccess(Base):
+    """Who may see and change a list's records: view and edit are a role (viewer, editor, admin, owner) or a team's
+    key (only Finance). Admins and the owner always may."""
+    do: Literal["set_access"]
+    list: str
+    view: str | None = None
+    edit: str | None = None
+
+
+@register("patch", {"do": "own_records", "list": "jobs", "field": "assigned_to", "roles": ["editor"], "see_all": ["office"]}, "data")
+class OwnRecords(Base):
+    """People with these roles see only the records where a person field is them (each salesperson their own deals);
+    see_all: teams who still see every record."""
+    do: Literal["own_records"]
+    list: str
+    field: str
+    roles: list[Literal["viewer", "editor", "admin"]] = Field(default_factory=lambda: ["viewer", "editor"])
+    see_all: list[str] = Field(default_factory=list)
+
+
 @register("patch", {"do": "add_document", "list": "jobs", "key": "job_report", "label": "Job report", "title": "Job report"}, "data")
 class AddDocument(Base):
     """A PDF each record of a list can be made into (a quote, an invoice, a report, a certificate), laid out by the
@@ -625,3 +679,6 @@ class DesignOp(Base):
 
 Total.model_rebuild()
 Move.model_rebuild()
+Plain.model_rebuild()
+Choice.model_rebuild()
+Link.model_rebuild()

@@ -61,6 +61,7 @@ EVERYTHING = [
     {"do": "add_list", "key": "services", "label": "Services", "singular": "Service", "fields": [
         {"type": "text", "key": "name", "label": "Name"}, {"type": "money", "key": "price", "label": "Price"}]},
     {"do": "add_list", "key": "notes", "label": "Notes", "singular": "Note", "fields": [{"type": "text", "key": "text", "label": "Text"}]},
+    {"do": "set_team", "key": "finance", "name": "Finance"}, {"do": "set_team", "key": "office", "name": "Office"},
 ]
 
 
@@ -232,7 +233,6 @@ class Model:
 
 
 def test_a_turn_of_the_new_builder_works_out_the_needs_builds_them_and_proves_them(app):
-    app.config["BUILDER"] = "v2"
     ws = _workspace(app, None)
     model = Model({
         "understand": {"needs": [{"said": "invoices with GST", "does": "Invoices add up their lines with GST"},
@@ -261,7 +261,6 @@ def test_a_turn_of_the_new_builder_works_out_the_needs_builds_them_and_proves_th
 
 
 def test_what_fails_is_put_right_by_the_best_of_several_candidate_fixes(app):
-    app.config["BUILDER"] = "v2"
     ws = _workspace(app, None)
     good = {"work": [{"need": 1, "patches": [{"do": "payments", "list": "invoices", "payments": "payments", "paid_stage": "Paid", "key": "payments_invoices"}]}]}
     bad = {"work": [{"need": 0, "patches": [{"do": "add_field", "list": "invoices", "field": {"type": "text", "key": "memo", "label": "Memo"}}]}]}
@@ -296,7 +295,6 @@ def test_what_fails_is_put_right_by_the_best_of_several_candidate_fixes(app):
 
 
 def test_a_need_whose_patches_were_all_refused_is_said_as_not_made_yet(app):
-    app.config["BUILDER"] = "v2"
     ws = _workspace(app, None)
     wrong = {"work": [{"need": 1, "patches": [{"do": "stage_alert", "list": "invoices", "stage": "Settled"}]}]}
     model = Model({
@@ -332,7 +330,6 @@ def test_a_feature_checks_itself_when_its_total_is_worked_out_by_a_formula(app):
 
 
 def test_lists_named_as_needed_but_not_made_are_asked_for_again(app):
-    app.config["BUILDER"] = "v2"
     ws = _workspace(app, None)
     data = iter([{"lists": ["customers", "invoices"], "patches": [EVERYTHING[0]]}, {"lists": ["invoices"], "patches": [_invoices()]}])
     model = Model({
@@ -353,7 +350,6 @@ def test_lists_named_as_needed_but_not_made_are_asked_for_again(app):
 
 
 def test_an_answer_too_long_to_write_is_asked_for_again_in_smaller_pieces(app):
-    app.config["BUILDER"] = "v2"
     ws = _workspace(app, None)
     data = iter(["cut", {"lists": ["customers", "invoices"], "patches": [EVERYTHING[0]]}, {"lists": ["invoices"], "patches": [_invoices()]}])
     behaviour = iter(["cut", {"patches": [{"do": "stage_alert", "list": "invoices", "stage": "Paid"}]}])
@@ -388,7 +384,6 @@ def test_an_email_to_someone_the_record_cant_reach_says_which_addresses_it_can()
 def test_the_new_builder_adds_the_records_the_owner_gave_and_brings_in_an_attached_spreadsheet(app):
     from app import storage
     from app.models import Job, Record
-    app.config["BUILDER"] = "v2"
     ws = _workspace(app, None)
     f = storage.save(ws.id, b"Customer name,E-mail\nAcme,acme@example.com\nBolt,bolt@example.com\n", "customers.csv")
     model = Model({
@@ -477,7 +472,6 @@ def test_an_expected_date_can_be_today_on_the_examples_own_calendar(app):
 
 
 def test_a_model_repeating_itself_while_working_out_the_needs_is_asked_again_and_the_turn_goes_on(app):
-    app.config["BUILDER"] = "v2"
     ws = _workspace(app, None)
     understood = iter(["stuck", {"needs": [{"said": "invoices", "does": "Keeps invoices"}], "reply": "OK."}])
 
@@ -556,7 +550,6 @@ def test_a_stage_a_rule_moves_records_on_from_isnt_a_dead_end(app):
 
 def test_asking_for_a_fix_makes_what_an_owners_check_said_the_app_doesnt_do_yet(app):
     from app.models import Job
-    app.config["BUILDER"] = "v2"
     bp = lang.apply(schema.empty("Shop"), [EVERYTHING[0], _invoices()]).blueprint
     ws = _workspace(app, bp)
     ws.state = {"refused_checks": [{"said": "I'm told when an invoice is paid", "missing": True, "by": "owner",
@@ -627,3 +620,63 @@ def test_discovery_proposes_an_app_in_the_keel_language_and_building_it_brings_t
     db.session.commit()
     number, imports = discovery.build(ws, job, db.session.get(User, ws.owner_id))
     assert number == 1 and len(imports) == 1 and schema.table(db.session.get(Workspace, ws.id).blueprint, "customers")
+
+
+def test_who_may_see_what_is_part_of_the_language():
+    out = lang.apply(everything(), [
+        {"do": "set_access", "list": "payments", "view": "finance", "edit": "finance"},
+        {"do": "own_records", "list": "jobs", "field": "assigned_to", "roles": ["editor"], "see_all": ["finance"]},
+        {"do": "add_field", "list": "jobs", "field": {"type": "money", "key": "cost", "label": "Cost", "visible_to": "admin"}},
+        {"do": "add_field", "list": "customers", "field": {"type": "text", "key": "bank_account", "label": "Bank account", "sensitive": True}},
+        {"do": "own_records", "list": "jobs", "field": "title"}])
+    assert out.refused == [5] and "isn't a person field" in out.problems[0]
+    bp = out.blueprint
+    assert schema.table(bp, "payments")["access"] == {"teams": ["finance"]}
+    assert schema.table(bp, "jobs")["row_access"] == {"field": "assigned_to", "roles": ["editor"], "teams": ["finance"]}
+    assert schema.field(schema.table(bp, "jobs"), "cost")["access"] == "admin"
+    assert schema.field(schema.table(bp, "customers"), "bank_account")["sensitive"] is True
+
+
+def test_fields_shown_or_needed_only_when_something_holds_views_and_validations_are_part_of_the_language():
+    out = lang.apply(everything(), [
+        {"do": "add_field", "list": "quotes", "field": {"type": "text", "key": "reason", "label": "Why declined",
+                                                       "show_if": [{"field": "status", "op": "equals", "value": "Declined"}],
+                                                       "required_if": [{"field": "status", "op": "equals", "value": "Declined"}]}},
+        {"do": "add_view", "list": "jobs", "view": {"type": "timeline", "label": "Timeline", "date_field": "scheduled_for", "end_field": "scheduled_for"}},
+        {"do": "add_validation", "list": "quotes", "check": "total >= 0", "message": "A total can't be below zero"},
+        {"do": "add_validation", "list": "quotes", "check": "totl >= 0", "message": "x"}])
+    assert out.refused == [4] and "“totl” isn't a field of Quotes" in out.problems[0]
+    quotes = schema.table(out.blueprint, "quotes")
+    reason = schema.field(quotes, "reason")
+    assert reason["show_if"] == [{"field": "status", "op": "equals", "value": "Declined"}] and reason["required_if"]
+    assert quotes["rules"][-1]["check"] == "total >= 0"
+    assert next(v for v in schema.table(out.blueprint, "jobs")["views"] if v["type"] == "timeline")["start_field"] == "scheduled_for"
+
+
+def test_a_turn_builds_the_app_shows_what_it_made_and_can_be_undone(app, owner):
+    from app.builder import chat
+    from app.models import Version
+    _, ws = owner
+    ai.set_backend(Model({"understand": {"needs": [{"said": "customers and invoices", "does": "Keeps customers and their invoices"}], "reply": "OK."},
+                          "data": {"lists": ["customers", "invoices"], "patches": [EVERYTHING[0], _invoices()]},
+                          "behaviour": {"work": [], "already": [1]}}))
+    m = chat.ask(ws, "I need customers and invoices")
+    chat.work(m.id)
+    m = db.session.get(Message, m.id)
+    assert m.status == "done" and m.version_after and m.navigate == f"/w/{ws.id}/app/t/customers"
+    ws = db.session.get(Workspace, ws.id)
+    assert [t["key"] for t in ws.blueprint["tables"]] == ["customers", "invoices"]
+    chat.restore(ws, m.version_before)
+    assert ws.blueprint["tables"] == [] and Version.query.filter_by(workspace_id=ws.id).count() == ws.version + 1  # going back is a version too
+
+
+def test_a_total_over_another_new_lists_formula_is_made_whichever_list_comes_first():
+    out = lang.apply(schema.empty(), [
+        {"do": "add_list", "key": "quotes", "label": "Quotes", "singular": "Quote", "fields": [
+            {"type": "total", "key": "subtotal", "label": "Subtotal", "of": "quote_lines", "link": "quote", "how": "sum", "field": "amount"},
+            {"type": "formula", "key": "total", "label": "Total", "formula": "subtotal * 1.1", "shows": "money"}]},
+        {"do": "add_list", "key": "quote_lines", "label": "Quote lines", "singular": "Quote line", "inside": "quotes", "fields": [
+            {"type": "number", "key": "quantity", "label": "Qty"}, {"type": "money", "key": "unit_price", "label": "Unit price"},
+            {"type": "formula", "key": "amount", "label": "Amount", "formula": "quantity * unit_price", "shows": "money"}]}])
+    assert not out.problems, out.problems
+    assert {"subtotal", "total"} <= {f["key"] for f in schema.table(out.blueprint, "quotes")["fields"]}
