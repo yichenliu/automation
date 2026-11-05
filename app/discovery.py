@@ -9,8 +9,8 @@ import json
 import re
 from collections import Counter, defaultdict
 
-from . import ai, jobs
-from .builder import chat, prompts
+from . import ai, jobs, lang
+from .builder import chat
 from .connectors import microsoft
 from .engine.records import Engine
 from .extensions import db
@@ -86,36 +86,52 @@ def take_stock(workspace, job=None):
     return found
 
 
-DISCOVERY = """The owner connected their Microsoft 365 so you can design their ERP from how the business already works.
-Below is what the platform found in their OneDrive and mailbox. Design the first version of their ERP from it:
-- a table for each thing their spreadsheets track (use the spreadsheets' columns as fields, with proper types,
-  links between tables where one spreadsheet refers to another's items, and statuses as selects); a column the
-  spreadsheet works out ("worked_out_by_formulas") becomes a formula, lookup or rollup doing the same, never a typed number;
-- for each spreadsheet worth bringing in, an import_file op with its file_id, sheet and a mapping of its column
-  headings to your field keys, after the create_table that defines that table;
-- automations for mail that clearly keeps coming and creates work (bills or invoices from suppliers → ai_create_record
-  with an email_received trigger; enquiries → records to follow up; and notify where someone should act);
-- one Overview page.
-Make what the evidence supports, not a generic ERP. In "reply", explain in a few short sentences what you found and
-what you built from it (name the spreadsheets and the kinds of email), and suggest a next step."""
+DISCOVERY = """The owner connected their Microsoft 365 so you can design their app from how the business already works.
+Below is what the platform found in their OneDrive and mailbox. Design the first version of their app from it, in
+patches of the Keel language:
+- a list for each thing their spreadsheets track (the spreadsheets' columns as fields, with proper types; links where
+  one spreadsheet refers to another's items; stages where a column is a status). A column the spreadsheet works out
+  ("worked_out_by_formulas") is a formula, a total or a lookup doing the same, never a typed number;
+- an import_rows patch for each spreadsheet worth bringing in: its file id, sheet, and each column heading to the field
+  it fills in;
+- for mail that clearly keeps coming and makes work (bills from suppliers, enquiries), a rule started by the email
+  (when {{"on": "email", …}}) that makes the record with ai_create, and tells whoever should act;
+- features wherever one fits (line totals, payments, chasing what's overdue).
+Make what the evidence supports, not a generic app. In "reply", say in a few short sentences what you found and what
+you'd build from it (name the spreadsheets and the kinds of email), and suggest a next step.
+
+{catalog}"""
 
 
 def propose(workspace, found, job=None):
-    engine = Engine(workspace)
-    convo = [{"role": "system", "content": prompts.system()},
-             {"role": "user", "content": f"About the business: {workspace.about or workspace.name}\nToday: {engine.today.isoformat()}\n\n"
-                                         f"The ERP right now:\n{prompts.outline(workspace.blueprint, engine.counts())}"},
-             {"role": "assistant", "content": "Understood. What would you like?"},
-             {"role": "user", "content": DISCOVERY + "\n\nWhat was found:\n" + json.dumps(found, default=str, ensure_ascii=False)[:60000]}]
-    notes = []
+    """The app the AI would build from what was found, in the Keel language, checked against the design as it is (not
+    saved): (answer, outcome). A patch the platform can't apply is sent back to be corrected once."""
+    from .builder import build
+    from .lang import describe
 
-    def progress(_thinking, content):
+    def progress(_thinking, _content):
         if job:
-            lines = chat._progress_lines(content)
-            jobs.stage(job, lines[-1] if lines else "Designing your app", 75)
-
-    answer, result = chat.design(workspace, convo, progress, notes.append)
-    return answer, result
+            jobs.stage(job, "Designing your app", 75)
+    system = DISCOVERY.format(catalog=build.catalog("all"))
+    user = (f"About the business: {workspace.about or workspace.name}\n\nThe app now:\n{describe(workspace.blueprint or {})}\n\n"
+            f"What was found:\n" + json.dumps(found, default=str, ensure_ascii=False)[:60000])
+    schema_ = build._answer_schema("all")
+    answer = build._ask(system, user, schema_, progress, kind="discover")
+    patches = answer.get("patches") or []
+    out = lang.apply(workspace.blueprint or {}, patches)
+    if out.problems and out.refused:
+        refused = [patches[n - 1] for n in out.refused if 0 < n <= len(patches)]
+        again = build._ask(build.REPAIR.format(catalog=build.catalog("all")),
+                           user + "\n\nRefused patches:\n" + "\n".join(json.dumps(p, ensure_ascii=False)[:1500] for p in refused)
+                           + "\n\nWhy:\n- " + "\n- ".join(out.problems[:12]), schema_, progress, tries=1, kind="repair")
+        kept = [p for n, p in enumerate(patches, start=1) if n not in out.refused]
+        patches = kept + (again.get("patches") or [])
+        out = lang.apply(workspace.blueprint or {}, patches)
+        refused_now = set(out.refused)
+        patches = [p for n, p in enumerate(patches, start=1) if n not in refused_now]  # what doesn't fit is left out, said
+        out = lang.apply(workspace.blueprint or {}, patches)
+    answer["patches"] = patches
+    return answer, out
 
 
 @jobs.handler("discover")
@@ -126,18 +142,17 @@ def _discover(job):
     db.session.commit()
     jobs.stage(job, "The AI is designing your ERP from what it found", 70)
     answer, result = propose(ws, found, job)
-    if result.problems:
-        raise ValueError("The AI's design didn't fit together: " + "; ".join(result.problems[:4]))
-    return {"found": found, "reply": answer.get("reply", ""), "ops": answer.get("ops") or [], "changes": result.changes,
+    if not result.changes:
+        raise ValueError("The AI's design didn't fit together: " + ("; ".join(result.problems[:4]) or "it proposed nothing"))
+    return {"found": found, "reply": answer.get("reply", ""), "patches": answer.get("patches") or [], "changes": result.changes,
             "imports": [d for d in result.data if d["op"] == "import_file"], "version": ws.version}
 
 
 def build(workspace, job, user):
     """The person accepted the proposal: apply it (checked again against the design as it is now) and start the imports."""
     from . import importer
-    from .blueprint import ops
     proposal = job.result or {}
-    result = ops.apply(workspace.blueprint, proposal.get("ops") or [])
+    result = lang.apply(workspace.blueprint or {}, proposal.get("patches") or [])
     if result.problems:
         raise ValueError("The design has changed since this was proposed; propose again. (" + "; ".join(result.problems[:3]) + ")")
     number = chat.save_version(workspace, result.blueprint, result.changes, "discovery", by=user.id)

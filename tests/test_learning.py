@@ -105,13 +105,14 @@ def test_the_analyst_answers_repeated_questions_and_reviews_the_business(busy):
     for text in ("how much do customers owe us", "how much is owed by customers?", "what do customers owe us now"):
         db.session.add(Message(workspace_id=busy.id, channel="assistant", role="user", text=text))
     db.session.commit()
-    widget = {"ops": [{"op": "add_page", "page": {"key": "money", "label": "Money", "widgets": [
+    widget = {"patches": [{"do": "design_op", "op": {"op": "add_page", "page": {"key": "money", "label": "Money", "widgets": [
         {"type": "metric", "table": "jobs", "aggregate": "sum", "field": "amount", "label": "Owed",
-         "filters": [{"field": "paid", "op": "not_equals", "value": "Paid"}]}]}}], "reply": "Added an Owed number to a Money page.", "more": False}
+         "filters": [{"field": "paid", "op": "not_equals", "value": "Paid"}]}]}}}], "reply": "Added an Owed number to a Money page."}
     review = {"suggestions": [{"title": "Colour urgent jobs red", "why": "Urgent jobs are mixed in with the rest.",
-                               "ops": [{"op": "update_table", "table": "jobs", "changes": {"colors": [
+                               "patches": [{"do": "design_op", "op": {"op": "update_table", "table": "jobs", "colors": [
                                    {"when": [{"field": "priority", "op": "equals", "value": "Urgent"}], "color": "red"}]}}]},
-                              {"title": "A broken idea", "why": "x", "ops": [{"op": "add_field", "table": "nowhere", "field": {"key": "x", "type": "text"}}]}]}
+                              {"title": "A broken idea", "why": "x", "patches": [{"do": "add_field", "list": "nowhere",
+                                                                                   "field": {"type": "text", "key": "x", "label": "X"}}]}]}
     scripted = ScriptedAI(widget, review)
     ai.set_backend(scripted)
     fresh = learning.learn(busy)

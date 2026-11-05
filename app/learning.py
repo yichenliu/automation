@@ -487,18 +487,39 @@ def _usage(engine, history):
     return "\n".join(lines)
 
 
+LEARN = """{base}
+
+You're the business's analyst: make only the change the task below needs, as patches of the Keel language (a feature
+whenever one fits). In "reply", say in one or two plain sentences what it changes for them.
+
+{catalog}"""
+
+
 def _design(engine, task):
-    """Ask the analyst for design changes for one task; returns (ops, reply) once they fit, or None."""
-    from .builder import chat, prompts
-    convo = [{"role": "system", "content": prompts.system()},
-             {"role": "user", "content": f"About the business: {engine.ws.about or engine.ws.name}\nToday: {engine.today.isoformat()}\n\n"
-                                         f"The ERP right now:\n{prompts.outline(engine.bp, engine.counts())}"},
-             {"role": "assistant", "content": "Understood. What would you like?"},
-             {"role": "user", "content": task + "\nMake only the changes needed for this; \"more\": false."}]
-    answer, result = chat.design(engine.ws, convo)
-    if result.problems or not result.changed:
+    """Ask the builder for the change one task needs, in the Keel language: (patches, reply) once they fit (checked against
+    the design as it is, not saved), or None."""
+    from .builder import build
+    from .lang import apply as apply_patches, describe
+    try:
+        answer = build._ask(LEARN.format(base=build.BASE, catalog=build.catalog("all")),
+                            f"About the business: {engine.ws.about or engine.ws.name}\nToday: {engine.today.isoformat()}\n\n"
+                            f"The app now:\n{describe(engine.bp)}\n\nThe task: {task}", build._answer_schema("all"), kind="learn")
+    except ai.AIError:
         return None
-    return answer.get("ops") or [], str(answer.get("reply") or "")
+    patches = answer.get("patches") or []
+    out = apply_patches(engine.bp, patches)
+    if out.problems or not out.changes:
+        log.info("The analyst's change for “%s” didn't fit: %s", task[:80], out.problems[:3])
+        return None
+    return patches, str(answer.get("reply") or "")
+
+
+def _new_rules(engine, patches):
+    """The rules these patches would make or change, as the design writes them (to try against what's happened)."""
+    from .lang import apply as apply_patches
+    out = apply_patches(engine.bp, patches)
+    before = {a["key"]: a for a in engine.bp.get("automations", [])}
+    return [a for a in out.blueprint.get("automations", []) if before.get(a["key"]) != a]
 
 
 def ai_findings(engine, history):
@@ -508,8 +529,8 @@ def ai_findings(engine, history):
     for f in failing(engine, history):
         a = f["automation"]
         errors = "; ".join(f"{e} ({n}×)" for e, n in f["errors"])
-        made = _design(engine, f"The automation “{a['name']}” failed {f['failed']} of its last {f['runs']} runs with: {errors}. Fix it "
-                               f"(update_automation with the whole corrected automation, or add what it needs).")
+        made = _design(engine, f"The rule “{a['name']}” ({a['key']}) failed {f['failed']} of its last {f['runs']} runs with: {errors}. Fix it "
+                               f"(change_rule with what's wrong in it, or add what it needs; a feature's rule by changing the feature).")
         if made:
             out.append(Finding("failing", f"fix:{a['key']}:{f['errors'][0][0][:80]}", f"Fix “{a['name']}”, which keeps failing",
                                f"It failed {f['failed']} of its last {f['runs']} runs. {made[1]}",
@@ -528,16 +549,11 @@ def ai_findings(engine, history):
             continue
         samples = "\n".join(f"- {c.title} — {c.text[:300]}" for c in g["emails"][:4])
         made = _design(engine, f"{len(g['emails'])} emails like these arrived in the last weeks and nothing handles them:\n{samples}\n"
-                               "Make an email_received automation (with from_contains / subject_contains filters that catch them) that "
-                               "turns each into the right record with ai_create_record, adding a table if the ERP has none for them.")
+                               "Make a rule started by such an email (when {\"on\": \"email\"} with from_contains / subject_contains that "
+                               "catch them) that turns each into the right record with ai_create, adding a list if the app has none for them.")
         if made:
-            automation = next((op.get("automation") for op in made[0] if op.get("op") in ("add_automation", "update_automation") and op.get("automation")), None)
-            proof = None
-            if automation:
-                try:
-                    proof = backtest(engine, schema.normalize_automation(automation))
-                except schema.SchemaError:
-                    proof = None
+            rules = [a for a in _new_rules(engine, made[0]) if a["trigger"]["type"] == "email_received"]
+            proof = backtest(engine, rules[0]) if rules else None
             out.append(Finding("email", f"mail:{g['domain']}:{g['words']}", f"Handle the {g['words'] or 'emails'} from {g['domain'] or 'your mailbox'} automatically",
                                f"{len(g['emails'])} of them arrived recently and someone had to deal with each by hand. {made[1]}",
                                [c.title for c in g["emails"][:5]], made[0], proof))
@@ -545,35 +561,42 @@ def ai_findings(engine, history):
 
 
 def review(engine, history):
-    """The analyst's own look at how the business is using its ERP: up to three improvements, each checked on its own."""
-    from .builder import prompts
+    """The analyst's own look at how the business is using its app: up to three improvements in the Keel language, each
+    checked on its own."""
+    from pydantic import BaseModel
+
+    from .builder import build
+    from .lang import apply as apply_patches, describe
     usage = _usage(engine, history)
-    content, _ = ai.chat([{"role": "system", "content": prompts.system()},
-                          {"role": "user", "content": f"About the business: {engine.ws.about or engine.ws.name}\nToday: {engine.today.isoformat()}\n\n"
-                                                      f"The ERP right now:\n{prompts.outline(engine.bp, engine.counts())}\n\n"
-                                                      f"How it has been used:\n{usage}\n\n"
-                                                      "As their analyst, suggest up to three improvements that would save them real time "
-                                                      "or prevent mistakes, based on how they actually use it (not things they haven't "
-                                                      "shown a need for). Each: a short title, why (citing what you saw), and the ops. "
-                                                      "Suggest nothing if it's working well."}],
-                         schema={**REVIEW_SCHEMA, "$defs": prompts.DEFS, "properties": {"suggestions": {"type": "array", "items": {
-                             **REVIEW_SCHEMA["properties"]["suggestions"]["items"],
-                             "properties": {"title": {"type": "string"}, "why": {"type": "string"},
-                                            "ops": {"type": "array", "items": prompts._OP}}}}}}, think=False)
+    patch = build._patches("all")
+
+    class Suggestion(BaseModel):
+        title: str
+        why: str
+        patches: list[patch]
+
+    class Suggestions(BaseModel):
+        suggestions: list[Suggestion]
+
+    try:
+        answer = build._ask(LEARN.format(base=build.BASE, catalog=build.catalog("all")),
+                            f"About the business: {engine.ws.about or engine.ws.name}\nToday: {engine.today.isoformat()}\n\n"
+                            f"The app now:\n{describe(engine.bp)}\n\nHow it has been used:\n{usage}\n\nThe task: suggest up to three "
+                            f"improvements that would save them real time or prevent mistakes, based on how they actually use it (not "
+                            f"things they haven't shown a need for). Each: a short title, why (citing what you saw), and its patches. "
+                            f"Suggest nothing if it's working well.", Suggestions.model_json_schema(), kind="learn")
+    except ai.AIError:
+        return []
     out = []
-    for s in (ai.parse_json(content).get("suggestions") or [])[:3]:
-        result = ops.apply(engine.bp, s.get("ops") or [])
-        if result.problems or not result.changed:
+    for s_ in (answer.get("suggestions") or [])[:3]:
+        patches = s_.get("patches") or []
+        result = apply_patches(engine.bp, patches)
+        if result.problems or not result.changes:
             continue
-        automation = next((op.get("automation") for op in s["ops"] if op.get("op") in ("add_automation", "update_automation") and isinstance(op.get("automation"), dict)), None)
-        proof = None
-        if automation:
-            try:
-                proof = backtest(engine, schema.normalize_automation(automation), history)
-            except schema.SchemaError:
-                proof = None
-        out.append(Finding("analyst", "review:" + schema.slug(s.get("title") or "")[:120], str(s.get("title") or "An improvement")[:300],
-                           str(s.get("why") or ""), [], s["ops"], proof))
+        rules = _new_rules(engine, patches)
+        proof = backtest(engine, rules[0], history) if rules else None
+        out.append(Finding("analyst", "review:" + schema.slug(s_.get("title") or "")[:120], str(s_.get("title") or "An improvement")[:300],
+                           str(s_.get("why") or ""), [], patches, proof))
     return out
 
 
@@ -605,8 +628,8 @@ def learn(workspace, with_ai=True):
     found_now = set()
     for f in findings:
         found_now.add(f.signature)
-        check = ops.apply(engine.bp, f.ops)
-        if check.problems or not check.changed:
+        check = _fitted(engine.bp, f.ops)
+        if check.problems or not check.changes:
             continue
         old = known.get(f.signature)
         if old is not None and old.status != "stale":
@@ -631,11 +654,20 @@ def learn(workspace, with_ai=True):
     return fresh
 
 
+def _fitted(bp, changes):
+    """A suggestion's changes applied to a design (not saved): the analyst's are Keel language patches, the platform's
+    own detectors' design ops. Either way, the result's blueprint, changes and problems."""
+    if any(isinstance(x, dict) and "do" in x for x in changes or []):
+        from .lang import apply as apply_patches
+        return apply_patches(bp or {}, changes)
+    return ops.apply(bp, changes)
+
+
 def apply(workspace, suggestion, by):
     """Make a suggestion's changes, as a new design version. Returns the version, or raises ValueError if the design has
     moved on so they no longer fit."""
     from .builder import chat
-    result = ops.apply(workspace.blueprint, suggestion.ops or [])
+    result = _fitted(workspace.blueprint, suggestion.ops or [])
     if result.problems:
         suggestion.status = "stale"
         db.session.commit()

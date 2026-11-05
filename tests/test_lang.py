@@ -604,3 +604,26 @@ def test_an_email_rule_and_the_ai_steps_compile_with_their_names_checked():
     assert rules["bills_by_email"]["actions"][0] == {"type": "ai_create_record", "table": "invoices", "instructions": "The supplier's bill",
                                                      "attach_to": "pdf", "review": "when_unsure", "reviewer": "editor"}
     assert [x["type"] for x in rules["summarise"]["actions"]] == ["ai_fill", "ai_check", "assign"]
+
+
+def test_discovery_proposes_an_app_in_the_keel_language_and_building_it_brings_the_rows_in(app):
+    from app import discovery, storage
+    from app.models import Job
+    ws = _workspace(app, schema.empty("Fresh"))
+    f = storage.save(ws.id, b"Customer name,E-mail\nAcme,acme@example.com\n", "customers.csv")
+    model = Model({"other": {"patches": [EVERYTHING[0], {"do": "import_rows", "file": f.id, "list": "customers",
+                                                         "columns": {"Customer name": "name", "E-mail": "email"}},
+                                         {"do": "add_list", "key": "nope", "label": "Nope", "singular": "Nope", "fields": [
+                                             {"type": "link", "key": "x", "label": "X", "to": "nowhere"}]}],
+                             "reply": "Your customers spreadsheet becomes a list."},
+                   "repair": {"patches": []}})
+    ai.set_backend(model)
+    answer, out = discovery.propose(ws, {"files": 1, "spreadsheets": [{"name": "customers.csv", "file_id": f.id}], "mail": {"messages": 0}})
+    assert [p["do"] for p in answer["patches"]] == ["add_list", "import_rows"]  # what didn't fit was left out
+    assert out.changes and [d["op"] for d in out.data] == ["import_file"]
+    job = Job(workspace_id=ws.id, kind="discover", status="done", payload={},
+              result={"found": {}, "patches": answer["patches"], "changes": out.changes, "imports": out.data})
+    db.session.add(job)
+    db.session.commit()
+    number, imports = discovery.build(ws, job, db.session.get(User, ws.owner_id))
+    assert number == 1 and len(imports) == 1 and schema.table(db.session.get(Workspace, ws.id).blueprint, "customers")
