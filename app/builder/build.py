@@ -288,11 +288,15 @@ class Turn:
         return self.workspace.blueprint or schema.empty(self.workspace.name)
 
     def about(self):
+        from .chat import describe_files
         engine = Engine(self.workspace)
         people = ", ".join(f"{engine.members().get(m_.user_id, 'someone')} ({m_.role})"
                            for m_ in Membership.query.filter_by(workspace_id=self.workspace.id) if m_.role != "portal")
+        files = describe_files(self.question.files, self.workspace.id) if self.question is not None and self.question.files else ""
         return (f"About the business: {self.workspace.about or self.workspace.name}\nToday: {schema.today_words(engine.today)}"
-                + (f"\nPeople in the app: {people}" if people else ""))
+                + (f"\nPeople in the app: {people}" if people else "")
+                + (f"\n\nFiles the owner attached (to design from; bring their rows in with import_rows when the owner wants their "
+                   f"data in the app):\n{files}" if files else ""))
 
     def history(self):
         from .chat import _history
@@ -302,10 +306,16 @@ class Turn:
         return "\n".join(said)
 
     def save(self, out):
-        from .chat import save_version
+        from .chat import _data, save_version
         if out.changes:
             self.message.version_after = save_version(self.workspace, out.blueprint, out.changes, "chat", self.message.id, by=self.by)
             self.changes += out.changes
+            db.session.commit()
+        if out.data:  # the records the owner gave, the rows of a file they attached: once the lists they go into are saved
+            said, shown = _data(self.workspace, out.data, by=self.by)
+            self.changes += said
+            if shown is not None:
+                self.message.results = shown
             db.session.commit()
 
     def credit(self, patches, out, owners):

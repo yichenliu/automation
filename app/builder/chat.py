@@ -998,14 +998,8 @@ def work(message_id):
 
 
 def _v2(message_id):
-    """Whether this turn is the Keel v2 builder's (app/builder/build.py): every turn, unless set otherwise, but one with
-    files attached (rows to bring in) stays with this one for now."""
-    if current_app.config.get("BUILDER", "v2") != "v2":
-        return False
-    message = db.session.get(Message, message_id)
-    question = Message.query.filter(Message.workspace_id == message.workspace_id, Message.channel == "builder", Message.id < message.id,
-                                    Message.role == "user").order_by(Message.id.desc()).first() if message else None
-    return not (question is not None and question.files)
+    """Whether this turn is the Keel v2 builder's (app/builder/build.py): every turn, unless set otherwise."""
+    return current_app.config.get("BUILDER", "v2") == "v2"
 
 
 def _work(message_id):

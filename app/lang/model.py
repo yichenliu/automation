@@ -463,6 +463,17 @@ class AddRecords(Base):
     records: list[dict]
 
 
+@register("patch", {"do": "import_rows", "file": 12, "sheet": "Customers", "list": "customers", "columns": {"Customer name": "name", "E-mail": "email"}}, "data")
+class ImportRows(Base):
+    """Bring an attached spreadsheet's rows into a list: each column heading to the field it fills in (a linked
+    record's field as customer.email, a line's as order_lines.quantity). Only when the owner wants their rows in."""
+    do: Literal["import_rows"]
+    file: int = Field(description="the attached file's id")
+    list: str
+    columns: dict[str, str]
+    sheet: str | None = None
+
+
 @register("patch", {"do": "design_op", "op": {"op": "add_page", "page": {"key": "today", "label": "Today", "widgets": []}}}, group="behaviour")
 class DesignOp(Base):
     """Only for what no other patch makes: an op of the platform's design format for pages, documents, forms,

@@ -383,3 +383,33 @@ def test_an_answer_too_long_to_write_is_asked_for_again_in_smaller_pieces(app):
 def test_an_email_to_someone_the_record_cant_reach_says_which_addresses_it_can():
     out = lang.apply(everything(), [{"do": "reminder_before", "list": "appointments", "date_field": "starts_on", "days": 1, "email_to": "owner"}])
     assert "The email addresses an appointment can reach: client.email" in out.problems[0]
+
+
+def test_the_new_builder_adds_the_records_the_owner_gave_and_brings_in_an_attached_spreadsheet(app):
+    from app import storage
+    from app.models import Job, Record
+    app.config["BUILDER"] = "v2"
+    ws = _workspace(app, None)
+    f = storage.save(ws.id, b"Customer name,E-mail\nAcme,acme@example.com\nBolt,bolt@example.com\n", "customers.csv")
+    model = Model({
+        "understand": {"needs": [{"said": "my customers are in the sheet", "does": "Keeps the customers from the spreadsheet"}], "reply": "OK."},
+        "data": {"lists": ["customers", "services"], "patches": [
+            EVERYTHING[0], {"do": "add_list", "key": "services", "label": "Services", "singular": "Service", "fields": [
+                {"type": "text", "key": "name", "label": "Name"}, {"type": "money", "key": "price", "label": "Price"}]},
+            {"do": "add_records", "list": "services", "records": [{"name": "Gutter clean", "price": 180}]},
+            {"do": "import_rows", "file": f.id, "list": "customers", "columns": {"Customer name": "name", "E-mail": "email"}}]},
+        "behaviour": {"work": []},
+    })
+    ai.set_backend(model)
+    q = Message(workspace_id=ws.id, channel="builder", user_id=ws.owner_id, role="user", text="My customers are in this sheet; I do gutter cleans for $180",
+                files=[f.id])
+    a = Message(workspace_id=ws.id, channel="builder", role="assistant", status="queued")
+    db.session.add_all([q, a])
+    db.session.commit()
+    from app.builder import chat
+    chat.work(a.id)
+    a = db.session.get(Message, a.id)
+    assert a.status == "done", a.error
+    assert Record.query.filter_by(workspace_id=ws.id, table="services").count() == 1
+    assert Job.query.filter_by(workspace_id=ws.id, kind="import").count() == 1
+    assert any("Importing" in c for c in a.changes)

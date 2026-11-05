@@ -32,6 +32,7 @@ class Outcome:
     problems: list = dfield(default_factory=list)  # "patch 3 (add_rule “Chase…”) › step 2: …"
     refused: list = dfield(default_factory=list)  # the numbers of the patches refused
     features: list = dfield(default_factory=list)  # keys of the features made or changed
+    data: list = dfield(default_factory=list)  # records to add and files to bring in, done once the design is saved
     navigate: str | None = None
 
 
@@ -497,6 +498,7 @@ def _apply_ops(out, ir_ops, where):
         return False
     out.blueprint = result.blueprint
     out.changes.extend(result.changes)
+    out.data.extend(getattr(result, "data", None) or [])
     out.navigate = out.navigate or getattr(result, "navigate", None)
     return True
 
@@ -710,6 +712,23 @@ def translate(d, p, where):
     if isinstance(p, m.AddRecords):
         t = _list(d, p.list, where)
         return [{"op": "add_records", "table": t["key"], "records": p.records}]
+    if isinstance(p, m.ImportRows):
+        t = _list(d, p.list, where)
+        mapping = {}
+        for heading, name in p.columns.items():
+            try:
+                _, _, keys = d.path(t, name)
+            except NameProblem as exc:
+                child = next((x for x in d.lists if x["key"] == schema.slug(name.partition(".")[0])), None)
+                if child is not None and d.field(child, name.partition(".")[2]):  # a line's field: order_lines.quantity
+                    mapping[heading] = f"{child['key']}.{d.field(child, name.partition('.')[2])['key']}"
+                    continue
+                raise Problem(f"{where} › columns › {heading}: {exc}") from None
+            mapping[heading] = ".".join(keys)
+        op = {"op": "import_file", "table": t["key"], "file_id": p.file, "mapping": mapping}
+        if p.sheet:
+            op["sheet"] = p.sheet
+        return [op]
     if isinstance(p, m.AddRule):
         return [{"op": "add_automation", "automation": ir_rule(d, p.rule, where)}]
     if isinstance(p, (m.ChangeRule, m.RemoveRule)):
