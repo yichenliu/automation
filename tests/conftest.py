@@ -29,7 +29,7 @@ def database_url():
 
 @pytest.fixture
 def app(tmp_path, database_url):
-    app = create_app({"TESTING": True, "WORKER": False, "DATA_DIR": tmp_path, "SECRET_KEY": "test",
+    app = create_app({"TESTING": True, "WORKER": False, "DATA_DIR": tmp_path, "SECRET_KEY": "test", "BUILDER": "v1",
                       "SQLALCHEMY_DATABASE_URI": database_url, "WTF_CSRF_ENABLED": False,
                       "SQLALCHEMY_ENGINE_OPTIONS": {"pool_size": 5, "max_overflow": 10},
                       "DEFAULT_TIMEZONE": "Australia/Perth", "MICROSOFT_CLIENT_ID": "", "MICROSOFT_CLIENT_SECRET": "",

@@ -983,7 +983,11 @@ def work(message_id):
     calls = []
     token, steady, tries = ai.recording.set(calls), ai.building.set(True), ai.again.set(0)
     try:
-        _work(message_id)
+        if _v2(message_id):
+            from . import build
+            build.work(message_id)
+        else:
+            _work(message_id)
     finally:
         ai.recording.reset(token)
         ai.building.reset(steady)
@@ -991,6 +995,17 @@ def work(message_id):
     message = db.session.get(Message, message_id)
     if message is not None and message.status == "done":
         training.keep(message, calls)
+
+
+def _v2(message_id):
+    """Whether this turn is the Keel v2 builder's (app/builder/build.py): every turn, unless set otherwise, but one with
+    files attached (rows to bring in) stays with this one for now."""
+    if current_app.config.get("BUILDER", "v2") != "v2":
+        return False
+    message = db.session.get(Message, message_id)
+    question = Message.query.filter(Message.workspace_id == message.workspace_id, Message.channel == "builder", Message.id < message.id,
+                                    Message.role == "user").order_by(Message.id.desc()).first() if message else None
+    return not (question is not None and question.files)
 
 
 def _work(message_id):
