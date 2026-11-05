@@ -277,3 +277,23 @@ def test_asking_the_assistant_to_change_the_app_hands_it_to_the_builder(app):
     assistant.work(theirs.id)
     assert "whoever runs it" in db.session.get(Message, theirs.id).text
     assert Message.query.filter_by(workspace_id=ws.id, channel="builder", role="user").count() == 1
+
+
+def test_a_gate_needing_a_choice_needs_its_done_answer_not_just_any(app):
+    """“Can't be confirmed until the deposit status is done”: a choice of Not received / Received is always filled in,
+    so what it needs is Received."""
+    bp = _app(JOBS + [{"do": "add_field", "list": "jobs", "field": {"type": "choice", "key": "deposit_status", "label": "Deposit status",
+                                                                    "options": ["Not received", "Received"], "default": "Not received"}},
+                      {"do": "gate", "list": "jobs", "stage": "In progress", "needs": ["deposit_status"]}])
+    ws = _workspace(bp)
+    e = _owner_engine(ws)
+    sam = e.create("clients", {"name": "Sam"})
+    job = e.create("jobs", {"client": sam.id})
+    with pytest.raises(FieldErrors):
+        e.update(e.get(job.id), {"status": "In progress"})
+    e.update(e.get(job.id), {"deposit_status": "Received"})
+    e.update(e.get(job.id), {"status": "In progress"})
+    from app.builder import trial
+    from app.lang import patterns
+    _, results = trial.try_out(ws, patterns.checks(bp), screens=False)
+    assert results and all(r["ok"] for r in results), [(r["title"], r.get("problem")) for r in results]

@@ -1261,13 +1261,43 @@ def _turned(conditions, where):
     out = []
     for i, c in enumerate(conditions, start=1):
         if "formula" in c:  # a formula turned round: it doesn't hold
-            out.append({"formula": f"not ({c['formula']})"})
+            out.append({"formula": _negated(c["formula"])})
             continue
         if "any" in c or "all" in c or c.get("op") not in TURNED:
             raise Problem(f"{where} {i}: “{c.get('op')}” can't be turned round to say when it's allowed: write what must hold "
                           f"for it to be allowed in only_if instead")
         out.append({**c, "op": TURNED[c["op"]]})
     return out[0] if len(out) == 1 else {"any": out}
+
+
+FLIPPED = {expr.ast.Eq: expr.ast.NotEq, expr.ast.NotEq: expr.ast.Eq, expr.ast.Lt: expr.ast.GtE, expr.ast.GtE: expr.ast.Lt,
+           expr.ast.Gt: expr.ast.LtE, expr.ast.LtE: expr.ast.Gt, expr.ast.In: expr.ast.NotIn, expr.ast.NotIn: expr.ast.In}
+
+
+def _negated(source):
+    """A formula that holds when this one doesn't, as plainly as it can be said: a comparison flipped (status !=
+    'Paid' for status == 'Paid'), a "not" taken off, else not (…)."""
+    try:
+        tree = expr.parse(source).body
+    except expr.ExprError:
+        return f"not ({source})"
+    if isinstance(tree, expr.ast.UnaryOp) and isinstance(tree.op, expr.ast.Not):
+        return expr.ast.unparse(tree.operand)
+    if isinstance(tree, expr.ast.Compare) and len(tree.ops) == 1 and type(tree.ops[0]) in FLIPPED:
+        return expr.ast.unparse(expr.ast.Compare(left=tree.left, ops=[FLIPPED[type(tree.ops[0])]()], comparators=tree.comparators))
+    return f"not ({source})"
+
+
+def _done_choice(f, where):
+    """For a choice a gate needs (Deposit: Not received / Received): the one answer that says it's done, or None for
+    anything that isn't a choice. More than one that could be: said, so the builder names which (only_if)."""
+    if f is None or f.get("type") != "select" or not f.get("options"):
+        return None
+    done = [o for o in f["options"] if not schema.says_no(o) and not re.search(r"\b(pending|waiting|due|unpaid|outstanding|none|no|to do|todo|draft)\b", str(o), re.I)]
+    if len(done) == 1:
+        return done[0]
+    raise Problem(f"{where} › needs: {f['key']} is a choice ({', '.join(f['options'])}), always filled in: say which answer it "
+                  f"must be in only_if ({f['key']} equals …)")
 
 
 def _words_of(d, t, conditions):
@@ -1324,6 +1354,10 @@ class Gate(Feature):
             nf = d.field(t, name)
             if nf is None and re.search(r"[()<>=!]|\b(and|or|not)\b", name):  # a formula among what it needs: what must hold
                 only_if.append(name)
+                continue
+            done = _done_choice(nf, where)
+            if done is not None:  # a choice is always filled in (Not received): what it needs is its done answer
+                only_if.append(Condition(field=nf["key"], op="equals", value=done))
                 continue
             if nf is None and "." in name:  # a linked record's field (the job's invoice's deposit): filled in there first
                 try:
@@ -1403,6 +1437,11 @@ class Gate(Feature):
         empty, full, linked = {}, {}, []
         if any(d.field(t, name) is None for name in self.needs):
             return []  # what a linked record must have can't be written for sure (as a linked only_if)
+        choices = [(name, _done_choice(d.field(t, name), "gate")) for name in self.needs]
+        if any(done is not None for _, done in choices):  # a choice it needs is its done answer: checked as only_if
+            return self.model_copy(update={"needs": [n for n, done in choices if done is None],
+                                           "only_if": list(self.only_if) + [Condition(field=d.field(t, n)["key"], op="equals", value=done)
+                                                                            for n, done in choices if done is not None]}).checks(d)
         for name in self.needs:
             nf = d.field(t, name)
             if nf["type"] == "checkbox":
