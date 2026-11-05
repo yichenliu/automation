@@ -467,11 +467,12 @@ class Chase(Feature):
 
 @register("feature", {"do": "overdue", "list": "invoices", "date_field": "due_date", "from_stages": ["Sent"], "to_stage": "Overdue"})
 class Overdue(Feature):
-    """Each day, move records whose date field has passed (by days_after) from these stages to a late stage (made if
-    it isn't there yet); tell: who to tell, if anyone."""
+    """Each day, move records from these stages to a late stage (made if it isn't there yet) once days_after have gone
+    by since their date_field (a due date), or, with no date_field, since they got to the first of from_stages ("30
+    days after we send it": from_stages Sent, days_after 30). tell: who to tell, if anyone."""
     do: Literal["overdue"] = "overdue"
     list: str
-    date_field: str
+    date_field: str | None = Field(None, description="the date to count from; left out: the day it got to the first of from_stages")
     from_stages: list[str]
     to_stage: str = "Overdue"
     days_after: int = 0
@@ -485,10 +486,6 @@ class Overdue(Feature):
         f = d.stage_field(t)
         if f is None:
             raise Problem(f"{where}: {t['label']} has no stages yet: give it stages first (set_stages)")
-        df = d.field(t, self.date_field)
-        if df is None or d.kind(df) != "date":
-            raise Problem(f"{where} › date_field: {self.date_field} isn't a date field of {t['label']} (its dates: "
-                          f"{', '.join(x['key'] for x in t['fields'] if d.kind(x) == 'date') or 'none'})")
         froms = []
         for s in self.from_stages:
             found = d.choice(f, s)
@@ -496,6 +493,20 @@ class Overdue(Feature):
                 raise Problem(f"{where} › from_stages: “{s}” isn't a stage of {t['label']} ({', '.join(f.get('options') or [])})")
             froms.append(found)
         made = Made()
+        if self.date_field:
+            df = d.field(t, self.date_field)
+            if df is None or d.kind(df) != "date":
+                raise Problem(f"{where} › date_field: {self.date_field} isn't a date field of {t['label']} (its dates: "
+                              f"{', '.join(x['key'] for x in t['fields'] if d.kind(x) == 'date') or 'none'}); leave it out to count "
+                              f"from the day it got to {froms[0] if froms else 'its stage'}")
+        else:  # the day it got to the first of its stages, noted as it gets there
+            df = {"key": schema.slug(f"{froms[0]}_on"), "label": f"{froms[0]} on", "type": "date", "help": f"The day it got to {froms[0]}."}
+            if d.field(t, df["key"]) is None or (d.field(t, df["key"]) or {}).get("feature") == self.feature_key():
+                made.fields.append((t["key"], df))
+            made.rules.append({"key": f"{self.feature_key()}_stamp", "name": f"Note the day {_a(t['singular'].lower())} gets to {froms[0]}",
+                               "trigger": {"type": "record_created_or_updated", "table": t["key"]},
+                               "conditions": [{"field": f["key"], "op": "changed_to", "value": froms[0]}],
+                               "actions": [{"type": "update_record", "values": {df["key"]: "{{today()}}"}}]})
         late = d.choice(f, self.to_stage)
         options = [o for o in f.get("options") or [] if o != late]
         at = max(options.index(s) for s in froms) + 1
@@ -515,8 +526,9 @@ class Overdue(Feature):
             flow["transitions"] = moves
             made.ops.append({"op": "update_table", "table": t["key"], "workflow": flow})
             made.undo = {**made.undo, "workflow": {t["key"]: original}}
+        # on the day days_after have gone by (30 days after it's sent: on the 30th day), or the day after the date itself
         cond_date = {"field": df["key"], "op": "before_today"} if not self.days_after else \
-            {"field": df["key"], "op": "more_than_days_ago", "value": self.days_after}
+            {"field": df["key"], "op": "more_than_days_ago", "value": self.days_after - 1}
         actions = [{"type": "update_record", "values": {f["key"]: late}}]
         if self.tell:
             actions.append({"type": "notify", "to": _who(d, t, self.tell, where), "message": f"{_title(t)} is {late}"})
@@ -528,11 +540,21 @@ class Overdue(Feature):
     def checks(self, d):
         t = d.list(self.list)
         f = d.stage_field(t)
-        df = d.field(t, self.date_field)
         late = d.choice(f, self.to_stage) or self.to_stage
         start = d.choice(f, self.from_stages[0])
-        due = {df["key"]: "today+2"} if df["type"] in schema.STORED else {}
         move = [{"do": "move", "record": "r1", "to": start}] if start != ((t.get("workflow") or {}).get("start") or (f.get("options") or [None])[0]) else []
+        if not self.date_field:  # counted from the day it got to its stage
+            out = [{"title": f"{_a(t['singular'])} still {start} {self.days_after or 1} days on becomes {late}",
+                    "steps": adding(d, t, "r1") + move + [{"do": "wait", "days": self.days_after or 1}, {"do": "run", "rule": self.feature_key()}],
+                    "expect": [{"record": "r1", "field": f["key"], "equals": late}]}]
+            if self.days_after >= 2:
+                out.append({"title": f"One {start} for less than {self.days_after} days stays {start}",
+                            "steps": adding(d, t, "r2") + [{**s, "record": "r2"} for s in move]
+                            + [{"do": "wait", "days": self.days_after - 1}, {"do": "run", "rule": self.feature_key()}],
+                            "expect": [{"record": "r2", "field": f["key"], "equals": start}]})
+            return out
+        df = d.field(t, self.date_field)
+        due = {df["key"]: "today+2"} if df["type"] in schema.STORED else {}
         out = [{"title": f"{_a(t['singular'])} past its {df['label'].lower()} becomes {late}",
                 "steps": adding(d, t, "r1", due) + move + [{"do": "wait", "days": 3 + self.days_after}, {"do": "run", "rule": self.feature_key()}],
                 "expect": [{"record": "r1", "field": f["key"], "equals": late}]}]
@@ -544,7 +566,9 @@ class Overdue(Feature):
         return out
 
     def said(self, d):
-        return f"marks {self.list} {self.to_stage} once their {self.date_field} has passed"
+        if not self.date_field:
+            return f"marks {self.list} {self.to_stage} once they've been {', '.join(self.from_stages)} for {self.days_after} days"
+        return f"marks {self.list} {self.to_stage} once their {self.date_field} has passed" + (f" by {self.days_after} days" if self.days_after else "")
 
 
 @register("feature", {"do": "line_totals", "list": "invoices", "lines": "invoice_lines", "tax_percent": 10, "tax_label": "GST"})
@@ -996,23 +1020,62 @@ class Recurring(Feature):
         return f"makes {self.to_list} for each {self.from_list.rstrip('s')} every {self.every}"
 
 
+TURNED = {"equals": "not_equals", "not_equals": "equals", "is_empty": "not_empty", "not_empty": "is_empty",
+          "greater_than": "at_most", "at_most": "greater_than", "less_than": "at_least", "at_least": "less_than"}
+
+
+def _turned(conditions, where):
+    """What holds when not all of these do: one of them turned round ({"any": [...]}, or the one condition itself)."""
+    out = []
+    for i, c in enumerate(conditions, start=1):
+        if "any" in c or "all" in c or c.get("op") not in TURNED:
+            raise Problem(f"{where} {i}: “{c.get('op')}” can't be turned round to say when it's allowed: write what must hold "
+                          f"for it to be allowed in only_if instead")
+        out.append({**c, "op": TURNED[c["op"]]})
+    return out[0] if len(out) == 1 else {"any": out}
+
+
+def _words_of(d, t, conditions):
+    out = []
+    for c in conditions:
+        f = d.field(t, c.field) if "." not in c.field else None
+        name = (f or {}).get("label") or c.field.replace("_", " ").replace(".", "'s ")
+        value = "" if c.value in (None, "") else f" {c.value}"
+        out.append(f"{name} {c.op.replace('_', ' ')}{value}".strip())
+    return " and ".join(out)
+
+
 @register("feature", {"do": "gate", "list": "jobs", "stage": "In progress", "needs": ["assigned_to", "billable"]})
 class Gate(Feature):
-    """A record can't move into a stage until these fields are filled in (a yes/no field: ticked), and only_if these
-    hold: a unit can't be assigned until the ID is checked and the agreement signed; a service can't be signed off
-    within 2 days of the ceremony (only_if ceremony_date not within_next_days 2: write it as more_than... or after...)."""
+    """A record can't get to a stage (or a choice of another field: a payment status of Paid) until these fields are
+    filled in (a yes/no field: ticked), only while only_if all hold, and never while blocked_if all hold. "Can't
+    assign a unit until the ID is checked": needs. "A steer under 450kg can't be signed off": blocked_if type equals
+    Steer and weight less_than 450. "Only once the deposit is at least $50": only_if deposit at_least 50."""
     do: Literal["gate"] = "gate"
     list: str
     stage: str
     needs: list[str] = Field(default_factory=list)
-    only_if: list[Condition] = Field(default_factory=list)
+    only_if: list[Condition] = Field(default_factory=list, description="it's allowed only while all of these hold")
+    blocked_if: list[Condition] = Field(default_factory=list, description="it's refused while all of these hold")
 
     def default_key(self):
         return f"gate_{self.list}_{self.stage}"
 
+    def _target(self, d, t, where):
+        """(the field, the value): the list's stage, or else a choice of another of its fields with that name."""
+        f = d.stage_field(t)
+        found = d.choice(f, self.stage) if f else None
+        if found is not None:
+            return f, found
+        for x in t["fields"]:
+            if x is not f and d.kind(x) == "choice" and x["type"] == "select" and d.choice(x, self.stage) is not None:
+                return x, d.choice(x, self.stage)
+        stages = ", ".join(f.get("options") or []) if f else "none"
+        raise Problem(f"{where}: “{self.stage}” isn't a stage of {t['label']} (its stages: {stages}), nor a choice of one of its fields")
+
     def build(self, d, where):
         t = _t(d, self.list, where)
-        f, stage = _stage(d, t, self.stage, where)
+        f, stage = self._target(d, t, where)
         fields = []
         for name in self.needs:
             nf = d.field(t, name)
@@ -1021,16 +1084,41 @@ class Gate(Feature):
             if nf["type"] in schema.CALCULATED:
                 raise Problem(f"{where} › needs: {nf['key']} is worked out, so nobody fills it in: name the fields people fill in")
             fields.append(nf)
-        flow = copy.deepcopy(t.get("workflow") or {})
-        entry = next((e for e in d.bp.get("features", []) if e["key"] == self.feature_key()), None)
-        original = (entry or {}).get("undo", {}).get("workflow", {}).get(t["key"]) or flow.get("transitions") or []
-        if not any(mv["to"] == stage for mv in original):
-            raise Problem(f"{where}: no move takes {_a(t['singular'].lower())} to {stage} by hand, so there's nothing to hold back; add one (set_stages)")
-        if not fields and not self.only_if:
-            raise Problem(f"{where}: say what must be done first: needs (fields filled in or ticked) and/or only_if (what must hold)")
+        if not fields and not self.only_if and not self.blocked_if:
+            raise Problem(f"{where}: say what must be done first: needs (fields filled in or ticked), only_if (what must hold) "
+                          f"and/or blocked_if (what stops it)")
         ticks = [nf["key"] for nf in fields if nf["type"] == "checkbox"]
         filled = [nf["key"] for nf in fields if nf["type"] != "checkbox"]
         conditions = ir_conditions(d, t, self.only_if, f"{where} › only_if") if self.only_if else []
+        blocked = ir_conditions(d, t, self.blocked_if, f"{where} › blocked_if") if self.blocked_if else []
+        allowed = conditions + ([_turned(blocked, f"{where} › blocked_if")] if blocked else [])
+        entry = next((e for e in d.bp.get("features", []) if e["key"] == self.feature_key()), None)
+        mine = ((entry or {}).get("made") or {}).get("rules") or {}
+        made = Made()
+        rules = [r for r in t.get("rules") or [] if r not in (mine.get(t["key"]) or [])]  # what this gate made before goes
+        flow = copy.deepcopy(t.get("workflow") or {})
+        original = (entry or {}).get("undo", {}).get("workflow", {}).get(t["key"]) or flow.get("transitions") or []
+        if f is not d.stage_field(t):  # a choice of another field: kept to by every save
+            at = {"field": f["key"], "op": "equals", "value": stage}
+            new = [{"check": "false", "message": f"{nf['label']} must be filled in before {f['label']} is {stage}",
+                    "when": [at, {"field": nf["key"], "op": "is_empty"}], "field": nf["key"]} for nf in fields if nf["key"] in filled]
+            new += [{"check": "false", "message": f"{nf['label']} must be ticked before {f['label']} is {stage}",
+                     "when": [at, {"field": nf["key"], "op": "not_equals", "value": True}], "field": nf["key"]} for nf in fields if nf["key"] in ticks]
+            if conditions:
+                new.append({"check": "false", "message": f"{f['label']} can only be {stage} when {_words_of(d, t, self.only_if)}",
+                            "when": [at, _turned(conditions, f"{where} › only_if")], "field": f["key"]})
+            if blocked:
+                new.append({"check": "false", "message": f"{f['label']} can't be {stage} while {_words_of(d, t, self.blocked_if)}",
+                            "when": [at] + blocked, "field": f["key"]})
+            made.ops.append({"op": "update_table", "table": t["key"], "rules": rules + new})
+            if (entry or {}).get("undo", {}).get("workflow", {}).get(t["key"]) is not None and flow:  # it gated a stage before
+                made.ops.append({"op": "update_table", "table": t["key"], "workflow": {**flow, "transitions": original}})
+            made.undo = {"made": {"rules": {t["key"]: new}}}
+            return made
+        if not any(mv["to"] == stage for mv in original):
+            raise Problem(f"{where}: no move takes {_a(t['singular'].lower())} to {stage} by hand, so there's nothing to hold back; add one (set_stages)")
+        if mine.get(t["key"]):
+            made.ops.append({"op": "update_table", "table": t["key"], "rules": rules})
         moves = copy.deepcopy(original)
         for mv in moves:
             if mv["to"] != stage:
@@ -1038,27 +1126,22 @@ class Gate(Feature):
             mv["feature"] = self.feature_key()
             if filled:
                 mv["requires"] = list(dict.fromkeys(list(mv.get("requires") or []) + filled))
-            if ticks or conditions:
-                mv["only_if"] = list(mv.get("only_if") or []) + [{"field": k, "op": "equals", "value": True} for k in ticks] + conditions
+            if ticks or allowed:
+                mv["only_if"] = list(mv.get("only_if") or []) + [{"field": k, "op": "equals", "value": True} for k in ticks] + allowed
         flow["transitions"] = moves
-        made = Made()
         made.ops.append({"op": "update_table", "table": t["key"], "workflow": flow})
         made.undo = {"workflow": {t["key"]: original}}
         return made
 
     def checks(self, d):
         t = d.list(self.list)
-        stage = d.choice(d.stage_field(t), self.stage)
-        flow = t.get("workflow") or {}
-        before = next((mv["from"][0] for mv in flow.get("transitions", []) if mv["to"] == stage and mv.get("from")), None)
-        start = flow.get("start") or d.stages(t)[0]
-        lead = [{"do": "move", "record": "{alias}", "to": before}] if before and before != start else []
-        empty = {}
+        f, stage = self._target(d, t, "gate")
+        on_stage = f is d.stage_field(t)
+        empty, full = {}, {}
         for name in self.needs:
             nf = d.field(t, name)
             if nf["type"] == "checkbox":
                 empty[nf["key"]] = False
-        full = {}
         for i, name in enumerate(self.needs):
             nf = d.field(t, name)
             full[nf["key"]] = True if nf["type"] == "checkbox" else ("today" if d.kind(nf) == "date" else _sample(d, nf, i, "r2"))
@@ -1070,23 +1153,50 @@ class Gate(Feature):
             full[nf["key"]] = yes
             if no is not None:
                 empty[nf["key"]] = no
-        steps1 = adding(d, t, "r1", empty) + [{**s, "record": "r1"} for s in lead] + [{"do": "move", "record": "r1", "to": stage, "refused": True}]
-        steps2 = adding(d, t, "r2", full) + [{**s, "record": "r2"} for s in lead] + [{"do": "move", "record": "r2", "to": stage}]
-        for s_ in steps1[:-1]:  # what the gate needs is left out of the first, whatever adding() would have filled in
+        for i, c in enumerate(self.blocked_if):  # the first: all of them hold; the second: the first doesn't
+            nf = d.field(t, c.field)
+            yes, no = holding(d, nf, c, True), holding(d, nf, c, False)
+            if nf is None or yes is None or no is None:
+                return []
+            if not self.only_if and not self.needs:
+                empty[nf["key"]] = yes
+            full[nf["key"]] = no if i == 0 else yes
+        if on_stage:
+            flow = t.get("workflow") or {}
+            before = next((mv["from"][0] for mv in flow.get("transitions", []) if mv["to"] == stage and mv.get("from")), None)
+            start = flow.get("start") or d.stages(t)[0]
+            lead = [{"do": "move", "record": "{alias}", "to": before}] if before and before != start else []
+            go = lambda r, **x: [{**s, "record": r} for s in lead] + [{"do": "move", "record": r, "to": stage, **x}]  # noqa: E731
+        else:
+            other = next((o for o in f.get("options") or [] if o != stage), None)
+            if other is not None:
+                empty.setdefault(f["key"], other)
+                full.setdefault(f["key"], other)
+            go = lambda r, **x: [{"do": "change", "record": r, "values": {f["key"]: stage}, **x}]  # noqa: E731
+        steps1 = adding(d, t, "r1", empty) + go("r1", refused=True)
+        steps2 = adding(d, t, "r2", full) + go("r2")
+        for s_ in steps1:  # what the gate needs is left out of the first, whatever adding() would have filled in
             if s_.get("do") == "add" and s_.get("as") == "r1":
                 for name in self.needs:
                     nf = d.field(t, name)
                     if nf["type"] != "checkbox":
                         s_["values"].pop(nf["key"], None)
         what = " and ".join(([f"{', '.join(self.needs)} {'is' if len(self.needs) == 1 else 'are'} done"] if self.needs else [])
-                            + (["it's time"] if self.only_if else []))
-        return [{"title": f"{_a(t['singular'])} can't move to {stage} until {what}",
-                 "steps": steps1, "expect": [{"record": "r1", "field": d.stage_field(t)["key"], "not_equals": stage}]},
-                {"title": f"Once {what}, it can move to {stage}",
-                 "steps": steps2, "expect": [{"record": "r2", "field": d.stage_field(t)["key"], "equals": stage}]}]
+                            + (["it's time"] if self.only_if else []) + ([f"it's not {_words_of(d, t, self.blocked_if)}"] if self.blocked_if else []))
+        to = f"move to {stage}" if on_stage else f"be {stage}"
+        return [{"title": f"{_a(t['singular'])} can't {to} until {what}",
+                 "steps": steps1, "expect": [{"record": "r1", "field": f["key"], "not_equals": stage}]},
+                {"title": f"Once {what}, it can {to}",
+                 "steps": steps2, "expect": [{"record": "r2", "field": f["key"], "equals": stage}]}]
 
     def said(self, d):
-        return f"keeps {self.list} from {self.stage} until {', '.join(self.needs)} {'is' if len(self.needs) == 1 else 'are'} done"
+        until = [f"{', '.join(self.needs)} {'is' if len(self.needs) == 1 else 'are'} done"] if self.needs else []
+        if self.only_if:
+            until.append(_words_of(d, d.list(self.list) or {"fields": []}, self.only_if))
+        out = f"keeps {self.list} from {self.stage}" + (f" until {' and '.join(until)}" if until else "")
+        if self.blocked_if:
+            out += f" while {_words_of(d, d.list(self.list) or {'fields': []}, self.blocked_if)}"
+        return out
 
 
 @register("feature", {"do": "lock", "list": "invoices", "stages": ["Sent", "Paid"]})
@@ -1207,6 +1317,10 @@ def remove(out, key, where):
             ir_ops.append({"op": "update_table", "table": tk, "workflow": {**t["workflow"], "transitions": transitions}})
     for tk, lock in (undo.get("lock_if") or {}).items():
         ir_ops.append({"op": "update_table", "table": tk, "lock_if": lock})
+    for tk, rules in ((entry.get("made") or {}).get("rules") or {}).items():  # a gate's rules every save keeps
+        t = schema.table(out.blueprint, tk)
+        if t is not None:
+            ir_ops.append({"op": "update_table", "table": tk, "rules": [r for r in t.get("rules") or [] if r not in rules]})
     mine = (entry.get("made") or {}).get("limit")
     if mine:
         for t in out.blueprint.get("tables", []):

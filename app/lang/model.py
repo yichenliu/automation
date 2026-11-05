@@ -15,11 +15,22 @@ from __future__ import annotations
 
 from typing import Annotated, Literal, Union
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field
 
 from .registry import register, union
 
 Scalar = Union[str, float, int, bool, None]
+
+
+def _words(text):
+    """A name people see is words: one written as a key (feedlot_buyer) is made into them (Feedlot buyer)."""
+    if text and "_" in text and " " not in text.strip():
+        text = " ".join(text.split("_")).strip()
+        return text[:1].upper() + text[1:]
+    return text
+
+
+Words = Annotated[str, AfterValidator(_words)]  # a label, a singular: what people read on the screen
 
 
 class Base(BaseModel):
@@ -39,7 +50,7 @@ class Plain(Base):
     type: Literal["text", "long_text", "rich_text", "email", "phone", "url", "address", "barcode", "tags", "number", "money", "percent",
                   "duration", "rating", "date", "datetime", "time", "yes_no", "person", "file", "image", "signature"]
     key: str
-    label: str
+    label: Words
     required: bool = False
     default: Scalar = None
     help: str | None = None
@@ -55,7 +66,7 @@ class Choice(Base):
     """A field with choices: "choice" (one) or "choices" (several). The choices are the owner's own words."""
     type: Literal["choice", "choices"]
     key: str
-    label: str
+    label: Words
     options: list[str]
     required: bool = False
     default: str | None = None
@@ -70,7 +81,7 @@ class Link(Base):
     """A link to a record of another list (an invoice's customer). many: several records (a job's crew)."""
     type: Literal["link"]
     key: str
-    label: str
+    label: Words
     to: str = Field(description="the list it links to")
     many: bool = False
     required: bool = False
@@ -84,7 +95,7 @@ class AutoNumber(Base):
     """A number the app gives each new record (INV-0001)."""
     type: Literal["auto_number"]
     key: str
-    label: str
+    label: Words
     prefix: str = ""
 
 
@@ -94,7 +105,7 @@ class Formula(Base):
     "round(subtotal * 0.1, 2)" or "customer.discount_percent". shows: how the result looks."""
     type: Literal["formula"]
     key: str
-    label: str
+    label: Words
     formula: str
     shows: Literal["number", "money", "percent", "date", "text", "yes_no"] = "number"
 
@@ -105,7 +116,7 @@ class Total(Base):
     invoice_lines.amount, where invoice_lines.invoice links to the invoice. how: sum, count, avg, min, max."""
     type: Literal["total"]
     key: str
-    label: str
+    label: Words
     of: str = Field(description="the list whose records are totalled")
     link: str = Field(description="that list's link field pointing at this list")
     how: Literal["sum", "count", "avg", "min", "max"] = "sum"
@@ -118,7 +129,7 @@ class Lookup(Base):
     """A linked record's field shown on this one, e.g. path "customer.email"."""
     type: Literal["lookup"]
     key: str
-    label: str
+    label: Words
     path: str
 
 
@@ -211,7 +222,7 @@ class Button(Base):
     """A button on each record of the list; only_if of the rule says when it shows."""
     on: Literal["button"]
     list: str
-    label: str
+    label: Words
 
 
 @register("when", {"on": "every", "list": "invoices", "period": "day", "at": "08:00"})
@@ -464,7 +475,7 @@ class View(Base):
     """Another way to see a list: a board (by stage), a calendar (by a date field), a timeline (date_field to
     end_field), a gallery (of image_field), a filtered list."""
     type: Literal["list", "board", "calendar", "gallery", "timeline", "map"]
-    label: str
+    label: Words
     filters: list[Condition] = Field(default_factory=list)
     date_field: str | None = None
     end_field: str | None = None
@@ -480,8 +491,8 @@ class AddList(Base):
     records hold these as lines (invoice lines inside an invoice; needs a link field to it)."""
     do: Literal["add_list"]
     key: str
-    label: str
-    singular: str
+    label: Words
+    singular: Words
     fields: list[FieldDef]
     stages: Stages | None = None
     inside: str | None = None
@@ -492,8 +503,8 @@ class ChangeList(Base):
     """Rename a list."""
     do: Literal["change_list"]
     list: str
-    label: str | None = None
-    singular: str | None = None
+    label: Words | None = None
+    singular: Words | None = None
 
 
 @register("patch", {"do": "remove_list", "list": "notes"}, group="data")
@@ -604,10 +615,13 @@ class AddRecords(Base):
     records: list[dict]
 
 
-@register("patch", {"do": "add_validation", "list": "invoices", "check": "total >= 0", "message": "A total can't be below zero"}, "data")
+@register("patch", {"do": "add_validation", "list": "payments", "check": "amount <= invoice.total",
+                     "message": "A payment can't be more than its invoice's total"}, "behaviour")
 class AddValidation(Base):
-    """A rule every saved record of a list must keep: check is a formula that must be true (end_date >= start_date),
-    message what people are told when it isn't; only_if: only while these hold."""
+    """A rule every record of a list must keep when it's added or changed, so what breaks it is refused ("can't book
+    unless…", "never more than…"): check is a formula that must be true (end_date >= start_date; a linked record's
+    field through its link: student.deposit_paid >= 50), message what people are told when it isn't; only_if: only
+    while these hold. Holding a record back from a stage is a gate."""
     do: Literal["add_validation"]
     list: str
     check: str
@@ -652,7 +666,7 @@ class AddDocument(Base):
     do: Literal["add_document"]
     list: str
     key: str
-    label: str
+    label: Words
     title: str | None = None
 
 

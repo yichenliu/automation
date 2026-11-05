@@ -526,6 +526,63 @@ def test_a_gate_on_a_condition_keeps_a_record_from_a_stage_until_it_holds(app):
     assert all(r["ok"] for r in results), [r.get("problem") for r in results]
 
 
+@pytest.mark.parametrize("gate", [
+    {"do": "gate", "list": "quotes", "stage": "Sent", "blocked_if": [{"field": "total", "op": "less_than", "value": 50}]},
+    {"do": "gate", "list": "jobs", "stage": "Urgent", "needs": ["assigned_to"]},
+    {"do": "gate", "list": "jobs", "stage": "Urgent", "blocked_if": [{"field": "billable", "op": "equals", "value": False}]},
+])
+def test_a_gate_stops_what_its_blocked_if_says_and_holds_back_a_choice_that_isnt_a_stage(app, gate):
+    """“A steer under 450kg can't be signed off”: blocked_if, as the owner says it (not only_if written backwards); and
+    “signed off” may be a choice of another field, kept to by every save."""
+    out = lang.apply(everything(), [gate])
+    assert not out.problems, out.problems
+    examples = patterns.checks(out.blueprint)
+    assert len(examples) == 2
+    ws = _workspace(app, out.blueprint)
+    _, results = trial.try_out(ws, examples, screens=False)
+    assert all(r["ok"] for r in results), [r.get("problem") for r in results]
+    gone = lang.apply(out.blueprint, [{"do": "remove_feature", "feature": out.blueprint["features"][-1]["key"]}])
+    assert not gone.problems, gone.problems
+    assert not schema.table(gone.blueprint, gate["list"]).get("rules")
+
+
+def test_overdue_can_count_from_the_day_a_record_got_to_its_stage(app):
+    """“Chase them 30 days after I send it”: no date field to count from, so the day it got to Sent is noted; on the
+    30th day it's Overdue (and the owner's own way of checking that comes out right)."""
+    out = lang.apply(everything(), [{"do": "overdue", "list": "invoices", "from_stages": ["Sent"], "to_stage": "Overdue", "days_after": 30}])
+    assert not out.problems, out.problems
+    examples = patterns.checks(out.blueprint) + [{
+        "title": "30 days after it's sent it's overdue", "steps": [
+            {"do": "add", "as": "i1", "table": "invoices", "values": {}}, {"do": "move", "record": "i1", "to": "Sent"},
+            {"do": "wait", "days": 30}, {"do": "run", "rule": "overdue_invoices"}],
+        "expect": [{"record": "i1", "field": "status", "equals": "Overdue"}]}]
+    ws = _workspace(app, out.blueprint)
+    _, results = trial.try_out(ws, examples, screens=False)
+    assert len(results) == 3 and all(r["ok"] for r in results), [r.get("problem") for r in results]
+
+
+def test_a_rule_emails_a_records_own_field_called_email(app):
+    """“email”, “reason”, “file”: names a rule keeps for what started it, and a list's own fields too; with no email
+    starting the rule, {{email}} is the record's."""
+    out = lang.apply(schema.empty("x"), [
+        {"do": "add_list", "key": "students", "label": "Students", "singular": "Student", "fields": [
+            {"type": "text", "key": "name", "label": "Name"}, {"type": "email", "key": "email", "label": "Email"},
+            {"type": "text", "key": "reason", "label": "Reason"}],
+         "stages": {"stages": ["Signed up", "Learning"]}},
+        {"do": "chase", "list": "students", "stage": "Signed up", "days": 3, "email_to": "email", "message": "Hi {{name}}: {{reason}}"}])
+    assert not out.problems, out.problems
+    ws = _workspace(app, out.blueprint)
+    _, results = trial.try_out(ws, patterns.checks(out.blueprint), screens=False)
+    assert results and all(r["ok"] for r in results), [r.get("problem") for r in results]
+
+
+def test_a_name_written_as_a_key_is_shown_in_words():
+    out = lang.apply(schema.empty("x"), [{"do": "add_list", "key": "feedlot_buyers", "label": "Feedlot buyers", "singular": "feedlot_buyer",
+                                          "fields": [{"type": "text", "key": "name", "label": "contact_person"}]}])
+    t = schema.table(out.blueprint, "feedlot_buyers")
+    assert t["singular"] == "Feedlot buyer" and t["fields"][0]["label"] == "Contact person"
+
+
 def test_an_approval_records_who_let_it_through_and_when(app):
     bp = lang.apply(everything(), [{"do": "approval", "list": "quotes", "stage": "Sent", "by": "owner"}]).blueprint
     ws = _workspace(app, bp)

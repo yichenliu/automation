@@ -70,6 +70,9 @@ patches.
 - Lines that belong to a record (invoice lines) are a list "inside" it, with a link field to it.
 - First name, in "lists", every list the needs require (most apps need several: the people, the things, the work, the
   money); then send an add_list for each one the app doesn't have yet, all in this answer.
+- Something the owner wants added to a list the app has (a note, a date, a box, a detail: "add a team note to jobs") is
+  one field on that list (add_field). A new list only for a new kind of thing kept many times over, with details of
+  its own, that the owner asks for.
 - Every link points at a list that exists or that you add here. Put numbers people type as number or money fields.
 
 {catalog}"""
