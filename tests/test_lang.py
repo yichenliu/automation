@@ -314,7 +314,7 @@ def test_a_need_whose_patches_were_all_refused_is_said_as_not_made_yet(app):
     a = db.session.get(Message, a.id)
     assert a.status == "done", a.error
     assert a.checks["needs"][0]["state"] == "unmade"
-    assert a.text.startswith("Not everything works yet") and "I couldn't make this yet: The owner is told when an invoice is paid" in a.text
+    assert a.text.startswith("Not everything works yet. I couldn't make this yet: The owner is told when an invoice is paid.")
     assert "(not made yet)" in a.text
 
 
@@ -413,3 +413,11 @@ def test_the_new_builder_adds_the_records_the_owner_gave_and_brings_in_an_attach
     assert Record.query.filter_by(workspace_id=ws.id, table="services").count() == 1
     assert Job.query.filter_by(workspace_id=ws.id, kind="import").count() == 1
     assert any("Importing" in c for c in a.changes)
+
+
+def test_a_rule_that_makes_a_document_the_list_hasnt_got_makes_a_standard_one():
+    out = lang.apply(everything(), [{"do": "add_rule", "rule": {"key": "send_report", "name": "Send the report", "when": {"on": "reaches", "list": "jobs", "stage": "Done"},
+                                                              "steps": [{"do": "document", "document": "job_report"},
+                                                                        {"do": "email", "to": "customer.email", "subject": "Your report", "body": "Attached.", "attach": ["job_report"]}]}}])
+    assert not out.problems, out.problems
+    assert [d["key"] for d in schema.table(out.blueprint, "jobs")["documents"]] == ["job_report"]

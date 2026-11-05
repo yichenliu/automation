@@ -388,7 +388,7 @@ def ir_step(d, t, s, where, made=None):
             to = "{{" + ".".join(keys) + "}}"
         else:
             _template(d, t, to, f"{where} › to")
-        docs = {x["key"] for x in t.get("documents", [])}
+        docs = {x["key"] for x in t.get("documents", [])} | NEW_DOCUMENTS.get(t["key"], set())
         for key in s.attach:
             if schema.slug(key) not in docs and not d.field(t, key):
                 raise Problem(f"{where} › attach: {t['label']} has no document or file field “{key}” (documents: {', '.join(docs) or 'none'})")
@@ -398,8 +398,8 @@ def ir_step(d, t, s, where, made=None):
             out["attach"] = [schema.slug(a) for a in s.attach]
     elif isinstance(s, m.MakeDocument):
         docs = {x["key"] for x in t.get("documents", [])}
-        if schema.slug(s.document) not in docs:
-            raise Problem(f"{where}: {t['label']} has no document “{s.document}” (documents: {', '.join(docs) or 'none'})")
+        if schema.slug(s.document) not in docs:  # none by that name: a standard one, laid out from the record, is made
+            NEW_DOCUMENTS.setdefault(t["key"], set()).add(schema.slug(s.document))
         out = {"type": "generate_document", "document": schema.slug(s.document)}
         if s.save_to:
             f = d.field(t, s.save_to)
@@ -514,6 +514,7 @@ def _name(p):
 
 
 LATE = (m.Link, m.Lookup, m.Total, m.Formula)
+NEW_DOCUMENTS = {}  # while a rule is compiled: the documents its steps name that the list doesn't have yet (made with it)
 # what a design_op may do: only what the language has no patch of its own for
 ESCAPE = {"add_page", "update_page", "remove_page", "add_document", "update_document", "remove_document", "set_public_form",
           "set_portal", "set_team", "set_space", "remove_space", "set_sync", "remove_sync", "add_flow", "update_flow",
@@ -650,6 +651,18 @@ def apply(bp, raw_patches, allowed=None):
     return out
 
 
+def _documents_for(d):
+    """The standard documents a rule's steps named that their lists don't have yet."""
+    out = []
+    for table, keys in NEW_DOCUMENTS.items():
+        t = d.list(table)
+        for key in sorted(keys):
+            label = schema.label_of(key)
+            out.append({"op": "add_document", "table": t["key"], "document": {"key": key, "label": label, "title": label}})
+    NEW_DOCUMENTS.clear()
+    return out
+
+
 def translate(d, p, where):
     """The design ops for one patch (not a new list, not a feature)."""
     if isinstance(p, m.ChangeList):
@@ -730,7 +743,12 @@ def translate(d, p, where):
             op["sheet"] = p.sheet
         return [op]
     if isinstance(p, m.AddRule):
-        return [{"op": "add_automation", "automation": ir_rule(d, p.rule, where)}]
+        NEW_DOCUMENTS.clear()
+        rule = ir_rule(d, p.rule, where)
+        return _documents_for(d) + [{"op": "add_automation", "automation": rule}]
+    if isinstance(p, m.AddDocument):
+        t = _list(d, p.list, where)
+        return [{"op": "add_document", "table": t["key"], "document": {"key": schema.slug(p.key), "label": p.label, "title": p.title or p.label}}]
     if isinstance(p, (m.ChangeRule, m.RemoveRule)):
         name = schema.slug(p.rule)
         made = next((a for a in d.bp.get("automations", []) if a["key"] == name and a.get("feature")), None)
@@ -756,6 +774,7 @@ def translate(d, p, where):
                 raise Problem(f"{where}: this rule isn't about a list's records, so it has no only_if")
             whens = [c for c in new.get("conditions", []) if c.get("op") in ("changed", "changed_to")]
             new["conditions"] = whens + ir_conditions(d, t, p.only_if, f"{where} › only_if")
+        NEW_DOCUMENTS.clear()
         if p.steps is not None:
             if t is None:
                 raise Problem(f"{where}: steps need the list the rule is about")
@@ -764,7 +783,7 @@ def translate(d, p, where):
                 step, made = ir_step(d, t, s, f"{where} › step {n}", made)
                 actions.append(step)
             new["actions"] = actions
-        return [{"op": "add_automation", "automation": new}]
+        return _documents_for(d) + [{"op": "add_automation", "automation": new}]
     if isinstance(p, m.RemoveRule):
         old = next((a for a in d.bp.get("automations", []) if a["key"] == schema.slug(p.rule) or a["name"].lower() == p.rule.lower()), None)
         if old is None:

@@ -581,6 +581,20 @@ def _make_behaviour(turn, needs, needs_text):
     return sent, owners
 
 
+def _not_yet_said(wrong, issues, unmade):
+    """What isn't right yet, in plain words: what came out wrong when tried, then what couldn't be made at all."""
+    parts = []
+    said = [f"“{r['title'].rstrip('.')}”" for r in wrong[:3]] + [i.rstrip(".") for i in issues[:max(0, 3 - len(wrong))]]
+    more = len(wrong) + len(issues) - len(said)
+    if said:
+        parts.append(f"When I tried it out, {'this' if len(said) + more == 1 else 'these'} didn't come out right: "
+                     + "; ".join(said) + (f", and {more} more" if more > 0 else "") + ".")
+    if unmade:
+        parts.append(f"I couldn't make {'this' if len(unmade) == 1 else 'these'} yet: " + "; ".join(unmade) + ".")
+    return ("Not everything works yet. " + " ".join(parts) + " Press “Fix these” and I'll have another go, or tell me what "
+            "should happen.")
+
+
 def _need_states(turn, needs, run):
     """Each need, and whether it's made and comes out right: "ok", "wrong" (a check of it failed) or "unmade"."""
     failing = {x.get("title") for x, r in zip(run["examples"], run["results"]) if not r["ok"]} if run else set()
@@ -623,7 +637,7 @@ def _hand_over(turn, needs, run, reply="", first=None, rounds=0, custom=(), stop
     lines = [f"- {n.does.rstrip('.')}" + {"ok": "", "wrong": " (not right yet)", "unmade": " (not made yet)",
                                            "unchecked": " (made, but I couldn't try it out: check it yourself)"}[s] for n, s in states]
     if wrong or issues or unmade:
-        text = _not_yet([{"title": r["title"]} for r in wrong], issues + [f"I couldn't make this yet: {u}" for u in unmade])
+        text = _not_yet_said(wrong, issues, unmade)
     elif turn.changes:
         text = "Your app is ready to try." if not turn.message.version_before else "Done."
     else:

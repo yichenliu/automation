@@ -279,7 +279,8 @@ class Email(Base):
 
 @register("step", {"do": "document", "document": "invoice", "save_to": "pdf"})
 class MakeDocument(Base):
-    """Make the list's document (a PDF) for the record, kept in a file field if save_to is given."""
+    """Make the record's document (a PDF; a standard one is made for the list if it has none by that name), kept in a
+    file field if save_to is given."""
     do: Literal["document"]
     document: str
     save_to: str | None = None
@@ -461,6 +462,17 @@ class AddRecords(Base):
     do: Literal["add_records"]
     list: str
     records: list[dict]
+
+
+@register("patch", {"do": "add_document", "list": "jobs", "key": "job_report", "label": "Job report", "title": "Job report"}, "data")
+class AddDocument(Base):
+    """A PDF each record of a list can be made into (a quote, an invoice, a report, a certificate), laid out by the
+    platform from the record's fields and lines. A rule's document step or a send_document feature makes and sends it."""
+    do: Literal["add_document"]
+    list: str
+    key: str
+    label: str
+    title: str | None = None
 
 
 @register("patch", {"do": "import_rows", "file": 12, "sheet": "Customers", "list": "customers", "columns": {"Customer name": "name", "E-mail": "email"}}, "data")
