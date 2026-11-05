@@ -336,10 +336,13 @@ def search(engine, query, k=6, sources=None):
         try:
             q = [float(x) for x in _unit(ai.embed([query]))[0]]
             dims = len(q)
-            # pgvector, through the HNSW index for this length: 1 - cosine distance is the similarity
-            rows = db.session.execute(sql(f"SELECT id, 1 - ((embedding::vector({dims})) <=> CAST(:q AS vector({dims}))) AS sim FROM chunk "
-                                          f"WHERE workspace_id = :ws AND model = :model AND dims = {dims} "
-                                          f"ORDER BY (embedding::vector({dims})) <=> CAST(:q AS vector({dims})) LIMIT 80"),
+            # pgvector, through the HNSW index for this length: 1 - cosine distance is the similarity. The index is
+            # shared by every workspace, so it's scanned on until this one's nearest are found (an iterative scan),
+            # never the nearest of all filtered afterwards (which leaves a small workspace in a big index with none)
+            db.session.execute(sql("SET LOCAL hnsw.iterative_scan = 'relaxed_order'"))
+            rows = db.session.execute(sql(f"SELECT id, sim FROM (SELECT id, 1 - ((embedding::vector({dims})) <=> CAST(:q AS vector({dims}))) AS sim "
+                                          f"FROM chunk WHERE workspace_id = :ws AND model = :model AND dims = {dims} "
+                                          f"ORDER BY (embedding::vector({dims})) <=> CAST(:q AS vector({dims})) LIMIT 80) found ORDER BY sim DESC"),
                                       {"q": str(q), "ws": ws_id, "model": model}).fetchall()
             if rows:
                 floor = max(MIN_SIMILARITY, float(rows[0][1]) - CLOSE_TO_BEST)
