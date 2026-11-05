@@ -132,7 +132,8 @@ def test_each_feature_compiles_and_passes_its_own_checks_in_the_simulator(app, f
 def test_a_feature_whose_parts_are_broken_fails_its_own_checks(app):
     """The checks prove the feature works: take away the rule it made, and they fail."""
     bp = lang.apply(everything(), [{"do": "payments", "list": "invoices", "payments": "payments", "paid_stage": "Paid"}]).blueprint
-    broken = lang.apply(bp, [{"do": "design_op", "op": {"op": "remove_automation", "key": "payments_invoices"}}]).blueprint
+    broken = json.loads(json.dumps(bp))
+    broken["automations"] = [a for a in broken["automations"] if a["key"] != "payments_invoices"]
     ws = _workspace(app, broken)
     _, results = trial.try_out(ws, patterns.checks(broken), screens=False)
     assert results and not all(r["ok"] for r in results)
@@ -162,6 +163,14 @@ def test_a_condition_on_a_linked_records_choice_says_how_to_write_it():
                                                       "steps": [{"do": "set", "on": "order", "values": [{"field": "status", "to": "Ready"}],
                                                                  "only_if": [{"field": "status", "op": "equals", "value": "In fitting"}]}]}}])
     assert "write order.status" in out.problems[0]
+
+
+def test_a_design_op_can_never_make_what_the_language_has_patches_for():
+    out = lang.apply(everything(), [{"do": "design_op", "op": {"op": "create_table", "key": "x", "label": "X", "fields": []}},
+                                    {"do": "design_op", "op": {"op": "update_table", "table": "jobs", "workflow": {}}},
+                                    {"do": "design_op", "op": {"op": "update_table", "table": "jobs", "row_access": {"field": "assigned_to"}}}])
+    assert out.refused == [1, 2]
+    assert "lists, fields, stages and rules are made with add_list" in out.problems[0]
 
 
 def test_lists_that_link_to_each_other_can_be_made_in_any_order_and_keep_their_field_order():
@@ -307,3 +316,37 @@ def test_a_need_whose_patches_were_all_refused_is_said_as_not_made_yet(app):
     assert a.checks["needs"][0]["state"] == "unmade"
     assert a.text.startswith("Not everything works yet") and "I couldn't make this yet: The owner is told when an invoice is paid" in a.text
     assert "(not made yet)" in a.text
+
+
+def test_a_feature_checks_itself_when_its_total_is_worked_out_by_a_formula(app):
+    bp = lang.apply(everything(), [
+        {"do": "add_field", "list": "invoices", "field": {"type": "money", "key": "base", "label": "Base"}},
+        {"do": "add_field", "list": "invoices", "field": {"type": "money", "key": "call_out_fee", "label": "Call-out fee"}},
+        {"do": "change_field", "list": "invoices", "field": {"type": "formula", "key": "total", "label": "Total", "formula": "base + call_out_fee", "shows": "money"}},
+        {"do": "payments", "list": "invoices", "payments": "payments", "paid_stage": "Paid", "part_paid_stage": "Part paid"}]).blueprint
+    examples = patterns.checks(bp)
+    assert len(examples) == 2
+    ws = _workspace(app, bp)
+    _, results = trial.try_out(ws, examples, screens=False)
+    assert all(r["ok"] for r in results), [r.get("problem") for r in results]
+
+
+def test_lists_named_as_needed_but_not_made_are_asked_for_again(app):
+    app.config["BUILDER"] = "v2"
+    ws = _workspace(app, None)
+    data = iter([{"lists": ["customers", "invoices"], "patches": [EVERYTHING[0]]}, {"lists": ["invoices"], "patches": [_invoices()]}])
+    model = Model({
+        "understand": {"needs": [{"said": "invoices", "does": "Customers get invoices"}], "reply": "OK."},
+        "data": lambda messages: next(data),
+        "behaviour": {"work": []},
+    })
+    ai.set_backend(model)
+    q = Message(workspace_id=ws.id, channel="builder", user_id=ws.owner_id, role="user", text="Customers and their invoices")
+    a = Message(workspace_id=ws.id, channel="builder", role="assistant", status="queued")
+    db.session.add_all([q, a])
+    db.session.commit()
+    from app.builder import chat
+    chat.work(a.id)
+    assert model.asked.count("data") == 2
+    ws = db.session.get(Workspace, ws.id)
+    assert {t["key"] for t in ws.blueprint["tables"]} >= {"customers", "invoices"}

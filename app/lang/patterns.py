@@ -14,7 +14,7 @@ from typing import Literal
 
 from pydantic import Field
 
-from ..blueprint import schema
+from ..blueprint import expr, schema
 from .compile import Problem, _apply_ops, _list, ir_conditions
 from .design import Design, NameProblem
 from .model import Base, Condition, Value
@@ -164,32 +164,43 @@ def _through(path):
     return (str(path or "").split(".")[0],) if "." in str(path or "") else ()
 
 
-def _driven_by_lines(d, t, field_key):
-    """The line_totals feature that works out this list's field, if one does: its params."""
-    for entry in d.bp.get("features", []):
-        if entry.get("do") == "line_totals" and schema.slug(entry["params"].get("list", "")) in (t["key"], schema.slug(t.get("label"))):
-            p = entry["params"]
-            if field_key in ("subtotal", "tax", "total", schema.slug(p.get("total") or "total"), schema.slug(p.get("subtotal") or "subtotal")):
-                return p
-    return None
-
-
-def setting(d, t, field_key, value, alias):
-    """(values for the add, steps after it) that make this field come out as `value` or more, when that can be done:
-    a field people fill in directly, or a total the line_totals feature works out (one line of that price). None when
-    it can't be done for sure."""
+def setting(d, t, field_key, value, alias, depth=0):
+    """(values for the add, steps after it) that make this field come out at `value` or more (exactly 0 for 0):
+    a field people fill in directly; a sum over lines (one line made to come out at it); a formula (its inputs set so
+    the sum works out, tried out where they're all typed in). None when it can't be done for sure."""
     f = d.field(t, field_key)
-    if f is None:
+    if f is None or depth > 3:
         return None
     if f["type"] in schema.STORED:
-        return {f["key"]: value}, []
-    p = _driven_by_lines(d, t, f["key"])
-    if p:
-        lines = d.list(p["lines"])
-        link = next((x["key"] for x in (lines or {}).get("fields", []) if x["type"] == "link" and x.get("table") == t["key"]), None)
-        if lines and link:
-            return {}, adding(d, lines, f"{alias}_line", {link: alias, schema.slug(p.get("quantity") or "quantity"): 1,
-                                                          schema.slug(p.get("price") or "unit_price"): value})
+        return ({f["key"]: value}, []) if d.kind(f) == "number" else None
+    if f["type"] == "rollup" and f.get("aggregate") == "sum" and f.get("field") and "." not in str(f.get("via") or "."):
+        lines = d.list(f.get("table"))
+        got = setting(d, lines, f["field"], value, f"{alias}_line", depth + 1) if lines else None
+        if got is None:
+            return None
+        values, after = got
+        return {}, adding(d, lines, f"{alias}_line", {f["via"]: alias, **values}) + after
+    if f["type"] == "formula":
+        try:
+            names = [n for n in expr.names_in(f["expression"]) if d.field(t, n)]
+        except expr.ExprError:
+            return None
+        typed = [n for n in names if d.field(t, n)["type"] in schema.STORED and d.kind(d.field(t, n)) == "number"]
+        if typed and len(typed) == len(names):  # all typed in: tried out until the sum works out
+            for rest in (1, 0):
+                for n in typed:
+                    values = {k: (value if k == n else rest) for k in typed}
+                    try:
+                        got = expr.evaluate(f["expression"], expr.Context(values))
+                    except Exception:  # noqa: BLE001 - this way of filling it in doesn't work it out
+                        continue
+                    if got is not None and (got >= value if value else got == 0):
+                        return {k: v for k, v in values.items()}, []
+            return None
+        for n in names:  # one input worked out itself (a subtotal of lines): that one carries it
+            got = setting(d, t, n, value, alias, depth + 1)
+            if got is not None:
+                return got
     return None
 
 
