@@ -143,6 +143,10 @@ def test_signing_in_the_session_and_messages_for_the_next_page():
         assert s["_user_id"] == "5" and "_id" in s
         s["_user_id"] = "9"
     assert client.get("/w/1/mine").get_data(as_text=True).startswith("9 ")
+    fresh = _app(WTF_CSRF_ENABLED=False).test_client()  # signed in without the form, as a try-out's people are
+    with fresh.session_transaction() as s:
+        s["_user_id"], s["_fresh"] = "7", True
+    assert fresh.get("/w/1/mine").get_data(as_text=True) == "7 []"
     other = _app(WTF_CSRF_ENABLED=False, SECRET_KEY="another").test_client()
     other._client.cookies = client._client.cookies  # a cookie signed with another key is no session at all
     assert other.get("/w/1/mine").status_code == 302
