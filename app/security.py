@@ -13,7 +13,7 @@ from sqlalchemy import text
 from .extensions import db
 from .models import Membership, Workspace
 from .core.settings import settings
-from .webkit import abort, current_app, current_user, g, request
+from .webkit import abort, current_user, g, request
 
 _log = logging.getLogger(__name__)
 
@@ -206,7 +206,6 @@ def forget_old_hits(older_than=86400):
 def client_ip():
     """Who's connecting. X-Forwarded-For is only believed when the platform runs behind a proxy that sets it
     (TRUST_PROXY=1); otherwise anyone could send a new one each time and dodge the sign-in limits."""
-    from .webkit import current_app
     if settings().get("TRUST_PROXY"):
         return request.headers.get("X-Forwarded-For", request.remote_addr or "").split(",")[0].strip()
     return request.remote_addr or ""
