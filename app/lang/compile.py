@@ -511,6 +511,12 @@ def _name(p):
 
 
 LATE = (m.Link, m.Lookup, m.Total, m.Formula)
+# what a design_op may do: only what the language has no patch of its own for
+ESCAPE = {"add_page", "update_page", "remove_page", "add_document", "update_document", "remove_document", "set_public_form",
+          "set_portal", "set_team", "set_space", "remove_space", "set_sync", "remove_sync", "add_flow", "update_flow",
+          "remove_flow", "set_theme", "rename_app", "set_module", "update_view", "remove_view", "order_fields", "update_table"}
+POLICY_KEYS = {"op", "table", "access", "permissions", "row_access", "own_records", "rules", "validations", "unique_together",
+               "approve_changes", "sealed", "colors", "journey", "portal", "audit_views", "wizard"}
 
 
 def apply(bp, raw_patches, allowed=None):
@@ -745,5 +751,16 @@ def translate(d, p, where):
             raise Problem(f"{where}: there's no rule “{p.rule}”")
         return [{"op": "remove_automation", "key": old["key"]}]
     if isinstance(p, m.DesignOp):
+        name = schema.slug(str(p.op.get("op") or ""))
+        if name not in ESCAPE:
+            raise Problem(f"{where}: “{name or 'no op'}” can't be sent as a design_op: design_op is only for "
+                          f"{', '.join(sorted(ESCAPE))}; lists, fields, stages and rules are made with add_list, add_field, "
+                          f"set_stages, add_rule or a feature")
+        if name == "update_table":
+            other = set(p.op) - POLICY_KEYS
+            if other:
+                raise Problem(f"{where}: an update_table design_op may only set who may see and change a list's records "
+                              f"({', '.join(sorted(POLICY_KEYS - {'op', 'table'}))}), not {', '.join(sorted(other))}: "
+                              f"change_list, set_stages and the field patches change the rest")
         return [p.op]
     raise Problem(f"{where}: unknown patch")

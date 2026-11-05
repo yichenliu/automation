@@ -465,7 +465,9 @@ class AddRecords(Base):
 
 @register("patch", {"do": "design_op", "op": {"op": "add_page", "page": {"key": "today", "label": "Today", "widgets": []}}}, group="behaviour")
 class DesignOp(Base):
-    """Anything else, as an op of the platform's design format (pages, documents, forms, portals, flows, syncs)."""
+    """Only for what no other patch makes: an op of the platform's design format for pages, documents, forms,
+    portals, flows, syncs, spaces, teams, the theme or the app's name; or update_table for who may see and change a
+    list's records (access, row_access, rules, unique_together). Lists, fields, stages and rules are never made here."""
     do: Literal["design_op"]
     op: dict
 
