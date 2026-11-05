@@ -4,13 +4,14 @@ API, MCP, a worker doing a job), read by the core (the audit log, who uploaded a
     with acting(user=..., ip=..., workspace_id=...):
         ...
 
-While Flask is still here, a Flask request is read when nothing has been set: its signed-in person, its address and
-its workspace. That fallback is the only place the core reads Flask's request, and it goes with Flask.
+A page's request learns who it is for as it goes: the signed-in person once the session is read, the workspace only
+once the page has looked it up. So the platform app's context enters `reading(source)` instead, and `source(name)` is
+asked each time ("user", "ip" or "workspace_id"); an `acting(...)` inside it says it outright and comes first.
 """
 import contextlib
 import contextvars
 
-_actor = contextvars.ContextVar("keel_actor", default=None)
+_actor = contextvars.ContextVar("keel_actor", default=None)  # a dict said outright, or a source asked as it goes
 
 
 @contextlib.contextmanager
@@ -22,24 +23,14 @@ def acting(user=None, ip=None, workspace_id=None):
         _actor.reset(token)
 
 
-def _from_flask():
+@contextlib.contextmanager
+def reading(source):
+    """Who is acting is asked of `source(name)` while the block runs (a request, which knows more as it goes)."""
+    token = _actor.set(source)
     try:
-        from flask import g, has_app_context, has_request_context, request
-    except ImportError:
-        return {}
-    out = {}
-    if has_request_context():
-        try:
-            from flask_login import current_user
-            out["user"] = current_user if current_user and current_user.is_authenticated else None
-        except Exception:  # noqa: BLE001 - no sign-in here (an API call, a form)
-            out["user"] = None
-        out["ip"] = (request.headers.get("X-Forwarded-For", request.remote_addr or "").split(",")[0].strip()[:64]) or None
-    if has_app_context():
-        ws = g.get("ws") or getattr(g.get("engine"), "ws", None)
-        if ws is not None:
-            out["workspace_id"] = _identity(ws)
-    return out
+        yield
+    finally:
+        _actor.reset(token)
 
 
 def _identity(obj):
@@ -50,13 +41,16 @@ def _identity(obj):
     return key[0] if key else obj.__dict__.get("id")
 
 
-def _now():
-    return _actor.get() or _from_flask()
+def _get(name):
+    now = _actor.get()
+    if now is None:
+        return None
+    return now.get(name) if isinstance(now, dict) else now(name)
 
 
 def user():
     """The person acting, or None (a rule, a worker, an API key)."""
-    return _now().get("user")
+    return _get("user")
 
 
 def user_id():
@@ -65,8 +59,8 @@ def user_id():
 
 
 def ip():
-    return _now().get("ip")
+    return _get("ip")
 
 
 def workspace_id():
-    return _now().get("workspace_id")
+    return _get("workspace_id")

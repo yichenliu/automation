@@ -8,9 +8,9 @@ Which database a session talks to belongs to the context the code runs in:
 - the live app's PostgreSQL;
 - a simulator copy's in-memory SQLite, inside it;
 - a worker's job.
-`using(engine)` enters a context, and so does each Flask app context while Flask is still here (init_app). Each context
-has its own session, removed when the context ends, so a simulator copy opened inside a request never shares the
-request's session.
+`using(engine)` enters a context; the platform app's own context (`app.app_context()`) enters its engine this way. Each
+context has its own session, removed when the context ends, so a simulator copy opened inside a request never shares
+the request's session.
 """
 import contextlib
 import contextvars
@@ -51,28 +51,15 @@ class Database:
                 return _snake(cls.__name__)
 
         self.Model = Model
-        self._engines = {}  # a Flask app's id -> its engine, while Flask is here
         # a context's session is made bound to that context's engine, the first time it's asked for
         self.session = orm.scoped_session(lambda: orm.Session(bind=self.engine), scopefunc=self._scope)
 
     # the context: which engine, which session ----------------------------------------------------------------------
-    def _flask(self):
-        try:
-            from flask import current_app
-            from flask.globals import app_ctx
-            app = current_app._get_current_object()
-            return app, app_ctx._get_current_object()
-        except (ImportError, RuntimeError):
-            return None, None
-
     def _current(self):
         entered = _context.get()
-        if entered is not None:
-            return entered
-        app, ctx = self._flask()
-        if app is not None and id(app) in self._engines:
-            return self._engines[id(app)], ("flask", id(ctx))
-        raise RuntimeError("No database here: run inside the platform's context (db.using(engine), or an app context)")
+        if entered is None:
+            raise RuntimeError("No database here: run inside the platform's context (db.using(engine), or an app context)")
+        return entered
 
     def _scope(self):
         return self._current()[1]
@@ -103,14 +90,10 @@ class Database:
         return sa.create_engine(url, **(options or {}))
 
     def init_app(self, app):
-        """While Flask is here: the app's engine, and a session per app context, removed when the context ends."""
-        engine = self.make_engine(app.config["SQLALCHEMY_DATABASE_URI"], app.config.get("SQLALCHEMY_ENGINE_OPTIONS") or {})
-        self._engines[id(app)] = engine
+        """The app's engine, made from its config; its context runs against it (app.app_context() enters `using`)."""
+        app.engine = self.make_engine(app.config["SQLALCHEMY_DATABASE_URI"], app.config.get("SQLALCHEMY_ENGINE_OPTIONS") or {})
         app.extensions["sqlalchemy"] = self
-
-        @app.teardown_appcontext
-        def _remove(exc=None):
-            self.session.remove()
+        return app.engine
 
     def create_all(self):
         self.metadata.create_all(self.engine)
