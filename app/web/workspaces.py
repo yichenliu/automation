@@ -63,11 +63,26 @@ def new():
     return render_template("new_workspace.html", form={}, parts=modules.MODULES)
 
 
-def _add_parts(ws, chosen):
+def with_parts(blueprint, chosen):
+    """A design with ready-made parts added (not saved): their Keel language patches, then the design ops for the little
+    the language can't say yet. Returns the outcome (its blueprint and changes), or raises ValueError saying what didn't fit."""
+    from .. import lang
     from ..blueprint import modules, ops
+    out = lang.apply(blueprint, modules.ops_for(chosen, blueprint))
+    if out.problems:
+        raise ValueError("; ".join(out.problems))
+    unsaid = modules.unsaid_for(chosen, blueprint)
+    if unsaid:
+        rest = ops.apply(out.blueprint, unsaid, already=ops.wrong_already(out.blueprint), strict=True)
+        if rest.problems:
+            raise ValueError("; ".join(rest.problems))
+        out.blueprint, out.changes = rest.blueprint, out.changes + rest.changes
+    return out
+
+
+def _add_parts(ws, chosen):
+    from ..blueprint import modules
     from ..builder import chat
-    result = ops.apply(ws.blueprint, modules.ops_for(chosen, ws.blueprint))
-    if result.problems:
-        raise ValueError("; ".join(result.problems))
+    result = with_parts(ws.blueprint, chosen)
     names = ", ".join(modules.MODULES[k]["label"] for k in chosen)
     chat.save_version(ws, result.blueprint, [f"Started from the ready-made {names}"] + result.changes, "parts", by=current_user.id)
