@@ -834,8 +834,9 @@ class Convert(Feature):
 
 @register("feature", {"do": "send_document", "list": "invoices", "button": "Send invoice", "email_to": "customer.email", "then_stage": "Sent"})
 class SendDocument(Feature):
-    """A button that makes the record's document (a PDF; the list's own, or a standard one made for it), emails it to
-    an email field, and moves the record to then_stage."""
+    """Makes the record's document (a PDF; the list's own, or a standard one made for it) and emails it to an email
+    field: with then_stage, whenever a record gets to that stage (its button is the move to it, which keeps the
+    stage's own checks); without, from a button of its own."""
     do: Literal["send_document"] = "send_document"
     list: str
     button: str
@@ -859,9 +860,19 @@ class SendDocument(Feature):
         actions = [{"type": "generate_document", "document": key},
                    {"type": "send_email", "to": to, "subject": self.subject or f"{t['singular']} {_title(t)}",
                     "body": self.body or f"Please find your {t['singular'].lower()} {_title(t)} attached.", "attach": [key]}]
-        if self.then_stage:
+        if self.then_stage:  # the move to the stage is the button; getting there (however) sends it
             f, stage = _stage(d, t, self.then_stage, where)
-            actions.append({"type": "update_record", "values": {f["key"]: stage}})
+            flow = copy.deepcopy(t.get("workflow") or {"field": f["key"], "transitions": []})
+            if not any(mv["to"] == stage for mv in flow.get("transitions", [])):
+                options = list(f.get("options") or [])
+                before = options[options.index(stage) - 1] if options.index(stage) > 0 else None
+                flow.setdefault("transitions", []).append({"from": [before] if before else [], "to": stage, "label": self.button[:60],
+                                                           "feature": self.feature_key()})
+                made.ops.append({"op": "update_table", "table": t["key"], "workflow": flow})
+            made.rules.append({"key": self.feature_key(), "name": f"Send the {t['singular'].lower()} when it's {stage}",
+                               "trigger": {"type": "record_created_or_updated", "table": t["key"]},
+                               "conditions": [{"field": f["key"], "op": "changed_to", "value": stage}], "actions": actions})
+            return made
         made.rules.append({"key": self.feature_key(), "name": self.button, "trigger": {"type": "button", "table": t["key"], "label": self.button[:40]},
                            "conditions": [], "actions": actions})
         return made
@@ -875,10 +886,13 @@ class SendDocument(Feature):
             f = None
         if f is not None and len(keys) == 1:
             steps[-1]["values"][keys[0]] = "r1@example.com"
-        steps.append({"do": "press", "record": "r1", "button": self.button})
         expect = [{"told": True, "record": "r1"}]
         if self.then_stage:
-            expect.append({"record": "r1", "field": d.stage_field(t)["key"], "equals": d.choice(d.stage_field(t), self.then_stage)})
+            stage = d.choice(d.stage_field(t), self.then_stage)
+            steps.append({"do": "move", "record": "r1", "to": stage})
+            expect.append({"record": "r1", "field": d.stage_field(t)["key"], "equals": stage})
+            return [{"title": f"{_a(t['singular'])} that gets to {stage} is sent", "steps": steps, "expect": expect}]
+        steps.append({"do": "press", "record": "r1", "button": self.button})
         return [{"title": f"“{self.button}” sends the {t['singular'].lower()}", "steps": steps, "expect": expect}]
 
     def said(self, d):

@@ -540,3 +540,15 @@ def test_an_approval_records_who_let_it_through_and_when(app):
         "expect": [{"record": "q1", "field": "sent_by", "equals": "filled in"}, {"record": "q1", "field": "sent_on", "equals": "today"}]}
     _, results = trial.try_out(ws, [example], screens=False)
     assert results[0]["ok"], results[0].get("problem")
+
+
+def test_a_stage_a_rule_moves_records_on_from_isnt_a_dead_end(app):
+    bp = lang.apply(everything(), [
+        {"do": "set_stages", "list": "orders", "stages": {"stages": ["New", "In fitting", "Ready"],
+                                                           "moves": [{"from": ["New"], "to": "In fitting", "button": "Start fitting"}]}},
+        {"do": "add_rule", "rule": {"key": "fitted", "name": "Fitted orders are ready", "when": {"on": "changed", "list": "orders", "field": "name"},
+                                    "only_if": [{"field": "status", "op": "equals", "value": "In fitting"}],
+                                    "steps": [{"do": "set", "values": [{"field": "status", "to": "Ready"}]}]}}]).blueprint
+    ws = _workspace(app, bp)
+    walked, _ = trial.try_out(ws, [], screens=False)
+    assert not [i for i in walked["issues"] if "orders record at In fitting can't move on" in i["text"]], walked["issues"]
