@@ -9,6 +9,7 @@ New lists are made in phases (their plain fields and stages, then links, then to
 their stage moves), so a batch can make lists that link to each other in any order.
 """
 import ast
+import contextvars
 import copy
 import re
 from dataclasses import dataclass, field as dfield
@@ -388,7 +389,7 @@ def ir_step(d, t, s, where, made=None):
             to = "{{" + ".".join(keys) + "}}"
         else:
             _template(d, t, to, f"{where} › to")
-        docs = {x["key"] for x in t.get("documents", [])} | NEW_DOCUMENTS.get(t["key"], set())
+        docs = {x["key"] for x in t.get("documents", [])} | _new_documents().get(t["key"], set())
         for key in s.attach:
             if schema.slug(key) not in docs and not d.field(t, key):
                 raise Problem(f"{where} › attach: {t['label']} has no document or file field “{key}” (documents: {', '.join(docs) or 'none'})")
@@ -399,7 +400,7 @@ def ir_step(d, t, s, where, made=None):
     elif isinstance(s, m.MakeDocument):
         docs = {x["key"] for x in t.get("documents", [])}
         if schema.slug(s.document) not in docs:  # none by that name: a standard one, laid out from the record, is made
-            NEW_DOCUMENTS.setdefault(t["key"], set()).add(schema.slug(s.document))
+            _new_documents().setdefault(t["key"], set()).add(schema.slug(s.document))
         out = {"type": "generate_document", "document": schema.slug(s.document)}
         if s.save_to:
             f = d.field(t, s.save_to)
@@ -514,7 +515,17 @@ def _name(p):
 
 
 LATE = (m.Link, m.Lookup, m.Total, m.Formula)
-NEW_DOCUMENTS = {}  # while a rule is compiled: the documents its steps name that the list doesn't have yet (made with it)
+_NEW_DOCUMENTS = contextvars.ContextVar("keel_new_documents", default=None)
+
+
+def _new_documents():
+    """While a rule is compiled: the documents its steps name that the list doesn't have yet (made with it). Each
+    compile has its own (builder turns and API calls compile at the same time)."""
+    found = _NEW_DOCUMENTS.get()
+    if found is None:
+        found = {}
+        _NEW_DOCUMENTS.set(found)
+    return found
 # what a design_op may do: only what the language has no patch of its own for
 ESCAPE = {"add_page", "update_page", "remove_page", "add_document", "update_document", "remove_document", "set_public_form",
           "set_portal", "set_team", "set_space", "remove_space", "set_sync", "remove_sync", "add_flow", "update_flow",
@@ -654,12 +665,12 @@ def apply(bp, raw_patches, allowed=None):
 def _documents_for(d):
     """The standard documents a rule's steps named that their lists don't have yet."""
     out = []
-    for table, keys in NEW_DOCUMENTS.items():
+    for table, keys in _new_documents().items():
         t = d.list(table)
         for key in sorted(keys):
             label = schema.label_of(key)
             out.append({"op": "add_document", "table": t["key"], "document": {"key": key, "label": label, "title": label}})
-    NEW_DOCUMENTS.clear()
+    _new_documents().clear()
     return out
 
 
@@ -743,7 +754,7 @@ def translate(d, p, where):
             op["sheet"] = p.sheet
         return [op]
     if isinstance(p, m.AddRule):
-        NEW_DOCUMENTS.clear()
+        _new_documents().clear()
         rule = ir_rule(d, p.rule, where)
         return _documents_for(d) + [{"op": "add_automation", "automation": rule}]
     if isinstance(p, m.AddDocument):
@@ -774,7 +785,7 @@ def translate(d, p, where):
                 raise Problem(f"{where}: this rule isn't about a list's records, so it has no only_if")
             whens = [c for c in new.get("conditions", []) if c.get("op") in ("changed", "changed_to")]
             new["conditions"] = whens + ir_conditions(d, t, p.only_if, f"{where} › only_if")
-        NEW_DOCUMENTS.clear()
+        _new_documents().clear()
         if p.steps is not None:
             if t is None:
                 raise Problem(f"{where}: steps need the list the rule is about")
