@@ -1,10 +1,11 @@
 """The two studios: the data model (every list, its fields and how the lists link, drawn as a diagram and changed by
 hand) and workflows (each list's stages, each rule and each step-by-step flow, drawn and changed by hand).
 
-Neither touches the design directly. An edit made here becomes the same changes the builder makes (blueprint ops),
-checked the same way and saved as a version that can be gone back to; what can't be changed by hand is asked of the
-builder in words. A few edits reach the records too, and say so: renaming a choice (or a stage) renames it on every
-record that has it, so nothing is left behind under the old name.
+Neither touches the design directly. An edit made here is read and checked here (data_ops, stage_ops: names, what's
+in use), then said as the Keel language patches the AI builder writes (data_patches, stage_patches) and made through
+Keel (app/lang), checked the same way and saved as a version that can be gone back to; what can't be changed by hand
+is asked of the builder in words. A few edits reach the records too, and say so: renaming a choice (or a stage)
+renames it on every record that has it, so nothing is left behind under the old name.
 """
 import copy
 import re
@@ -829,6 +830,140 @@ def _move(t, names, change):
     if needs:
         move["requires"] = needs
     return move
+
+
+# --- the App map's edits in the Keel language ----------------------------------------------------------------------
+#
+# The map changes an app only as any builder does: with Keel language patches, made through app/lang. Each edit is
+# still read and checked by the studio's own builder above (its names, what's in use, the rules that use a stage), so
+# a refusal says what it always said and shows the records it's about; what that builder would change is then said as
+# patches. What the language has no words for yet stays a design op, made after the patches in the same version: a
+# field the AI fills in, a kind of field it doesn't make, a move named like one before it.
+
+def data_patches(bp, change, filled):
+    """An edit made in the data model, as Keel patches (and the few design ops the language can't say yet)."""
+    made, _ = data_ops(bp, change, filled)
+    return [p for op in made for p in _said_in_keel(bp, op)]
+
+
+def stage_patches(bp, change, filled):
+    """An edit to a list's stages, as Keel patches. A move is named by its button in the language: one named like a
+    move before it can't be singled out, so that edit stays the design op it was."""
+    made, _ = stage_ops(bp, change, filled)
+    t = _table(bp, change.get("table"))
+    flow, do = t.get("workflow") or {}, change.get("do")
+    if do == "add_stages":
+        workflow = made[-1]["workflow"]
+        new = next((op["field"] for op in made if op["op"] == "add_field"), None) or schema.field(t, workflow["field"])
+        return [{"do": "set_stages", "list": t["key"], "stages": {"field": workflow["field"], "stages": list(new["options"])}}]
+    if not flow or do == "rename_stage":  # a plain choice's stages are its choices; a stage renamed is a choice renamed
+        return [p for op in made for p in _said_in_keel(bp, op)]
+    if do == "remove_stages":
+        return [{"do": "remove_stages", "list": t["key"]}]
+    if do == "add_stage":  # put in its place, a way into it from the stage before and on from it to the next
+        options, moves = made[0]["changes"]["options"], made[1]["workflow"]["transitions"][len(flow["transitions"]):]
+        return [{"do": "set_field", "list": t["key"], "field": flow["field"], "settings": {"options": options}}] + \
+            [{"do": "add_move", "list": t["key"], "move": _move_said(mv)} for mv in moves]
+    if do == "remove_stage":
+        return [{"do": "remove_stage", "list": t["key"], "stage": change["name"]}]
+    if do == "order_stages":
+        return [{"do": "order_stages", "list": t["key"], "stages": [str(x) for x in change["names"]]}]
+    if do == "set_start":
+        return [{"do": "order_stages", "list": t["key"], "stages": list(schema.field(t, flow["field"])["options"]), "start": change["name"]}]
+    moves = made[-1]["workflow"]["transitions"]
+    if do == "add_move":
+        return [{"do": "add_move", "list": t["key"], "move": _move_said(moves[-1])}]
+    i = int(change.get("i", -1))
+    button = _button(flow, i)
+    if button is None:
+        return made
+    if do == "update_move":
+        return [{"do": "change_move", "list": t["key"], "button": button, "move": _move_said(moves[i])}]
+    return [{"do": "remove_move", "list": t["key"], "button": button}]
+
+
+def _said_in_keel(bp, op):
+    """One design op of the data model's, as the Keel patches that make it; [op] where the language can't say it."""
+    from .lang.compile import SETTINGS
+    name, t = op["op"], schema.table(bp, op.get("table") or "")
+    if name == "create_table":
+        fields = [_field_said(f) for f in op["fields"]]
+        if None in fields:
+            return [op]
+        made = [{"do": "add_list", "key": op["table"], "label": op["label"], "singular": schema._singular(op["label"]), "fields": fields}]
+        return made + ([{"do": "change_list", "list": op["table"], "module": op["module"]}] if op.get("module") else [])
+    if name == "update_table":
+        listed = {k: op[k] for k in ("label", "singular", "module", "title_field") if k in op}
+        policies = {k: v for k, v in op.items() if k not in listed and k not in ("op", "table")}  # a number's colours
+        return ([{"do": "change_list", "list": op["table"], **listed}] if listed else []) + \
+            ([{"do": "design_op", "op": {"op": "update_table", "table": op["table"], **policies}}] if policies else [])
+    if name == "delete_table":
+        return [{"do": "remove_list", "list": op["table"]}]
+    if name == "add_field":
+        said = _field_said(op["field"])
+        return [{"do": "add_field", "list": op["table"], "field": said}] if said else [op]
+    if name == "update_field":
+        f, changes = schema.field(t, op["key"]), dict(op["changes"])
+        kind = {k: v for k, v in changes.items() if k in ("type", "table", "expression", "format")}  # what goes in it
+        settings = {k: v for k, v in changes.items() if k in SETTINGS}
+        if f.get("feature") or set(changes) - set(kind) - set(settings) - {"ai"}:
+            return [op]  # a feature's own field: the language changes it only through the feature (set_field refuses it)
+        out = []
+        if kind:  # a new kind, or a formula's sum: the field said again whole
+            said = _field_said({**f, **changes})
+            if said is None:
+                return [op]
+            out.append({"do": "change_field", "list": t["key"], "field": said})
+        if settings:
+            out.append({"do": "set_field", "list": t["key"], "field": f["key"], "settings": settings})
+        if "ai" in changes:  # the AI filling a field in has no words in the language yet
+            out.append({"op": "update_field", "table": t["key"], "key": f["key"], "changes": {"ai": changes["ai"]}})
+        return out
+    if name == "rename_choice":
+        return [{"do": "rename_choice", "list": op["table"], "field": op["key"], "old": op["old"], "new": op["new"]}]
+    if name == "remove_field":
+        return [{"do": "remove_field", "list": op["table"], "field": op["key"]}]
+    if name == "order_fields":
+        return [{"do": "order_fields", "list": op["table"], "fields": op["keys"]}]
+    return [op]
+
+
+def _field_said(f):
+    """A design field as the Keel language writes it, or None where the language has no words for its kind."""
+    from .lang.design import TYPE_BACK
+    from .lang.model import PLAIN_TYPES
+    kind = TYPE_BACK.get(f["type"], f["type"])
+    out = {"type": kind, "key": f["key"], "label": f["label"]}
+    if kind in ("choice", "choices"):
+        out["options"] = list(f.get("options") or [])
+    elif kind == "link":
+        if not f.get("table"):
+            return None
+        out.update(to=f["table"], many=bool(f.get("multiple")))
+    elif kind == "auto_number":
+        out["prefix"] = f.get("prefix") or ""
+    elif kind == "formula":
+        shows = {"checkbox": "yes_no"}.get(f.get("format") or "number", f.get("format") or "number")
+        if not str(f.get("expression") or "").strip() or shows not in ("number", "money", "percent", "date", "text", "yes_no"):
+            return None
+        out.update(formula=f["expression"], shows=shows)
+    elif kind not in PLAIN_TYPES:
+        return None
+    if f.get("required") and kind not in ("auto_number", "formula"):
+        out["required"] = True
+    return out
+
+
+def _move_said(mv):
+    return {"from": list(mv["from"]), "to": mv["to"], "button": mv["label"], "who": list(mv.get("who") or []),
+            "needs": list(mv.get("requires") or [])}
+
+
+def _button(flow, i):
+    """The button the language names move i by, or None when a move before it has the same one."""
+    label = str(flow["transitions"][i].get("label") or flow["transitions"][i]["to"])
+    first = next((j for j, mv in enumerate(flow["transitions"]) if str(mv.get("label") or mv["to"]).lower() == label.strip().lower()), None)
+    return label if first == i else None
 
 
 def rule_ops(bp, change):
