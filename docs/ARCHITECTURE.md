@@ -20,7 +20,7 @@ Only 1 was the model's own judgment.
 ```
             owner · App map · outside agents (MCP / REST)
                               │
-   app/api      FastAPI (ASGI) front: typed tools, REST v2, MCP, streaming; the Flask UI mounted inside
+   app/api      FastAPI (ASGI) front: typed tools, REST v2, MCP, streaming; the pages (app/webkit) mounted inside
                               │
    app/builder  understand → needs and checks → data → behaviour → compile → simulate → repair by search → hand over
                               │                              ▲
@@ -104,8 +104,11 @@ Only 1 was the model's own judgment.
   - pages (the same Jinja templates, through Starlette);
   - sign-in sessions and CSRF protection;
   - REST v2, MCP and streaming.
-- While pages move over, the routes not yet moved stay mounted inside FastAPI (a2wsgi), so the app works at every
-  step. The last step deletes Flask, Flask-Login, Flask-WTF and Flask-SQLAlchemy.
+- The pages are written with the platform's own small web kit on Starlette (`app/webkit`): the few things the views
+  used from Flask (Blueprint, request, session, g, url_for, flash, render_template, sign-in, CSRF), under the same
+  names and with the same behaviour, so each view kept its code. Each request runs in a worker thread in the
+  platform's context (settings, its own database session, who is acting). The kit is mounted inside the FastAPI front,
+  so one ASGI app serves everything. Flask, Flask-Login, Flask-WTF and Flask-SQLAlchemy are gone.
 - One typed tool layer (describe, explain, what-if, apply, test, undo) serves the builder, the in-app assistant, MCP
   and REST v2.
 
@@ -143,7 +146,7 @@ Only 1 was the model's own judgment.
 | 8 | AI gateway | done |
 | 9a | Core free of Flask (database, settings, who is acting) | done |
 | 9b | FastAPI: typed tools, MCP and REST v2, streaming | done |
-| 9c | The pages on a Starlette web kit, and Flask removed | in progress |
+| 9c | The pages on a Starlette web kit, and Flask removed | done |
 | 10 | Tenancy: row-level security, per-workspace vector search, object storage; cells | done |
 | 11 | Evals on the finished platform | after 9c |
 | 12 | The first builder deleted | done (dc3a1ce) |

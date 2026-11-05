@@ -135,8 +135,8 @@ def _valid(purpose, priority):
 
 def _who(purpose=None, priority=None, workspace_id=None):
     """(purpose, priority, workspace) of a call: what the caller said, or else what the work around it says (the builder
-    at work, `asking`, the worker thread it's on), or else the assistant's. The workspace is flask.g's when a person's
-    request has one; None (one shared turn) when nothing says."""
+    at work, `asking`, the worker thread it's on), or else the assistant's. The workspace is the request's (g.ws) when a
+    person's request has one; None (one shared turn) when nothing says."""
     _valid(purpose, priority)
     said = _asking.get() or {}
     thread = THREADS.get(threading.current_thread().name)

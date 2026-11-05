@@ -132,7 +132,7 @@ complete list (36 field types, 8 views, 16 widgets, 9 triggers, 15 automation st
   combine both rankings, keep to what the person asking may see, and fall back to words alone if the embedding model is
   away. Fields kept to admins never go into the index, and when the design changes how records read (a field renamed,
   or kept from some people) they're read again.
-- **Automations, jobs and the worker:** the web (waitress) and the worker run as processes of their own, and more of
+- **Automations, jobs and the worker:** the web (uvicorn) and the worker run as processes of their own, and more of
   either can run at once (`./start.sh` starts one of each; `python run.py` alone, with `WORKER=1`, runs the worker's
   threads inside the web for development). The worker does builder turns, the assistant, jobs (imports, reading
   documents, discovery, AI fields), rule runs, the email and text outbox, indexing for the AI, and the scheduler's work
