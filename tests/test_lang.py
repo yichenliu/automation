@@ -497,3 +497,14 @@ def test_a_model_repeating_itself_while_working_out_the_needs_is_asked_again_and
     a = db.session.get(Message, a.id)
     assert a.status == "done", a.error
     assert model.asked.count("understand") == 2
+
+
+def test_an_owner_approving_what_only_they_may_send_is_their_move_and_staff_trying_first_are_stopped(app):
+    bp = lang.apply(everything(), [{"do": "approval", "list": "quotes", "stage": "Sent", "by": "owner", "over": {"field": "total", "amount": 5000}}]).blueprint
+    ws = _workspace(app, bp)
+    example = {"title": "Over $5,000 waits for me", "steps": [
+        {"do": "add", "table": "quotes", "as": "q1", "values": {"total": 6000}},
+        {"do": "move", "record": "q1", "to": "Sent", "by": "staff"}, {"do": "approve", "record": "q1"}],
+        "expect": [{"record": "q1", "field": "status", "equals": "Sent"}]}
+    _, results = trial.try_out(ws, [example], screens=False)
+    assert results[0]["ok"], results[0].get("problem")

@@ -20,6 +20,7 @@ from ..engine import automations
 from ..engine.records import Engine
 from ..extensions import db
 from ..models import Workspace, utcnow
+from .. import lang
 from . import prompts, trial
 from ..core.settings import settings
 
@@ -102,7 +103,8 @@ def add(workspace, said, by=None):
     convo = [{"role": "system", "content": prompts.EXAMPLES.format(count="Write exactly one example: the one the owner describes below, "
                                                                            "with their numbers.", when_none=prompts.ALWAYS_ONE)},
              {"role": "user", "content": f"The owner wants this checked, always: {said[:1500]}\n\nToday: {schema.today_words(engine.today)}"
-                                         f"\n\nThe app:\n{prompts.outline(workspace.blueprint, engine.counts())}"}]
+                                         f"\n\nThe app (use only the lists, fields, stages, buttons and rules named here, by their keys; its "
+                                         f"features say how it already works):\n{lang.describe(workspace.blueprint or {})}"}]
     steady = ai.building.set(True)
     try:
         content, _ = ai.chat(convo, schema=prompts.ONE_EXAMPLE_SCHEMA, think=settings().get("AI_THINK_BUILDER", False))

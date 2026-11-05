@@ -925,6 +925,11 @@ def _act(trial, engine, step, names, hold=False):
             words = APPROVING if do == "approve" else REJECTING
             if t.get("workflow") and _press_move(engine, record, t, lambda m: words.search(f"{m.get('label') or ''} {m['to']}")):
                 return
+            if do == "approve" and t.get("workflow"):  # the approver lets it through: the move only they may make (an
+                # approval kept as who may make a move, not as a request to answer)
+                theirs = [m for _, m, problem in engine.moves(record) if m.get("who") and not problem]
+                if theirs and _press_move(engine, record, t, lambda m: m in theirs):
+                    return
             asking = {a["key"] for a in engine.bp.get("automations", []) if a["trigger"].get("table") == t["key"]
                       and any(act["type"] == "request_approval" for act in schema.steps_of(a["actions"]))}
             if not asking:  # nothing ever asks: the example meant a move
@@ -1531,9 +1536,9 @@ def _meant_refused(engine, example, step, names):
         return False
     steps = [s for s in example.get("steps") or [] if isinstance(s, dict)]
     later = steps[steps.index(step) + 1:] if step in steps else []
-    if any(s.get("do") == "move" and (s.get("record") or s.get("as")) == alias and str(s.get("to") or "").lower() == str(step.get("to") or "").lower()
-           and str(s.get("by") or "owner").lower() != str(step.get("by")).lower() for s in later):
-        return True
+    if any(((s.get("do") == "move" and str(s.get("to") or "").lower() == str(step.get("to") or "").lower()) or s.get("do") == "approve")
+           and (s.get("record") or s.get("as")) == alias and str(s.get("by") or "owner").lower() != str(step.get("by")).lower() for s in later):
+        return True  # the same move made later by someone else, or someone else approving it: this one is stopped
     record = engine.get(names[alias])
     flow = (engine.tables.get(record.table) or {}).get("workflow") if record is not None else None
     if not flow:
