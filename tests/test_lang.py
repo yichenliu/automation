@@ -108,8 +108,7 @@ def test_every_piece_of_the_language_says_what_it_does_and_shows_how():
 
 def test_each_patch_example_applies_on_an_app_that_has_what_it_names():
     bp = everything()
-    bp = lang.apply(bp, [{"do": "add_rule", "rule": {"key": "job_done_invoice", "name": "Invoice", "when": {"on": "reaches", "list": "jobs", "stage": "Done"},
-                                                     "steps": [{"do": "notify", "message": "Done"}]}},
+    bp = lang.apply(bp, [m.AddRule.__keel_example__,  # what the step patches' examples change
                          {"do": "stage_alert", "list": "invoices", "stage": "Paid", "key": "alert_invoices_paid"},
                          m.AddValidation.__keel_example__]).blueprint  # what remove_validation's example takes away
     for cls in registry.items("patch"):

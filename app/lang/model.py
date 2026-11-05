@@ -13,7 +13,7 @@ Names are explicit everywhere:
 """
 from __future__ import annotations
 
-from typing import Annotated, Literal, Union
+from typing import Annotated, Any, Literal, Union
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field
 
@@ -148,6 +148,8 @@ class Move(Base):
     who: list[str] = Field(default_factory=list)
     needs: list[str] = Field(default_factory=list)
     only_if: list["Condition | str"] = Field(default_factory=list)
+    not_by: str | None = Field(None, description="never by this person (a person field, or creator): someone else checks it")
+    step_up: bool = Field(False, description="the person confirms their sign-in first (a payment run)")
 
 
 class Stages(Base):
@@ -297,6 +299,7 @@ class AddEach(Base):
     values: list[Value] = Field(default_factory=list)
     copy_same: bool = True
     only_if: list[Condition | str] = Field(default_factory=list)
+    lines_where: list[Condition | str] = Field(default_factory=list, description="only the lines that match these")
 
 
 @register("step", {"do": "notify", "who": "owner", "message": "{{number}} is ready to invoice"})
@@ -382,6 +385,7 @@ class AiFill(Base):
     field: str
     instructions: str
     review: REVIEW = "never"
+    reviewer: str | None = Field(None, description="who checks its work when it's checked: a role or a team (left out: the team)")
     read_files: bool = False
     use_knowledge: bool = False
     only_if: list[Condition | str] = Field(default_factory=list)
@@ -488,7 +492,7 @@ class View(Base):
     """Another way to see a list: a board (by stage), a calendar (by a date field), a timeline (date_field to
     end_field), a gallery (of image_field), a filtered list. A list with group_by shows its records under each value
     of that field, with counts and totals: unpaid invoices by customer (group_by customer), jobs by driver."""
-    type: Literal["list", "board", "calendar", "gallery", "timeline", "map"]
+    type: Literal["list", "board", "calendar", "gallery", "timeline", "map", "inbox"]
     label: Words
     filters: list[Condition | str] = Field(default_factory=list)
     date_field: str | None = None
@@ -519,6 +523,9 @@ class ChangeList(Base):
     list: str
     label: Words | None = None
     singular: Words | None = None
+    module: str | None = Field(None, description="the section of the menu it's in")
+    icon: str | None = None
+    title_field: str | None = Field(None, description="the field that names each record")
 
 
 @register("patch", {"do": "remove_list", "list": "notes"}, group="data")
@@ -570,7 +577,7 @@ class SetStages(Base):
     stages: Stages
 
 
-@register("patch", {"do": "add_rule", "rule": {"key": "job_done_invoice", "name": "Invoice a finished job", "when": {"on": "reaches", "list": "jobs", "stage": "Done"}, "steps": [{"do": "add", "list": "invoices", "values": [{"field": "job", "formula": "record"}]}]}}, group="behaviour")
+@register("patch", {"do": "add_rule", "rule": {"key": "job_done_invoice", "name": "Invoice a finished job", "when": {"on": "reaches", "list": "jobs", "stage": "Done"}, "steps": [{"do": "add", "list": "invoices", "values": [{"field": "job", "formula": "record"}]}, {"do": "notify", "who": "owner", "message": "{{record.title}} is done and invoiced"}]}}, group="behaviour")
 class AddRule(Base):
     """Add a rule no feature covers (or replace one: same key)."""
     do: Literal["add_rule"]
@@ -586,6 +593,7 @@ class ChangeRule(Base):
     when: When | None = None
     only_if: list[Condition | str] | None = None
     steps: list[Step] | None = None
+    enabled: bool | None = Field(None, description="false switches the rule off (it's kept), true back on")
 
 
 @register("patch", {"do": "remove_rule", "rule": "job_done_invoice"}, group="behaviour")
@@ -611,6 +619,112 @@ class AddStage(Base):
     stage: str
     after: str
     button: str | None = None
+
+
+# --- small changes: one setting of a field, one stage, one move, one step of a rule -----------------------------------
+
+@register("patch", {"do": "set_field", "list": "jobs", "field": "fax", "settings": {"required": False, "help": "Only some customers have one"}}, group="data")
+class SetField(Base):
+    """Change some of a field's settings, leaving the rest as they are; null takes a setting away. Settings: label,
+    help, required, unique, default, placeholder, options, multiple, sensitive, readonly, decimals, unit, currency,
+    prefix, digits, min, max, visible_to (roles or teams who may see it), option_colors, before, after, yes_label,
+    no_label."""
+    do: Literal["set_field"]
+    list: str
+    field: str
+    settings: dict[str, Any]
+
+
+@register("patch", {"do": "order_fields", "list": "jobs", "fields": ["title", "customer", "scheduled_for"]}, group="data")
+class OrderFields(Base):
+    """Put a list's fields in this order on its forms and pages (any not named keep their places after them)."""
+    do: Literal["order_fields"]
+    list: str
+    fields: list[str]
+
+
+@register("patch", {"do": "remove_stage", "list": "jobs", "stage": "In progress"}, group="data")
+class RemoveStage(Base):
+    """Take one stage away (refused while records are at it); its moves go with it."""
+    do: Literal["remove_stage"]
+    list: str
+    stage: str
+
+
+@register("patch", {"do": "order_stages", "list": "jobs", "stages": ["Booked", "In progress", "Done"], "start": "Booked"}, group="data")
+class OrderStages(Base):
+    """Put a list's stages in this order (every one of them), and say which a new record starts at."""
+    do: Literal["order_stages"]
+    list: str
+    stages: list[str]
+    start: str | None = None
+
+
+@register("patch", {"do": "add_move", "list": "quotes", "move": {"from": ["Sent"], "to": "Draft", "button": "Back to draft"}}, group="data")
+class AddMove(Base):
+    """Add one way people move a record on: a button from some stages to another."""
+    do: Literal["add_move"]
+    list: str
+    move: Move
+
+
+@register("patch", {"do": "change_move", "list": "quotes", "button": "Send", "move": {"from": ["Draft"], "to": "Sent", "button": "Send to customer", "who": ["owner"]}}, group="data")
+class ChangeMove(Base):
+    """Change one move, named by its button: sent whole as it should be."""
+    do: Literal["change_move"]
+    list: str
+    button: str
+    move: Move
+
+
+@register("patch", {"do": "remove_move", "list": "quotes", "button": "Declined"}, group="data")
+class RemoveMove(Base):
+    """Take one move away, named by its button."""
+    do: Literal["remove_move"]
+    list: str
+    button: str
+
+
+@register("patch", {"do": "remove_stages", "list": "orders"}, group="data")
+class RemoveStages(Base):
+    """A list no longer goes through stages (its stage field stays, as a plain choice)."""
+    do: Literal["remove_stages"]
+    list: str
+
+
+@register("patch", {"do": "add_step", "rule": "job_done_invoice", "step": {"do": "notify", "who": "owner", "message": "An invoice was made for {{record.title}}"}}, group="behaviour")
+class AddStep(Base):
+    """Add one step to a rule, at a place (1 is first; left out, last)."""
+    do: Literal["add_step"]
+    rule: str
+    step: Step
+    at: int | None = None
+
+
+@register("patch", {"do": "change_step", "rule": "job_done_invoice", "at": 1, "step": {"do": "add", "list": "invoices", "values": [{"field": "job", "formula": "record"}, {"field": "due_date", "formula": "today() + 14"}]}}, group="behaviour")
+class ChangeStep(Base):
+    """Change one step of a rule, by its place (1 is first): sent whole as it should be."""
+    do: Literal["change_step"]
+    rule: str
+    at: int
+    step: Step
+
+
+@register("patch", {"do": "remove_step", "rule": "job_done_invoice", "at": 2}, group="behaviour")
+class RemoveStep(Base):
+    """Take one step away from a rule, by its place (1 is first)."""
+    do: Literal["remove_step"]
+    rule: str
+    at: int
+
+
+@register("patch", {"do": "move_step", "rule": "job_done_invoice", "at": 2, "to": 1}, group="behaviour")
+class MoveStep(Base):
+    """Move one step of a rule to another place (1 is first)."""
+    do: Literal["move_step"]
+    rule: str
+    at: int
+    to: int
 
 
 @register("patch", {"do": "add_view", "list": "jobs", "view": {"type": "calendar", "label": "Job calendar", "date_field": "scheduled_for"}}, group="data")

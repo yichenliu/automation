@@ -564,6 +564,8 @@ def ir_step(d, t, s, where, made=None):
             raise Problem(f"{where}: “link” is {lines['key']}'s link field to {t['key']}" + (f" ({', '.join(links)})" if links else ", and it has none"))
         out = {"type": "create_for_each", "table": target["key"], "source": {"table": lines["key"], "via": link["key"]},
                "values": ir_values(d, t, target, s.values, where, item=lines, created=made), "copy_matching": s.copy_same}
+        if s.lines_where:
+            out["where"] = ir_conditions(d, lines, s.lines_where, f"{where} › lines_where")
     elif isinstance(s, m.Notify):
         try:
             who = d.who(t, s.who)
@@ -718,7 +720,13 @@ def _ai_step(d, t, s, where):
         if s.notes_field:
             out["notes_field"] = field_of(s.notes_field, "notes_field", ("long_text", "text", "rich_text"))
     if s.review != "never":
-        out.update(review=s.review, reviewer="editor")
+        reviewer = "editor"
+        if getattr(s, "reviewer", None):
+            try:
+                reviewer = d.who(t, s.reviewer)
+            except NameProblem as exc:
+                raise Problem(f"{where} › reviewer: {exc}") from None
+        out.update(review=s.review, reviewer=reviewer)
     return out
 
 
@@ -1015,12 +1023,212 @@ def _names_field(params, t, f):
     return walk(params)
 
 
+# how many records have a value in a field (or that value): what's in use is never thrown away by a change. Whoever
+# applies patches to an app in use says (the App map, the builder); left unsaid, nothing is in use.
+FILLED = contextvars.ContextVar("keel_filled", default=None)
+
+
+def _filled():
+    return FILLED.get() or (lambda table, field, value=None: 0)
+
+
+def _studio(fn, d, change, where):
+    """The ops the App map's own edit makes for this change (one logic for a click and a patch), its refusals as ours."""
+    from .. import studio
+    try:
+        made = fn(d.bp, change, _filled()) if fn is not studio.rule_ops else fn(d.bp, change)
+    except design_ops.SchemaError as exc:
+        raise Problem(f"{where}: {exc}") from None
+    return made[0]
+
+
+SETTINGS = {"label", "help", "required", "unique", "default", "placeholder", "options", "multiple", "sensitive", "readonly",
+            "decimals", "unit", "currency", "prefix", "digits", "min", "max", "visible_to", "access", "option_colors", "before",
+            "after", "yes_label", "no_label", "many"}
+
+
+def _stages_of(d, t, where):
+    flow = t.get("workflow")
+    if not flow:
+        raise Problem(f"{where}: {t['label']} has no stages (set_stages gives it some)")
+    return flow, list((d.field(t, flow["field"]) or {}).get("options") or [])
+
+
+def _stage_named(d, t, names, said, where):
+    found = next((x for x in names if x.lower() == str(said or "").strip().lower()), None)
+    if found is None:
+        raise Problem(f"{where}: “{said}” isn't one of {t['label']}'s stages ({', '.join(names)})")
+    return found
+
+
+def _move_parts(d, t, names, mv, where):
+    """A Move as the App map's edit takes it, and what it adds that the map's form doesn't (only_if, not_by, step_up)."""
+    change = {"from": [_stage_named(d, t, names, x, f"{where} › from") for x in mv.from_], "to": _stage_named(d, t, names, mv.to, f"{where} › to"),
+              "label": mv.button}
+    try:
+        change["who"] = [d.who(t, w) for w in mv.who]
+    except NameProblem as exc:
+        raise Problem(f"{where} › who: {exc}") from None
+    missing = [x for x in mv.needs if not d.field(t, x)]
+    if missing:
+        raise Problem(f"{where} › needs: {', '.join(missing)} aren't fields of {t['label']} (its fields: {', '.join(d.field_names(t))})")
+    change["requires"] = [d.field(t, x)["key"] for x in mv.needs]
+    extra = {}
+    if mv.only_if:
+        extra["only_if"] = ir_conditions(d, t, mv.only_if, f"{where} › only_if")
+    if mv.not_by:
+        extra["not_by"] = [mv.not_by]
+    if mv.step_up:
+        extra["step_up"] = True
+    return change, extra
+
+
+def _with_move_extra(ops_, index, extra):
+    for op in ops_:
+        flow = op.get("workflow") if op.get("op") == "update_table" else None
+        if flow and extra:
+            flow["transitions"][index] = {**flow["transitions"][index], **extra}
+    return ops_
+
+
+def _button_at(d, t, flow, button, where):
+    said = str(button or "").strip().lower()
+    i = next((i for i, mv in enumerate(flow.get("transitions") or []) if str(mv.get("label") or mv["to"]).lower() == said), None)
+    if i is None:
+        raise Problem(f"{where}: {t['label']} has no move with the button “{button}” (its buttons: "
+                      f"{', '.join(mv.get('label') or mv['to'] for mv in flow.get('transitions') or [])})")
+    return i
+
+
+def _rule_to_change(d, name, where):
+    old = next((a for a in d.bp.get("automations", []) if a["key"] == schema.slug(name) or a["name"].lower() == str(name).lower()), None)
+    if old is None:
+        keys = [a["key"] for a in d.bp.get("automations", [])]
+        raise Problem(f"{where}: there's no rule “{name}” (rules: {', '.join(keys) or 'none'})")
+    if old.get("feature"):
+        raise Problem(f"{where}: {old['key']} is part of the feature {old['feature']}: change the feature (send it again with its key)")
+    t = d.list(old["trigger"].get("table")) if old["trigger"].get("table") else None
+    return copy.deepcopy(old), t
+
+
+def _place(at, n, where, adding=False):
+    top = n + 1 if adding else n
+    if at is None:
+        return n if adding else n - 1
+    if not 1 <= int(at) <= max(top, 1):
+        raise Problem(f"{where}: the rule has {n} step{'s' if n != 1 else ''}, so {at} isn't a place in it")
+    return int(at) - 1
+
+
 def translate(d, p, where):
     """The design ops for one patch (not a new list, not a feature)."""
+    from .. import studio
     if isinstance(p, m.ChangeList):
         t = _list(d, p.list, where)
         changes = {k: v for k, v in (("label", p.label), ("singular", p.singular)) if v}
-        return [{"op": "update_table", "table": t["key"], "changes": changes}] if changes else []
+        out = [{"op": "update_table", "table": t["key"], "changes": changes}] if changes else []
+        if p.title_field is not None:
+            f = d.field(t, p.title_field)
+            if f is None:
+                raise Problem(f"{where} › title_field: {t['label']} has no field “{p.title_field}” (its fields: {', '.join(d.field_names(t))})")
+            out.append({"op": "update_table", "table": t["key"], "title_field": f["key"]})
+        if p.module is not None:
+            out.append({"op": "update_table", "table": t["key"], "module": p.module})
+        if p.icon is not None:
+            out.append({"op": "update_table", "table": t["key"], "icon": p.icon})
+        return out
+    if isinstance(p, m.SetField):
+        t = _list(d, p.list, where)
+        f = d.field(t, p.field)
+        if f is None:
+            raise Problem(f"{where}: {t['label']} has no field “{p.field}” (its fields: {', '.join(d.field_names(t))})")
+        if f.get("feature"):
+            raise Problem(f"{where}: {f['key']} is made by the feature {f['feature']}: change the feature (send it again with its key)")
+        wrong = [k for k in p.settings if k not in SETTINGS]
+        if wrong:
+            raise Problem(f"{where}: “{wrong[0]}” isn't a setting a field has (settings: {', '.join(sorted(SETTINGS - {'access', 'many'}))})")
+        change = {{"visible_to": "access", "many": "multiple"}.get(k, k): v for k, v in p.settings.items()}
+        if isinstance(change.get("access"), list):
+            try:
+                change["access"] = [d.who(t, w) for w in change["access"]]
+            except NameProblem as exc:
+                raise Problem(f"{where} › visible_to: {exc}") from None
+        return _studio(studio.data_ops, d, {"do": "update_field", "table": t["key"], "key": f["key"], **change}, where)
+    if isinstance(p, m.OrderFields):
+        t = _list(d, p.list, where)
+        wanted = []
+        for name in p.fields:
+            f = d.field(t, name)
+            if f is None:
+                raise Problem(f"{where}: {t['label']} has no field “{name}” (its fields: {', '.join(d.field_names(t))})")
+            wanted.append(f["key"])
+        return [{"op": "order_fields", "table": t["key"], "fields": wanted + [k for k in d.field_names(t) if k not in wanted]}]
+    if isinstance(p, m.RemoveStages):
+        t = _list(d, p.list, where)
+        _stages_of(d, t, where)
+        return _studio(studio.stage_ops, d, {"do": "remove_stages", "table": t["key"]}, where)
+    if isinstance(p, m.RemoveStage):
+        t = _list(d, p.list, where)
+        flow, names = _stages_of(d, t, where)
+        gone = _stage_named(d, t, names, p.stage, where)
+        ops_ = _studio(studio.stage_ops, d, {"do": "remove_stage", "table": t["key"], "name": gone}, where)
+        into = [x for mv in flow.get("transitions") or [] if mv["to"] == gone for x in (mv.get("from") or []) if x != gone]
+        onto = [mv["to"] for mv in flow.get("transitions") or [] if gone in (mv.get("from") or []) and mv["to"] != gone]
+        for op in ops_:  # the chain closes up: what led into it now leads on to where it led
+            moves = (op.get("workflow") or {}).get("transitions") if op.get("op") == "update_table" else None
+            if moves is None:
+                continue
+            for a in dict.fromkeys(into):
+                for b in dict.fromkeys(onto):
+                    if a != b and not any(b == mv["to"] and a in (mv.get("from") or []) for mv in moves):
+                        moves.append({"from": [a], "to": b, "label": f"Move to {b}"[:60]})
+        return ops_
+    if isinstance(p, m.OrderStages):
+        t = _list(d, p.list, where)
+        _, names = _stages_of(d, t, where)
+        order = [_stage_named(d, t, names, x, where) for x in p.stages]
+        if sorted(order) != sorted(names):
+            raise Problem(f"{where}: name every stage once, in order ({', '.join(names)})")
+        ops_ = _studio(studio.stage_ops, d, {"do": "order_stages", "table": t["key"], "names": order}, where)
+        if p.start:
+            start = _stage_named(d, t, names, p.start, f"{where} › start")
+            for op in ops_:
+                if op.get("op") == "update_table" and op.get("workflow"):
+                    op["workflow"]["start"] = start
+        return ops_
+    if isinstance(p, (m.AddMove, m.ChangeMove)):
+        t = _list(d, p.list, where)
+        flow, names = _stages_of(d, t, where)
+        change, extra = _move_parts(d, t, names, p.move, f"{where} › move")
+        if isinstance(p, m.AddMove):
+            return _with_move_extra(_studio(studio.stage_ops, d, {"do": "add_move", "table": t["key"], **change}, where), -1, extra)
+        i = _button_at(d, t, flow, p.button, where)
+        return _with_move_extra(_studio(studio.stage_ops, d, {"do": "update_move", "table": t["key"], "i": i, **change}, where), i, extra)
+    if isinstance(p, m.RemoveMove):
+        t = _list(d, p.list, where)
+        flow, _ = _stages_of(d, t, where)
+        return _studio(studio.stage_ops, d, {"do": "remove_move", "table": t["key"], "i": _button_at(d, t, flow, p.button, where)}, where)
+    if isinstance(p, (m.AddStep, m.ChangeStep, m.RemoveStep, m.MoveStep)):
+        new, t = _rule_to_change(d, p.rule, where)
+        actions = list(new.get("actions") or [])
+        _new_documents().clear()
+        if isinstance(p, (m.AddStep, m.ChangeStep)):
+            if t is None:
+                raise Problem(f"{where}: steps need the list the rule is about")
+            step, _ = ir_step(d, t, p.step, f"{where} › step", None)
+            if isinstance(p, m.AddStep):
+                actions.insert(_place(p.at, len(actions), where, adding=True), step)
+            else:
+                actions[_place(p.at, len(actions), where)] = step
+        elif isinstance(p, m.RemoveStep):
+            if len(actions) <= 1:
+                raise Problem(f"{where}: a rule needs at least one step: remove_rule takes the rule away")
+            actions.pop(_place(p.at, len(actions), where))
+        else:
+            step = actions.pop(_place(p.at, len(actions), where))
+            actions.insert(_place(p.to, len(actions), f"{where} › to", adding=True), step)
+        new["actions"] = actions
+        return _documents_for(d) + [{"op": "add_automation", "automation": new}]
     if isinstance(p, m.RemoveList):
         return [{"op": "delete_table", "table": _list(d, p.list, where)["key"]}]
     if isinstance(p, m.AddField):
@@ -1229,6 +1437,8 @@ def translate(d, p, where):
                 step, made = ir_step(d, t, s, f"{where} › step {n}", made)
                 actions.append(step)
             new["actions"] = actions
+        if p.enabled is not None:
+            new["enabled"] = bool(p.enabled)
         return _documents_for(d) + [{"op": "add_automation", "automation": new}]
     if isinstance(p, m.RemoveRule):
         old = next((a for a in d.bp.get("automations", []) if a["key"] == schema.slug(p.rule) or a["name"].lower() == p.rule.lower()), None)

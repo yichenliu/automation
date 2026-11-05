@@ -25,7 +25,7 @@ from ..blueprint import expr, schema
 from ..engine import automations
 from ..engine.records import Engine, FieldErrors, NoRate, RecordContext, automations_words, mask, masked, parse_duration, to_number
 from ..extensions import db
-from ..models import Approval, Membership, Record, Run, User, Workspace
+from ..models import Approval, Membership, Record, Run, User, Workspace, utcnow
 from ..core.settings import settings
 
 _log = logging.getLogger(__name__)
@@ -1236,21 +1236,21 @@ def pass_time(engine, days):
                 except ValueError:
                     pass
         r.data = data
-        r.created_at, r.updated_at = (r.created_at or datetime.utcnow()) - gone, (r.updated_at or datetime.utcnow()) - gone
+        r.created_at, r.updated_at = (r.created_at or utcnow()) - gone, (r.updated_at or utcnow()) - gone
     for row in RecordChange.query.filter_by(workspace_id=engine.ws.id).all():
-        row.created_at = (row.created_at or datetime.utcnow()) - gone
+        row.created_at = (row.created_at or utcnow()) - gone
     for a in Approval.query.filter_by(workspace_id=engine.ws.id).all():
-        a.created_at = (a.created_at or datetime.utcnow()) - gone
+        a.created_at = (a.created_at or utcnow()) - gone
         if (a.proposal or {}).get("ready_at"):  # a change's cooling-off ends that much sooner too
             a.proposal = {**a.proposal, "ready_at": (datetime.fromisoformat(a.proposal["ready_at"]) - gone).isoformat()}
     for run in Run.query.filter_by(workspace_id=engine.ws.id).all():
-        run.created_at = (run.created_at or datetime.utcnow()) - gone
+        run.created_at = (run.created_at or utcnow()) - gone
         if run.next_try:
             run.next_try -= gone
     db.session.commit()
     for _ in range(3):  # what falls due, and what that sets off
         due = Run.query.filter(Run.workspace_id == engine.ws.id, Run.status.in_(["waiting", "waiting_approval"]),
-                               Run.next_try <= datetime.utcnow()).all()
+                               Run.next_try <= utcnow()).all()
         if not due:
             break
         for run in due:
