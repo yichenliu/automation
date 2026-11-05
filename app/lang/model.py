@@ -316,6 +316,15 @@ class Email(Base):
     only_if: list[Condition] = Field(default_factory=list)
 
 
+@register("step", {"do": "text", "to": "customer.phone", "message": "Hi {{customer.name}}, your car is ready to collect."})
+class Text(Base):
+    """Send a text message (SMS): to is a phone field or a linked one (customer.phone)."""
+    do: Literal["text"]
+    to: str
+    message: str
+    only_if: list[Condition] = Field(default_factory=list)
+
+
 @register("step", {"do": "document", "document": "invoice", "save_to": "pdf"})
 class MakeDocument(Base):
     """Make the record's document (a PDF; a standard one is made for the list if it has none by that name), kept in a
@@ -474,7 +483,8 @@ class Rule(Base):
 
 class View(Base):
     """Another way to see a list: a board (by stage), a calendar (by a date field), a timeline (date_field to
-    end_field), a gallery (of image_field), a filtered list."""
+    end_field), a gallery (of image_field), a filtered list. A list with group_by shows its records under each value
+    of that field, with counts and totals: unpaid invoices by customer (group_by customer), jobs by driver."""
     type: Literal["list", "board", "calendar", "gallery", "timeline", "map"]
     label: Words
     filters: list[Condition] = Field(default_factory=list)
@@ -517,7 +527,7 @@ class RemoveList(Base):
 
 @register("patch", {"do": "add_field", "list": "jobs", "field": {"type": "money", "key": "call_out_fee", "label": "Call-out fee"}}, group="data")
 class AddField(Base):
-    """Add a field to a list."""
+    """Add a field to a list. Sent for one it has already, that field is made as sent."""
     do: Literal["add_field"]
     list: str
     field: FieldDef

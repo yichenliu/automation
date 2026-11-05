@@ -149,13 +149,23 @@ def left_unfilled(engine):
                 said = values.get(f["key"])
                 copies = act.get("copy_matching") and any(schema.field(x, f["key"]) or f.get("table") == x["key"] for x in near)
                 if said is None and not copies:  # what copy_matching fills: the same field, or a link back to the record itself
-                    out.append(_issue("fix", f"Rule {a['key']} adds {t['key']} records without {f['key']}, which must be filled in, "
-                                             f"so it stops every time: set \"{f['key']}\" in its values (from the record that "
-                                             + ("starts it: a field there that holds a person, or {{approver}} after an approval), "
-                                                if f["type"] == "user" else "starts it, or a fixed value), ")
-                                             + f"or make {f['key']} optional",
-                                      f"“{a['name']}” can't add {_a(schema.lc(t['singular']))}: it doesn't fill in "
-                                      f"{schema.lc(f['label'])}, which must be filled in", t["key"]))
+                    # it's added all the same, for people to finish (they're told what to fill in): wrong only when what it
+                    # starts from plainly has it (a field of that name, a link to the same list)
+                    known = next((g for x in near for g in x["fields"] if g["key"] == f["key"] or g["label"].lower() == f["label"].lower()
+                                  or (f["type"] == "link" and g["type"] == "link" and g.get("table") == f.get("table"))), None)
+                    if known is not None:
+                        out.append(_issue("fix", f"Rule {a['key']} adds {t['key']} records without {f['key']}, which must be filled in, "
+                                                 f"though {known['key']} of the record that starts it has it: set \"{f['key']}\" in its "
+                                                 f"values from it (people are otherwise asked to fill it in every time)",
+                                          f"“{a['name']}” adds {_a(schema.lc(t['singular']))} without its {schema.lc(f['label'])}, "
+                                          f"though it could take it from the {schema.lc(known['label'])}", t["key"]))
+                    else:
+                        out.append(_issue("check", f"Rule {a['key']} adds {t['key']} records without {f['key']}, which must be filled "
+                                                   f"in: each is added for people to finish (they're told to fill it in). If what starts "
+                                                   f"it knows it, set \"{f['key']}\" in its values" + (" (a person: {{approver}} after an "
+                                                   "approval, or a field there that holds one)" if f["type"] == "user" else ""),
+                                          f"“{a['name']}” adds {_a(schema.lc(t['singular']))} without its {schema.lc(f['label'])}: "
+                                          f"you'll be asked to fill it in each time", t["key"]))
                     continue
                 copied = re.fullmatch(r"\{\{\s*(record|item)\.(\w+)\s*\}\}", str(said or ""))
                 whose = (item if copied.group(1) == "item" else source) if copied else None

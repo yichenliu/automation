@@ -471,6 +471,8 @@ def _turn(turn):
     workspace, question = turn.workspace, turn.question
     asked = (question.text if question else "") or ""
     changing = bool(turn.bp.get("tables"))
+    if changing:
+        _refit(turn)
     mending = _mending(workspace, question) if changing else None
     before = checking.not_right(workspace) if changing else {"failing": [], "issues": [], "missing": []}
     needs, custom = [], [x for x in _kept(workspace) if x.get("by") == "builder"]
@@ -585,12 +587,31 @@ def _turn(turn):
         turn.save(out)
         turn.credit(patches, out, owners)
         best = run
+    if turn.changes and _refit(turn, [(x, r) for x, r in zip(best["examples"], best["results"])
+                                      if r.get("kind") == "example" and checking.theirs(x)]):
+        best = _run(workspace, turn.bp, _suite(workspace, turn.bp, custom), asked=asked)  # this turn's changes left them behind
     if asked_for and turn.changes:  # the owner's checks for them are tried again, as the owner would
         checking.try_again_missing(workspace)
     _hand_over(turn, needs, best, reply=reply, first=first, rounds=rounds, custom=custom)
 
 
 TOO_MUCH = (ai.CutOff, ai.Stuck)
+
+
+def _refit(turn, found=None):
+    """The owner's checks that no longer fit the app (a field they named renamed, something now needed not given),
+    written again from their own words for the app as it is: the turn then puts right what they find, rather than
+    nothing being tried at all. `found`: [(check, result)]; left out, those that didn't fit when last tried (and the
+    app is checked again with them). Returns whether any were."""
+    last = found is None
+    found = checking.stale(turn.workspace) if last else found
+    if not found:
+        return False
+    turn.note(f"Rewriting {len(found)} of your checks for your app as it is now (it changed since they were written)")
+    done = checking.refit(turn.workspace, found)
+    if done and last:
+        checking.check(turn.workspace, "your checks were rewritten for your app as it is now")
+    return bool(done)
 
 
 def _listed(found):
@@ -775,7 +796,7 @@ def _hand_over(turn, needs, run, reply="", first=None, rounds=0, custom=(), stop
         playable = [(x, r) for x, r in results if r.get("kind") not in ("example", "crash") or x.get("by") not in ("builder",)]
         wrong = [r for _, r in playable if not r["ok"]]
         issues = [i["plain"] for i in run["hard"]]
-        shown = [{"title": r["title"], "ok": r["ok"], "lines": [[ok, line] for ok, line in r["lines"]], "problem": r.get("plain") or "", "example": x}
+        shown = [{"title": r["title"], "ok": r["ok"], "lines": [[ok, line] for ok, line in r["lines"]], "problem": r.get("plain") or r.get("problem") or "", "example": x}
                  for x, r in playable]
         state = dict(workspace.state or {})
         state["examples"] = [x for x, r in playable if x.get("by") != "builder" or r["ok"] or x in custom][:checking.KEEP]

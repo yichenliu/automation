@@ -458,7 +458,8 @@ def ir_step(d, t, s, where, made=None):
                 reach = d.paths_to(t, {"email"})
                 raise Problem(f"{where} › to: {exc}. The email addresses it can reach: {', '.join(reach) or 'none: add an email field'}") from None
             if f.get("type") not in ("email", "text", "lookup", "formula"):
-                raise Problem(f"{where} › to: {to} isn't an email address field ({f.get('type')})")
+                raise Problem(f"{where} › to: {to} isn't an email address field ({f.get('type')})"
+                              + ("; to text a phone, use the text step" if f.get("type") == "phone" else ""))
             to = "{{" + ".".join(keys) + "}}"
         else:
             _template(d, t, to, f"{where} › to")
@@ -470,6 +471,20 @@ def ir_step(d, t, s, where, made=None):
                "body": _template(d, t, s.body, f"{where} › body")}
         if s.attach:
             out["attach"] = [schema.slug(a) for a in s.attach]
+    elif isinstance(s, m.Text):
+        to = s.to.strip()
+        if "{{" not in to and not to.lstrip("+").replace(" ", "").isdigit():
+            try:
+                f, _, keys = d.path(t, to)
+            except NameProblem as exc:
+                reach = d.paths_to(t, {"phone"})
+                raise Problem(f"{where} › to: {exc}. The phone numbers it can reach: {', '.join(reach) or 'none: add a phone field'}") from None
+            if f.get("type") not in ("phone", "text", "lookup", "formula"):
+                raise Problem(f"{where} › to: {to} isn't a phone number field ({f.get('type')})")
+            to = "{{" + ".".join(keys) + "}}"
+        else:
+            _template(d, t, to, f"{where} › to")
+        out = {"type": "send_sms", "to": to, "message": _template(d, t, s.message, f"{where} › message")}
     elif isinstance(s, m.MakeDocument):
         docs = {x["key"] for x in t.get("documents", [])}
         if schema.slug(s.document) not in docs:  # none by that name: a standard one, laid out from the record, is made
@@ -875,8 +890,17 @@ def translate(d, p, where):
         return [{"op": "delete_table", "table": _list(d, p.list, where)["key"]}]
     if isinstance(p, m.AddField):
         t = _list(d, p.list, where)
-        if d.field(t, p.field.key):
-            raise Problem(f"{where}: {t['label']} already has a field “{p.field.key}”: change_field changes it")
+        old = d.field(t, p.field.key)
+        if old is not None:  # sent again (the data step made it already): it's made as sent, never refused for being there
+            new = {**ir_field(d, t, p.field, where), "key": old["key"]}
+            if old.get("feature"):
+                raise Problem(f"{where}: {t['label']} already has “{old['key']}”, made by the feature {old['feature']}: change "
+                              f"the feature instead (send it again with its key)")
+            if old["key"] == ((t.get("workflow") or {}).get("field")) and list(new.get("options") or []) != list(old.get("options") or []):
+                raise Problem(f"{where}: {old['key']} is {t['label']}'s stages ({', '.join(old.get('options') or [])}): set_stages "
+                              f"changes them, add_stage adds one")
+            same = all(old.get(k) == v for k, v in new.items() if k not in ("label",))
+            return [] if same else [{"op": "update_field", "table": t["key"], "key": old["key"], "changes": new}]
         return [{"op": "add_field", "table": t["key"], "field": ir_field(d, t, p.field, where)}]
     if isinstance(p, m.ChangeField):
         t = _list(d, p.list, where)
@@ -999,9 +1023,15 @@ def translate(d, p, where):
             name = getattr(v, attr)
             if name:
                 f = d.field(t, name)
+                if f is None and attr == "group_by" and "." in name:  # customer.name: grouped by the customer
+                    f = d.field(t, name.split(".")[0])
+                    f = f if f is not None and f["type"] == "link" else None
                 if f is None:
                     raise Problem(f"{where} › {attr}: {name} isn't a field of {t['label']}")
                 view[key] = f["key"]
+        group = d.field(t, view.get("group_by") or "")
+        if v.type == "board" and group is not None and group["type"] != "select":  # a board's columns are choices: by
+            view["type"] = "list"  # anything else (a customer, a driver) it's the list grouped under each one
         return [{"op": "add_view", "table": t["key"], "view": view}]
     if isinstance(p, m.AddRecords):
         t = _list(d, p.list, where)

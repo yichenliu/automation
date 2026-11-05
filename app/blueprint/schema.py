@@ -174,7 +174,7 @@ TRIGGER_ALIASES = {
 EVERY = ["hour", "day", "week", "month"]
 ACTIONS = ["update_record", "create_record", "create_for_each", "update_each", "delete_record", "assign", "wait", "notify",
            "send_email", "generate_document", "request_approval", "webhook", "ai_fill", "ai_extract", "ai_create_record",
-           "branch", "task", "run_automation", "ai_check", "copy_record", "payment_link"]
+           "branch", "task", "run_automation", "ai_check", "copy_record", "payment_link", "send_sms"]
 APPROVAL_MODES = ["any", "all"]  # one of the approvers decides, or every one of them must approve
 AI_STEPS = ("ai_fill", "ai_extract", "ai_create_record", "ai_check")
 # Whether a person checks an AI step's work before it counts: every time, only when the AI isn't sure (and now and then
@@ -191,6 +191,7 @@ ACTION_ALIASES = {
     "ai_summarise": "ai_fill", "generate": "ai_fill", "ai_field": "ai_fill", "ai_update": "ai_fill", "ai_set": "ai_fill",
     "copy_lines": "create_for_each", "for_each": "create_for_each", "create_each": "create_for_each", "copy_records": "create_for_each",
     "email": "send_email", "send_mail": "send_email", "mail": "send_email", "email_customer": "send_email",
+    "sms": "send_sms", "text": "send_sms", "send_text": "send_sms", "text_message": "send_sms", "send_text_message": "send_sms",
     "pdf": "generate_document", "create_pdf": "generate_document", "generate_pdf": "generate_document", "document": "generate_document",
     "make_document": "generate_document", "create_document": "generate_document",
     "approval": "request_approval", "approve": "request_approval", "ask_approval": "request_approval", "get_approval": "request_approval",
@@ -1993,6 +1994,12 @@ def normalize_action(raw):
         attach = _first(raw, "attach", "attachments", "attach_document", "documents")
         if attach:
             action["attach"] = [f"page:{slug(str(a)[5:])}" if str(a).startswith("page:") else slug(a) for a in _list(attach)]
+    elif atype == "send_sms":
+        to = _first(raw, "to", "phone", "number", "recipient")
+        message = _first(raw, "message", "body", "text", "content")
+        if not to or not message:
+            raise SchemaError("send_sms needs \"to\" (a phone number or {{record.phone}}) and a \"message\"")
+        action.update(to=str(to), message=str(message)[:1600])
     elif atype == "generate_document":
         document = _first(raw, "document", "template", "doc", "key")
         if not document:

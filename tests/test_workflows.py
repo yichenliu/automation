@@ -317,13 +317,21 @@ def test_an_automation_runs_another_for_the_record_it_made_and_failures_are_told
                                                                           "actions": [{"type": "run_automation", "automation": "missing"}]}}])
     assert any("runs “missing”, which isn't an automation" in p for p in loop.problems)
     _built(ws, [{"op": "create_table", "table": "notes", "label": "Notes", "fields": [{"key": "text", "type": "text", "required": True},
-                                                                                     {"key": "job", "type": "link", "table": "jobs"}]},
+                                                                                     {"key": "job", "type": "link", "table": "jobs"},
+                                                                                     {"key": "hours", "type": "number"}]},
+                {"op": "add_automation", "automation": {"name": "Unfinished", "trigger": {"type": "record_created", "table": "jobs"},
+                                                        "actions": [{"type": "create_record", "table": "notes", "values": {"job": "{{record}}"}}]}},
                 {"op": "add_automation", "automation": {"name": "Broken", "trigger": {"type": "record_created", "table": "jobs"},
-                                                        "actions": [{"type": "create_record", "table": "notes", "values": {"job": "{{record}}"}}]}}])
+                                                        "actions": [{"type": "create_record", "table": "notes",
+                                                                     "values": {"job": "{{record}}", "text": "x", "hours": "lots"}}]}}])
     Engine(ws, by="Ethan").create("jobs", {"title": "Oops"})
-    run = Run.query.filter_by(name="Broken").one()
-    assert run.status == "failed" and "Text is required" in run.error
-    assert Notification.query.filter(Notification.text.like("The rule “Broken” stopped: Text is required%"), Notification.kind == "error").count() == 1
+    run = Run.query.filter_by(name="Unfinished").one()  # what it couldn't know is left for people to fill in, and said
+    assert run.status == "done" and "for people to finish: Text still to fill in" in run.steps[0]["result"]
+    assert Notification.query.filter(Notification.text.like("Note “%” was added by “Unfinished”: fill in Text to finish it."),
+                                     Notification.kind == "info").count() == 1
+    run = Run.query.filter_by(name="Broken").one()  # a value that can't be kept stops it, and that's told
+    assert run.status == "failed"
+    assert Notification.query.filter(Notification.text.like("The rule “Broken” stopped:%"), Notification.kind == "error").count() == 1
 
 
 

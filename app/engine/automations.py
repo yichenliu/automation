@@ -1084,9 +1084,16 @@ def _do(engine, automation, action, record, run):
     if kind == "create_record":
         values = {**copy_matching(engine, action["table"], record), **_render_values(action["values"], ctx)} if action.get("copy_matching") \
             else _render_values(action["values"], ctx)
-        created = engine.create(action["table"], values, by=_by(automation), depth=depth)
+        created = engine.create(action["table"], values, by=_by(automation), depth=depth, unfinished=True)
+        left = list(getattr(engine, "left_unfilled", None) or [])
         _remember(run, created)
         t = engine.tables[action["table"]]
+        if left:  # what the rule couldn't know (which supplier): the record's there, for people to finish
+            said = f"{', '.join(left[:-1])} and {left[-1]}" if len(left) > 1 else left[0]
+            text = f"{t['singular']} “{engine.title(created)}” was added by “{automation.get('name') or automation['key']}”: fill in {said} to finish it."
+            notify(engine, text, link=_link(action["table"], created.id), to="admin", kind="info")
+            return {"result": f"Created {t['singular']} “{engine.title(created)}”, for people to finish: {said} still to fill in",
+                    "link": _link(action["table"], created.id)}
         return {"result": f"Created {t['singular']} “{engine.title(created)}”", "link": _link(action["table"], created.id)}
     if kind == "copy_record":
         return _copy(engine, automation, action, record, run, ctx, depth)
@@ -2239,6 +2246,8 @@ def describe_action(engine, automation, action):
         who = {"everyone": "everyone", "owner": "the owner", "admin": "the admins", "editor": "the editors", "viewer": "everyone"}.get(to) \
             or _who(engine, table, to)
         text = f"Tell {who}: {humanize(engine, action['message'], table)}"
+    elif kind == "send_sms":
+        text = f"Text {humanize(engine, action['to'], table)}: {humanize(engine, action['message'], table)}"
     elif kind == "send_email":
         made = next((a["table"] for a in schema.steps_of(automation["actions"]) if a.get("table") and a["type"] in ("create_record", "ai_create_record")), None)
         docs = {d["key"]: d["label"] for d in (engine.tables.get(made) or {}).get("documents", [])}

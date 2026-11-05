@@ -799,7 +799,8 @@ def test_a_wrong_total_says_what_it_added_up(app, owner):
 
 
 def test_a_rule_that_adds_a_record_without_the_person_it_must_have_is_found(app, owner):
-    """A weekly family update must name its nurse, and the rule that adds one each week doesn't: it stops every time."""
+    """A weekly family update must name its nurse, and the rule that adds one each week doesn't (nothing it starts from
+    has one): each is added for people to finish, and that's said."""
     _, ws = owner
     _built(ws, [{"op": "create_table", "table": "residents", "label": "Residents", "fields": [{"key": "name", "type": "text", "required": True}]},
                 {"op": "create_table", "table": "updates", "label": "Family updates", "fields": [
@@ -808,8 +809,8 @@ def test_a_rule_that_adds_a_record_without_the_person_it_must_have_is_found(app,
                 {"op": "add_automation", "automation": {
                     "key": "weekly", "name": "Weekly family update", "trigger": {"type": "schedule", "table": "residents", "every": "week"},
                     "actions": [{"type": "create_record", "table": "updates", "values": {"resident": "{{record}}"}}]}}])
-    plain = [i["plain"] for i in checks.left_unfilled(Engine(ws))]
-    assert plain == ["“Weekly family update” can't add a family update: it doesn't fill in nurse, which must be filled in"], plain
+    said = [(i["level"], i["plain"]) for i in checks.left_unfilled(Engine(ws))]
+    assert said == [("check", "“Weekly family update” adds a family update without its nurse: you'll be asked to fill it in each time")], said
 
 
 def test_a_step_said_again_straight_after_a_branch_is_done_only_on_its_way(app, owner):

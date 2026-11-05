@@ -1008,3 +1008,145 @@ def test_a_check_whose_example_needs_a_rule_the_app_hasnt_got_is_one_it_doesnt_d
     assert result["plain"].startswith("your app doesn't do this yet: it has no rule that does it")
     kept = db.session.get(Workspace, ws.id).state["refused_checks"]
     assert kept[0]["missing"] and kept[0]["said"] == "Invoices a week overdue get chased"
+
+
+# a chain of must-have links, four deep: an order's contract's quote's enquiry's client
+CHAIN = [
+    {"do": "add_list", "key": "clients", "label": "Clients", "singular": "Client", "fields": [
+        {"type": "text", "key": "name", "label": "Name", "required": True}, {"type": "email", "key": "email", "label": "Email"}]},
+    {"do": "add_list", "key": "enquiries", "label": "Enquiries", "singular": "Enquiry", "fields": [
+        {"type": "link", "key": "client", "label": "Client", "to": "clients", "required": True}]},
+    {"do": "add_list", "key": "quotes", "label": "Quotes", "singular": "Quote", "fields": [
+        {"type": "link", "key": "enquiry", "label": "Enquiry", "to": "enquiries", "required": True}]},
+    {"do": "add_list", "key": "contracts", "label": "Contracts", "singular": "Contract", "fields": [
+        {"type": "link", "key": "quote", "label": "Quote", "to": "quotes", "required": True}], "stages": {"stages": ["Draft", "Approved"]}},
+    {"do": "add_list", "key": "orders", "label": "Orders", "singular": "Order", "fields": [
+        {"type": "link", "key": "contract", "label": "Contract", "to": "contracts", "required": True}],
+     "stages": {"stages": ["Created", "Coordinating", "Ready"]}},
+]
+
+
+def test_a_features_checks_add_what_a_record_must_link_to_however_far_and_meet_what_its_moves_wait_for(app):
+    """An order must have a contract, which must have a quote, an enquiry and a client: a feature's check adds them all.
+    The move on from Created waits for the contract to be Approved: the walk approves it first, as a person would."""
+    from app.lang.design import Design
+    out = lang.apply(schema.empty("Fit-outs"), CHAIN + [
+        {"do": "gate", "list": "orders", "stage": "Coordinating", "only_if": [{"field": "contract.status", "op": "equals", "value": "Approved"}]},
+        {"do": "stage_alert", "list": "orders", "stage": "Ready"}])
+    assert not out.problems, out.problems
+    d = Design(out.blueprint)
+    assert [s["table"] for s in patterns.adding(d, d.list("orders"), "r1")] == ["clients", "enquiries", "quotes", "contracts", "orders"]
+    ws = _workspace(app, out.blueprint)
+    _, results = trial.try_out(ws, lang.checks(out.blueprint), screens=False)
+    assert results and all(r["ok"] for r in results), [(r["title"], r.get("problem")) for r in results if not r["ok"]]
+
+
+def test_a_features_check_never_types_into_what_the_app_works_out_and_is_about_its_own_messages(app):
+    """The enquiry is emailed to its client's email, which the enquiry looks up (it can't be typed in): the check adds
+    the client with an email instead. Another alert telling someone at an earlier stage is that alert's, not this one's."""
+    out = lang.apply(schema.empty("Fit-outs"), CHAIN[:2] + [
+        {"do": "add_field", "list": "enquiries", "field": {"type": "lookup", "key": "client_email", "label": "Client email", "path": "client.email"}},
+        {"do": "set_stages", "list": "enquiries", "stages": {"stages": ["New", "Seen", "Answered"]}},
+        {"do": "send_document", "list": "enquiries", "button": "Send answer", "email_to": "client_email", "then_stage": "Answered"},
+        {"do": "stage_alert", "list": "enquiries", "stage": "Seen", "key": "seen_alert"}])
+    assert not out.problems, out.problems
+    checks = lang.checks(out.blueprint)
+    typed = [k for c in checks for s in c["steps"] if s.get("table") == "enquiries" for k in s.get("values") or {}]
+    assert "client_email" not in typed
+    told = [e for c in checks for e in c["expect"] if e.get("told") is not None]
+    assert told and all(e.get("by_rule") for e in told)
+    ws = _workspace(app, out.blueprint)
+    _, results = trial.try_out(ws, checks, screens=False)
+    assert all(r["ok"] for r in results), [(r["title"], r.get("problem")) for r in results if not r["ok"]]
+
+
+def test_a_view_grouped_by_a_linked_record_is_a_list_under_each_one():
+    """“Unpaid invoices by customer”: grouped by the customer (customer.name means the customer), and a board by
+    anything but a choice is the list grouped under each one."""
+    out = lang.apply(everything(), [
+        {"do": "add_view", "list": "invoices", "view": {"type": "list", "label": "By customer", "group_by": "customer.name"}},
+        {"do": "add_view", "list": "jobs", "view": {"type": "board", "label": "By person", "group_by": "assigned_to"}}])
+    assert not out.problems, out.problems
+    by_customer = next(v for v in schema.table(out.blueprint, "invoices")["views"] if v["label"] == "By customer")
+    by_person = next(v for v in schema.table(out.blueprint, "jobs")["views"] if v["label"] == "By person")
+    assert (by_customer["type"], by_customer["group_by"]) == ("list", "customer")
+    assert (by_person["type"], by_person["group_by"]) == ("list", "assigned_to")
+
+
+def test_a_gate_can_wait_for_a_linked_records_field_to_be_filled_in():
+    out = lang.apply(everything(), [{"do": "gate", "list": "jobs", "stage": "In progress", "needs": ["customer.email"]}])
+    assert not out.problems, out.problems
+    move = next(mv for mv in schema.table(out.blueprint, "jobs")["workflow"]["transitions"] if mv["to"] == "In progress")
+    assert {"field": "customer.email", "op": "not_empty"} in [{k: c.get(k) for k in ("field", "op")} for c in move["only_if"]]
+
+
+def test_an_approval_on_a_list_whose_status_is_a_plain_choice_gives_it_stages_first():
+    """Members' status is a choice (Active, Lapsed) with no buttons: an approval to Lapsed makes those its stages, a
+    button on to each next, so there's a move for the approver to hold."""
+    out = lang.apply(everything(), [{"do": "approval", "list": "members", "stage": "Lapsed", "by": "owner"}])
+    assert not out.problems, out.problems
+    flow = schema.table(out.blueprint, "members")["workflow"]
+    assert flow["field"] == "status" and flow["start"] == "Active"
+    assert [(mv["from"], mv["to"], mv.get("who")) for mv in flow["transitions"]] == [(["Active"], "Lapsed", ["owner"])]
+
+
+def test_a_field_sent_again_is_made_as_sent_and_never_refused_for_being_there():
+    bp = everything()
+    same = lang.apply(bp, [{"do": "add_field", "list": "jobs", "field": {"type": "text", "key": "fax", "label": "Fax"}}])
+    assert not same.problems and not same.changes, (same.problems, same.changes)
+    changed = lang.apply(bp, [{"do": "add_field", "list": "jobs", "field": {"type": "text", "key": "fax", "label": "Fax", "required": True}}])
+    assert not changed.problems, changed.problems
+    assert schema.field(schema.table(changed.blueprint, "jobs"), "fax")["required"] is True
+    stages = lang.apply(bp, [{"do": "add_field", "list": "jobs", "field": {"type": "choice", "key": "status", "label": "Status", "options": ["Open", "Closed"]}}])
+    assert stages.problems and "set_stages changes them" in stages.problems[0]
+
+
+def test_a_rule_can_text_a_phone():
+    out = lang.apply(everything(), [
+        {"do": "add_field", "list": "customers", "field": {"type": "phone", "key": "mobile", "label": "Mobile"}},
+        {"do": "add_rule", "rule": {"key": "ready_text", "name": "Text when done", "when": {"on": "reaches", "list": "jobs", "stage": "Done"},
+                                    "steps": [{"do": "text", "to": "customer.mobile", "message": "Your job {{title}} is done."}]}}])
+    assert not out.problems, out.problems
+    rule = next(a for a in out.blueprint["automations"] if a["key"] == "ready_text")
+    assert rule["actions"][0] == {"type": "send_sms", "to": "{{customer.mobile}}", "message": "Your job {{title}} is done."}
+    assert "text {{customer.mobile}}" in lang.describe(out.blueprint)
+    wrong = lang.apply(everything(), [{"do": "add_rule", "rule": {"key": "x", "name": "x", "when": {"on": "reaches", "list": "jobs", "stage": "Done"},
+                                                                  "steps": [{"do": "email", "to": "customer.discount_percent", "subject": "s", "body": "b"}]}}])
+    assert wrong.problems
+
+
+def test_an_owners_check_that_no_longer_fits_the_app_is_written_again_from_their_words(app):
+    """The owner's check named a field since taken away: it can't be acted out on the app as it is. Before the turn puts
+    anything right, it's written again from the owner's own words for the app as it is, and kept."""
+    from app.builder import checking
+    ws = _workspace(app, everything())
+    old = {"title": "A booking can be added", "by": "owner", "steps": [
+        {"do": "add", "table": "bookings", "as": "b1", "values": {"date": "today", "room": "Blue"}}],
+        "expect": [{"table": "bookings", "count": 1}]}
+    ws.state = {"examples": [old]}
+    db.session.commit()
+    checking.check(ws, "a change")
+    assert [x for x, _ in checking.stale(ws)] == [old]
+    fixed = {"title": "A booking can be added", "steps": [{"do": "add", "table": "bookings", "as": "b1", "values": {"date": "today"}}],
+             "expect": [{"table": "bookings", "count": 1}]}
+    ai.set_backend(lambda messages, schema=None, on_progress=None: (json.dumps({"verdict": "example", "missing": "", "examples": [fixed]}), ""))
+    assert checking.refit(ws, checking.stale(ws)) == ["A booking can be added"]
+    kept = checking.examples(db.session.get(Workspace, ws.id))
+    assert kept[0]["steps"][0]["values"] == {"date": "today"} and kept[0]["by"] == "owner"
+    checking.check(ws, "your checks were rewritten")
+    assert not checking.stale(ws) and all(x["ok"] for x in ws.state["checks"]["examples"])
+
+
+def test_a_step_meant_to_be_refused_that_only_the_owner_could_do_is_tried_as_staff(app):
+    """“Staff can't send a quote without my OK”: the example moves it as the owner (who may), expecting a refusal. Tried
+    again as an ordinary staff member, as the owner meant, before they're told their app doesn't do it."""
+    from app.builder import checking
+    bp = lang.apply(everything(), [{"do": "approval", "list": "quotes", "stage": "Sent", "by": "owner"}]).blueprint
+    ws = _workspace(app, bp)
+    example = {"title": "Only I can send a quote", "steps": [{"do": "add", "table": "quotes", "as": "q1", "values": {"total": 100}},
+                                                             {"do": "move", "record": "q1", "to": "Sent", "refused": True}],
+               "expect": [{"record": "q1", "field": "status", "equals": "Draft"}]}
+    ai.set_backend(lambda messages, schema=None, on_progress=None: (json.dumps({"examples": [example]}), ""))
+    result = checking.add(ws, "Only I can send a quote", by="owner")
+    assert result["ok"], result
+    assert result["example"]["steps"][1].get("by") == "staff"

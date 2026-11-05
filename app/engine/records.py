@@ -1629,8 +1629,11 @@ class Engine:
             said.append(f"{f['label'] if f else k} “{v}”")
         return " and ".join(said)
 
-    def _clean(self, t, data, creating, record=None):
+    def _clean(self, t, data, creating, record=None, unfinished=False):
+        """unfinished: a record a rule adds, whose must-haves it couldn't know (which supplier), is added all the same;
+        those left empty are kept in self.left_unfilled (their labels), for people to fill in."""
         values, errors = {}, {}
+        self.left_unfilled = []
         data = {k: v for k, v in data.items() if not str(k).startswith("_")}
         for f in t["fields"]:
             if f["type"] not in schema.STORED or f["type"] == "autonumber":
@@ -1689,6 +1692,9 @@ class Engine:
             shown = self.shown(t, f, draft)
             needed = f.get("required") or (f.get("required_if") and self.matches(draft, f["required_if"]))
             if needed and shown and value in (None, "", []) and (creating or key in data or f.get("required_if")):
+                if unfinished and creating and key not in data and f.get("required"):
+                    self.left_unfilled.append(f["label"])  # for people to fill in: the rule couldn't know it
+                    continue
                 errors[key] = f"{f['label']} is required" + (" here" if f.get("required_if") and not f.get("required") else "")
             if f.get("readonly") and key in values and self.role is not None and not self._at_least("admin") \
                     and values[key] != ((record.data or {}).get(key) if record is not None else None) and values[key] not in (None, "", []):
@@ -2424,19 +2430,22 @@ class Engine:
         mine = rows.get("field") if self.role in (rows.get("roles") or []) else None
         return [f for f in t["fields"] if f["type"] == "user" and (f["key"] == mine or RAISED_BY.search(f"{f['key']} {f['label']}".replace("_", " ")))]
 
-    def create(self, table, data, *, by=None, automations=True, depth=0, ai=True, keep_numbers=False):
+    def create(self, table, data, *, by=None, automations=True, depth=0, ai=True, keep_numbers=False, unfinished=False):
         """keep_numbers: an autonumber given in `data` is kept (past invoices brought in keep theirs) and new records
-        carry on after it."""
+        carry on after it. unfinished: added even with must-haves left empty that nothing given could fill (a rule's,
+        for people to finish: self.left_unfilled says which)."""
         t = self.tables.get(table)
         if t is None:
             raise FieldErrors({"_": f"there's no table “{table}”"})
         self._not_combined(t)
         if self.role is not None and not self.can(t, "edit"):
             raise FieldErrors({"_": f"Your role can't add {schema.lc(t['label'])}."})
-        values = self._clean(t, data or {}, creating=True)
+        values = self._clean(t, data or {}, creating=True, unfinished=unfinished)
+        left = list(self.left_unfilled)
         for f in self._mine_when_blank(t):
             if values.get(f["key"]) in (None, "", []):
                 values[f["key"]] = [self.user_id] if f.get("multiple") else self.user_id
+        left = [f["label"] for f in t["fields"] if f["label"] in left and values.get(f["key"]) in (None, "", [])]
         parent_link = next((f for f in t["fields"] if f["type"] == "link"), None) if t.get("embedded") else None
         if parent_link is not None and values.get(parent_link["key"]):
             self._check_lock(self.get(values[parent_link["key"]], parent_link["table"]), None)
@@ -2462,6 +2471,7 @@ class Engine:
                 auto.on_change(self, self.get(record.id) or record, None, depth=depth)
             self._combine(record)
         self._saved(record, after, "created")
+        self.left_unfilled = left  # (what its own rules added may have said otherwise meanwhile)
         return record
 
     def _not_combined(self, t):

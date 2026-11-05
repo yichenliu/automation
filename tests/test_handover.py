@@ -154,9 +154,9 @@ CENTRE = [
 def test_a_rule_missing_what_it_must_fill_is_found_a_stage_records_who_and_dates_stay_on_the_calendar(app, owner):
     user, ws = owner
     _built(ws, CENTRE)
-    said = [i for i in checks.left_unfilled(Engine(ws)) if i["level"] == "fix"]
-    assert [i["plain"] for i in said] == ["“Approved applications become children” can't add a child: it doesn't fill in last name, "
-                                          "which must be filled in"]
+    said = checks.left_unfilled(Engine(ws))  # nothing it starts from has a last name: added for people to finish, and said
+    assert [(i["level"], i["plain"]) for i in said] == [("check", "“Approved applications become children” adds a child without its "
+                                                                  "last name: you'll be asked to fill it in each time")]
     me = _as(ws, user)
     application = me.create("applications", {"child_name": "Oliver"})
     me.move(me.get(application.id), 0)

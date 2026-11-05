@@ -5,6 +5,7 @@
   <div class="titles"><div class="crumbs"><a href="{{ url_for('app.table', wid=ws.id, table=t.key) }}">{{ icon(t.icon or 'table') }}{{ t.label }}</a></div>
     <h1>{{ e.title(r) }}</h1>
     {% if hidden %}<p class="lock-note small">{{ icon('lock') }}{{ sealed }}</p>{% elif locked %}<p class="lock-note small">{{ icon('lock') }}{{ locked }}</p>{% elif sealed %}<p class="lock-note small">{{ icon('lock') }}{{ sealed }}</p>{% endif %}
+    {% if to_finish and not hidden %}<p class="small mt-1 to-finish">{{ icon('pencil') }}Still to fill in: {{ to_finish|join(', ') }}{% if can_edit %} · <a href="{{ url_for('app.edit', wid=ws.id, table=t.key, rid=r.id) }}">Fill {{ 'it' if to_finish|length == 1 else 'them' }} in</a>{% endif %}</p>{% endif %}
     {% if portal_people is not none %}<p class="small mt-1">{{ icon('globe') }}
       {% if portal_people %}In the {{ portal.title|lower }}: {{ portal_people|join(', ') }}{% else %}Not in the {{ portal.title|lower }} yet{% endif %}
       {% if member and member.can('admin') %}<form method="post" action="{{ url_for('app.portal_invite', wid=ws.id, table=t.key, rid=r.id) }}" class="inline-form"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn sm ghost">{{ icon('user-plus') }}Invite</button></form>{% endif %}</p>{% endif %}

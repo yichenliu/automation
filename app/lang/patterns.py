@@ -206,12 +206,16 @@ def _keeping(d, f, value):
     return value
 
 
-def adding(d, t, alias, values=None, by=None, depth=0, made=None, through=(), keep=()):
+def adding(d, t, alias, values=None, by=None, depth=0, made=None, through=(), keep=(), chain=()):
     """Steps that add a valid record of t as `alias`: its required fields filled in (a record it must link to added
-    first, and one it links to `through` even if it needn't: the customer an email goes to), what the list's rules ask
-    of it (a job's quote Approved: that quote added so), and these values. `keep`: more such asks, from the record that
-    links to it."""
+    first, however far that goes: an invoice's order's contract's quote's enquiry's client; and one it links to
+    `through` even if it needn't: the customer an email goes to), what the list's rules ask of it (a job's quote
+    Approved: that quote added so), and these values. `keep`: more such asks, from the record that links to it.
+    `chain`: the lists being added on the way here (a list that must link back to one of them can't be added)."""
     steps, values = [], dict(values or {})
+    chain = tuple(chain) + (t["key"],)
+    through = tuple(((d.field(t, k) or {}).get("link") or k) if (d.field(t, k) or {}).get("type") == "lookup" else k
+                    for k in through)  # an email worked out from the customer's: that customer added
     made = made if made is not None else {}
     flow_field = (t.get("workflow") or {}).get("field")
     asked, onward = {}, {}  # its own fields' values the rules ask for; and, by link, what they ask of the linked record
@@ -235,13 +239,13 @@ def adding(d, t, alias, values=None, by=None, depth=0, made=None, through=(), ke
             continue
         if f["type"] == "link":
             other = d.list(f.get("table"))
-            if other is None or depth > 2:
+            if other is None or other["key"] in chain or depth > 8:
                 continue
             if other["key"] in made and f["key"] not in onward:
                 values[f["key"]] = made[other["key"]]
                 continue
             other_alias = f"{alias}_{other['key'][:8]}"
-            steps += adding(d, other, other_alias, depth=depth + 1, made=made, keep=onward.get(f["key"], ()))
+            steps += adding(d, other, other_alias, depth=depth + 1, made=made, keep=onward.get(f["key"], ()), chain=chain)
             made.setdefault(other["key"], other_alias)
             values[f["key"]] = other_alias
         else:
@@ -295,8 +299,9 @@ def holding(d, f, c, yes):
 
 
 def _through(path):
-    """The link an email path goes through ("customer" for customer.email), for a check to fill it in."""
-    return (str(path or "").split(".")[0],) if "." in str(path or "") else ()
+    """The link an email path goes through ("customer" for customer.email; a field worked out from one, such as a
+    lookup of the customer's email, goes through that customer), for a check to fill it in."""
+    return (str(path).split(".")[0],) if path else ()
 
 
 def setting(d, t, field_key, value, alias, depth=0):
@@ -843,6 +848,10 @@ class Limit(Feature):
         same, counted, first = {}, None, []
         for i, name in enumerate(self.per):
             f = d.field(t, name)
+            if f["type"] == "lookup" and d.field(t, f.get("link") or ""):  # the job's date: shared by sharing the job
+                f = d.field(t, f["link"])
+            if f["key"] in same:
+                continue
             if f["type"] == "link":  # the record they share is added first (the technician they're all booked with)
                 other = d.list(f.get("table"))
                 if other is None:
@@ -865,7 +874,8 @@ class Limit(Feature):
             if counted:
                 steps.append({"do": "move", "record": f"b{n}", "to": counted})
         steps[-1]["refused"] = True
-        what = f"for the same {', '.join(self.per)}" if self.per else "at a time"
+        named = [schema.lc((d.field(t, n) or {}).get("label") or n) for n in self.per]  # in the owner's words, not keys
+        what = f"for the same {' and '.join(named)}" if self.per else "at a time"
         expect = [{"record": f"b{self.max + 1}", "field": stage["key"], "not_equals": counted}] if counted else \
             [{"table": t["key"], "count": self.max + sum(1 for s in steps if s.get("table") == t["key"]) - (self.max + 1)}]
         return [{"title": f"No more than {self.max} {t['label'].lower()} {what}", "steps": steps, "expect": expect}]
@@ -1015,7 +1025,7 @@ class SendDocument(Feature):
             f, _, keys = d.path(t, self.email_to)
         except NameProblem:
             f = None
-        if f is not None and len(keys) == 1:
+        if f is not None and len(keys) == 1 and f["type"] in schema.STORED:
             steps[-1]["values"][keys[0]] = "r1@example.com"
         expect = [{"told": True, "record": "r1"}]
         if self.then_stage:
@@ -1155,7 +1165,8 @@ def _words_of(d, t, conditions):
 @register("feature", {"do": "gate", "list": "jobs", "stage": "In progress", "needs": ["assigned_to", "billable"]})
 class Gate(Feature):
     """A record can't get to a stage (or a choice of another field: a payment status of Paid) until these fields are
-    filled in (a yes/no field: ticked), only while only_if all hold, and never while blocked_if all hold. "Can't
+    filled in (a yes/no field: ticked; a linked record's through dots, job.deposit_paid), only while only_if all hold,
+    and never while blocked_if all hold. "Can't
     assign a unit until the ID is checked": needs. "A steer under 450kg can't be signed off": blocked_if type equals
     Steer and weight less_than 450. "Only once the deposit is at least $50": only_if deposit at_least 50."""
     do: Literal["gate"] = "gate"
@@ -1183,9 +1194,18 @@ class Gate(Feature):
     def build(self, d, where):
         t = _t(d, self.list, where)
         f, stage = self._target(d, t, where)
-        fields = []
+        fields, only_if = [], list(self.only_if)
         for name in self.needs:
             nf = d.field(t, name)
+            if nf is None and "." in name:  # a linked record's field (the job's invoice's deposit): filled in there first
+                try:
+                    pf, _, _ = d.path(t, name)
+                except NameProblem:
+                    pf = None
+                if pf is not None and pf["type"] not in schema.CALCULATED:
+                    only_if.append(Condition(field=name, op="equals", value=True) if pf["type"] == "checkbox" else
+                                   Condition(field=name, op="not_empty"))
+                    continue
             if nf is None:
                 raise Problem(f"{where} › needs: {name} isn't a field of {t['label']} (its fields: {', '.join(d.field_names(t))})")
             if nf["type"] in schema.CALCULATED:
@@ -1195,12 +1215,12 @@ class Gate(Feature):
                               f"done before {self.stage}: if it's filled in later, make it not required (change_field); otherwise "
                               f"leave it out of needs")
             fields.append(nf)
-        if not fields and not self.only_if and not self.blocked_if:
+        if not fields and not only_if and not self.blocked_if:
             raise Problem(f"{where}: say what must be done first: needs (fields filled in or ticked), only_if (what must hold) "
                           f"and/or blocked_if (what stops it)")
         ticks = [nf["key"] for nf in fields if nf["type"] == "checkbox"]
         filled = [nf["key"] for nf in fields if nf["type"] != "checkbox"]
-        conditions = ir_conditions(d, t, self.only_if, f"{where} › only_if") if self.only_if else []
+        conditions = ir_conditions(d, t, only_if, f"{where} › only_if") if only_if else []
         blocked = ir_conditions(d, t, self.blocked_if, f"{where} › blocked_if") if self.blocked_if else []
         allowed = conditions + ([_turned(blocked, f"{where} › blocked_if")] if blocked else [])
         allowed = [c for i, c in enumerate(allowed) if c not in allowed[:i]]  # only_if and blocked_if saying the same: said once
@@ -1217,7 +1237,7 @@ class Gate(Feature):
             new += [{"check": "false", "message": f"{nf['label']} must be ticked before {f['label']} is {stage}",
                      "when": [at, {"field": nf["key"], "op": "not_equals", "value": True}], "field": nf["key"]} for nf in fields if nf["key"] in ticks]
             if conditions:
-                new.append({"check": "false", "message": f"{f['label']} can only be {stage} when {_words_of(d, t, self.only_if)}",
+                new.append({"check": "false", "message": f"{f['label']} can only be {stage} when {_words_of(d, t, only_if)}",
                             "when": [at, _turned(conditions, f"{where} › only_if")], "field": f["key"]})
             if blocked:
                 new.append({"check": "false", "message": f"{f['label']} can't be {stage} while {_words_of(d, t, self.blocked_if)}",
@@ -1250,6 +1270,8 @@ class Gate(Feature):
         f, stage = self._target(d, t, "gate")
         on_stage = f is d.stage_field(t)
         empty, full, linked = {}, {}, []
+        if any(d.field(t, name) is None for name in self.needs):
+            return []  # what a linked record must have can't be written for sure (as a linked only_if)
         for name in self.needs:
             nf = d.field(t, name)
             if nf["type"] == "checkbox":
@@ -1368,9 +1390,28 @@ def _entry(bp, key):
     return next((e for e in bp.get("features", []) if e["key"] == key), None)
 
 
+def _staged(out, p, where):
+    """An approval or a gate on a stage of a list whose status is still a plain choice (Draft, Sent, Paid, with no
+    buttons between them): that choice becomes its stages first, in its order, a button on to each next (as set_stages
+    without moves makes them), so there's a move to hold back. False if that couldn't be applied."""
+    if p.do not in ("approval", "gate"):
+        return True
+    d = Design(out.blueprint)
+    t = d.list(getattr(p, "list", None) or "")
+    f = d.stage_field(t) if t is not None else None
+    if f is None or ((t.get("workflow") or {}).get("transitions")) or d.choice(f, p.stage) is None or len(f.get("options") or []) < 2:
+        return True
+    names = list(f["options"])
+    start = f.get("default") if f.get("default") in names else names[0]
+    flow = {"field": f["key"], "start": start, "transitions": [{"from": [a], "to": b, "label": f"Move to {b}"[:60]} for a, b in zip(names, names[1:])]}
+    return _apply_ops(out, [{"op": "update_table", "table": t["key"], "workflow": flow}], where)
+
+
 def apply(out, p, where, quiet=False):
     """Apply one feature (new, or changed: same key) to the outcome's design, all of it or none of it. A changed one
     that adds to a list's moves is laid over them again with the others that do, in their order (see overlay)."""
+    if not _staged(out, p, where):
+        return False
     d = Design(out.blueprint)
     key = p.feature_key()
     again = _entry(out.blueprint, key) is not None and not quiet
@@ -1573,9 +1614,28 @@ def checks(bp):
         p = model_of(entry)
         if p is None:
             continue
+        own = [a["key"] for a in bp.get("automations", []) if a.get("feature") == entry["key"]]
         try:
             for c in p.checks(d):
+                c = _typed_only(d, c)
+                if own:  # whether someone's told is about this feature's own rules: another's message is another's
+                    c["expect"] = [{**e, "by_rule": own} if isinstance(e, dict) and e.get("told") is not None else e
+                                   for e in c.get("expect") or []]
                 out.append({**c, "by": f"feature:{entry['key']}"})
         except Exception:  # noqa: BLE001 - a feature that can't write its checks for this design has none, said elsewhere
             continue
     return out
+
+
+def _typed_only(d, check):
+    """A feature's check as people would act it out: it never types into a field the app works out itself (a lookup of
+    the job's date, the customer's email copied onto the invoice); that comes out of what it's worked out from."""
+    tables, steps = {}, []
+    for s in check.get("steps") or []:
+        if s.get("do") == "add":
+            tables[s.get("as")] = s.get("table")
+        t = d.list(tables.get(s.get("as") if s.get("do") == "add" else s.get("record")) or "")
+        if t is not None and isinstance(s.get("values"), dict) and s.get("do") in ("add", "change", "move"):
+            s = {**s, "values": {k: v for k, v in s["values"].items() if (d.field(t, k) or {}).get("type") not in schema.CALCULATED}}
+        steps.append(s)
+    return {**check, "steps": steps}

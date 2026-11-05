@@ -926,10 +926,10 @@ def _act(trial, engine, step, names, hold=False):
             record = engine.get(record.id)
         if not step.get("refused"):  # what its button asks for, filled in as the person would (a stop for it left empty is
             # shown with "refused")
-            _fill_asked(trial, engine, record, t, lambda m: m["to"].lower() == wanted, given)
+            _fill_asked(trial, engine, record, t, lambda m: m["to"].lower() == wanted, given, names["_given"])
             record = engine.get(record.id)
         if not _press_move(engine, record, t, lambda m: m["to"].lower() == wanted):
-            _take_along(engine, record, t, step.get("to"), trial, last=not step.get("refused"), given=given)
+            _take_along(engine, record, t, step.get("to"), trial, last=not step.get("refused"), given=given, others=names["_given"])
     elif do == "press":
         wanted = str(step.get("button") or "").strip().lower()
         a = next((a for a in engine.bp.get("automations", []) if a["trigger"]["type"] == "button"
@@ -1024,11 +1024,11 @@ def _unchanged(engine, t, record, key, value):
     return str(value if value is not None else "") == str((record.data or {}).get(key) if (record.data or {}).get(key) is not None else "")
 
 
-def _take_along(engine, record, t, target, trial=None, last=True, given=()):
+def _take_along(engine, record, t, target, trial=None, last=True, given=(), others=None):
     """“Move it to Invoiced” from New: taken along the stages between by their buttons, as the person would (a rule may
     carry it on by itself), filling in what each button asks (with `trial`): on the way, always; at the target too
     unless not `last` (a move meant to be refused is tried as it stands). `given`: the fields the example set itself,
-    never filled over. Raises FieldErrors where it can't go on."""
+    never filled over (`others`: those of every record, by id). Raises FieldErrors where it can't go on."""
     field, began = t["workflow"]["field"], None
     for _ in range(len(schema.stages(t)) + 1):
         engine.reset()
@@ -1043,7 +1043,7 @@ def _take_along(engine, record, t, target, trial=None, last=True, given=()):
             raise FieldErrors({"_": f"from {at} there's no way to move it to {target} (it can go to: {', '.join(open_) or 'nowhere'})"})
         try:
             if trial is not None and (last or way[0].lower() != str(target).lower()):
-                _fill_asked(trial, engine, record, t, lambda m: m["to"].lower() == way[0].lower(), given)
+                _fill_asked(trial, engine, record, t, lambda m: m["to"].lower() == way[0].lower(), given, others)
                 record = engine.get(record.id)
             pressed = _press_move(engine, record, t, lambda m: m["to"].lower() == way[0].lower())
         except FieldErrors as exc:
@@ -1054,18 +1054,31 @@ def _take_along(engine, record, t, target, trial=None, last=True, given=()):
     raise FieldErrors({"_": f"it went round its stages without reaching {target}"})
 
 
-def _fill_asked(trial, engine, record, t, pick, given=()):
+def _fill_asked(trial, engine, record, t, pick, given=(), others=None):
     """Fill in what the button of the first move `pick` likes asks for (the Check out button's Checked out by), as the
     person pressing it would, with ordinary values; and what it waits for (“once the deposit is Received”), unless the
-    example set that field itself (`given`): what it says stands, and the move then says if it's stopped."""
+    example set that field itself (`given`): what it says stands, and the move then says if it's stopped. What it waits
+    for of a linked record (“once the contract is Approved”) is done to that record first, as the person would (the
+    contract taken to Approved by its own buttons), unless the example set it itself (`others`: by record id)."""
     move = next((m for _, m, _ in engine.moves(record) if pick(m)), None)
     if move is None:
         return
     asked = [f for f in engine.to_fill(t, record, move) if engine.kind(f) not in schema.FILES]
     needs = {f["key"]: v for f in asked for v in [sample_value(engine, t, f, trial.owner_id, {}, 300, 0)] if v is not None}
     if move.get("only_if") and not engine.matches(record, move["only_if"]):  # “once the clearance date is filled in”
-        meet = _meeting(trial, engine, record, t, move["only_if"], given)
+        linked = []
+        meet = _meeting(trial, engine, record, t, move["only_if"], given, others or {}, linked)
         needs = {**needs, **meet}  # what it waits for wins over an ordinary value
+        for other, ot, values in linked:
+            try:
+                stage = (ot.get("workflow") or {}).get("field")
+                if stage in values:
+                    _take_along(engine, other, ot, values.pop(stage), trial, given=(others or {}).get(other.id, ()), others=others)
+                if values:
+                    engine.update(engine.get(other.id), values)
+                engine.reset()
+            except FieldErrors:
+                pass  # it can't be done: the move then says what it waits for
     dates = [f for f in asked if engine.kind(f) in ("date", "datetime") and f["key"] in needs]
     own = [v for g in t["fields"] if engine.kind(g) in ("date", "datetime") and g["key"] not in needs
            for v in [(record.data or {}).get(g["key"])] if v]  # a pickup date like the hire's own dates, not just today
@@ -1084,13 +1097,25 @@ def _fill_asked(trial, engine, record, t, pick, given=()):
                 needs[f["key"]] = tries[attempt % len(tries)] if tries else needs[f["key"]]
 
 
-def _meeting(trial, engine, record, t, conditions, given=()):
+def _meeting(trial, engine, record, t, conditions, given=(), others=None, linked=None):
     """Values for the record's own fields that a move's conditions ask for (“once the deposit is Received”, “once the
     clearance date is filled in”), as the person told so would fill them in. A field the example set itself (`given`)
-    is the example's to say, and is never changed."""
+    is the example's to say, and is never changed. What they ask of a record it links to (“once the contract is
+    Approved”) is put in `linked` as (that record, its list, values), unless the example set those itself (`others`)."""
     out = {}
     for c in conditions or []:
-        if not isinstance(c, dict) or "." in str(c.get("field") or ""):
+        if not isinstance(c, dict):
+            continue
+        if "." in str(c.get("field") or ""):
+            head, rest = str(c["field"]).split(".", 1)
+            lf = schema.field(t, head)
+            other = engine.get((record.data or {}).get(lf["key"])) if lf and lf["type"] == "link" and not lf.get("multiple") \
+                and isinstance((record.data or {}).get(lf["key"]), int) else None
+            ot = engine.tables.get(lf["table"]) if other is not None else None
+            if ot is not None and linked is not None and "." not in rest and not engine.matches(record, [c]):
+                values = _meeting(trial, engine, other, ot, [{**c, "field": rest}], (others or {}).get(other.id, ()))
+                if values:
+                    linked.append((other, ot, values))
             continue
         f = schema.field(t, c.get("field") or "")
         if f is None or f["type"] not in schema.STORED or f["type"] in schema.FILES or f["key"] in given:
@@ -1281,9 +1306,12 @@ TOLD = re.compile(r"^(Notified|Would email|Emailed|Would text|Texted)\b")
 
 def _told(engine, c, names):
     """Someone was told (in the app, by email or text) since the example began, about its record if it names one:
-    {"told": true, "record": "i1", "about": "words the message has"} (or "told": false: nobody was)."""
+    {"told": true, "record": "i1", "about": "words the message has"} (or "told": false: nobody was). "by_rule": [keys]
+    counts only what those rules said (a feature's own check: another rule's message neither passes nor fails it)."""
     record_id = _record(engine, names, c["record"]).id if c.get("record") else None
     runs = Run.query.filter(Run.workspace_id == engine.ws.id, Run.id > names.get("_first_run", 0)).order_by(Run.id).all()
+    if c.get("by_rule"):
+        runs = [r for r in runs if r.automation in set(c["by_rule"])]
     about = str(c.get("about") or "").strip().lower()
     said = [str(step.get("result") or "") for run in runs if record_id is None or run.record_id == record_id
             for step in run.steps or [] if TOLD.match(str(step.get("result") or ""))]

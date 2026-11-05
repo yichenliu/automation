@@ -630,11 +630,13 @@ def record(wid, table, rid):
     if own is not None:
         portal_people = [m.user.display for m in Membership.query.filter_by(workspace_id=ws.id, role="portal", contact_id=r.id)]
     sealed = engine.seal_note(r)
+    to_finish = [f["label"] for f in t["fields"] if f.get("required") and f["type"] in schema.STORED and f["type"] != "autonumber"
+                 and engine.sees(f) and engine.shown(t, f, r) and (r.data or {}).get(f["key"]) in (None, "", [])]  # added by a rule that couldn't know them
     others = [a for a in approvals if a.id not in ({x.id for x in my_approvals(ws, member)} if member else set())]
     waiting_text = (f"Waiting for {automations._named(engine, others)} to "
                     + {"task": "do their part", "review": "check the AI's work", "change": "approve a change"}.get(others[0].kind, "approve it") + ".") if others else ""
     return render_template("app/record.html", ws=ws, e=engine, t=t, r=r, sections=_sections(t), related=_related(engine, t, r),
-                           sealed=sealed, hidden=hidden, waiting_text=waiting_text, journey=journey(engine, t, r), stepped=engine.stepped_up,
+                           sealed=sealed, hidden=hidden, waiting_text=waiting_text, to_finish=to_finish, journey=journey(engine, t, r), stepped=engine.stepped_up,
                            teams={tm["key"]: tm["name"] for tm in schema.teams(engine.bp)},
                            lines=lines, history=history, runs=runs, buttons=buttons, approvals=approvals, comments=comments,
                            files=files, member=member, documents=[d for d in t.get("documents", []) if not d.get("only_if") or engine.matches(r, d["only_if"])],

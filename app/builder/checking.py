@@ -107,11 +107,7 @@ def add(workspace, said, by=None):
     """A check the owner asked for in their own words: the AI writes it as a worked example, it's tried at once and kept.
     Returns its result, or None if the AI couldn't make one of it."""
     engine = Engine(workspace)
-    convo = [{"role": "system", "content": prompts.EXAMPLES.format(count="Write exactly one example: the one the owner describes below, "
-                                                                           "with their numbers.", when_none=prompts.ALWAYS_ONE)},
-             {"role": "user", "content": f"The owner wants this checked, always: {said[:1500]}\n\nToday: {schema.today_words(engine.today)}"
-                                         f"\n\nThe app (use only the lists, fields, stages, buttons and rules named here, by their keys; its "
-                                         f"features say how it already works):\n{lang.describe(workspace.blueprint or {})}"}]
+    convo = _convo(workspace, engine, said)
     steady = ai.building.set(True)
     try:
         content, _ = ai.chat(convo, schema=prompts.ONE_EXAMPLE_SCHEMA, think=settings().get("AI_THINK_BUILDER", False))
@@ -136,10 +132,63 @@ def add(workspace, said, by=None):
     return result
 
 
+def _convo(workspace, engine, said):
+    """What the AI is shown to write the owner's check as a worked example of the app as it is."""
+    return [{"role": "system", "content": prompts.EXAMPLES.format(count="Write exactly one example: the one the owner describes below, "
+                                                                           "with their numbers.", when_none=prompts.ALWAYS_ONE)},
+            {"role": "user", "content": f"The owner wants this checked, always: {said[:1500]}\n\nToday: {schema.today_words(engine.today)}"
+                                        f"\n\nThe app (use only the lists, fields, stages, buttons and rules named here, by their keys; its "
+                                        f"features say how it already works):\n{lang.describe(workspace.blueprint or {})}"}]
+
+
+def stale(workspace):
+    """The owner's checks that, when last tried, couldn't be acted out on the app as it is now (a field they named was
+    renamed or taken away, something the app now needs wasn't given): [(check, result)]."""
+    last = {x["title"]: x for x in ((workspace.state or {}).get("checks") or {}).get("examples") or []}
+    out = []
+    for x in examples(workspace):
+        shown = last.get(x.get("title"))
+        if theirs(x) and shown and not shown.get("ok") and shown.get("kind") == "example":
+            out.append((x, {"kind": "example", "ok": False, "lines": [], "problem": str(shown.get("problem") or "").removeprefix(
+                "it can't be tried on your app as it is now: ")}))
+    return out
+
+
+def refit(workspace, found):
+    """The owner's checks that can't be acted out on the app as it is now, each written again from their own words for
+    the app as it is (never dropped, never quietly kept failing for a reason that isn't the app's). One that names what
+    the app doesn't do at all goes to the Checks page as such, for the builder to make. `found`: [(check, result)].
+    Returns the titles rewritten."""
+    engine, done, missing = Engine(workspace), {}, []
+    for x, r in found[:4]:
+        said = x["title"]
+        try:
+            example, result = _again(workspace, engine, _convo(workspace, engine, said), said, x, r)
+        except ai.AIError:
+            continue
+        if result.get("kind") == "missing":
+            missing.append({"said": said, "why": result["plain"].split(": ", 1)[-1][:300], "missing": True,
+                            "by": x.get("by") or "owner", "at": utcnow().isoformat()})
+        elif example is not x and result.get("kind") != "example":
+            done[said] = example
+    if not done and not missing:
+        return []
+    state = dict(workspace.state or {})
+    gone = {m_["said"] for m_ in missing}
+    state["examples"] = [done.get(x.get("title"), x) for x in examples(workspace) if x.get("title") not in gone]
+    state["refused_checks"] = (missing + [x for x in state.get("refused_checks") or [] if x.get("said") not in gone])[:5]
+    workspace.state = state
+    db.session.commit()
+    return list(done) + list(gone)
+
+
 def _again(workspace, engine, convo, said, example, result):
     """Before the owner hears their app doesn't do what they asked: the AI looks at what happened and either corrects
     its own example (a sum worked out wrong, a step the owner may do tried as the owner), which is then acted out
     instead, or says what the app doesn't do yet. Returns (example, result)."""
+    staff = _as_staff(workspace, example, result)
+    if staff is not None:
+        return staff
     lines = "\n".join(f"- {'as expected' if ok else 'NOT as expected'}: {line}" for ok, line in result.get("lines") or [])
     what = "\n".join(x for x in (result.get("problem") or "", lines) if x)
     how = "couldn't be acted out" if result["kind"] == "example" else "didn't come out as expected"
@@ -159,6 +208,9 @@ def _again(workspace, engine, convo, said, example, result):
         corrected = {**fixed[0], "title": example["title"], "by": example["by"]}
         with trial.copy_of(workspace) as copy:
             again = {**trial.play(copy, corrected), "looked_again": "example"}
+        staff = _as_staff(workspace, corrected, again)
+        if staff is not None:
+            return staff
         if again["kind"] == "example" and ABSENT.search(again.get("problem") or ""):  # still needs what isn't there: it isn't
             return corrected, {**again, "kind": "missing", "plain": f"your app doesn't do this yet: {missing or _absent(again)}"}
         return corrected, again
@@ -168,6 +220,20 @@ def _again(workspace, engine, convo, said, example, result):
         # it isn't in the app at all: it doesn't do it (not “should have been stopped”: nothing there could stop it)
         return example, {**result, "kind": "missing", "plain": f"your app doesn't do this yet: {missing}", "looked_again": "app"}
     return example, {**result, "looked_again": answer.get("verdict") or ""}
+
+
+def _as_staff(workspace, example, result):
+    """A step that should have been refused but went through, done by the owner (no "by"): the owner may do nearly
+    anything (their own sign-off is the sign-off), so what the check means is that others can't. Tried again with an
+    ordinary staff member doing those steps; (example, result) if that comes out right, else None."""
+    steps = example.get("steps") or []
+    if "should have been stopped" not in str(result.get("plain") or result.get("problem") or "") \
+            or not any(s.get("refused") and not s.get("by") for s in steps):
+        return None
+    variant = {**example, "steps": [{**s, "by": "staff"} if s.get("refused") and not s.get("by") else s for s in steps]}
+    with trial.copy_of(workspace) as copy:
+        again = trial.play(copy, variant)
+    return (variant, {**again, "looked_again": "example"}) if again["ok"] else None
 
 
 ABSENT = re.compile(r"there's no (automation|button) “")

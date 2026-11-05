@@ -105,6 +105,8 @@ def _step(s):
         return f"notify {s.get('to')}: “{s.get('message')}”"
     if kind == "send_email":
         return f"email {s.get('to')}: “{s.get('subject')}”" + (f" attaching {','.join(s['attach'])}" if s.get("attach") else "")
+    if kind == "send_sms":
+        return f"text {s.get('to')}: “{s.get('message')}”"
     if kind == "generate_document":
         return f"document {s.get('document')}"
     if kind == "request_approval":
