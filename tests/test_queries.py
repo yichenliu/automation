@@ -225,3 +225,27 @@ def test_a_gate_needing_a_formula_holds_to_it(app):
         e.update(e.get(job.id), {"status": "In progress"})
     e.create("deposits", {"job": job.id, "amount": 50})
     e.update(e.get(job.id), {"status": "In progress"})
+
+
+def test_a_check_that_comes_out_wrong_says_why_in_the_apps_own_terms(app):
+    """The builder is told what in the app was about it: the rules on the list and what each found, or the rule that
+    sets the field and what it was waiting for, so a fix changes what's really wrong."""
+    from app.builder import trial
+    bp = _app(JOBS + [{"do": "add_validation", "list": "jobs", "message": "Not for Sam", "check": "notes != 'sam'"},
+                      {"do": "add_rule", "rule": {"key": "start_when_paid", "name": "Start a job once its deposit is paid",
+                                                  "when": {"on": "changed", "list": "jobs", "field": "deposit_paid"},
+                                                  "only_if": [{"field": "deposit_paid", "op": "equals", "value": True}, {"field": "notes", "op": "equals", "value": "go"}],
+                                                  "steps": [{"do": "set", "values": [{"field": "status", "to": "In progress"}]}]}}])
+    ws = _workspace(bp)
+    allowed = {"title": "A job can't start before its deposit is paid", "steps": [
+        {"do": "add", "table": "clients", "as": "c1", "values": {"name": "Ann"}},
+        {"do": "add", "table": "jobs", "as": "j1", "values": {"client": "c1"}},
+        {"do": "move", "record": "j1", "to": "In progress", "refused": True}], "expect": []}
+    stays = {"title": "Paying the deposit starts the job", "steps": [
+        {"do": "add", "table": "clients", "as": "c1", "values": {"name": "Ann"}},
+        {"do": "add", "table": "jobs", "as": "j1", "values": {"client": "c1"}},
+        {"do": "change", "record": "j1", "values": {"deposit_paid": True}}],
+        "expect": [{"record": "j1", "field": "status", "equals": "In progress"}]}
+    _, (first, second) = trial.try_out(ws, [allowed, stays], screens=False)
+    assert not first["ok"] and any("Not for Sam" in w and "held" in w for w in first["why"]), first
+    assert not second["ok"] and any("start_when_paid" in w and "didn't run" in w and "notes" in w for w in second["why"]), second

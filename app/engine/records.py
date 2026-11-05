@@ -171,6 +171,144 @@ class RecordProxy:
         return hash(self.record.id)
 
 
+class Rows(expr.Lazy):
+    """The records of a list a formula looks at (a whole list, or those linking to one record), read only when they
+    must be: narrowed first by what of a `where` SQL can test (stylist == this.stylist; status == "Unpaid"), and counted
+    and added up by SQL where it can. Every record counts, whoever's save it is: a rule against double-booking counts
+    the bookings this person can't see too."""
+
+    def __init__(self, engine, table, filters=(), without=()):
+        self.e, self.table, self.filters, self.without = engine, table, list(filters), frozenset(without)
+        self._read = None
+
+    def narrowed_by(self, node, ctx):
+        pushed, without, whole = _pushable(self.e, self.e.tables[self.table], node, ctx)
+        if not pushed and not without:
+            return self, False
+        return Rows(self.e, self.table, self.filters + pushed, self.without | without), whole
+
+    def _found(self):
+        if not self.filters:
+            return self.e.rows(self.table)
+        return self.e.query(self.table, self.filters, everyone=True)
+
+    def read(self):
+        if self._read is None:
+            self._read = expr.Many(RecordProxy(self.e, r) for r in sorted(self._found(), key=lambda r: r.id or 0)
+                                   if r.id not in self.without)
+        return self._read
+
+    def answer(self, how, key=None):
+        if self._read is not None:
+            return expr.UNSURE  # read already: worked out from what's read
+        left_out = [r for r in (self.e.get(i, self.table) for i in self.without) if r is not None and self.e.matches(r, self.filters)]
+        if how == "count" and key is None:
+            return self.e.count(self.table, self.filters, everyone=True) - len(left_out)
+        f = self.e.field(self.table, key) if key else None
+        if left_out or f is None or f["type"] not in schema.STORED or how not in ("sum", "avg", "min", "max"):
+            return expr.UNSURE
+        from .planner import UNSURE
+        got = self.e.total(self.table, how, key, self.filters, everyone=True)
+        return expr.UNSURE if got is UNSURE else (0 if got is None and how == "sum" else got)
+
+
+PUSHED_OPS = {expr.ast.Eq: "equals", expr.ast.NotEq: "not_equals", expr.ast.Gt: "greater_than", expr.ast.Lt: "less_than",
+              expr.ast.GtE: "at_least", expr.ast.LtE: "at_most"}
+TURNED_OPS = {"greater_than": "less_than", "less_than": "greater_than", "at_least": "at_most", "at_most": "at_least"}
+
+
+def _pushable(engine, t, node, ctx):
+    """What of a count(...)'s `where` SQL can test, as conditions on the records looked at: (conditions, ids left out,
+    whether that's all of it). Only a field of theirs compared with what doesn't depend on them (a value, this.x,
+    today()); the rest is worked out on what SQL finds."""
+    parts = node.values if isinstance(node, expr.ast.BoolOp) and isinstance(node.op, expr.ast.And) else [node]
+    pushed, without, whole = [], set(), True
+    for part in parts:
+        got = _pushed(engine, t, part, ctx) or _overlapping(engine, t, part, ctx)
+        if got is None:
+            whole = False
+        elif got[0] == "without":
+            without.add(got[1])
+        elif got[0] == "near":  # narrows to those that could hold; worked out exactly on what's found
+            pushed += got[1]
+            whole = False
+        else:
+            pushed.append(got[1])
+    return pushed, without, whole
+
+
+def _overlapping(engine, t, part, ctx):
+    """overlaps(starts_at, ends_at, this.starts_at, this.ends_at) as SQL can narrow it: those starting no later than this
+    one ends, and ending (or, with no end, starting) no earlier than it starts."""
+    if not (isinstance(part, expr.ast.Call) and isinstance(part.func, expr.ast.Name) and part.func.id.lower() in ("overlaps", "overlap")
+            and len(part.args) == 4):
+        return None
+    start, end = part.args[0], part.args[1]
+    if not all(isinstance(n, expr.ast.Name) and schema.field(t, n.id) and schema.field(t, n.id)["type"] in ("date", "datetime")
+               for n in (start, end)) or any(_theirs(engine, t, n) for n in part.args[2:]):
+        return None
+    try:
+        theirs = [expr._eval(n, ctx) for n in part.args[2:]]
+    except expr.ExprError:
+        return None
+    lo = expr.to_datetime(theirs[0])
+    hi = expr.to_datetime(theirs[1]) or lo
+    if lo is None:
+        return None
+    kind = schema.field(t, start.id)["type"]
+    said = (lambda d: d.date().isoformat()) if kind == "date" else (lambda d: d.isoformat(sep=" ", timespec="minutes"))
+    return "near", [{"field": start.id, "op": "at_most", "value": said(hi)},
+                    {"any": [{"field": end.id, "op": "at_least", "value": said(lo)},
+                             {"all": [{"field": end.id, "op": "is_empty"}, {"field": start.id, "op": "at_least", "value": said(lo)}]}]}]
+
+
+def _theirs(engine, t, node):
+    """Whether an expression reads anything of the records looked at (a bare name that's one of their fields)."""
+    for n in expr.ast.walk(node):
+        if isinstance(n, expr.ast.Name) and n.id not in ("this", "record", "today", "now", "True", "False", "None") \
+                and (n.id in ("item", "it", "id") or schema.field(t, n.id) or schema.backlink(engine.tables, t, n.id)):
+            if not any(isinstance(c, expr.ast.Call) and c.func is n for c in expr.ast.walk(node)):
+                return True
+    return False
+
+
+def _pushed(engine, t, part, ctx):
+    if not isinstance(part, expr.ast.Compare) or len(part.ops) != 1:
+        return None
+    op, left, right = part.ops[0], part.left, part.comparators[0]
+    for mine, other, turned in ((left, right, False), (right, left, True)):
+        if not isinstance(mine, expr.ast.Name) or _theirs(engine, t, other):
+            continue
+        try:
+            value = expr._eval(other, ctx)
+        except expr.ExprError:
+            return None
+        if isinstance(value, RecordProxy):
+            value = value.record.id
+        if mine.id == "id":
+            return ("without", value) if isinstance(op, expr.ast.NotEq) and isinstance(value, int) else None
+        f = schema.field(t, mine.id)
+        if f is None or f["type"] not in schema.STORED or f.get("sensitive") or isinstance(value, (expr.Many, expr.Lazy, list, dict)) \
+                and not isinstance(op, (expr.ast.In, expr.ast.NotIn)):
+            return None
+        if isinstance(value, datetime):
+            value = value.isoformat(sep=" ", timespec="minutes")
+        elif isinstance(value, date):
+            value = value.isoformat()
+        if isinstance(op, expr.ast.In) and not turned and isinstance(value, list):
+            return "where", {"field": f["key"], "op": "one_of", "value": [str(v) for v in value]}
+        said = PUSHED_OPS.get(type(op))
+        if said is None:
+            return None
+        if value in (None, "") and said in ("equals", "not_equals"):
+            return "where", {"field": f["key"], "op": "is_empty" if said == "equals" else "not_empty"}
+        if value in (None, ""):
+            return None
+        said = TURNED_OPS.get(said, said) if turned else said
+        return "where", {"field": f["key"], "op": said, "value": value}
+    return None
+
+
 class RecordContext(expr.Context):
     """Names in a formula or template: the record's own fields, `record` itself, plus today/now."""
 
@@ -196,8 +334,8 @@ class RecordContext(expr.Context):
             if many is not None:
                 return many
         whole = schema.list_named(self.engine.tables, name) if name not in ("today", "now") else None
-        if whole is not None:  # a whole list: any(bookings where …)
-            return expr.Many(RecordProxy(self.engine, r) for r in self.engine.rows(whole["key"]))
+        if whole is not None:  # a whole list: any(bookings where …), read only as far as it must be
+            return Rows(self.engine, whole["key"])
         return super().resolve(name)
 
 
@@ -506,13 +644,13 @@ class Engine:
         self._memo, self._files, self._seals, self._asked_ids, self._queried, self._counted = {}, {}, {}, None, {}, {}
         self._dirty = set()
 
-    def _sql_plan(self, table, filters=None, q=None, sort=None):
+    def _sql_plan(self, table, filters=None, q=None, sort=None, everyone=False):
         """How SQL answers a query of this table (engine/planner.py), or None to read it in Python: a table already read
-        whole is checked where it is, and a sealed one only Python can read."""
+        whole is checked where it is, and a sealed one only Python can read. everyone: every record, whoever's asking."""
         if table in self._rows or table not in self.tables:
             return None
         from .planner import Plan
-        plan = Plan(self, table, filters, q, sort)
+        plan = Plan(self, table, filters, q, sort, everyone=everyone)
         return plan if plan.usable else None
 
     def page(self, table, filters=None, q=None, sort=None, offset=0, limit=50, sums=()):
@@ -525,22 +663,22 @@ class Engine:
             return rows[offset:offset + limit], len(rows)
         return plan.page(offset, limit, sums)
 
-    def count(self, table, filters=None, q=None):
+    def count(self, table, filters=None, q=None, everyone=False):
         """len(query(table, filters, q)), counted by SQL when it can be."""
-        plan = self._sql_plan(table, filters, q)
-        return plan.count() if plan is not None else len(self.query(table, filters, q=q))
+        plan = self._sql_plan(table, filters, q, everyone=everyone)
+        return plan.count() if plan is not None else len(self.query(table, filters, q=q, everyone=everyone))
 
-    def total(self, table, aggregate="count", key=None, filters=None, q=None):
+    def total(self, table, aggregate="count", key=None, filters=None, q=None, everyone=False):
         """aggregate(query(table, filters, q), aggregate, key): a count, sum, average, lowest, highest or middle, from SQL
         when the field is kept (not worked out) and SQL can settle every record."""
         from .planner import UNSURE
-        plan = self._sql_plan(table, filters, q)
+        plan = self._sql_plan(table, filters, q, everyone=everyone)
         got = plan.total(aggregate, key) if plan is not None else UNSURE
         if got is not UNSURE:
             return got
-        asked = (table, repr(filters), q)  # a list's worked-out columns totalled one after another: its records read once
+        asked = (table, repr(filters), q, everyone)  # a list's worked-out columns totalled one after another: its records read once
         if asked not in self._queried:
-            self._queried[asked] = self.query(table, filters, q=q)
+            self._queried[asked] = self.query(table, filters, q=q, everyone=everyone)
         return self.aggregate(self._queried[asked], aggregate, key)
 
     def neighbours(self, table, record):
@@ -1008,8 +1146,12 @@ class Engine:
         if found is None:
             return None
         other, f = found
-        rows = self.children(other["key"], f["key"], record.id) if record.id is not None else []
-        return expr.Many(RecordProxy(self, r) for r in sorted(rows, key=lambda r: r.id or 0))
+        if record.id is None:
+            return expr.Many()
+        if other["key"] in self._rows or (other["key"], f["key"]) in self._index or other.get("embedded"):  # read already, or lines
+            rows = self.children(other["key"], f["key"], record.id)
+            return expr.Many(RecordProxy(self, r) for r in sorted(rows, key=lambda r: r.id or 0))
+        return Rows(self, other["key"], [{"field": f["key"], "op": "equals", "value": record.id}])
 
     def _rollup(self, record, f):
         memo_key = (record.id, f["key"])
@@ -1384,13 +1526,14 @@ class Engine:
         except TypeError:
             return rows
 
-    def query(self, table, filters=None, q=None, sort=None):
-        """Records of a table (those this person may see) meeting the filters, matching the search, sorted. When SQL can
-        leave records out (engine/planner.py), only the rest are read, and only those it can't settle are checked here."""
-        plan = self._sql_plan(table, filters, q, sort)
+    def query(self, table, filters=None, q=None, sort=None, everyone=False):
+        """Records of a table (those this person may see; with everyone, all of them) meeting the filters, matching the
+        search, sorted. When SQL can leave records out (engine/planner.py), only the rest are read, and only those it
+        can't settle are checked here."""
+        plan = self._sql_plan(table, filters, q, sort, everyone=everyone)
         if plan is not None and plan.narrows:
             return plan.rows()
-        rows = self.visible_rows(table)
+        rows = self.rows(table) if everyone else self.visible_rows(table)
         rows = [r for r in rows if self.matches(r, filters)] if filters else list(rows)
         return self.sort(self.search(rows, q), sort)
 

@@ -1756,7 +1756,8 @@ def _play(trial, engine, example, names, out):
             owner = "" if step.get("by") else (" (the owner did it, who may do nearly anything: if only some people should, such as "
                                                 "the owner, have \"by\": \"staff\" try it)")
             out.update(problem=f"step {n} ({said}) should have been refused, but the app allowed it{owner}{_scheduled(engine, example)}", kind="app",
-                       plain=f"{_plain_step(engine, step, names)} should have been stopped, but wasn't")
+                       plain=f"{_plain_step(engine, step, names)} should have been stopped, but wasn't",
+                       why=_safely(_why_allowed, engine, step, names))
             return out
     flush()
     stopped = failed_runs(engine, last_run)
@@ -1773,6 +1774,8 @@ def _play(trial, engine, example, names, out):
     out["ok"] = bool(out["lines"]) and all(ok for ok, _ in out["lines"]) and not stopped
     if not out["ok"]:
         out["kind"] = "app"
+        out["why"] = [line for c, (ok, _) in zip(example.get("expect") or [], out["lines"]) if not ok
+                      for line in _safely(_why_value, engine, c, names, last_run)][:10]
         out["problem"] = ("; ".join(out["detail"] + [i["text"] for i in stopped]) or "it expected nothing") + _scheduled(engine, example)
         out["plain"] = "; ".join([p for ok, p in out["lines"] if not ok] + [i["plain"] for i in stopped])
         if by_hand:
@@ -1782,6 +1785,108 @@ def _play(trial, engine, example, names, out):
                                f"record them themselves, an example that says so in its title)")
             out["plain"] += f" (the app didn't add the {', '.join(schema.lc(x) for x in by_hand)} itself)"
     return out
+
+
+# --- why: what of the app was about it, for the builder to put right what's really wrong ---------------------------------
+
+def _safely(why, *args):
+    """What explains a check that came out wrong, or nothing: explaining never stops a try-out."""
+    try:
+        return why(*args)
+    except Exception:  # noqa: BLE001
+        _log.warning("Explaining a check that came out wrong failed", exc_info=True)
+        db.session.rollback()
+        return []
+
+
+def _rule_words(engine, t, rule):
+    said = [] if str(rule.get("check")).strip().lower() in ("true", "false") else [f"check {rule['check']}"]
+    if rule.get("holds"):
+        said.append("must hold: " + automations_words(engine, rule["holds"], t["key"]))
+    if rule.get("when"):
+        said.append("only when " + automations_words(engine, rule["when"], t["key"]))
+    return f"“{rule.get('message')}” (" + "; ".join(said) + ")"
+
+
+def _why_allowed(engine, step, names):
+    """What on the list could have refused a step that went through, and why each didn't: its rules (and what they
+    found), limits, a gate's buttons; or that nothing there refuses it."""
+    record = None
+    try:
+        alias = step.get("as") if step.get("do") == "add" else step.get("record")
+        record = engine.get(names[alias]) if alias in names else None
+    except Exception:  # noqa: BLE001
+        record = None
+    t = engine.tables.get(record.table) if record is not None else engine.tables.get(str(step.get("table") or ""))
+    if t is None:
+        return []
+    out = []
+    for rule in t.get("rules") or []:
+        applies = not rule.get("when") or (record is not None and engine.matches(record, rule["when"]))
+        try:
+            kept = record is not None and engine._keeps(t, record, rule)
+        except expr.ExprError as exc:
+            out.append(f"{t['key']} rule {_rule_words(engine, t, rule)}: couldn't be worked out ({exc})")
+            continue
+        out.append(f"{t['key']} rule {_rule_words(engine, t, rule)}: " + ("didn't apply to it" if not applies else
+                                                                           "held for it" if kept else "was broken, yet the change was kept"))
+    for limit in t.get("limits") or []:
+        out.append(f"{t['key']} limit {json.dumps({k: v for k, v in limit.items() if k in ('per', 'max', 'overlap', 'where')}, ensure_ascii=False)}: held")
+    if step.get("do") == "move":
+        moves = [m for m in (t.get("workflow") or {}).get("transitions") or [] if str(m.get("to", "")).lower() == str(step.get("to", "")).lower()]
+        for m in moves:
+            if m.get("only_if") and not step.get("by"):
+                out.append(f"the move to {m['to']} has only_if {automations_words(engine, m['only_if'], t['key'])}: a button's "
+                           f"only_if holds back staff's button, while rules hold back every save (the owner's too)")
+    if not out:
+        out.append(f"{t['key']} has no rule that refuses this: add_validation refuses adding or saving what breaks it, and a gate "
+                   f"holds a record back from a stage, for everyone")
+    return out[:8]
+
+
+def _why_value(engine, c, names, since):
+    """For an expectation that came out wrong: what in the app sets that field (rules, features, a formula), whether
+    each ran in the example, and if not what it was waiting for, with the record's values."""
+    if c.get("told") is not None or c.get("count") is not None or not c.get("record"):
+        return []
+    try:
+        record = engine.get(names[c["record"]]) if c["record"] in names else None
+    except Exception:  # noqa: BLE001
+        record = None
+    if record is None:
+        return []
+    t = engine.tables[record.table]
+    key = str(c.get("field") or (t.get("workflow") or {}).get("field") or "").split(".")[0]
+    f = schema.field(t, key)
+    if f is None:
+        return []
+    if f["type"] == "formula":
+        return [f"{t['key']}.{key} is worked out: {f['expression']}"]
+    ran = {}
+    for run in Run.query.filter(Run.workspace_id == engine.ws.id, Run.id > (since or 0)).all():
+        ran.setdefault(run.automation, []).append(run.status)
+    out = []
+    for a in engine.bp.get("automations", []):
+        sets = any((act.get("type") == "update_record" and key in (act.get("values") or {}) and a["trigger"].get("table") == t["key"]
+                    and not act.get("target")) or (act.get("type") == "create_record" and act.get("table") == t["key"]
+                                                    and key in (act.get("values") or {}))
+                   for act in schema.steps_of(a["actions"]))
+        if not sets:
+            continue
+        name = f"rule {a['key']}" + (f" (of {a['feature']})" if a.get("feature") else "")
+        trigger = automations.describe_trigger(engine, a["trigger"]).lower()
+        if a["key"] in ran:
+            out.append(f"{name} sets {key}: it ran ({', '.join(sorted(set(ran[a['key']])))}), {trigger}")
+            continue
+        waiting = []
+        for cond in schema.condition_leaves(a.get("conditions")):
+            got = engine._at_path(record, cond["field"])[1]
+            if not engine.matches(record, [cond]):
+                waiting.append(f"{cond['field']} {cond['op']} {cond.get('value', '')}".strip() + f" (it's {got!r})")
+        out.append(f"{name} sets {key} but didn't run: {trigger}" + (f"; waiting for {', '.join(waiting[:3])}" if waiting else ""))
+    if not out:
+        out.append(f"nothing in the app sets {t['key']}.{key} by itself: a rule (or a feature) has to, or people do")
+    return out[:6]
 
 
 def _scheduled(engine, example):

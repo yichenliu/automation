@@ -139,8 +139,42 @@ class Many(list):
         return ", ".join(_text(x) for x in self)
 
 
+UNSURE = object()  # what the database can't answer for sure: the records are read and it's worked out here
+
+
+class Lazy:
+    """Several records not read yet (a whole list, a client's invoices): narrowed by what each must be, and counted or
+    added up, by the database where it can (the engine's Rows); read only when they must be."""
+
+    def narrowed_by(self, node, ctx):
+        """(the records narrowed by this condition as far as the database can, whether that's all of it)."""
+        return self, False
+
+    def answer(self, how, key=None):
+        """count (key None), or sum/avg/min/max of a kept field, from the database; UNSURE when it can't say."""
+        return UNSURE
+
+    def read(self):
+        return Many()
+
+    def field(self, name):
+        return self.read().field(name)
+
+    def __iter__(self):
+        return iter(self.read())
+
+    def __len__(self):
+        return len(self.read())
+
+    def __bool__(self):
+        return len(self) > 0
+
+    def __str__(self):
+        return str(self.read())
+
+
 def _record_like(x):
-    return callable(getattr(x, "field", None)) and not isinstance(x, Many)
+    return callable(getattr(x, "field", None)) and not isinstance(x, (Many, Lazy))
 
 
 class ItemContext(Context):
@@ -675,14 +709,23 @@ def _eval(node, ctx):
 
 
 def _is_many(value):
-    return isinstance(value, Many) or (isinstance(value, (list, tuple)) and any(_record_like(x) for x in value))
+    return isinstance(value, (Many, Lazy)) or (isinstance(value, (list, tuple)) and any(_record_like(x) for x in value))
+
+
+CONDITIONED = ("count", "any", "none", "where", "first", "last", "sumif", "avgif")  # their second value says which count
 
 
 def _query(name, node, items, ctx):
     """count/sum/avg/min/max/any/all/none/where/first/last over several records: `where` (or a second value) says which
-    of them count; sum, avg, min and max say what of each to add up."""
+    of them count; sum, avg, min and max say what of each to add up. Records not read yet (Lazy) are narrowed, counted
+    and added up by the database where it can, and read only for what it can't."""
+    args = list(node.args[1:])
+    if isinstance(items, Lazy):
+        got = _from_database(name, args, items, ctx)
+        if got[0] is not UNSURE:
+            return got[0]
+        items = got[1].read()
     items = Many(items)
-    args = node.args[1:]
 
     def holds(item, cond):
         return to_bool(_eval(cond, ItemContext(ctx, item)))
@@ -732,6 +775,30 @@ def _query(name, node, items, ctx):
     if all(to_datetime(v) is not None for v in values):  # the latest due date, the earliest booking
         return pick(values, key=to_datetime)
     return pick(values, key=lambda v: _text(v).lower())
+
+
+def _from_database(name, args, items, ctx):
+    """(the answer, or UNSURE; the records, narrowed as far as the database could). What's read after is still checked
+    against the whole condition here: narrowing only leaves out what can't count."""
+    plain = lambda n: n.id if isinstance(n, ast.Name) else None  # noqa: E731  (a field of each: sum(payments, amount))
+    if name in CONDITIONED and args:
+        items, whole = items.narrowed_by(args[0], ctx)
+        if whole:
+            if name == "where":
+                return items, items
+            if name in ("count", "any", "none") and len(args) == 1:
+                n = items.answer("count")
+                if n is not UNSURE:
+                    return (n if name == "count" else n > 0 if name == "any" else n == 0), items
+            if name in ("sumif", "avgif") and len(args) == 2 and plain(args[1]):
+                return items.answer(name[:-2], plain(args[1])), items
+        return UNSURE, items
+    if not args and name in ("count", "any", "none"):
+        n = items.answer("count")
+        return ((n if name == "count" else n > 0 if name == "any" else n == 0) if n is not UNSURE else UNSURE), items
+    if name in ("sum", "avg", "min", "max") and len(args) == 1 and plain(args[0]):
+        return items.answer(name, plain(args[0])), items
+    return UNSURE, items
 
 
 TEMPLATE = re.compile(r"\{\{\s*(.+?)\s*\}\}")

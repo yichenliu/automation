@@ -312,7 +312,8 @@ def _said_failing(run, failing=None, hard=None):
         by = str(x.get("by") or "builder")
         whose = (f"the feature {by[8:]}'s own check: change that feature (send it again with its key)" if by.startswith("feature:")
                  else "your own worked example" if by == "builder" else "the owner's own check: the app must do what it says")
-        lines.append(f"- “{x.get('title')}” ({whose}; steps: {steps}; expects {json.dumps(x.get('expect'), ensure_ascii=False)}): {r.get('problem')}")
+        lines.append(f"- “{x.get('title')}” ({whose}; steps: {steps}; expects {json.dumps(x.get('expect'), ensure_ascii=False)}): {r.get('problem')}"
+                     + "".join(f"\n    why: {w}" for w in (r.get("why") or [])[:6]))
     lines += [f"- {i['text']}" for i in (run["hard"] if hard is None else hard)[:6]]
     return "\n".join(lines)
 

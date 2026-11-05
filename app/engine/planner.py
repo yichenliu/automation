@@ -761,13 +761,16 @@ class Plan:
     """A query of one table (Engine.query's filters, search and order) and how to answer it: straight from SQL when every
     record it finds is settled, else by checking the records it finds in Python."""
 
-    def __init__(self, engine, table, filters=None, q=None, sort=None):
+    def __init__(self, engine, table, filters=None, q=None, sort=None, everyone=False):
+        """everyone: every record counts, whoever's asking (a rule's count of bookings includes those this person can't
+        see)."""
         self.e, self.table, self.filters, self.q, self.sort = engine, table, list(filters or []), q, sort
+        self.everyone = everyone
         p = self.planner = Planner(engine, table)
         self.usable = p.usable()
         if not self.usable:
             return
-        self.access = p.access()
+        self.access = (True, True) if everyone else p.access()
         pushed, self.residual = [], []
         for c in self.filters:
             got = p.condition(c)
@@ -792,7 +795,7 @@ class Plan:
         columns a page will total (`sums`) are added up in the same reading of the table."""
         settled = _all((self.access or (True, True))[0], self.yes_f, self.yes_q)
         unordered = self.order[1] if self.order else False
-        asked = (self.table, repr(self.filters), self.q)
+        asked = (self.table, repr(self.filters), self.q, self.everyone)
         adding = [k for k in sums if (asked, k) not in self.e._counted and self._adding(k)]
         if unordered is False and asked in self.e._counted and not adding:
             return (*self.e._counted[asked], 0)
@@ -861,7 +864,7 @@ class Plan:
         e._found(self.table, [r for r, _, _ in found], fetch=False)
         out = []
         for r, sure, sure_q in found:
-            if self.access is None and not e.allowed(r):
+            if self.access is None and not self.everyone and not e.allowed(r):
                 continue
             if not (e.matches(r, self.residual) if sure else e.matches(r, self.filters)):
                 continue
@@ -898,7 +901,7 @@ class Plan:
         total, whole, _ = self.exact([key])
         if not whole:
             return UNSURE
-        added, n, fraction, odd_ones = self.e._counted[((self.table, repr(self.filters), self.q), key)]
+        added, n, fraction, odd_ones = self.e._counted[((self.table, repr(self.filters), self.q, self.everyone), key)]
         if odd_ones:
             return UNSURE
         v = self.planner.value(key)
