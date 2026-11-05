@@ -80,3 +80,17 @@ def test_a_lists_title_field_and_section_and_lines_only_some():
                                                        "values": [{"field": "invoice", "formula": "created"}], "lines_where": [{"field": "billable", "op": "equals", "value": True}]}]}})
     each = next(a for a in bp["automations"] if a["key"] == "invoice_lines")["actions"][1]
     assert each["where"] == [{"field": "billable", "op": "equals", "value": True}]
+
+
+def test_a_new_list_is_named_and_shown_by_its_fields_links_included():
+    """A stock movement (item, location, quantity) is named by its item, not its quantity, and its list shows them all:
+    chosen once its links are made too, not before."""
+    out = lang.apply(everything(), [
+        {"do": "add_list", "key": "locations", "label": "Locations", "singular": "Location", "fields": [{"type": "text", "key": "name", "label": "Name"}]},
+        {"do": "add_list", "key": "movements", "label": "Stock movements", "singular": "Stock movement", "fields": [
+            {"type": "link", "key": "item", "label": "Item", "to": "services"}, {"type": "link", "key": "location", "label": "Location", "to": "locations"},
+            {"type": "number", "key": "change", "label": "Change"}]}])
+    assert not out.problems, out.problems
+    t = schema.table(out.blueprint, "movements")
+    assert t["title_field"] == "item"
+    assert next(v for v in t["views"] if v["key"] == "all")["columns"][:3] == ["item", "location", "change"]

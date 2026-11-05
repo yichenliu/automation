@@ -940,6 +940,14 @@ def apply(bp, raw_patches, allowed=None):
         have = [f["key"] for f in t["fields"]]
         if [k for k in have if k in wanted] != [k for k in wanted if k in have]:
             _apply_ops(out, [{"op": "order_fields", "table": t["key"], "fields": [k for k in wanted if k in have] + [k for k in have if k not in wanted]}], where(n, p))
+    for key in made_here:  # what names each new record, and its list's columns, chosen once its links are there too
+        t = schema.table(out.blueprint, key)
+        if t is None:
+            continue
+        t["title_field"] = schema.title_field({**t, "title_field": None})
+        every = next((v for v in t.get("views") or [] if v.get("key") == "all" and v.get("type") == "list"), None)
+        if every is not None:
+            every["columns"] = [f["key"] for f in t["fields"] if f["type"] != "long_text"][:7]
     # everything else, one patch at a time; one refused is tried again once the rest are in (a feature that reads a
     # total another feature in the same batch makes), and only its last problems are kept
     waiting, said = list(rest), {}
