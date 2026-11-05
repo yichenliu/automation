@@ -1275,7 +1275,7 @@ def test_a_total_that_came_out_wrong_because_its_linked_records_dont_count_says_
 def test_refusing_while_a_customer_owes_is_a_count_of_their_overdue_invoices_used_through_the_link(app):
     """“No new quote, and no job started, for a customer with an invoice unpaid over 30 days”: a total counting their
     overdue invoices, read through the link by a rule every save keeps and by a gate. And a formula reaching into other
-    records (count(...)) is refused saying so."""
+    records (count(invoices where ...)) says the same in one line."""
     out = lang.apply(everything(), [
         {"do": "add_field", "list": "customers", "field": {"type": "total", "key": "overdue_invoices", "label": "Overdue invoices",
                                                            "of": "invoices", "link": "customer", "how": "count",
@@ -1295,9 +1295,13 @@ def test_refusing_while_a_customer_owes_is_a_count_of_their_overdue_invoices_use
         e.create("quotes", {"customer": acme.id, "total": 10})
     started = [problem for _, m, problem in e.moves(e.get(job.id)) if m["to"] == "In progress"]
     assert started and started[0], started
-    wrong = lang.apply(everything(), [{"do": "add_validation", "list": "quotes", "check": "count(invoices, customer = record.customer) == 0",
-                                       "message": "x"}])
-    assert wrong.problems and "add a total field" in wrong.problems[0]
+    direct = lang.apply(everything(), [{"do": "add_validation", "list": "quotes", "message": "Clear their overdue invoices first",
+                                        "check": 'count(invoices where customer == this.customer and status != "Paid" and days_since(due_date) > 30) == 0'}])
+    assert not direct.problems, direct.problems
+    ws.blueprint = direct.blueprint
+    db.session.commit()
+    with pytest.raises(FieldErrors):
+        Engine(ws).create("quotes", {"customer": acme.id, "total": 10})
 
 
 def test_a_rule_with_a_long_name_made_on_the_app_map_is_opened_by_the_key_it_is_saved_under():
@@ -1321,3 +1325,25 @@ def test_two_status_fields_with_the_same_choices_are_a_mistake_to_put_right(app)
     assert found and found[0]["level"] == "fix" and "payment_status" in found[0]["text"] and "remove_field payment_status" in found[0]["text"]
     ws.blueprint = everything()
     assert not checks.two_statuses(Engine(ws))
+
+
+def test_a_vague_new_app_gets_a_few_quick_questions_to_click_once(app, owner):
+    """“need sumthing to run my shop”: the builder asks up to four questions with answers to click, rather than building a
+    shell; asked once, then it builds from what they said."""
+    from app.builder import chat
+    _, ws = owner
+    asking = {"needs": [], "questions": [{"ask": "Does anything need your OK before it goes ahead?", "choices": ["Quotes over a set amount", "Orders", "Nothing"]},
+                                        {"ask": "What gets chased?", "choices": ["Unpaid invoices", "Quotes not answered"], "many": True}],
+              "reply": ""}
+    ai.set_backend(Model({"understand": asking}))
+    m = chat.ask(ws, "need sumthing to run my shop")
+    chat.work(m.id)
+    m = db.session.get(Message, m.id)
+    assert m.status == "done" and not m.version_after and m.proposals["questions"][0]["choices"][0] == "Quotes over a set amount"
+    assert m.text.startswith("A few quick questions") and "?" in m.text  # said in words too
+    ai.set_backend(Model({"understand": {**asking, "needs": [{"said": "orders", "does": "Keeps customers and their orders"}]},
+                          "data": {"lists": ["customers"], "patches": [EVERYTHING[0]]}, "behaviour": {"work": [], "already": [1]}}))
+    again = chat.ask(ws, "Does anything need your OK before it goes ahead? Orders")
+    chat.work(again.id)
+    again = db.session.get(Message, again.id)
+    assert again.status == "done" and again.version_after and not again.proposals  # asked once: now it builds

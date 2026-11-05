@@ -148,7 +148,16 @@ class RecordProxy:
         self._engine, self.record = engine, record
 
     def field(self, name):
+        if name not in ("id", "created_at", "updated_at") and self._engine.field(self.record.table, name) is None:
+            many = self._engine.linking(self.record, name)  # a client's invoices
+            if many is not None:
+                return many
         return self._engine.value(self.record, name, typed=True)
+
+    def has(self, name):
+        """Whether `name` is something of this record: a field, or the records linking to it (its invoices)."""
+        return name in ("id", "created_at", "updated_at") or self._engine.field(self.record.table, name) is not None \
+            or schema.backlink(self._engine.tables, self._engine.tables.get(self.record.table), name) is not None
 
     def __str__(self):
         return self._engine.title(self.record)
@@ -177,12 +186,18 @@ class RecordContext(expr.Context):
     def resolve(self, name):
         if name in self.names:
             return self.names[name]
-        if name == "record":
+        if name in ("record", "this"):
             return RecordProxy(self.engine, self.record) if self.record is not None else None
         if self.record is not None:
             t = self.engine.tables.get(self.record.table)
             if name in ("id", "created_at", "updated_at") or (t and schema.field(t, name)):
                 return self.engine.value(self.record, name, typed=True)
+            many = self.engine.linking(self.record, name)  # this job's payments
+            if many is not None:
+                return many
+        whole = schema.list_named(self.engine.tables, name) if name not in ("today", "now") else None
+        if whole is not None:  # a whole list: any(bookings where …)
+            return expr.Many(RecordProxy(self.engine, r) for r in self.engine.rows(whole["key"]))
         return super().resolve(name)
 
 
@@ -222,17 +237,7 @@ def automations_words(engine, conditions, table):
     return " and ".join(describe_condition(engine, c, table).replace("“", "").replace("”", "") for c in conditions)
 
 
-def _overlap(a, b):
-    """Whether two spans of dates or times overlap; one with no end is that one day or moment. The day one ends, the
-    next can start (a checkout and a check-in)."""
-    (s1, e1), (s2, e2) = a, b
-    if e1 <= s1 and e2 <= s2:
-        return s1 == s2
-    if e1 <= s1:
-        return s2 <= s1 < e2
-    if e2 <= s2:
-        return s1 <= s2 < e1
-    return s1 < e2 and s2 < e1
+_overlap = expr.spans_overlap  # two spans of dates or times: one with no end is that day or moment
 
 
 CURRENCIES = (("Australia/", "AUD"), ("Pacific/Auckland", "NZD"), ("Pacific/Chatham", "NZD"), ("Europe/London", "GBP"),
@@ -292,6 +297,7 @@ class Engine:
         self.started = []  # automation runs this engine started (so a screen can say what ran)
         self._members, self._files, self._sources = None, {}, None
         self._depth, self._after, self._touched, self._failed = 0, [], set(), False
+        self._before = {}  # each record written in this save, as it was before it (None: added in it), for its rules
         self._dirty = set()  # tables written since the caches were last brought up to date (only theirs are thrown away)
         self._batch = None  # an import's rows, committed together (see batch())
         self._open = set()  # records that weren't locked when this save began (a locked status set in it applies next time)
@@ -995,6 +1001,16 @@ class Engine:
             ids = [r.id for r in rows]
         return rows
 
+    def linking(self, record, name):
+        """The records of another list that link to this one, by that list's name (a client's invoices), as a formula
+        reads them; or None when no list links here by that name."""
+        found = schema.backlink(self.tables, self.tables.get(record.table), name) if record is not None else None
+        if found is None:
+            return None
+        other, f = found
+        rows = self.children(other["key"], f["key"], record.id) if record.id is not None else []
+        return expr.Many(RecordProxy(self, r) for r in sorted(rows, key=lambda r: r.id or 0))
+
     def _rollup(self, record, f):
         memo_key = (record.id, f["key"])
         if memo_key in self._memo:
@@ -1265,6 +1281,14 @@ class Engine:
         for c in conditions or []:
             if "any" in c or "all" in c:
                 if not (any(self.matches(record, [x], old, about) for x in c["any"]) if "any" in c else self.matches(record, c["all"], old, about)):
+                    return False
+                continue
+            if "formula" in c:  # count(client.invoices where …) == 0: a formula that must hold
+                try:
+                    if not to_bool(expr.evaluate(schema.percents_fixed(self.tables.get(record.table), c["formula"]), RecordContext(self, record))):
+                        return False
+                except expr.ExprError as exc:
+                    log.warning("The condition %r couldn't be worked out: %s", c["formula"], exc)
                     return False
                 continue
             f, actual = self._at_path(record, c["field"])
@@ -2229,6 +2253,7 @@ class Engine:
     def _abandon(self):
         db.session.rollback()
         self._touched, self._after, self._failed, self._open = set(), [], False, set()
+        self._before = {}
         self.reset()
 
     def _pair_links(self, t, record, keys, by=None):
@@ -2284,7 +2309,7 @@ class Engine:
             self._abandon()
             raise
         touched, after = self._touched, self._after
-        self._touched, self._after, self._open = set(), [], set()
+        self._touched, self._after, self._open, self._before = set(), [], set(), {}
         self.reset()
         self._index_later(touched)
         self._tell_followers(touched)
@@ -2348,9 +2373,11 @@ class Engine:
                     if rule.get("when") and not self.matches(target, rule["when"]):
                         continue
                     try:
-                        ok = to_bool(expr.evaluate(schema.percents_fixed(t, rule["check"]), RecordContext(self, target)))
+                        ok = self._keeps(t, target, rule)
                     except expr.ExprError as exc:
                         log.warning("The rule %r on %s couldn't be worked out: %s", rule["check"], t.get("key"), exc)
+                        continue
+                    if not ok and target is r and self._kept_out_of_it(t, target, rule):
                         continue
                     if not ok:
                         where = rule.get("field") if target is r and rule.get("field") else "_"
@@ -2359,6 +2386,42 @@ class Engine:
                         read = sorted(n for n in expr.names_in(rule["check"]) if self.field(target.table, n))
                         refused.rule = (t["key"], rule["check"], {n: (target.data or {}).get(n) for n in read})  # what it saw
                         raise refused
+
+    def _keeps(self, t, record, rule):
+        """Whether a record keeps a rule: its check is true, and what it says must hold does."""
+        return to_bool(expr.evaluate(schema.percents_fixed(t, rule["check"]), RecordContext(self, record))) \
+            and (not rule.get("holds") or self.matches(record, rule["holds"]))
+
+    def _kept_out_of_it(self, t, record, rule):
+        """Whether a rule broken now was broken before this save too, and this save didn't touch what it's about: then
+        it doesn't stop the save (a job already In progress when its client fell behind can still have its notes
+        changed). A record added now, a rule this save broke, or a change to what the rule reads is refused."""
+        old = self._before.get(record.id, None)
+        if record.id not in self._before or old is None:
+            return False
+        read = set()
+        said = list(rule.get("when") or []) + list(rule.get("holds") or [])
+        try:
+            read |= {n for n in expr.outer_names(rule["check"])}
+            for source in schema.formulas(said):
+                read |= expr.outer_names(source)
+        except expr.ExprError:
+            return False
+        read |= {c["field"].split(".")[0] for c in schema.condition_leaves(said)}
+        now = record.data or {}
+        if any(old.get(k) != now.get(k) for k in read if not str(k).startswith("_")) or "this" in read or "record" in read:
+            return False
+        draft = Record(workspace_id=self.ws.id, table=record.table, data=old)
+        draft.id = record.id
+        memo, self._memo = self._memo, {}
+        try:
+            if rule.get("when") and not self.matches(draft, rule["when"]):
+                return False  # it didn't apply before: this save made it apply
+            return not self._keeps(t, draft, rule)
+        except expr.ExprError:
+            return False
+        finally:
+            self._memo = memo
 
     # --- what was approved stays approved ---------------------------------------------------------------------------
     def _approved_amounts(self, t, record):
@@ -2491,6 +2554,7 @@ class Engine:
                         created_by_id=self.user_id)
         db.session.add(record)
         db.session.flush()
+        self._before.setdefault(record.id, None)
         if self._depth:
             self._open.add(record.id)
         db.session.add(RecordChange(workspace_id=self.ws.id, record_id=record.id, kind="created", by=by or self.by, by_id=self.user_id,
@@ -2551,6 +2615,7 @@ class Engine:
                 self._check_lock(self.get(values[link["key"]], link["table"]), None)
         owned = set(old.get("_ai") or [])
         owned = owned | set(diff) if ai_filled else owned - set(diff)
+        self._before.setdefault(record.id, old)
         record.data = {**old, **values, "_ai": sorted(owned)}
         flow = t.get("workflow")
         if flow and flow["field"] in diff:

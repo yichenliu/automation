@@ -10,6 +10,7 @@ each one under "features": {key, do, params, undo} (undo puts back what it chang
 stage move).
 """
 import copy
+import re
 from typing import Literal
 
 from pydantic import Field
@@ -812,7 +813,7 @@ class Limit(Feature):
     list: str
     per: list[str] = Field(default_factory=list)
     max: int
-    only_if: list[Condition] = Field(default_factory=list)
+    only_if: list[Condition | str] = Field(default_factory=list)
     message: str | None = None
 
     def default_key(self):
@@ -900,7 +901,7 @@ class NoOverlap(Feature):
     starts: str
     ends: str | None = None
     length: str | None = None
-    only_if: list[Condition] = Field(default_factory=list)
+    only_if: list[Condition | str] = Field(default_factory=list)
     message: str | None = None
 
     def default_key(self):
@@ -1166,7 +1167,7 @@ class ReminderBefore(Feature):
     tell: str = "owner"
     email_to: str | None = None
     message: str | None = None
-    only_if: list[Condition] = Field(default_factory=list)
+    only_if: list[Condition | str] = Field(default_factory=list)
 
     def default_key(self):
         return f"remind_{self.list}_{self.date_field}"
@@ -1214,7 +1215,7 @@ class Recurring(Feature):
     from_list: str
     to_list: str
     every: Literal["week", "month"] = "month"
-    only_if: list[Condition] = Field(default_factory=list)
+    only_if: list[Condition | str] = Field(default_factory=list)
     values: list[Value] = Field(default_factory=list)
 
     def default_key(self):
@@ -1259,6 +1260,9 @@ def _turned(conditions, where):
     """What holds when not all of these do: one of them turned round ({"any": [...]}, or the one condition itself)."""
     out = []
     for i, c in enumerate(conditions, start=1):
+        if "formula" in c:  # a formula turned round: it doesn't hold
+            out.append({"formula": f"not ({c['formula']})"})
+            continue
         if "any" in c or "all" in c or c.get("op") not in TURNED:
             raise Problem(f"{where} {i}: “{c.get('op')}” can't be turned round to say when it's allowed: write what must hold "
                           f"for it to be allowed in only_if instead")
@@ -1267,8 +1271,12 @@ def _turned(conditions, where):
 
 
 def _words_of(d, t, conditions):
+    from ..engine.automations import formula_words
     out = []
     for c in conditions:
+        if isinstance(c, str):
+            out.append(formula_words(c))
+            continue
         f = d.field(t, c.field) if "." not in c.field else None
         name = (f or {}).get("label") or c.field.replace("_", " ").replace(".", "'s ")
         value = "" if c.value in (None, "") else f" {c.value}"
@@ -1280,17 +1288,18 @@ def _words_of(d, t, conditions):
 class Gate(Feature):
     """A record can't get to a stage (or a choice of another field: a payment status of Paid) until these fields are
     filled in (a yes/no field: ticked; a linked record's through dots, job.deposit_paid), only while only_if all hold,
-    and never while blocked_if all hold. "Can't
-    assign a unit until the ID is checked": needs. "A steer under 450kg can't be signed off": blocked_if type equals
-    Steer and weight less_than 450. "Only once the deposit is at least $50": only_if deposit at_least 50. "Not while
-    the client owes on an invoice over 30 days": blocked_if client.overdue_invoices greater_than 0, a total field on
-    clients counting their invoices only those unpaid with due_date more_than_days_ago 30."""
+    and never while blocked_if all hold, whoever moves it (the owner and the app's own rules too). "Can't assign a unit
+    until the ID is checked": needs. "A steer under 450kg can't be signed off": blocked_if type equals Steer and weight
+    less_than 450. "Only once the deposit is at least $50": only_if deposit at_least 50. A condition can be a formula,
+    looking at other records: "not while the client owes on an invoice over 30 days": blocked_if ["count(client.invoices
+    where status = 'Unpaid' and days_since(due_date) > 30) > 0"]; "not until its quote is accepted":
+    only_if ["quote.status == 'Accepted'"]."""
     do: Literal["gate"] = "gate"
     list: str
     stage: str
     needs: list[str] = Field(default_factory=list)
-    only_if: list[Condition] = Field(default_factory=list, description="it's allowed only while all of these hold")
-    blocked_if: list[Condition] = Field(default_factory=list, description="it's refused while all of these hold")
+    only_if: list[Condition | str] = Field(default_factory=list, description="it's allowed only while all of these hold")
+    blocked_if: list[Condition | str] = Field(default_factory=list, description="it's refused while all of these hold")
 
     def default_key(self):
         return f"gate_{self.list}_{self.stage}"
@@ -1313,6 +1322,9 @@ class Gate(Feature):
         fields, only_if = [], list(self.only_if)
         for name in self.needs:
             nf = d.field(t, name)
+            if nf is None and re.search(r"[()<>=!]|\b(and|or|not)\b", name):  # a formula among what it needs: what must hold
+                only_if.append(name)
+                continue
             if nf is None and "." in name:  # a linked record's field (the job's invoice's deposit): filled in there first
                 try:
                     pf, _, _ = d.path(t, name)
@@ -1346,28 +1358,31 @@ class Gate(Feature):
         rules = [r for r in t.get("rules") or [] if r not in (mine.get(t["key"]) or [])]  # what this gate made before goes
         flow = copy.deepcopy(t.get("workflow") or {})
         original = (entry or {}).get("undo", {}).get("workflow", {}).get(t["key"]) or flow.get("transitions") or []
-        if f is not d.stage_field(t):  # a choice of another field: kept to by every save
-            at = {"field": f["key"], "op": "equals", "value": stage}
-            new = [{"check": "false", "message": f"{nf['label']} must be filled in before {f['label']} is {stage}",
-                    "when": [at, {"field": nf["key"], "op": "is_empty"}], "field": nf["key"]} for nf in fields if nf["key"] in filled]
-            new += [{"check": "false", "message": f"{nf['label']} must be ticked before {f['label']} is {stage}",
-                     "when": [at, {"field": nf["key"], "op": "not_equals", "value": True}], "field": nf["key"]} for nf in fields if nf["key"] in ticks]
-            if conditions:
-                new.append({"check": "false", "message": f"{f['label']} can only be {stage} when {_words_of(d, t, only_if)}",
-                            "when": [at, _turned(conditions, f"{where} › only_if")], "field": f["key"]})
-            if blocked:
-                new.append({"check": "false", "message": f"{f['label']} can't be {stage} while {_words_of(d, t, self.blocked_if)}",
-                            "when": [at] + blocked, "field": f["key"]})
-            made.ops.append({"op": "update_table", "table": t["key"], "rules": rules + new})
+        # what it holds back, as rules every save keeps: whoever makes the change (the owner, a rule, an import, the
+        # board), never only the buttons of those who may press them
+        on_stage = f is d.stage_field(t)
+        at = {"field": f["key"], "op": "equals", "value": stage}
+        one = _a(t["singular"].lower()) if on_stage else ""
+        before = (lambda what: f"{what} before {one} can move to {stage}") if on_stage else (lambda what: f"{what} before {f['label']} is {stage}")
+        new = [{"check": "false", "message": before(f"{nf['label']} must be filled in"),
+                "when": [at, {"field": nf["key"], "op": "is_empty"}], "field": nf["key"]} for nf in fields if nf["key"] in filled]
+        new += [{"check": "false", "message": before(f"{nf['label']} must be ticked"),
+                 "when": [at, {"field": nf["key"], "op": "not_equals", "value": True}], "field": nf["key"]} for nf in fields if nf["key"] in ticks]
+        if conditions:
+            new.append({"check": "true", "holds": conditions, "message": (f"{one[:1].upper() + one[1:]} can only move to {stage} when "
+                                                                          if on_stage else f"{f['label']} can only be {stage} when ")
+                        + _words_of(d, t, only_if), "when": [at], "field": f["key"]})
+        if blocked:
+            new.append({"check": "false", "message": (f"{one[:1].upper() + one[1:]} can't move to {stage} while " if on_stage else
+                                                      f"{f['label']} can't be {stage} while ") + _words_of(d, t, self.blocked_if),
+                        "when": [at] + blocked, "field": f["key"]})
+        made.ops.append({"op": "update_table", "table": t["key"], "rules": rules + new})
+        if not on_stage or not any(mv["to"] == stage for mv in original):
             if (entry or {}).get("undo", {}).get("workflow", {}).get(t["key"]) is not None and flow:  # it gated a stage before
                 made.ops.append({"op": "update_table", "table": t["key"], "workflow": {**flow, "transitions": original}})
             made.undo = {"made": {"rules": {t["key"]: new}}}
             return made
-        if not any(mv["to"] == stage for mv in original):
-            raise Problem(f"{where}: no move takes {_a(t['singular'].lower())} to {stage} by hand, so there's nothing to hold back; add one (set_stages)")
-        if mine.get(t["key"]):
-            made.ops.append({"op": "update_table", "table": t["key"], "rules": rules})
-        moves = copy.deepcopy(original)
+        moves = copy.deepcopy(original)  # its buttons say what they wait for, and ask for what must be filled in
         for mv in moves:
             if mv["to"] != stage:
                 continue
@@ -1378,7 +1393,7 @@ class Gate(Feature):
                 mv["only_if"] = list(mv.get("only_if") or []) + [{"field": k, "op": "equals", "value": True} for k in ticks] + allowed
         flow["transitions"] = moves
         made.ops.append({"op": "update_table", "table": t["key"], "workflow": flow})
-        made.undo = {"workflow": {t["key"]: original}}
+        made.undo = {"workflow": {t["key"]: original}, "made": {"rules": {t["key"]: new}}}
         return made
 
     def checks(self, d):
@@ -1718,6 +1733,29 @@ def remove(out, key, where):
     return True
 
 
+REMADE = ("gate",)  # features the platform now makes differently: made again from what they were asked for
+
+
+def refresh(bp, kinds=REMADE):
+    """A design with its features of these kinds made again as the platform now makes them (a gate that held back only
+    staff's buttons is now a rule every save keeps), and every stage within reach. Returns (design, what changed in
+    plain words); a feature that can't be made again stays as it was."""
+    from .compile import apply as apply_patches
+    out_bp, said = bp, []
+    for entry in list(bp.get("features", [])):
+        if entry.get("do") not in kinds or model_of(entry) is None:
+            continue
+        out = apply_patches(out_bp, [{"do": entry["do"], **(entry.get("params") or {}), "key": entry["key"]}])
+        if not out.problems and out.blueprint != out_bp:
+            out_bp = out.blueprint
+            said.append(f"{entry['key']} now holds for everyone, the owner and the app's own rules too")
+    out = apply_patches(out_bp, [])  # stages nothing could reach get their buttons
+    if not out.problems and out.blueprint != out_bp:
+        out_bp = out.blueprint
+        said.append("stages nothing could get to (or leave) have buttons now")
+    return out_bp, said
+
+
 def model_of(entry):
     cls = next((c for c in ALL if c.model_fields["do"].default == entry.get("do")), None)
     return cls.model_validate({**entry.get("params", {}), "key": entry["key"]}) if cls else None
@@ -1728,7 +1766,7 @@ def checks(bp):
     d, out = Design(bp), []
     for entry in bp.get("features", []):
         p = model_of(entry)
-        if p is None:
+        if p is None or has_formula(p):  # what keeps to a formula can't be written for sure: the builder's examples prove it
             continue
         own = [a["key"] for a in bp.get("automations", []) if a.get("feature") == entry["key"]]
         try:
@@ -1741,6 +1779,11 @@ def checks(bp):
         except Exception:  # noqa: BLE001 - a feature that can't write its checks for this design has none, said elsewhere
             continue
     return out
+
+
+def has_formula(p):
+    """Whether a feature's conditions include a formula (count(client.invoices where …) == 0)."""
+    return any(isinstance(c, str) for name in ("only_if", "blocked_if") for c in (getattr(p, name, None) or []))
 
 
 def _typed_only(d, check):

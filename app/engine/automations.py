@@ -1113,7 +1113,8 @@ def _do(engine, automation, action, record, run):
                 values = _render_values(action["values"], item_ctx)
                 if action.get("copy_matching"):
                     values = {**copy_matching(engine, action["table"], linked or record, also=[record]), **values}
-                made.append(engine.create(action["table"], values, by=_by(automation), depth=depth, automations=True))
+                made.append(engine.create(action["table"], values, by=_by(automation), depth=depth, automations=True, unfinished=True))
+                _to_finish(engine, automation, action["table"], made[-1])
         t = engine.tables[action["table"]]
         if not made:  # nothing to make them from: said, never “Created 0 lines”
             return {"result": f"No {schema.lc(t['label'])} were added: there was nothing in {f['label']} to add them for"}
@@ -1128,7 +1129,8 @@ def _do(engine, automation, action, record, run):
                 if action.get("copy_matching"):
                     made_for = (_context(engine, run, record).names.get("created") or None)
                     values = {**copy_matching(engine, action["table"], row, also=[made_for.record if made_for else None, record]), **values}
-                made.append(engine.create(action["table"], values, by=_by(automation), depth=depth, automations=False))
+                made.append(engine.create(action["table"], values, by=_by(automation), depth=depth, automations=False, unfinished=True))
+                _to_finish(engine, automation, action["table"], made[-1])
         t, s = engine.tables[action["table"]], engine.tables[source["table"]]
         if not made:
             return {"result": f"No {schema.lc(t['label'])} were added: it had no {schema.lc(s['label'])} to copy"}
@@ -1324,6 +1326,17 @@ def _deep(engine, value, ctx, record):
     return value
 
 
+def _to_finish(engine, automation, table, created):
+    """A record a rule added without something it must have (which supplier): it's there, and people are told to finish it."""
+    left = list(getattr(engine, "left_unfilled", None) or [])
+    if not left or created is None:
+        return
+    t = engine.tables[table]
+    said = f"{', '.join(left[:-1])} and {left[-1]}" if len(left) > 1 else left[0]
+    notify(engine, f"{t['singular']} “{engine.title(created)}” was added by “{automation.get('name') or automation['key']}”: fill in "
+                   f"{said} to finish it.", link=_link(table, created.id), to="admin", kind="info")
+
+
 def _copy(engine, automation, action, record, run, ctx, depth):
     """A copy of the record and its lines (a contract's next revision, a renewal, a repeat order): its own values, less
     its number and stage (it starts again), with the step's values on top and a link back to the original."""
@@ -1336,14 +1349,15 @@ def _copy(engine, automation, action, record, run, ctx, depth):
         values[action["link_back"]] = record.id
     lines = 0
     with engine.atomic():
-        copy = engine.create(t["key"], values, by=_by(automation), depth=depth)
+        copy = engine.create(t["key"], values, by=_by(automation), depth=depth, unfinished=True)
+        _to_finish(engine, automation, t["key"], copy)
         for child in engine.bp.get("tables", []) if action.get("lines", True) else []:
             link = next((f for f in child["fields"] if f["type"] == "link" and f["table"] == t["key"] and not f.get("multiple")), None)
             if not child.get("embedded") or link is None:
                 continue
             for line in engine.children(child["key"], link["key"], record.id):
                 kept = {f["key"]: (line.data or {}).get(f["key"]) for f in child["fields"] if f["type"] in schema.STORED and f["type"] != "autonumber"}
-                engine.create(child["key"], {**kept, link["key"]: copy.id}, by=_by(automation), depth=depth, automations=False)
+                engine.create(child["key"], {**kept, link["key"]: copy.id}, by=_by(automation), depth=depth, automations=False, unfinished=True)
                 lines += 1
     _remember(run, copy)
     return {"result": f"Made {t['singular']} “{engine.title(copy)}” from “{engine.title(record)}”"
@@ -2166,7 +2180,23 @@ def _whose(engine, table, source):
     return f"its {link['label'] if link else source['of'].replace('_', ' ')}'s"
 
 
+def formula_words(source):
+    """A formula as people read it: count(client.invoices where status == "Unpaid") == 0 → the client's invoices
+    where status is Unpaid number 0."""
+    text = re.sub(r"\s*\band\s+id\s*!=\s*(this|record)\.id\b|\bid\s*!=\s*(this|record)\.id\s+and\s+", " ", expr.normalise(source))
+    text = re.sub(r"[\"']", "", text)
+    for a, b in ((r"\bnot any\(where\(", "no "), (r"\bany\(where\(", "any "), (r"\bcount\(where\(", "how many "),
+                 (r"\bsum\(where\(", "the total of "), (r"\bwhere\(", ""), (r"\bthis\.", "its "), (r"\brecord\.", "its "),
+                 (r"\s*==\s*", " is "), (r"\s*!=\s*", " isn't "), (r"\s*>=\s*", " at least "), (r"\s*<=\s*", " at most "),
+                 (r"\s*>\s*", " over "), (r"\s*<\s*", " under "), (r"days_since\((\w+)\)", r"days since \1"),
+                 (r"\bTrue\b", "yes"), (r"\bFalse\b", "no"), (r"[()]", ""), (r",", " where"), (r"(?<=[A-Za-z_])\.(?=[A-Za-z_])", "'s "), (r"_", " ")):
+        text = re.sub(a, b, text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
 def describe_condition(engine, c, table):
+    if "formula" in c:
+        return formula_words(c["formula"])
     if "any" in c:
         return "either " + " or ".join(describe_condition(engine, x, table) for x in c["any"])
     if "all" in c:

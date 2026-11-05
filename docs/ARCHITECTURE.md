@@ -126,6 +126,30 @@ Only 1 was the model's own judgment.
   compile on a sample app, or if its checks don't pass in the simulator.
 - When the registry changes, every app's checks run again (checking.after_platform_update).
 
+**D12. The language core, written for the AI (v3).** Rounds 33–37 showed the builder failing at the seams of the language,
+not at the business: of 29 owners who described their business, 3 apps were right at handover. Five classes of
+failure were the language's: a "can't … until …" held back only staff's buttons (13 apps); rules about other records
+had no way to be said (every round a new feature); time passing in a try-out didn't run the daily rules (12 apps); a
+rule stopped on a must-have it couldn't know (10 apps); stages nothing could reach (7 apps). So:
+- **One formula language, which can look at other records.** The records linking to one (`client.invoices`,
+  `job.payments`) and whole lists (`bookings`), with `count`, `sum`, `avg`, `min`, `max`, `any`, `all`, `none`, `first`,
+  `last` and `where`; `this` is the formula's own record; `overlaps()`, `days_since()`, `days_until()`. It's what the
+  model already writes (SQL, spreadsheets). Names inside a count(...) are checked against the counted list, and words
+  compared with a choice must be one of its choices.
+- **Conditions are formulas too.** Anywhere a condition goes (only_if, blocked_if, a gate's needs, a total's only),
+  text is a formula that must hold; `{field, op, value}` stays as the App map's point-and-click form.
+- **What must not happen is a rule every save keeps.** A gate is table rules (with `holds` for what must hold), kept
+  by the owner, staff, the app's own rules and imports alike; its buttons still say what they wait for. A rule refuses
+  a save that breaks it, or that touches what it's about while it's broken; a change beside the point (a note on a job
+  started before the client fell behind) is kept.
+- **The platform works out what the builder used to keep consistent by hand.** Every stage gets a button that reaches
+  it, and none with stages after it is a dead end (`schema.complete_moves`). A record a rule adds without a must-have it
+  couldn't know is added for people to finish, and they're told; the rule never stops on it.
+- **A try-out's time passes like the app's.** Each day of a wait, the rules that run on a schedule run, so a check says
+  "wait 14 days", never which rule to run.
+- Apps made before are made again on the next platform update (`patterns.refresh`): their gates become rules, and
+  their unreachable stages get buttons.
+
 **D10. Tenancy and cells.**
 - Row-level security as a second lock behind the code's workspace filters.
 - Per-tenant filtering in the vector index.

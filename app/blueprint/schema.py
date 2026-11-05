@@ -693,8 +693,13 @@ def normalize_condition(raw):
     {"all": [conditions]} when every one does (inside an "any": over $5,000 and not yet approved)."""
     if isinstance(raw, list):
         raw = {"all": raw}
+    if isinstance(raw, str) and raw.strip():  # a formula that must hold: count(client.invoices where …) == 0
+        raw = {"formula": raw}
     if not isinstance(raw, dict):
         raise SchemaError("a condition must look like {\"field\": \"status\", \"op\": \"equals\", \"value\": \"Done\"}")
+    said = _first(raw, "formula", "expression", "check")
+    if isinstance(said, str) and said.strip() and not _first(raw, "field", "key", "column", "name"):
+        return {"formula": said.strip()}
     if not _first(raw, "field", "key", "column", "name"):
         for kind, names in (("any", ("any", "or", "either", "one_of_these")), ("all", ("all", "and", "every", "both"))):
             inner = _first(raw, *names)
@@ -1186,7 +1191,8 @@ def normalize_rule(raw, table_label=""):
         raw = {"check": raw}
     if not isinstance(raw, dict):
         raise SchemaError(f"a rule on {table_label} looks like {{\"check\": \"end_date >= start_date\", \"message\": \"...\"}}")
-    check = _first(raw, "check", "expression", "formula", "must", "condition", "assert")
+    holds = _first(raw, "holds", "must_hold")  # conditions that must all hold (a gate's only_if)
+    check = _first(raw, "check", "expression", "formula", "must", "condition", "assert") or ("true" if holds else None)
     if not check:
         raise SchemaError(f"a rule on {table_label} needs \"check\": an expression that must be true")
     try:
@@ -1197,6 +1203,8 @@ def normalize_rule(raw, table_label=""):
     when = _first(raw, "when", "only_if", "if", "applies_when")
     if when:
         rule["when"] = [normalize_condition(c) for c in _list(when)]
+    if holds:
+        rule["holds"] = [normalize_condition(c) for c in _list(holds)]
     where = _first(raw, "field", "show_on", "on_field")
     if where:
         rule["field"] = slug(where)
@@ -2178,13 +2186,50 @@ def table(bp, key):
     return next((t for t in bp.get("tables", []) if t["key"] == key), None)
 
 
+def backlink(tables, t, name):
+    """The records of another list that link to a record of t, named in a formula as that list (a client's invoices:
+    client.invoices), or as that list and its link when it links to t more than once (invoices_by_billed_to): (that
+    list, its link field), or None. A field of t by that name comes first; the caller looks there."""
+    if not t or not name:
+        return None
+    said = str(name).strip().lower()
+    found = []
+    for other in (tables.values() if isinstance(tables, dict) else tables or []):
+        links = [f for f in other.get("fields") or [] if f.get("type") == "link" and f.get("table") == t.get("key")]
+        for f in links:
+            if said == f"{other['key']}_by_{f['key']}".lower():
+                return other, f
+        if links and said in {other["key"].lower(), lc(other.get("label") or "").replace(" ", "_")}:
+            found.append((other, links[0]))
+    return found[0] if found else None
+
+
+def list_named(tables, name):
+    """A whole list named in a formula (bookings: all of them), or None."""
+    said = str(name or "").strip().lower()
+    for t in (tables.values() if isinstance(tables, dict) else tables or []):
+        if said and said in {t["key"].lower(), lc(t.get("label") or "").replace(" ", "_")}:
+            return t
+    return None
+
+
 def condition_leaves(conditions):
-    """Every plain condition of a list, those inside "any" and "all" groups too."""
+    """Every plain condition of a list ({"field", "op", "value"}), those inside "any" and "all" groups too. A formula
+    ({"formula": …}) isn't one: formulas() gives those."""
     for c in conditions or []:
         if "any" in c or "all" in c:
             yield from condition_leaves(c.get("any") or c.get("all"))
-        else:
+        elif "formula" not in c:
             yield c
+
+
+def formulas(conditions):
+    """The formulas among conditions ({"formula": "count(client.invoices where …) == 0"}), in groups too."""
+    for c in conditions or []:
+        if "any" in c or "all" in c:
+            yield from formulas(c.get("any") or c.get("all"))
+        elif "formula" in c:
+            yield c["formula"]
 
 
 def step_at(actions, at):
@@ -2199,6 +2244,63 @@ def step_at(actions, at):
     except (IndexError, KeyError, ValueError, TypeError):
         return None
     return step
+
+
+def stages_set_by_rules(bp, t):
+    """The stages automations, and flows' buttons, put a table's records at (lower case)."""
+    key = (t.get("workflow") or {}).get("field") or "status"
+    out = {str(o["value"]).strip().lower() for f in flows(bp) if f["table"] == t["key"]
+           for s in f["steps"] if s["kind"] == "decide" and s.get("field") == key for o in s["options"]}
+    for a in bp.get("automations", []):
+        for act in steps_of(a["actions"]):
+            mine = (act["type"] == "update_record" and a["trigger"].get("table") == t["key"] and not act.get("target")) or \
+                (act["type"] in ("create_record", "create_for_each", "update_each") and act.get("table") == t["key"]) or \
+                (act["type"] == "update_record" and act.get("target"))  # a linked record's stage: counted, to be safe
+            value = (act.get("values") or {}).get(key)
+            if mine and isinstance(value, str):
+                out.add(value.strip().lower())
+    return out
+
+
+def complete_moves(bp, t):
+    """The stage buttons a list's workflow is missing, so no stage is out of reach and none with stages after it is a
+    dead end (unless a rule moves records there or on): [move]. Each is a button to the stage after, in order; a stage
+    that stops things (Cancelled) can be got to from any stage still going."""
+    flow = t.get("workflow")
+    names = stages(t) if flow else []
+    if not flow or len(names) < 2:
+        return []
+    moves, added = list(flow.get("transitions") or []), []
+    by_rules = stages_set_by_rules(bp, t)
+    start = start_stage(t) or names[0]
+    going = [x for x in names if not says_no(x)]
+
+    def reached():
+        got, grew = {start.lower()} | by_rules, True
+        while grew:
+            grew = False
+            for mv in moves + added:
+                if (not mv.get("from") or {x.lower() for x in mv["from"]} & got) and mv["to"].lower() not in got:
+                    got.add(mv["to"].lower())
+                    grew = True
+        return got
+    for i, stage in enumerate(names):
+        if stage.lower() in reached():
+            continue
+        if says_no(stage):
+            frm = [x for x in going if x.lower() in reached()][:-1] or [start]
+        else:
+            prev = next((x for x in reversed(names[:i]) if not says_no(x) and x.lower() in reached()), None)
+            frm = [prev] if prev else []
+        if frm:
+            added.append({"from": frm, "to": stage, "label": f"Move to {stage}"[:60]})
+    for i, stage in enumerate(going[:-1]):
+        later = going[i + 1:]
+        if any(not says_no(mv["to"]) and mv["to"] != stage and (not mv.get("from") or stage in mv["from"]) for mv in moves + added) \
+                or {x.lower() for x in later} & by_rules or ENDED.search(stage):
+            continue
+        added.append({"from": [stage], "to": later[0], "label": f"Move to {later[0]}"[:60]})
+    return added
 
 
 def steps_of(actions):
@@ -2227,12 +2329,15 @@ def title_field(t):
     return t["fields"][0]["key"] if t["fields"] else None
 
 
-def _check_expression(source, allowed, where, problems, record_fields=None):
+def _check_expression(source, allowed, where, problems, record_fields=None, tables=None, t=None):
+    """tables, t: the design's lists and the one the expression is on, so it can name the records linking to its own
+    (a client's invoices) and whole lists (bookings), as count(...), sum(...) and any(...) look at them."""
     try:
-        names = expr.names_in(source)
+        names = expr.outer_names(source)
     except expr.ExprError as exc:
         problems.append(f"{where}: {exc}")
         return
+    names = {n for n in names if not (tables and ((t and backlink(tables, t, n)) or list_named(tables, n)))} - {"this"}
     unknown = sorted(n for n in names if n not in allowed and n not in ("today", "now", "True", "False", "None"))
     if unknown:
         problems.append(f"{where}: “{', '.join(unknown)}” isn't a field here (fields: {', '.join(sorted(a for a in allowed if a != 'record')) or 'none'})")
@@ -2243,7 +2348,7 @@ def _check_expression(source, allowed, where, problems, record_fields=None):
     if record_fields is not None:
         import ast
         for node in ast.walk(expr.parse(source)):
-            if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == "record" \
+            if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id in ("record", "this") \
                     and node.attr not in record_fields and node.attr not in ("id", "title", "created_at", "updated_at"):
                 problems.append(f"{where}: record.{node.attr} isn't a field of this table")
 
@@ -2454,6 +2559,8 @@ def reach(t, source, via, tables):
 
 def _check_conditions(conditions, t, where, problems, tables):
     keys = {f["key"] for f in t["fields"]} | {"created_at", "updated_at"}
+    for source in formulas(conditions):
+        _check_expression(source, keys | {"record", "id"}, where, problems, tables=tables, t=t)
     for c in condition_leaves(conditions):
         head, _, rest = c["field"].partition(".")
         if rest:  # through a link: an invoice's customer.account_manager
@@ -2540,7 +2647,7 @@ def _check_table(t, tables, modules, problems):
                 elif ours not in keys:
                     problems.append(f"{where} only offers {other['label'].lower()} matching this record's “{ours}”, which isn't one of its fields")
         if f["type"] == "formula":
-            _check_expression(f["expression"], set(keys) | {"record", "id", "created_at", "updated_at"}, where, problems)
+            _check_expression(f["expression"], set(keys) | {"record", "id", "created_at", "updated_at"}, where, problems, tables=tables, t=t)
             if f["key"] in expr.names_in(f["expression"]):
                 problems.append(f"{where}: a formula can't use itself")
         if f["type"] == "lookup" and "where" in f:
@@ -2693,8 +2800,9 @@ def _check_table(t, tables, modules, problems):
             _check_template(text, where, problems, list(keys))
     for rule in t.get("rules", []):
         where = f"the rule “{rule['message']}” on {t['label']}"
-        _check_expression(rule["check"], set(keys) | {"record"}, where, problems)
+        _check_expression(rule["check"], set(keys) | {"record", "id", "created_at", "updated_at"}, where, problems, tables=tables, t=t)
         _check_conditions(rule.get("when"), t, where, problems, tables)
+        _check_conditions(rule.get("holds"), t, where, problems, tables)
         if rule.get("field") and rule["field"] not in keys:
             problems.append(f"{where} shows its message on “{rule['field']}”, which isn't a field")
     _check_conditions(t.get("lock_if"), t, f"the lock on {t['label']}", problems, tables)

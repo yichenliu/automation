@@ -111,6 +111,20 @@
   prompt.addEventListener("keydown", (ev) => { if (ev.key === "Enter" && !ev.shiftKey && !ev.isComposing) { ev.preventDefault(); submit(prompt.value); } });
   prompt.addEventListener("input", () => { prompt.style.height = "auto"; prompt.style.height = Math.min(prompt.scrollHeight, 220) + "px"; });
 
+  list.addEventListener("submit", (ev) => {  // the builder's quick questions, answered with clicks
+    const form = ev.target.closest("[data-answers]");
+    if (!form) return;
+    ev.preventDefault();
+    const said = [];
+    form.querySelectorAll("fieldset.question").forEach((fs) => {
+      const picked = [...fs.querySelectorAll("input:checked")].map((x) => x.value);
+      if (picked.length) said.push(`${fs.querySelector("legend").textContent.trim()} ${picked.join(", ")}`);
+    });
+    const more = (form.querySelector("[name=more]")?.value || "").trim();
+    if (more) said.push(more);
+    submit(said.length ? said.join(". ") : "Just build what a business like mine usually needs");
+  });
+
   list.addEventListener("click", async (ev) => {
     const starter = ev.target.closest("[data-starter]");
     if (starter) { submit(starter.textContent); return; }

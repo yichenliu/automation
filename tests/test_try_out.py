@@ -3,10 +3,12 @@ stuck at, a choice that isn't one, a stage nothing reaches), a copy of the app w
 in it, and what's wrong sent back to the AI to fix, with what was checked shown to the owner and kept for training."""
 import json
 
+import pytest
+
 from app import ai
 from app.blueprint import expr, ops, schema
 from app.builder import chat, checks, trial
-from app.engine.records import Engine
+from app.engine.records import Engine, FieldErrors
 from app.extensions import db
 from app.models import Message, Record, Run
 
@@ -406,20 +408,32 @@ def test_a_field_required_when_its_empty_is_simply_required():
 
 
 def test_a_rule_calling_a_function_there_isnt_is_sent_back_rather_than_never_holding(app, owner):
-    """“all(depends_on, status == 'Complete')” can never be worked out, so a rule written with it would quietly hold
-    nothing back on every save: the design is refused, naming the functions there are."""
+    """“every(depends_on, status == 'Complete')” can never be worked out, so a rule written with it would quietly hold
+    nothing back on every save: the design is refused, naming the functions there are. all(...) is one."""
     from app.engine.records import RecordContext
     _, ws = owner
     stages = {"op": "create_table", "table": "stages", "label": "Stages", "fields": [
         {"key": "name", "type": "text"}, {"key": "status", "type": "select", "options": ["Not started", "In progress", "Complete"]},
         {"key": "depends_on", "type": "link", "table": "stages"}],
-        "rules": [{"check": "is_empty(depends_on) or all(depends_on, status == 'Complete')",
+        "rules": [{"check": "is_empty(depends_on) or every(depends_on, status == 'Complete')",
                    "message": "A stage can't start before the one it depends on is complete",
                    "when": [{"field": "status", "op": "equals", "value": "In progress"}]}]}
     result = ops.apply(ws.blueprint, [stages], always_check=True)
-    assert any("there's no function all()" in p and "add_days" in p for p in result.problems), result.problems
+    assert any("there's no function every()" in p and "add_days" in p for p in result.problems), result.problems
     stages["rules"][0]["check"] = "is_empty(depends_on) or depends_on.status == 'Complete'"
     assert not ops.apply(ws.blueprint, [stages], always_check=True).problems
+    stages["rules"][0]["check"] = "is_empty(depends_on) or all(depends_on, status == 'Complete')"
+    done = ops.apply(ws.blueprint, [stages], always_check=True)
+    assert not done.problems, done.problems
+    ws.blueprint = done.blueprint
+    db.session.commit()
+    e = Engine(ws)
+    first = e.create("stages", {"name": "Frame", "status": "Not started"})
+    second = e.create("stages", {"name": "Roof", "status": "Not started", "depends_on": first.id})
+    with pytest.raises(FieldErrors):
+        e.update(second, {"status": "In progress"})
+    e.update(e.get(first.id), {"status": "Complete"})
+    e.update(e.get(second.id), {"status": "In progress"})
     assert set(RecordContext(Engine(ws), None).functions) == set(expr.RECORD_FUNCTIONS)  # what a record gives is what's known
 
 

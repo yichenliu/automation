@@ -57,8 +57,8 @@ class Plain(Base):
     unique: bool = False
     visible_to: str | None = None
     sensitive: bool = False
-    show_if: list["Condition"] = Field(default_factory=list, description="shown only while these hold (a reason, when declined)")
-    required_if: list["Condition"] = Field(default_factory=list, description="must be filled in while these hold")
+    show_if: list["Condition | str"] = Field(default_factory=list, description="shown only while these hold (a reason, when declined)")
+    required_if: list["Condition | str"] = Field(default_factory=list, description="must be filled in while these hold")
 
 
 @register("field", {"type": "choice", "key": "priority", "label": "Priority", "options": ["Standard", "Urgent"]})
@@ -72,8 +72,8 @@ class Choice(Base):
     default: str | None = None
     help: str | None = None
     visible_to: str | None = None
-    show_if: list["Condition"] = Field(default_factory=list)
-    required_if: list["Condition"] = Field(default_factory=list)
+    show_if: list["Condition | str"] = Field(default_factory=list)
+    required_if: list["Condition | str"] = Field(default_factory=list)
 
 
 @register("field", {"type": "link", "key": "customer", "label": "Customer", "to": "customers", "required": True})
@@ -86,8 +86,8 @@ class Link(Base):
     many: bool = False
     required: bool = False
     help: str | None = None
-    show_if: list["Condition"] = Field(default_factory=list)
-    required_if: list["Condition"] = Field(default_factory=list)
+    show_if: list["Condition | str"] = Field(default_factory=list)
+    required_if: list["Condition | str"] = Field(default_factory=list)
 
 
 @register("field", {"type": "auto_number", "key": "number", "label": "Invoice number", "prefix": "INV-"})
@@ -101,8 +101,9 @@ class AutoNumber(Base):
 
 @register("field", {"type": "formula", "key": "amount", "label": "Amount", "formula": "quantity * unit_price", "shows": "money"})
 class Formula(Base):
-    """Worked out from the record's own fields and its links' fields, e.g. "quantity * unit_price" or
-    "round(subtotal * 0.1, 2)" or "customer.discount_percent". shows: how the result looks."""
+    """Worked out from the record's own fields, its links' fields, and the records linking to it: "quantity *
+    unit_price", "round(subtotal * 0.1, 2)", "customer.discount_percent", "sum(payments, amount)" (its payments'
+    amounts), "count(invoices where status = 'Unpaid')". shows: how the result looks."""
     type: Literal["formula"]
     key: str
     label: Words
@@ -121,7 +122,7 @@ class Total(Base):
     link: str = Field(description="that list's link field pointing at this list")
     how: Literal["sum", "count", "avg", "min", "max"] = "sum"
     field: str | None = Field(None, description="the field totalled (not for count)")
-    only: list["Condition"] = Field(default_factory=list, description="only the records that match these")
+    only: list["Condition | str"] = Field(default_factory=list, description="only the records that match these")
 
 
 @register("field", {"type": "lookup", "key": "customer_email", "label": "Customer email", "path": "customer.email"})
@@ -146,7 +147,7 @@ class Move(Base):
     button: str
     who: list[str] = Field(default_factory=list)
     needs: list[str] = Field(default_factory=list)
-    only_if: list["Condition"] = Field(default_factory=list)
+    only_if: list["Condition | str"] = Field(default_factory=list)
 
 
 class Stages(Base):
@@ -167,7 +168,9 @@ OPS = ("equals", "not_equals", "contains", "is_empty", "not_empty", "greater_tha
 
 class Condition(Base):
     """field: a field of the record, or a linked record's through dots (order.status). value: what it's compared with
-    (a choice in the owner's words, a number, a date; days for within_… and more_than_days_ago; a list for one_of)."""
+    (a choice in the owner's words, a number, a date; days for within_… and more_than_days_ago; a list for one_of).
+    Or, as text, a formula that must hold, which can look at other records: 'count(client.invoices where status =
+    "Unpaid" and days_since(due_date) > 30) == 0'."""
     field: str
     op: Literal["equals", "not_equals", "contains", "is_empty", "not_empty", "greater_than", "less_than", "at_least",
                 "at_most", "one_of", "before_today", "after_today", "within_next_days", "within_last_days",
@@ -269,7 +272,7 @@ class SetValues(Base):
     do: Literal["set"]
     on: str = "record"
     values: list[Value]
-    only_if: list[Condition] = Field(default_factory=list)
+    only_if: list[Condition | str] = Field(default_factory=list)
 
 
 @register("step", {"do": "add", "list": "invoices", "values": [{"field": "job", "formula": "record"}, {"field": "issue_date", "formula": "today()"}]})
@@ -279,7 +282,7 @@ class AddRecord(Base):
     list: str
     values: list[Value] = Field(default_factory=list)
     copy_same: bool = True
-    only_if: list[Condition] = Field(default_factory=list)
+    only_if: list[Condition | str] = Field(default_factory=list)
 
 
 @register("step", {"do": "add_each", "list": "invoice_lines", "lines": "job_lines", "link": "job", "values": [{"field": "invoice", "formula": "created"}]})
@@ -293,7 +296,7 @@ class AddEach(Base):
     link: str
     values: list[Value] = Field(default_factory=list)
     copy_same: bool = True
-    only_if: list[Condition] = Field(default_factory=list)
+    only_if: list[Condition | str] = Field(default_factory=list)
 
 
 @register("step", {"do": "notify", "who": "owner", "message": "{{number}} is ready to invoice"})
@@ -302,7 +305,7 @@ class Notify(Base):
     do: Literal["notify"]
     who: str = "owner"
     message: str
-    only_if: list[Condition] = Field(default_factory=list)
+    only_if: list[Condition | str] = Field(default_factory=list)
 
 
 @register("step", {"do": "email", "to": "customer.email", "subject": "Your invoice {{number}}", "body": "Hi {{customer.name}}, your invoice is attached.", "attach": ["invoice"]})
@@ -313,7 +316,7 @@ class Email(Base):
     subject: str
     body: str
     attach: list[str] = Field(default_factory=list)
-    only_if: list[Condition] = Field(default_factory=list)
+    only_if: list[Condition | str] = Field(default_factory=list)
 
 
 @register("step", {"do": "text", "to": "customer.phone", "message": "Hi {{customer.name}}, your car is ready to collect."})
@@ -322,7 +325,7 @@ class Text(Base):
     do: Literal["text"]
     to: str
     message: str
-    only_if: list[Condition] = Field(default_factory=list)
+    only_if: list[Condition | str] = Field(default_factory=list)
 
 
 @register("step", {"do": "document", "document": "invoice", "save_to": "pdf"})
@@ -332,7 +335,7 @@ class MakeDocument(Base):
     do: Literal["document"]
     document: str
     save_to: str | None = None
-    only_if: list[Condition] = Field(default_factory=list)
+    only_if: list[Condition | str] = Field(default_factory=list)
 
 
 @register("step", {"do": "task", "who": "assigned_to", "message": "Call {{customer.name}} about the delay"})
@@ -341,7 +344,7 @@ class Task(Base):
     do: Literal["task"]
     who: str = "editor"
     message: str
-    only_if: list[Condition] = Field(default_factory=list)
+    only_if: list[Condition | str] = Field(default_factory=list)
 
 
 @register("step", {"do": "approval", "who": "owner", "message": "Approve this refund?"})
@@ -350,7 +353,7 @@ class Approval(Base):
     do: Literal["approval"]
     who: str = "owner"
     message: str = "Please approve this."
-    only_if: list[Condition] = Field(default_factory=list)
+    only_if: list[Condition | str] = Field(default_factory=list)
 
 
 @register("step", {"do": "wait", "days": 3})
@@ -381,7 +384,7 @@ class AiFill(Base):
     review: REVIEW = "never"
     read_files: bool = False
     use_knowledge: bool = False
-    only_if: list[Condition] = Field(default_factory=list)
+    only_if: list[Condition | str] = Field(default_factory=list)
 
 
 @register("step", {"do": "ai_extract", "source": "email", "fields": ["supplier", "amount", "due_date"]})
@@ -435,7 +438,7 @@ class UpdateEach(Base):
     list: str
     link: str
     values: list[Value]
-    only_if: list[Condition] = Field(default_factory=list)
+    only_if: list[Condition | str] = Field(default_factory=list)
 
 
 @register("step", {"do": "copy", "values": [{"field": "status", "to": "Draft"}], "lines": True})
@@ -475,7 +478,7 @@ class Rule(Base):
     key: str
     name: str
     when: When
-    only_if: list[Condition] = Field(default_factory=list)
+    only_if: list[Condition | str] = Field(default_factory=list)
     steps: list[Step]
 
 
@@ -487,7 +490,7 @@ class View(Base):
     of that field, with counts and totals: unpaid invoices by customer (group_by customer), jobs by driver."""
     type: Literal["list", "board", "calendar", "gallery", "timeline", "map"]
     label: Words
-    filters: list[Condition] = Field(default_factory=list)
+    filters: list[Condition | str] = Field(default_factory=list)
     date_field: str | None = None
     end_field: str | None = None
     image_field: str | None = None
@@ -581,7 +584,7 @@ class ChangeRule(Base):
     rule: str
     name: str | None = None
     when: When | None = None
-    only_if: list[Condition] | None = None
+    only_if: list[Condition | str] | None = None
     steps: list[Step] | None = None
 
 
@@ -629,16 +632,19 @@ class AddRecords(Base):
 @register("patch", {"do": "add_validation", "list": "payments", "check": "amount <= invoice.total",
                      "message": "A payment can't be more than its invoice's total"}, "behaviour")
 class AddValidation(Base):
-    """A rule every record of a list must keep when it's added or changed, so what breaks it is refused ("can't book
-    unless…", "never more than…"): check is a formula that must be true (end_date >= start_date; a linked record's
-    field through its link: student.deposit_paid >= 50), message what people are told when it isn't; only_if: only
-    while these hold. Sent again with the same check, it replaces that rule. Holding a record back from a stage is a
+    """A rule every record of a list must keep when it's added or changed, whoever does it (the owner, staff, the app's
+    own rules), so what breaks it is refused ("can't book unless…", "never more than…", "not while…"): check is a
+    formula that must be true: its own fields (end_date >= start_date), a linked record's (student.deposit_paid >= 50),
+    or other records, those linking to it or a whole list, counted or tested (count(client.invoices where status =
+    "Unpaid" and days_since(due_date) > 30) == 0; not any(bookings where room == this.room and id != this.id and
+    overlaps(starts_on, ends_on, this.starts_on, this.ends_on))); message what people are told when it isn't; only_if:
+    only while these hold. Sent again with the same check, it replaces that rule. Holding a record back from a stage is a
     gate."""
     do: Literal["add_validation"]
     list: str
     check: str
     message: str
-    only_if: list[Condition] = Field(default_factory=list)
+    only_if: list[Condition | str] = Field(default_factory=list)
 
 
 @register("patch", {"do": "remove_validation", "list": "payments", "check": "amount <= invoice.total"}, "behaviour")

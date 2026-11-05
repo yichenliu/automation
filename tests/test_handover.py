@@ -177,7 +177,7 @@ def test_a_rule_missing_what_it_must_fill_is_found_a_stage_records_who_and_dates
         "expect": [{"table": "children", "count": 1}]}
     _, (on_time, run_too) = trial.try_out(ws, [late, twice], screens=False)
     assert on_time["ok"], on_time  # still due on the calendar date, though 45 days were let pass
-    assert run_too["kind"] == "example" and "“run” is for scheduled automations" in run_too["problem"]
+    assert run_too["ok"], run_too  # a rule that starts by itself has run already: “run” on it does nothing more
 
 
 def test_an_ok_from_to_do_moves_the_record_on_when_an_older_rule_doesnt(app, owner):
@@ -272,7 +272,7 @@ def test_an_email_with_nobody_to_send_it_to_is_left_out_and_said_and_a_per_line_
     note = Notification.query.filter(Notification.text.like("%an email wasn't sent%")).first()
     assert note is not None and "is empty" in note.text and "Your order" in note.text
     said = [i["plain"] for i in checks.left_unfilled(Engine(ws))]
-    assert "“Orders take stock out” stops when an order's warehouse is left empty" in said
+    assert "“Orders take stock out” adds stock movements without their warehouse when an order's warehouse is left empty: you'll be asked to fill it in then" in said
 
 
 def test_an_ai_step_asked_to_do_sums_is_found(app, owner):

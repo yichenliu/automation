@@ -374,7 +374,8 @@ def run(scenario, out):
                 "left_out": [p for p in reply.progress or [] if p.startswith("Left out") or p.startswith("Didn't fit")],
                 "stories": {st["story"]: st["result"] for st in stories.run(ws, scenario["key"].split("-")[0])}
                 if (ws.blueprint or {}).get("tables") else {}})
-            if scenario.get("real") and reply.status == "done" and not reply.changes and "?" in (reply.text or "") \
+            if scenario.get("real") and reply.status == "done" and not reply.changes \
+                    and ("?" in (reply.text or "") or ((reply.proposals or {}) if isinstance(reply.proposals, dict) else {}).get("questions")) \
                     and len(scenario["turns"]) < 3:  # it asked: the owner answers from how their business really works
                 scenario["turns"].append({"say": fresh.answer(scenario["fresh"], scenario["real"], reply.text), "expect": {}})
         bp = ws.blueprint
@@ -782,6 +783,11 @@ def totals(results):
                if steady else "")
             + (f"  RIGHT WHEN HANDED OVER: {sum(1 for w in built if not w)}/{len(built)} apps (did what was asked, nothing wrong "
                f"when tried out, no errors, nothing left out)\n" if built else "")
+            + "".join(f"    owners who {said}: right when handed over {sum(1 for w in mine if not w)}/{len(mine)}, right in the end "
+                      f"{sum(1 for r in rs if (r.get('fixing') or {}).get('right_after') is not None)}/{len(rs)}\n"
+                      for said, style in (("described their business", "plain"), ("started vague", "vague"))
+                      for rs in [[r for r in results if r.get("style") == style and handed_over(r) is not None]]
+                      for mine in [[handed_over(r) for r in rs]] if rs)
             + (lambda fx: f"  RIGHT IN THE END, the owner pressing what the app offers (fix / carry on) up to {ASKS} times: "
                           f"{sum(1 for f in fx if f.get('right_after') is not None)}/{len(fx)} apps (at handover "
                           f"{sum(1 for f in fx if f.get('right_after') == 0)}"

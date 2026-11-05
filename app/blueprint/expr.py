@@ -7,6 +7,16 @@
 Expressions are parsed with Python's own parser but only a whitelist of node types is evaluated: no attribute access
 except to fields of records, no imports, no calls except the functions below. Spreadsheet habits are accepted too:
 IF(...), AND/OR, {field}, a single = for comparison, <> for "not equal".
+
+Formulas can look at other records too: the records that link to this one (a client's invoices: client.invoices), or a
+whole list (bookings), counted, added up or tested one by one, with what each must be after `where`:
+
+    count(client.invoices where status = "Unpaid" and days_since(due_date) > 30) == 0
+    sum(job.payments, amount)          any(bookings where stylist == this.stylist and id != this.id)
+    overlaps(starts_at, ends_at, this.starts_at, this.ends_at)
+
+Inside count/sum/any/all/…, a name is the field of the record being looked at; `this` is the record the formula is
+about (its own fields are read too when the one looked at has no field of that name).
 """
 import ast
 import keyword
@@ -112,6 +122,50 @@ class Context:
         raise ExprError(f"unknown name '{name}'")
 
 
+class Many(list):
+    """Several records (a client's invoices) or their values (their amounts): `.field` of each, as Many again."""
+
+    def field(self, name):
+        out = Many()
+        for x in self:
+            v = _attr(x, name)
+            if isinstance(v, list):
+                out.extend(v)
+            elif v is not None:
+                out.append(v)
+        return out
+
+    def __str__(self):
+        return ", ".join(_text(x) for x in self)
+
+
+def _record_like(x):
+    return callable(getattr(x, "field", None)) and not isinstance(x, Many)
+
+
+class ItemContext(Context):
+    """Names inside count(...), sum(...), any(...): the record looked at first, then what's outside."""
+
+    def __init__(self, outer, item):
+        self.outer, self.item = outer, item
+        self.names, self.today, self.now = {}, outer.today, outer.now
+
+    @property
+    def functions(self):
+        return self.outer.functions
+
+    def resolve(self, name):
+        if name in ("item", "it"):
+            return self.item
+        if name != "this":
+            has = getattr(self.item, "has", None)
+            if callable(has) and has(name):
+                return self.item.field(name)
+            if isinstance(self.item, dict) and name in self.item:
+                return self.item[name]
+        return self.outer.resolve(name)
+
+
 def _fn_iif(cond, a=None, b=None):
     return a if cond else b
 
@@ -205,8 +259,42 @@ def _round(x, n=0):
     return None if x is None else round(x, int(_num(n)))
 
 
+def _moment(v):
+    """A date, a date and time, or a time of day ("09:00"), as one point to compare."""
+    if v in (None, ""):
+        return None
+    clock = _clock(v) if not isinstance(v, (date, datetime)) else None
+    if clock is not None:
+        return datetime(2000, 1, 1) + timedelta(minutes=clock)
+    return to_datetime(v)
+
+
+def spans_overlap(a, b):
+    """Whether two spans of dates or times overlap; one with no end is that one day or moment. The day one ends, the
+    next can start (a checkout and a check-in)."""
+    (s1, e1), (s2, e2) = a, b
+    if e1 <= s1 and e2 <= s2:
+        return s1 == s2
+    if e1 <= s1:
+        return s2 <= s1 < e2
+    if e2 <= s2:
+        return s1 <= s2 < e1
+    return s1 < e2 and s2 < e1
+
+
+def _overlaps(start1, end1, start2=None, end2=None):
+    """overlaps(starts, ends, other_starts, other_ends): whether two bookings' times overlap (an end left empty: that
+    one day or moment)."""
+    s1, s2 = _moment(start1), _moment(start2)
+    if s1 is None or s2 is None:
+        return False
+    e1, e2 = _moment(end1) or s1, _moment(end2) or s2
+    return spans_overlap((s1, max(e1, s1)), (s2, max(e2, s2)))
+
+
 FUNCTIONS = {
     "iif": _fn_iif,
+    "overlaps": _overlaps,
     "round": _round,
     "abs": lambda x: abs(_num(x)),
     "min": lambda *a: min(_num(x) for x in a) if a else None,
@@ -242,9 +330,13 @@ FUNCTIONS = {
     "format_date": lambda d, f="%d%m%y": to_date(d).strftime(str(f)) if to_date(d) else "",
 }
 ALIASES = {"if": "iif", "datediff": "days_between", "dateadd": "add_days", "edate": "add_months", "eomonth": "end_of_month",
-           "today": "today", "now": "now"}
+           "today": "today", "now": "now", "countif": "count", "countifs": "count", "exists": "any", "filter": "where",
+           "sumif": "sumif", "sumifs": "sumif", "average": "avg", "averageif": "avgif", "mean": "avg", "overlap": "overlaps"}
+# what looks at several records: count(client.invoices where status = "Unpaid"), sum(job.payments, amount)
+QUERIES = {"count", "sum", "sumif", "avg", "avgif", "min", "max", "any", "all", "none", "where", "first", "last"}
+TODAY_FUNCTIONS = {"days_since", "days_until"}  # days from a date to today, and from today to a date
 RECORD_FUNCTIONS = ("convert", "workday", "add_workdays", "workdays_between", "networkdays")  # a record's context gives these
-KNOWN = set(FUNCTIONS) | set(ALIASES) | {"iif", "today", "now"} | set(RECORD_FUNCTIONS)
+KNOWN = set(FUNCTIONS) | set(ALIASES) | {"iif", "today", "now"} | set(RECORD_FUNCTIONS) | QUERIES | TODAY_FUNCTIONS
 
 
 def normalise(source):
@@ -264,6 +356,55 @@ def normalise(source):
     text = text.replace("<>", "!=").replace("&&", " and ").replace("||", " or ")
     text = re.sub(r"(?<![<>!=])=(?!=)", "==", text)
     text = re.sub(r"\s&\s", " + ", text)  # "a & b" joins text in spreadsheets
+    return _wheres(text)
+
+
+WHERE = re.compile(r"\bwhere\b(?!\s*\()", re.I)
+
+
+def _wheres(text):
+    """`client.invoices where status = "Unpaid"` read as where(client.invoices, status == "Unpaid"): what's before it
+    back to the bracket or comma it starts after, what's after it up to the bracket or comma it ends at."""
+    for _ in range(12):
+        quoted = [m.span() for m in _QUOTED.finditer(text)]
+        at = next((m for m in WHERE.finditer(text) if not any(a <= m.start() < b for a, b in quoted)), None)
+        if at is None:
+            return text
+
+        def outside(i):
+            return not any(a <= i < b for a, b in quoted)
+        depth, start = 0, 0
+        for i in range(at.start() - 1, -1, -1):
+            ch = text[i]
+            if not outside(i):
+                continue
+            if ch in ")]":
+                depth += 1
+            elif ch in "([":
+                if depth == 0:
+                    start = i + 1
+                    break
+                depth -= 1
+            elif ch == "," and depth == 0:
+                start = i + 1
+                break
+        depth, end = 0, len(text)
+        for i in range(at.end(), len(text)):
+            ch = text[i]
+            if not outside(i):
+                continue
+            if ch in "([":
+                depth += 1
+            elif ch in ")]":
+                if depth == 0:
+                    end = i
+                    break
+                depth -= 1
+            elif ch == "," and depth == 0:
+                end = i
+                break
+        left, right = text[start:at.start()].strip(), text[at.end():end].strip()
+        text = f"{text[:start]}{' ' if start and text[start - 1] == ',' else ''}where({left}, {right}){text[end:]}"
     return text
 
 
@@ -321,6 +462,27 @@ def names_in(source):
     tree = parse(source)
     called = {id(n.func) for n in ast.walk(tree) if isinstance(n, ast.Call)}
     return {n.id for n in ast.walk(tree) if isinstance(n, ast.Name) and id(n) not in called}
+
+
+def outer_names(source):
+    """The plain names an expression reads on its own record: those inside count(...), sum(...), any(...) (after the
+    records looked at) are the looked-at records' own, and aren't. `this` is the record itself."""
+    tree = parse(source)
+    out = set()
+
+    def walk(node):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and ALIASES.get(node.func.id.lower(), node.func.id.lower()) in QUERIES \
+                and node.args:
+            walk(node.args[0])
+            return
+        if isinstance(node, ast.Name):
+            out.add(node.id)
+            return
+        for child in ast.iter_child_nodes(node):
+            if not (isinstance(node, ast.Call) and child is node.func):
+                walk(child)
+    walk(tree.body)
+    return out
 
 
 def unknown_calls(source):
@@ -467,6 +629,36 @@ def _eval(node, ctx):
             return ctx.today
         if name == "now":
             return ctx.now
+        if name in TODAY_FUNCTIONS:  # days_since(sent_on): how long ago; days_until(starts_on): how long to go
+            if len(node.args) != 1:
+                raise ExprError(f"{node.func.id}() takes one date")
+            d = to_date(_eval(node.args[0], ctx))
+            if d is None:
+                return None
+            return (ctx.today - d).days if name == "days_since" else (d - ctx.today).days
+        if name in QUERIES and node.args:
+            first = _eval(node.args[0], ctx)
+            if _record_like(first) and name not in ("count", "sum", "min", "max", "avg") or (_record_like(first) and len(node.args) > 1):
+                first = Many([first])  # one linked record: the records looked at are that one
+            if _is_many(first):
+                return _query(name, node, first, ctx)
+            if name in ("where", "any", "all", "none", "first", "last", "sumif", "avgif"):
+                if first is None:  # nothing linked: nothing to look at
+                    return _query(name, node, Many(), ctx)
+                raise ExprError(f"{node.func.id}() looks at several records (a client's invoices: client.invoices, or a whole list), "
+                                f"and what's given isn't")
+            rest = [_eval(a, ctx) for a in node.args[1:]]
+            if name == "count":  # a spreadsheet's COUNT: the values given that are there
+                return sum(1 for x in [first, *rest] for y in (x if isinstance(x, list) else [x]) if y not in (None, ""))
+            if name == "avg":
+                values = [_num(y) for x in [first, *rest] for y in (x if isinstance(x, list) else [x]) if y not in (None, "")]
+                return sum(values) / len(values) if values else None
+            args = [first, *rest]
+            if name in ("min", "max") and len(args) == 1 and isinstance(first, list):
+                args = [y for y in first if y not in (None, "")]
+                if not args:
+                    return None
+            return FUNCTIONS[name](*args)
         fn = ctx.functions.get(name) or FUNCTIONS.get(name)
         if fn is None:
             raise ExprError(f"there's no function called {node.func.id}()")
@@ -480,6 +672,66 @@ def _eval(node, ctx):
         except Exception as exc:
             raise ExprError(f"{node.func.id}() couldn't work with those values ({exc})") from exc
     raise ExprError("unsupported expression")
+
+
+def _is_many(value):
+    return isinstance(value, Many) or (isinstance(value, (list, tuple)) and any(_record_like(x) for x in value))
+
+
+def _query(name, node, items, ctx):
+    """count/sum/avg/min/max/any/all/none/where/first/last over several records: `where` (or a second value) says which
+    of them count; sum, avg, min and max say what of each to add up."""
+    items = Many(items)
+    args = node.args[1:]
+
+    def holds(item, cond):
+        return to_bool(_eval(cond, ItemContext(ctx, item)))
+
+    def value(item, of):
+        return _eval(of, ItemContext(ctx, item))
+    if name == "where":
+        if len(args) != 1:
+            raise ExprError("where takes what each must be: client.invoices where status = \"Unpaid\"")
+        return Many(x for x in items if holds(x, args[0]))
+    if name in ("sumif", "avgif"):  # SUMIF(range, which, what to add up)
+        if len(args) != 2:
+            raise ExprError(f"{node.func.id}() takes the records, which of them count, and what of each to add up")
+        items, args, name = Many(x for x in items if holds(x, args[0])), args[1:], name[:-2]
+    if name in ("count", "any", "all", "none", "first", "last"):
+        if len(args) > 1:
+            raise ExprError(f"{node.func.id}() takes the records and, if only some count, what each must be")
+        chosen = [x for x in items if holds(x, args[0])] if args and name != "all" else list(items)
+        if name == "count":
+            return len(chosen)
+        if name == "any":
+            return bool(chosen)
+        if name == "none":
+            return not chosen
+        if name == "all":
+            return all(holds(x, args[0]) for x in items) if args else all(to_bool(x) for x in items)
+        return (chosen[0] if name == "first" else chosen[-1]) if chosen else None
+    # sum, avg, min, max: of each record what's given (sum(job.payments, amount)), or of values (sum(job.payments.amount))
+    if len(args) > 1:
+        raise ExprError(f"{node.func.id}() takes the records and what of each to add up: sum(job.payments, amount)")
+    if args:
+        values = [value(x, args[0]) for x in items]
+    elif any(_record_like(x) for x in items):
+        raise ExprError(f"say what of each to use: {node.func.id}(job.payments, amount)")
+    else:
+        values = list(items)
+    values = [v for v in values if v not in (None, "")]
+    if name == "sum":
+        return sum(_num(v) for v in values)
+    if not values:
+        return None
+    if name == "avg":
+        return sum(_num(v) for v in values) / len(values)
+    pick = min if name == "min" else max
+    if not any(isinstance(v, (date, datetime)) for v in values) and all(to_number(v) is not None for v in values):
+        return pick(to_number(v) for v in values)
+    if all(to_datetime(v) is not None for v in values):  # the latest due date, the earliest booking
+        return pick(values, key=to_datetime)
+    return pick(values, key=lambda v: _text(v).lower())
 
 
 TEMPLATE = re.compile(r"\{\{\s*(.+?)\s*\}\}")

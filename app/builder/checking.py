@@ -8,6 +8,7 @@ update of the platform itself), whoever runs the app is told what and why, with 
 
     .venv/bin/python -m app.builder.checking        check every app now (after updating the platform)
 """
+import logging
 import hashlib
 import json
 import re
@@ -24,6 +25,8 @@ from ..models import Workspace, utcnow
 from .. import lang
 from . import prompts, trial
 from ..core.settings import settings
+
+_log = logging.getLogger(__name__)
 
 KEEP = 30  # checks kept per app
 _PLATFORM = {}
@@ -325,9 +328,21 @@ def try_again_missing(workspace):
 
 def after_platform_update():
     """Check every app whose checks were last run on other platform code (the worker does this when it starts)."""
+    from ..lang import patterns
     for workspace in Workspace.query.all():
         last = ((workspace.state or {}).get("checks") or {}).get("platform")
-        if examples(workspace) and last != platform_version():
+        if last == platform_version():
+            continue
+        if (workspace.blueprint or {}).get("tables"):  # what the platform now makes differently, made so in this app
+            try:
+                bp, said = patterns.refresh(workspace.blueprint)
+                if said:
+                    from .chat import save_version
+                    save_version(workspace, bp, said, "platform", by="Keel")
+            except Exception:  # the app stays as it was, and is checked as it is
+                _log.exception("Making workspace %s's features as the platform now makes them failed", workspace.id)
+                db.session.rollback()
+        if examples(workspace):
             soon(workspace, "the platform was updated")
 
 

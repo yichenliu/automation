@@ -279,7 +279,7 @@ class Planner:
     # --- conditions ------------------------------------------------------------------------------------------------------
     def condition(self, c):
         """(yes, maybe) for one condition (or a group of them), or None when it's left for Python."""
-        if not isinstance(c, dict):
+        if not isinstance(c, dict) or "formula" in c:  # a formula: worked out in Python
             return None
         if "any" in c or "all" in c:
             parts = [self.condition(x) for x in (c["any"] if "any" in c else c["all"]) or []]

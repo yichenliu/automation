@@ -229,30 +229,89 @@ def _paths(source):
     return out
 
 
-# a formula that reaches into other records (count(...), EXISTS, SELECT ... WHERE, any(...)): a formula reads only its
-# own record and the ones its links lead to; what's among other records is a total field's
-OVER_OTHERS = re.compile(r"\b(count|countif|countifs|exists|any|all|filter|select|where|sumif|sumifs|lookup|vlookup)\s*\(|\bselect\b.+\bfrom\b|"
-                         r"\bwhere\b", re.I)
-OTHER_RECORDS = ("; a formula reads only its own record's fields and those its links lead to (customer.email). To count or add "
-                 "up other records (a client's unpaid invoices over 30 days, a stylist's other bookings), add a total field to the "
-                 "list they link to, with how: count and only: the conditions (\"op\": \"more_than_days_ago\" for dates), then "
-                 "use it through the link (client.overdue_invoices equals 0), in a gate's only_if or blocked_if, or a rule. For "
-                 "no two at overlapping times, use no_overlap")
+# what a formula can't say: SQL, lookups by text
+OVER_OTHERS = re.compile(r"\b(select|lookup|vlookup|xlookup|index|match)\s*\(|\bselect\b.+\bfrom\b", re.I)
+OTHER_RECORDS = ("; to look at other records, a formula names them: the records linking to this one through their "
+                 "link (client.invoices: a client's invoices; job.payments), or a whole list (bookings), with count, sum, "
+                 "any, all, none, min, max, avg and where: count(client.invoices where status = \"Unpaid\" and "
+                 "days_since(due_date) > 30) == 0; sum(job.payments, amount); not any(bookings where stylist == this.stylist "
+                 "and id != this.id and overlaps(starts_at, ends_at, this.starts_at, this.ends_at)). Inside them, a name is "
+                 "the field of the record looked at, and this.x the formula's own record's")
+QUERY_NAMES = {name for name, to in expr.ALIASES.items() if to in expr.QUERIES} | expr.QUERIES
+
+
+def _scoped_paths(tree, compared=None):
+    """(path, scopes) for each name a formula reads. scopes: the records looked at by each count(...), sum(...), any(...)
+    it's inside, innermost first (their expressions), so a name there is read on those records. `compared`: a list that
+    gets (path, scopes, the words it's compared with) for each name compared with words (status == "Paid")."""
+    out = []
+
+    def walk(node, scopes):
+        if compared is not None and isinstance(node, ast.Compare):
+            sides = [node.left] + list(node.comparators)
+            for (a, b) in zip(sides, sides[1:]):
+                for name, said in ((a, b), (b, a)):
+                    path = _dotted(name) if isinstance(name, (ast.Name, ast.Attribute)) else None
+                    words = [said.value] if isinstance(said, ast.Constant) and isinstance(said.value, str) else \
+                        [e.value for e in said.elts if isinstance(e, ast.Constant) and isinstance(e.value, str)] \
+                        if isinstance(said, (ast.List, ast.Tuple)) else []
+                    if path and words:
+                        compared.append((path, scopes, words))
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id.lower() in QUERY_NAMES and node.args:
+            walk(node.args[0], scopes)
+            for a in node.args[1:]:
+                walk(a, [node.args[0]] + scopes)
+            return
+        if isinstance(node, (ast.Attribute, ast.Name)):
+            path = _dotted(node)
+            if path:
+                out.append((path, scopes))
+                return
+        for child in ast.iter_child_nodes(node):
+            if isinstance(node, ast.Call) and child is node.func:
+                continue
+            walk(child, scopes)
+    walk(tree.body if isinstance(tree, ast.Expression) else tree, [])
+    return out
+
+
+def _set_list(d, t, node, scopes):
+    """The list of the records a count(...)'s first part looks at (client.invoices, where(bookings, ...)), or None."""
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id.lower() in ("where", "filter") and node.args:
+        return _set_list(d, t, node.args[0], scopes)
+    path = _dotted(node)
+    if not path:
+        return None
+    for here in [_set_list(d, t, s, scopes[i + 1:]) for i, s in enumerate(scopes)] + [t]:
+        if here is None:
+            continue
+        try:
+            f, reached, many = d.reach(here, path)
+        except NameProblem:
+            continue
+        if many:
+            return reached
+        if f is not None and f.get("type") == "link":  # the records it links to (one, or several)
+            return d.list(f.get("table"))
+    return None
 
 
 def _check_formula(d, t, source, where, item=None, created=None):
-    """Every name a formula reads is a field (or a linked one) of the record it's worked out on."""
+    """Every name a formula reads is a field (or a linked one) of the record it's worked out on, or of the records a
+    count(...), sum(...) or any(...) looks at (those linking to it, or a whole list)."""
+    compared = []
     try:
-        paths = _paths(source)
+        tree = expr.parse(source)
+        found = _scoped_paths(tree, compared)
         unknown = expr.unknown_calls(source)
     except expr.ExprError as exc:
-        raise Problem(f"{where}: {exc}" + (OTHER_RECORDS if OVER_OTHERS.search(str(source)) else "")) from None
+        raise Problem(f"{where}: {exc}" + (OTHER_RECORDS if OVER_OTHERS.search(str(source)) or "where" in str(source).lower() else "")) from None
     if unknown:
-        raise Problem(f"{where}: there's no function {', '.join(unknown)} (functions: {', '.join(sorted(expr.KNOWN))[:400]})"
+        raise Problem(f"{where}: there's no function {', '.join(unknown)} (functions: {', '.join(sorted(expr.KNOWN))[:600]})"
                       + (OTHER_RECORDS if OVER_OTHERS.search(str(source)) else ""))
-    for path in paths:
+    for path, scopes in found:
         head, _, rest = path.partition(".")
-        if head in ("item",) and item is not None:
+        if head in ("item",) and item is not None and not scopes:
             if rest:
                 try:
                     d.path(item, rest)
@@ -266,19 +325,63 @@ def _check_formula(d, t, source, where, item=None, created=None):
                 except NameProblem as exc:
                     raise Problem(f"{where}: created.{rest}: {exc}") from None
             continue
-        if head == "record":
+        if head in ("record", "this"):
             if not rest:
                 continue
-            path = rest
-        elif head.lower() in CONTEXT_NAMES:
+            path, scopes = rest, []
+        elif head.lower() in CONTEXT_NAMES and head not in ("item", "it"):
             continue
-        if t is None:  # a rule started by an email or a file: there's no record yet, only what arrived
+        if t is None and not scopes:  # a rule started by an email or a file: there's no record yet, only what arrived
             raise Problem(f"{where}: “{path}” isn't something an email or file rule can read (it can read email.subject, "
                           f"email.body, email.sender, file.name, today())")
+        looked = [_set_list(d, t, s, scopes[i + 1:]) for i, s in enumerate(scopes)]
+        if head in ("item", "it") and scopes:
+            if looked[0] is None or not rest:
+                continue
+            path, places = rest, [looked[0]]
+        else:
+            places = [x for x in looked if x is not None] + ([t] if t is not None else [])
+        first = None
+        for here in places:
+            try:
+                d.path(here, path)
+                break
+            except NameProblem:
+                try:
+                    d.reach(here, path)
+                    break
+                except NameProblem as exc:  # says the records linking there too
+                    first = first or exc
+        else:
+            if first is not None:
+                raise Problem(f"{where}: {first}") from None
+    for path, scopes, words in compared:  # a choice compared with words that aren't one of its choices never holds
+        f = _field_in_scope(d, t, path, scopes)
+        if f is None or f.get("type") not in ("select", "multi_select") or not f.get("options"):
+            continue
+        options = [str(o) for o in f["options"]]
+        wrong = [w for w in words if w.strip() and w.strip().lower() not in {o.lower() for o in options}]
+        if wrong:
+            raise Problem(f"{where}: “{wrong[0]}” isn't a choice of {path.split('.')[-1]} (its choices: {', '.join(options)})")
+
+
+def _field_in_scope(d, t, path, scopes):
+    """The field a name in a formula reads, where it's read (the records a count(...) looks at, then the formula's own)."""
+    head, _, rest = path.partition(".")
+    if head in ("record", "this"):
+        path, scopes = rest, []
+    looked = [_set_list(d, t, s, scopes[i + 1:]) for i, s in enumerate(scopes)]
+    for here in [x for x in looked if x is not None] + ([t] if t is not None else []):
         try:
-            d.path(t, path)
-        except NameProblem as exc:
-            raise Problem(f"{where}: {exc}") from None
+            return d.path(here, path)[0]
+        except NameProblem:
+            try:
+                f, _, many = d.reach(here, path)
+                if f is not None:
+                    return f
+            except NameProblem:
+                continue
+    return None
 
 
 NEEDS_VALUE = {"equals", "not_equals", "contains", "greater_than", "less_than", "at_least", "at_most", "one_of",
@@ -293,7 +396,13 @@ def ir_conditions(d, t, conditions, where):
 
 
 def ir_condition(d, t, c, where):
-    """A condition read on records of t: its path resolved, its value as the field writes it."""
+    """A condition read on records of t: its path resolved, its value as the field writes it. Text is a formula that
+    must hold (it may look at other records: count(client.invoices where …) == 0)."""
+    if isinstance(c, str):
+        if not c.strip():
+            raise Problem(f"{where}: an empty condition")
+        _check_formula(d, t, c, where)
+        return {"formula": c.strip()}
     try:
         f, _, keys = d.path(t, c.field)
     except NameProblem as exc:
@@ -860,8 +969,22 @@ def apply(bp, raw_patches, allowed=None):
     for n in sorted(said):
         out.problems.extend(said[n])
         refused.add(n)
+    _complete_stages(out)
     out.refused = sorted(refused)
     return out
+
+
+def _complete_stages(out):
+    """What the platform works out rather than the builder: every stage can be got to, and none with stages after it
+    is a dead end (each a button to the stage after, unless a rule moves records on)."""
+    for t in out.blueprint.get("tables", []):
+        added = schema.complete_moves(out.blueprint, t)
+        if not added:
+            continue
+        flow = {**t["workflow"], "transitions": list(t["workflow"].get("transitions") or []) + added}
+        said = len(out.problems)
+        if not _apply_ops(out, [{"op": "update_table", "table": t["key"], "workflow": flow}], f"the stages of {t['label']}"):
+            del out.problems[said:]  # not the builder's to put right: left as it was
 
 
 def _documents_for(d):

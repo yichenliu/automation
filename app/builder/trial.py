@@ -226,7 +226,7 @@ def _read_by_rule(t, exc):
     rule = next((r for r in t.get("rules", []) if r.get("check") == check), None) if table == t["key"] else None
     if rule is None:
         return []
-    keys = list(expr.names_in(check)) + [c.get("field") for c in rule.get("when") or [] if isinstance(c, dict)]
+    keys = list(expr.outer_names(check)) + [c.get("field") for c in schema.condition_leaves(list(rule.get("when") or []) + list(rule.get("holds") or []))]
     stage = (t.get("workflow") or {}).get("field")  # a new one starts at the first stage, whatever the rule says
     return [f for f in (schema.field(t, k) for k in dict.fromkeys(k for k in keys if k))
             if f is not None and f["type"] in schema.STORED and f["type"] != "autonumber" and not f.get("readonly") and f["key"] != stage]
@@ -894,20 +894,25 @@ def _act(trial, engine, step, names, hold=False):
         names.setdefault("_added", []).append((t["key"], record.id))
         names.setdefault("_given", {}).setdefault(record.id, set()).update(given)  # what the example says, never filled over
         return
-    if do == "wait":  # days pass: reminders fall due, approvals get chased, things get overdue
+    if do == "wait":  # days pass, one by one: the app's daily rules run each day, reminders fall due, things get overdue
         days = int(to_number(step.get("days")) or 1)
-        pass_time(engine, days)
-        names["_waited"] = names.get("_waited", 0) + days
+        for _ in range(max(days, 0)):
+            pass_time(engine, 1)
+            names["_waited"] = names.get("_waited", 0) + 1
+            _days_rules(engine, names)
         return
-    if do == "run":  # a scheduled rule, as if its time had come: about no one record
+    if do == "run":  # a scheduled rule, as if its time had come (it already ran today if a wait brought today round)
         wanted = str(step.get("rule") or step.get("button") or "").strip().lower()
         a = next((a for a in engine.bp.get("automations", []) if wanted in (a["key"].lower(), a["name"].lower())), None)
         if a is None:
             raise ExampleWrong(f"there's no automation “{wanted}” (automations: {', '.join(a['key'] for a in engine.bp.get('automations', []))})")
-        if a["trigger"]["type"] != "schedule":  # it runs by itself when its moment comes: running it as well does it twice
-            raise ExampleWrong(f"“run” is for scheduled automations; {a['key']} starts by itself "
-                               f"({automations.describe_trigger(engine, a['trigger']).lower()}): leave the “run” step out")
-        automations.run_schedule(engine, a, "Tried out")
+        if a["trigger"]["type"] == "button":
+            raise ExampleWrong(f"{a['key']} is a button: “press” it on the record (button: {a['trigger'].get('label') or a['name']})")
+        if a["trigger"]["type"] != "schedule":  # it ran by itself when its moment came: nothing more to do
+            return
+        if (a["key"], names.get("_waited", 0)) not in names.setdefault("_ran", set()):
+            names["_ran"].add((a["key"], names.get("_waited", 0)))
+            automations.run_schedule(engine, a, "Tried out")
         return
     alias = step.get("record") or (step.get("as") if step.get("as") in names else None)
     if alias in (None, ""):  # it doesn't say which: the one in front of them
@@ -1189,6 +1194,26 @@ def _press_move(engine, record, t, pick):
         raise FieldErrors({"_": move[2]})
     engine.move(record, move[0])
     return True
+
+
+def _days_rules(engine, names):
+    """The app's rules that run on a schedule, on the day the example has got to, as the scheduler would run them: the
+    daily (and hourly) ones each day, the weekly ones on their weekday, the monthly ones on the 1st."""
+    day = engine.today + timedelta(days=names.get("_waited", 0))
+    for a in engine.bp.get("automations", []):
+        trigger = a.get("trigger") or {}
+        if trigger.get("type") != "schedule" or not a.get("enabled", True):
+            continue
+        every = trigger.get("every", "day")
+        if every == "week" and day.weekday() != automations.WEEKDAYS.index(trigger.get("weekday", "mon")):
+            continue
+        if every == "month" and day.day != 1:
+            continue
+        if (a["key"], names.get("_waited", 0)) in names.setdefault("_ran", set()):
+            continue
+        names["_ran"].add((a["key"], names.get("_waited", 0)))
+        automations.run_schedule(engine, a, "Tried out")
+    engine.reset()
 
 
 def pass_time(engine, days):
@@ -1760,15 +1785,15 @@ def _play(trial, engine, example, names, out):
 
 
 def _scheduled(engine, example):
-    """What to say of an example that came out wrong without running any of the app's rules that run on a schedule
-    (marking invoices overdue each day): dates in the past don't run them, and an example runs one only by saying so."""
-    if any(isinstance(s, dict) and s.get("do") == "run" for s in example.get("steps") or []):
+    """What to say of an example that came out wrong without letting any time pass, when the app has rules that run on
+    a schedule (marking invoices overdue each day): they act as days go by, and dates in the past don't run them."""
+    if any(isinstance(s, dict) and s.get("do") in ("run", "wait") for s in example.get("steps") or []):
         return ""
     timed = [a for a in engine.bp.get("automations", []) if a["trigger"]["type"] == "schedule" and a.get("enabled", True)]
     if not timed:
         return ""
-    return (" (the app's rules that run on a schedule act in an example only after {\"do\": \"wait\", \"days\": n} then "
-            "{\"do\": \"run\", \"rule\": its key}, even for dates in the past: " +
+    return (" (the app's rules that run on a schedule act in an example as days go by, {\"do\": \"wait\", \"days\": n}: each "
+            "day of a wait they run as they would, even for dates in the past: " +
             ", ".join(f"{a['key']} (every {a['trigger'].get('every') or 'day'})" for a in timed[:6]) + ")")
 
 

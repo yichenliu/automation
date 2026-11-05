@@ -192,6 +192,14 @@ def left_unfilled(engine):
                 copied = re.fullmatch(r"\{\{\s*(record|item)\.(\w+)\s*\}\}", str(said or ""))
                 whose = (item if copied.group(1) == "item" else source) if copied else None
                 origin = schema.field(whose, copied.group(2)) if whose else None
+                if whose is not None and origin is None and copied.group(2) not in ("id", "title", "created_at", "updated_at") \
+                        and schema.backlink(engine.tables, whose, copied.group(2)) is None:
+                    out.append(_issue("fix", f"Rule {a['key']} (“{a['name']}”) fills {t['key']}.{f['key']} from {whose['key']}."
+                                             f"{copied.group(2)}, which isn't a field of {whose['label']} (its fields: "
+                                             f"{', '.join(x['key'] for x in whose['fields'])}), so it's always left empty",
+                                      f"“{a['name']}” fills in {_a(schema.lc(t['singular']))}'s {schema.lc(f['label'])} from "
+                                      f"something {_a(schema.lc(whose['singular']))} doesn't have, so it's never filled in", t["key"]))
+                    continue
                 skipped = whose is item and any(c.get("field") == origin["key"] and c.get("op") not in ("is_empty", "not_equals")
                                                 for c in act.get("where") or [] if origin is not None)  # only lines that have it
                 if origin is not None and not origin.get("required") and origin["type"] in schema.STORED and not skipped and kind == "create_record":
@@ -205,10 +213,11 @@ def left_unfilled(engine):
                                       f"asked to fill it in then", t["key"]))
                 elif origin is not None and not origin.get("required") and origin["type"] in schema.STORED and not skipped:
                     out.append(_issue("check", f"Rule {a['key']} fills {t['key']}.{f['key']} (which must be filled in) from "
-                                               f"{whose['key']}.{origin['key']}, which people may leave empty: then the rule stops. "
-                                               f"Make {whose['key']}.{origin['key']} required, or a move that starts the rule require it",
-                                      f"“{a['name']}” stops when {_a(schema.lc(whose['singular']))}'s {schema.lc(origin['label'])} "
-                                      f"is left empty", t["key"]))
+                                               f"{whose['key']}.{origin['key']}, which people may leave empty: then each is added "
+                                               f"for people to finish (they're told to fill it in)",
+                                      f"“{a['name']}” adds {schema.lc(t['label'])} without their {schema.lc(f['label'])} when "
+                                      f"{_a(schema.lc(whose['singular']))}'s {schema.lc(origin['label'])} is left empty: you'll be "
+                                      f"asked to fill it in then", t["key"]))
     return out
 
 
@@ -568,17 +577,7 @@ def skips_approvals(engine):
 
 def _set_by_rules(engine, t, key):
     """The stages automations, and flows' buttons, put a table's records at."""
-    out = {str(o["value"]).strip().lower() for f in schema.flows(engine.bp) if f["table"] == t["key"]
-           for s in f["steps"] if s["kind"] == "decide" and s.get("field") == key for o in s["options"]}
-    for a in engine.bp.get("automations", []):
-        for act in schema.steps_of(a["actions"]):
-            mine = (act["type"] == "update_record" and a["trigger"].get("table") == t["key"] and not act.get("target")) or \
-                (act["type"] in ("create_record", "create_for_each", "update_each") and act.get("table") == t["key"]) or \
-                (act["type"] == "update_record" and act.get("target"))  # a linked record's stage: counted, to be safe
-            value = (act.get("values") or {}).get(key)
-            if mine and isinstance(value, str):
-                out.add(value.strip().lower())
-    return out
+    return schema.stages_set_by_rules(engine.bp, t)
 
 
 LATE = re.compile(r"\b(overdue|late|expired|lapsed|past due|stale)\b", re.I)

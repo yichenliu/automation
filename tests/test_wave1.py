@@ -234,8 +234,7 @@ def test_the_try_out_also_fills_in_only_what_is_required(app, owner):
                          "values": {"invoice": "{{created}}", "description": "{{item.description}}", "price": "{{item.price}}"}}]}}])
     walked, _ = trial.try_out(ws, screens=False)
     plain = [i["plain"] for i in walked["issues"]]
-    assert any(p.startswith("When only what's required is filled in, the rule “Invoice an accepted plan” stopped") and "Description" in p
-               for p in plain), plain
+    assert any("“Invoice an accepted plan” adds invoice lines without their description" in p for p in plain), plain  # added to finish
 
 
 def test_a_rule_that_stops_half_way_leaves_nothing_half_made(app, owner):

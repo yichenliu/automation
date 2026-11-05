@@ -40,6 +40,9 @@ def _conds(conditions, joined=" and "):
             word = "any" if "any" in c else "all"
             out.append(f"({_conds(c[word], ' or ' if word == 'any' else ' and ')})")
             continue
+        if "formula" in c:  # written as the builder wrote it
+            out.append(json.dumps(c["formula"], ensure_ascii=False))
+            continue
         value = c.get("value")
         out.append(f"{c.get('field')} {c.get('op')}" + ("" if value is None else f" {json.dumps(value, ensure_ascii=False)}"))
     return joined.join(out)
@@ -50,7 +53,9 @@ def _rule(bp, t, rule):
     to refuse a choice ("refused when …"), with the feature that made it."""
     by = next((e["key"] for e in bp.get("features") or [] if rule in ((e.get("made") or {}).get("rules") or {}).get(t["key"], [])), None)
     when = f" while {_conds(rule['when'])}" if rule.get("when") else ""
-    said = f"refused when {_conds(rule.get('when'))}" if str(rule.get("check")).strip().lower() == "false" else f"must keep {rule.get('check')}{when}"
+    kept = " and ".join(x for x in ([] if str(rule.get("check")).strip().lower() == "true" else [str(rule.get("check"))])
+                        + ([_conds(rule["holds"])] if rule.get("holds") else []))
+    said = f"refused when {_conds(rule.get('when'))}" if str(rule.get("check")).strip().lower() == "false" else f"must keep {kept}{when}"
     return f"{said} “{rule.get('message')}”" + (f" (by {by})" if by else " (add_validation; remove_validation takes it away)")
 
 

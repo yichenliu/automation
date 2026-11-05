@@ -452,6 +452,10 @@ table.lines-editor select { min-width: 110px; } table.lines-editor td:has(input[
 .msg details.steps { margin-top: 8px; font-size: 12px; color: var(--muted); } .msg details.steps summary { cursor: pointer; width: fit-content; }
 .msg details.steps ul { margin: 6px 0 0; padding-left: 18px; } .msg details.steps li { margin: 2px 0; overflow-wrap: anywhere; }
 .msg-actions { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+.questions { display: flex; flex-direction: column; gap: 12px; margin-top: 10px; }
+.questions .question { border: 0; padding: 0; margin: 0; min-width: 0; }
+.questions legend { font-weight: 600; font-size: 13.5px; margin-bottom: 6px; padding: 0; }
+.questions .input { width: 100%; }
 .working { border: 1px solid var(--border); border-radius: 10px; padding: 11px 12px; background: var(--panel-2); }
 .working .line { display: flex; align-items: center; gap: 8px; font-size: 13px; }
 .working ul { list-style: none; margin: 8px 0 0; padding: 0; }

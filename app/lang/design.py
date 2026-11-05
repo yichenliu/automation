@@ -4,8 +4,8 @@ import difflib
 
 from ..blueprint import schema
 
-CONTEXT_NAMES = {"record", "created", "item", "today", "now", "approver", "reason", "email", "file", "payload", "true", "false",
-                 "none", "null"}
+CONTEXT_NAMES = {"record", "this", "created", "item", "it", "today", "now", "approver", "reason", "email", "file", "payload", "true",
+                 "false", "none", "null"}
 TYPE_OF = {"yes_no": "checkbox", "choice": "select", "choices": "multi_select", "person": "user", "auto_number": "autonumber",
            "total": "rollup"}
 TYPE_BACK = {v: k for k, v in TYPE_OF.items()}
@@ -93,6 +93,51 @@ class Design:
                 if here is None:
                     raise NameProblem(f"“{part}” links to a list that isn't there")
         return f, here, keys
+
+    def linking(self, t):
+        """The lists whose records link to a record of t, as a formula names them (a client's invoices)."""
+        out = []
+        for other in self.lists:
+            links = [f for f in other.get("fields", []) if f.get("type") == "link" and f.get("table") == (t or {}).get("key")]
+            if links:
+                out.append(other["key"] if len(links) == 1 else " or ".join(f"{other['key']}_by_{f['key']}" for f in links))
+        return out
+
+    def reach(self, t, path):
+        """(field or None, the list reached, many) for a path a formula may read through the records linking back to a
+        record (client.invoices: a client's invoices) or a whole list (bookings): ending at a field of those
+        (client.invoices.amount), or at the records themselves. Raises NameProblem saying what's there."""
+        parts = [p for p in str(path or "").split(".") if p]
+        if parts and parts[0] in ("record", "this"):
+            parts = parts[1:]
+        here, many = t, False
+        for i, part in enumerate(parts):
+            f = self.field(here, part)
+            if f is not None:
+                if i == len(parts) - 1:
+                    return f, here, many
+                if f["type"] == "link":
+                    here = self.list(f.get("table"))
+                    if here is None:
+                        raise NameProblem(f"“{part}” links to a list that isn't there")
+                    continue
+                raise NameProblem(f"“{part}” of {here['label']} isn't a link, so “{'.'.join(parts[i + 1:])}” can't be read through it")
+            back = schema.backlink(self.lists, here, part)
+            if back is not None:
+                here, many = back[0], True
+                continue
+            whole = schema.list_named(self.lists, part) if i == 0 else None
+            if whole is not None:
+                here, many = whole, True
+                continue
+            if part in ("id", "created_at", "updated_at") and i == len(parts) - 1:
+                return {"key": part, "type": "number" if part == "id" else "datetime", "label": part}, here, many
+            near = closest(part, self.field_names(here))
+            linking = self.linking(here)
+            raise NameProblem(f"“{part}” isn't a field of {here['label']}" + (f" (did you mean {', '.join(near)}?)" if near else "")
+                              + f"; its fields: {', '.join(self.field_names(here))}"
+                              + (f"; the records linking to it: {', '.join(linking)}" if linking else ""))
+        return None, here, many
 
     def kind(self, f):
         """What a field's values are: number, date, text, choice, link, yes_no…"""

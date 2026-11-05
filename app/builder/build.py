@@ -58,7 +58,12 @@ Read what the owner says and list what the app must do: their needs. Each need s
 from ("said"). Only what they asked for. For an app made from
 nothing, when they've said little, add what a business like theirs needs at its core (a few needs, "suggested": true).
 For a change to an app in use, only what this message asks for.
-Ask a question only when nothing at all can be built without its answer; otherwise choose sensibly and build.
+For a new app, when the owner has said almost nothing about how their business works (one line: "need a system for
+my shop"), don't guess: ask up to 4 short questions in "questions" and send no needs. Each has 2 to 5 short answers
+they can click, the usual ones for a business like theirs (and "None of these" where it fits), about what decides the
+app: what they keep track of, what needs their OK, what gets chased or reminded, who does what. Ask only once: when
+they've answered, build from what they said and choose sensibly for the rest.
+Otherwise ask a question ("question") only when nothing at all can be built without its answer; choose sensibly and build.
 "reply": one or two plain sentences to the owner about what you'll make (no jargon, no field names)."""
 
 DATA = BASE + """
@@ -83,10 +88,18 @@ Now make what the app does by itself, need by need: a feature whenever one fits,
 each need, send the patches that make it happen in "work", or put its number in "already" if the app as it is (its
 lists, fields, features and rules) already does it. Every need is one or the other. Add a field only when a rule
 needs one.
-- What must be stopped ("can't", "prevent", "unless", "only once", "never more than") is refused by the app, not
-  only told: a gate holds a record back from a stage or a choice; add_validation refuses adding or saving a record
-  that breaks it (a job whose quote isn't approved: quote.status = 'Approved'); a limit caps how many share something;
-  a button's only_if holds the button back until it's met (no specs sent until the design is approved).
+- What must be stopped ("can't", "prevent", "unless", "only once", "never more than", "not while") is refused by the
+  app, whoever tries (the owner, staff, the app's own rules), not only told: a gate holds a record back from a stage or
+  a choice; add_validation refuses adding or saving a record that breaks it (a job whose quote isn't approved:
+  quote.status == 'Approved'); a button's only_if holds the button back until it's met (no specs sent until the design
+  is approved).
+- A rule about other records is one formula: the records linking to this one (client.invoices, job.payments) or a
+  whole list (bookings), with count, sum, any, all, none, min, max and where. "No booking while the client owes over
+  30 days": add_validation check count(client.invoices where status = "Unpaid" and days_since(due_date) > 30) == 0.
+  "A stylist never booked twice at once": not any(bookings where stylist == this.stylist and id != this.id and
+  overlaps(starts_at, ends_at, this.starts_at, this.ends_at)). "At most 8 children a class": count(enrolments where
+  class == this.class and id != this.id) < 8. Inside count(...), names are the counted record's fields; this.x is the
+  record's own.
 
 {catalog}"""
 
@@ -98,7 +111,8 @@ Steps:
   field marked *; a link's value is the short name of a record added before; dates as "today" or "today+3".
 - {{"do": "change", "record": q1, "values": {{...}}}}, {{"do": "move", "record": q1, "to": a stage}} (by its button),
   {{"do": "press", "record": q1, "button": its label}}, {{"do": "approve", "record": q1}}.
-- Something that happens on a schedule: {{"do": "wait", "days": n}} then {{"do": "run", "rule": the rule's key}}.
+- Time passing: {{"do": "wait", "days": n}}: each day of it, the app's rules that run on a schedule run as they would
+  (reminders, chasing, marking overdue), so what's due by then has happened.
 - "by": "staff" on a step someone other than the owner does; "refused": true on a step the app must stop.
 Expect:
 - {{"record": q1, "field": key, "equals": value}}: a number written as its arithmetic ("=2*100+50"), never your own sum;
@@ -131,8 +145,15 @@ class Need(BaseModel):
     suggested: bool = False
 
 
+class Question(BaseModel):
+    ask: str = Field(description="one short plain question")
+    choices: list[str] = Field(description="2 to 5 short answers they can click, the usual ones for a business like theirs")
+    many: bool = Field(True, description="whether they may click more than one")
+
+
 class Understood(BaseModel):
     needs: list[Need]
+    questions: list[Question] = Field(default_factory=list, description="only for a new app when they've said almost nothing")
     question: str = ""
     reply: str = ""
     about: list[int] = Field(default_factory=list, description="the numbers of what isn't right (if listed) that this "
@@ -495,6 +516,15 @@ def _turn(turn):
         if listed:  # after "Not everything works yet": only what this message is about is taken on
             picked = [listed[i - 1] for i in dict.fromkeys(understood.about) if 0 < i <= len(listed)]
             mending = {**mending, "found": {k: [x for kind, x, _ in picked if kind == k] for k in ("failing", "issues", "missing")}} if picked else None
+        asking = [q for q in understood.questions if q.ask.strip() and len([c for c in q.choices if c.strip()]) >= 2][:4]
+        if asking and not changing and not _asked_before(workspace, turn.message):  # a new app from almost nothing: asked, once
+            turn.message.text = "A few quick questions, so I build what your business needs:\n" + "\n".join(
+                f"{i}. {q.ask.strip()} ({' / '.join(c.strip() for c in q.choices if c.strip())})" for i, q in enumerate(asking, start=1))
+            turn.message.proposals = {"questions": [{"ask": q.ask.strip(), "choices": [c.strip() for c in q.choices if c.strip()][:5],
+                                                     "many": q.many} for q in asking]}
+            turn.message.status, turn.message.finished_at = "done", utcnow()
+            db.session.commit()
+            return
         if understood.question and not needs:
             turn.message.text, turn.message.status, turn.message.finished_at = understood.question, "done", utcnow()
             db.session.commit()
@@ -519,8 +549,8 @@ def _turn(turn):
         turn.note("Making what it does")
         sent, owners = _make_behaviour(turn, needs, needs_text)
         # worked examples for the needs met by rules (a feature writes its own checks)
-        by_rule = sorted({owners[i] for i, p in enumerate(sent) if isinstance(p, dict) and p.get("do") in ("add_rule", "change_rule")
-                          and owners.get(i) in turn.made}
+        by_rule = sorted({owners[i] for i, p in enumerate(sent) if isinstance(p, dict) and owners.get(i) in turn.made
+                          and (p.get("do") in ("add_rule", "change_rule", "add_validation") or _formula_kept(p))}
                          # said to be met already, but more than keeping records (“needs my approval”, “pauses bookings”):
                          # tried out as well, never taken on its word
                          | {i for i in turn.already if 0 < i <= len(needs) and not KEEPS_RECORDS.match(needs[i - 1].does.strip())})
@@ -610,6 +640,19 @@ def _turn(turn):
 
 
 TOO_MUCH = (ai.CutOff, ai.Stuck)
+
+
+def _asked_before(workspace, message):
+    """Whether the builder has already asked this owner its quick questions (they're asked once)."""
+    return db.session.query(Message.id).filter(Message.workspace_id == workspace.id, Message.channel == "builder",
+                                               Message.role == "assistant", Message.id != message.id,
+                                               Message.proposals.isnot(None)).first() is not None
+
+
+def _formula_kept(patch):
+    """Whether a feature holds to a formula (a gate blocked while the client owes): its own checks can't be written for
+    sure, so the need gets a worked example like a rule's."""
+    return any(isinstance(c, str) for k in ("only_if", "blocked_if") for c in (patch.get(k) or []))
 
 
 def _refit(turn, found=None):
