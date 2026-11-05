@@ -1,12 +1,11 @@
 """A person's own account: their name, password, two-step sign-in, and whether notifications are also emailed."""
-from flask import Blueprint, current_app, flash, redirect, render_template, request, session, url_for
-from flask_login import current_user, login_required
 
 from .. import totp
 from .. import audit
 from ..extensions import db
 from ..models import Membership, Workspace
 from ..security import decrypt, encrypt
+from ..webkit import Blueprint, current_app, current_user, flash, login_required, redirect, render_template, request, session, url_for
 
 bp = Blueprint("account", __name__, url_prefix="/account")
 

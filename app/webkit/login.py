@@ -26,39 +26,6 @@ class AnonymousUser:
         return None
 
 
-class UserMixin:
-    """What a stored person needs to be signed in: an id, and being active (everyone is, here)."""
-
-    __hash__ = object.__hash__
-
-    @property
-    def is_active(self):
-        return True
-
-    @property
-    def is_authenticated(self):
-        return self.is_active
-
-    @property
-    def is_anonymous(self):
-        return False
-
-    def get_id(self):
-        try:
-            return str(self.id)
-        except AttributeError:
-            raise NotImplementedError("No `id` attribute - override `get_id`") from None
-
-    def __eq__(self, other):
-        if isinstance(other, UserMixin):
-            return self.get_id() == other.get_id()
-        return NotImplemented
-
-    def __ne__(self, other):
-        equal = self.__eq__(other)
-        return equal if equal is NotImplemented else not equal
-
-
 def _digest(app, payload):
     key = app.config["SECRET_KEY"]
     key = key.encode("latin1") if isinstance(key, str) else key

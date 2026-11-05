@@ -7,9 +7,6 @@ import itertools
 import re
 from datetime import date, datetime, timedelta
 
-from flask import Response, abort, current_app, flash, g, jsonify, redirect, render_template, request, send_file, url_for
-from flask_login import current_user, login_required
-
 from ..blueprint import expr, schema
 from ..blueprint.expr import to_number
 from ..engine import automations
@@ -19,6 +16,7 @@ from ..models import Approval, Comment, File, Membership, Record, RecordChange, 
 from ..storage import FileRejected, path_of, save
 from .filters import MORE_AFTER, blank_in, status_words
 from .erp import bp, confirm_step_up, ctx, my_approvals
+from ..webkit import Response, abort, current_app, current_user, flash, g, jsonify, login_required, redirect, render_template, request, send_file, url_for
 
 PAGE_SIZE = 50
 INLINE = {"text", "number", "money", "percent", "date", "select", "checkbox", "email", "phone", "duration", "rating", "user", "barcode"}
@@ -1371,7 +1369,7 @@ def _flows_here(engine, r):
 
 
 def _labels_pdf(engine, t, rows, key, size):
-    from flask import session
+    from ..webkit import session
     from ..documents import labels
     doc = next((d for d in t.get("documents", []) if d["key"] == key and d.get("format") == "label"), None)
     if key and doc is None:

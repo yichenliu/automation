@@ -8,18 +8,16 @@ each one that's waiting on the model.
     /api/v2/app/test              POST  every check the app has, acted out now
     /api/v2/app/undo              POST  {version}: back to an earlier version
     /api/v2/builder/{id}/events   GET   a builder turn's progress as it happens (server-sent events)
-    everything else               the pages, the v1 API and MCP, served by the Flask app mounted here while they move over
+    everything else               the pages, the v1 API and MCP: the platform app's own (app.webkit), mounted here
 
-Routes come over from Flask one at a time; the last step of the overhaul takes Flask out. Each call is checked
-against an API key (Authorization: Bearer keel_…). Changing the app needs an admin's key. The tools are the same
-ones the builder and MCP use (app/lang/tools.py).
+Each call is checked against an API key (Authorization: Bearer keel_…). Changing the app needs an admin's key. The
+tools are the same ones the builder and MCP use (app/lang/tools.py).
 """
 import asyncio
 import hashlib
 import hmac
 import json
 
-from a2wsgi import WSGIMiddleware
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -31,19 +29,24 @@ class Caller(BaseModel):
     name: str
 
 
-def create(flask_app=None):
-    """The ASGI app, with the Flask app (made here if not given) mounted under it."""
-    if flask_app is None:
+def create(app=None):
+    """The ASGI app: the platform app (made here if not given), which serves this API in front of its pages."""
+    if app is None:
         from .. import create_app
-        flask_app = create_app()
+        app = create_app()
+    return app
+
+
+def front(platform):
+    """The FastAPI app with the v2 routes, and the platform's pages (its own ASGI serving) mounted under it."""
     from ..lang import tools
 
-    api = FastAPI(title=flask_app.config.get("PLATFORM_NAME") or "Keel", version="2",
+    api = FastAPI(title=platform.config.get("PLATFORM_NAME") or "Keel", version="2",
                   description="Build and change a business app in the Keel language, with every change checked and proven.")
 
     def within(fn, *args, **kwargs):
         """Core work runs in the platform's own context (its database session and settings)."""
-        with flask_app.app_context():
+        with platform.app_context():
             from ..extensions import db
             try:
                 return fn(*args, **kwargs)
@@ -143,6 +146,6 @@ def create(flask_app=None):
 
         return StreamingResponse(stream(), media_type="text/event-stream")
 
-    api.mount("/", WSGIMiddleware(flask_app))  # the pages, the v1 API and MCP, until they move over
-    api.state.flask = flask_app
+    api.mount("/", platform.serve)  # the pages, the v1 API and MCP
+    api.state.platform = platform
     return api

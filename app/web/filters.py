@@ -5,12 +5,12 @@ from datetime import datetime
 
 import markdown as md
 import nh3
-from flask import current_app, g
 from markupsafe import Markup, escape
 
 from ..blueprint.schema import lc
 from ..models import utcnow
 from ..storage import human_size
+from ..webkit import current_app, g
 
 PILL_COLOURS = ["slate", "blue", "amber", "green", "violet", "red", "teal", "pink"]
 SPECIAL = {"done": "green", "paid": "green", "complete": "green", "completed": "green", "won": "green", "active": "blue",
@@ -65,7 +65,7 @@ def render_markdown(text):
 
 def when(stamp):
     """A stored UTC time (or its ISO text) as people read it, in the business's time: "9 Nov 2026, 8:41 am"."""
-    from flask import g
+    from ..webkit import g
     from zoneinfo import ZoneInfo
     if isinstance(stamp, str):
         try:
@@ -185,7 +185,7 @@ def _printer_for(ws, role):
 
 def _combined_from(t):
     """“Stock movements, purchase order lines and sales order lines”: what a combined list is put together from."""
-    from flask import g
+    from ..webkit import g
     from ..engine.combined import sources
     bp = g.engine.bp if g.get("engine") is not None else {}
     names = [n.lower() for n in sources(bp, t)]

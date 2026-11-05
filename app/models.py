@@ -6,13 +6,12 @@ restoring an earlier version brings it back. Files are stored on disk under the 
 """
 from datetime import datetime, timezone
 
-from flask_login import UserMixin
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import event
 from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
 from sqlalchemy.types import JSON
-from werkzeug.security import check_password_hash, generate_password_hash
 
+from .core.passwords import check_password, hash_password
 from .extensions import db
 
 ROLES = ["portal", "viewer", "editor", "admin", "owner"]  # each can do everything the ones before it can
@@ -23,7 +22,38 @@ def utcnow():
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
-class User(UserMixin, db.Model):
+class SignsIn:
+    """What a stored person needs to be signed in (app.webkit.login): an id, and being active (everyone is, here).
+    Two of them are the same person when their ids are."""
+
+    __hash__ = object.__hash__
+
+    @property
+    def is_active(self):
+        return True
+
+    @property
+    def is_authenticated(self):
+        return self.is_active
+
+    @property
+    def is_anonymous(self):
+        return False
+
+    def get_id(self):
+        return str(self.id)
+
+    def __eq__(self, other):
+        if isinstance(other, SignsIn):
+            return self.get_id() == other.get_id()
+        return NotImplemented
+
+    def __ne__(self, other):
+        equal = self.__eq__(other)
+        return equal if equal is NotImplemented else not equal
+
+
+class User(SignsIn, db.Model):
     id = db.Column(db.Integer, primary_key=True)
     email = db.Column(db.String(255), unique=True, nullable=False)
     name = db.Column(db.String(120), default="")
@@ -36,10 +66,10 @@ class User(UserMixin, db.Model):
     notify_email = db.Column(db.Boolean, default=False)  # also email them their notifications (through Microsoft 365)
 
     def set_password(self, password):
-        self.password_hash = generate_password_hash(password)
+        self.password_hash = hash_password(password)
 
     def check_password(self, password):
-        return check_password_hash(self.password_hash, password)
+        return check_password(self.password_hash, password)
 
     @property
     def display(self):

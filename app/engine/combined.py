@@ -9,11 +9,10 @@ the lists it comes from. Each combined record remembers where it came from ("_fr
 """
 import json
 
-from flask import current_app
-
 from ..extensions import db
 from ..models import Record
 from .records import FieldErrors
+from ..core.context import current_app
 
 FROM = "_from"
 

@@ -1,9 +1,8 @@
 """Connecting Microsoft 365: sending the person to Microsoft to sign in, and handling the way back."""
-from flask import Blueprint, flash, redirect, request, session, url_for
-from flask_login import current_user, login_required
 
 from ..connectors import microsoft
 from ..security import workspace
+from ..webkit import Blueprint, current_user, flash, login_required, redirect, request, session, url_for
 
 bp = Blueprint("connect", __name__)
 

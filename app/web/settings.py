@@ -7,9 +7,6 @@ import zipfile
 import csv
 from zoneinfo import available_timezones
 
-from flask import Blueprint, abort, current_app, flash, g, redirect, render_template, request, send_file, url_for
-from flask_login import current_user, login_required
-
 from .. import ai, audit, backup
 from ..blueprint import schema
 from ..builder import chat
@@ -19,6 +16,7 @@ from ..extensions import db
 from ..models import STAFF_ROLES, Invite, Membership, User
 from ..security import workspace
 from ..storage import FileRejected, save
+from ..webkit import Blueprint, abort, current_app, current_user, flash, g, login_required, redirect, render_template, request, send_file, url_for
 
 bp = Blueprint("settings", __name__, url_prefix="/w/<int:wid>/settings")
 BUSINESS = ["name", "legal_name", "abn", "address", "email", "phone", "website", "bank"]
@@ -200,7 +198,7 @@ def members(wid):
         return redirect(url_for(".members", wid=wid))
     people = Membership.query.filter_by(workspace_id=ws.id).order_by(Membership.id).all()
     invites = Invite.query.filter_by(workspace_id=ws.id, accepted_at=None).order_by(Invite.id.desc()).all()
-    from flask import current_app
+    from ..webkit import current_app
     return render_template("settings/members.html", ws=ws, people=people, invites=invites, me=me, roles=STAFF_ROLES,
                            base=current_app.config["BASE_URL"], section="members", teams=schema.teams(ws.blueprint or {}),
                            names={m.user_id: m.user.display for m in people})
@@ -210,7 +208,7 @@ def members(wid):
 @login_required
 def connections(wid):
     ws = workspace(wid, "admin")
-    from flask import current_app
+    from ..webkit import current_app
     from ..connectors import apps
     connected = {a.key: apps.connection(ws, a.key) for a in apps.all_apps()}
     syncs = {}
@@ -333,7 +331,7 @@ def forms(wid):
         settings["forms"] = tokens
         ws.settings = settings
         db.session.commit()
-    from flask import current_app
+    from ..webkit import current_app
     return render_template("settings/forms.html", ws=ws, tables=tables, tokens=tokens, base=current_app.config["BASE_URL"], section="forms")
 
 
@@ -432,7 +430,7 @@ def api_keys(wid):
     keys = ApiKey.query.filter_by(workspace_id=ws.id, revoked_at=None).order_by(ApiKey.id.desc()).all()
     hooks = [{"name": a["name"], "url": automations.hook_url(ws.id, a["key"])} for a in (ws.blueprint or {}).get("automations", [])
              if a["trigger"]["type"] == "webhook_received"]
-    from flask import current_app
+    from ..webkit import current_app
     return render_template("settings/api.html", ws=ws, keys=keys, made=made, hooks=hooks, section="api", base=current_app.config["BASE_URL"])
 
 

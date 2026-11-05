@@ -18,8 +18,6 @@ import hmac
 import secrets
 from types import SimpleNamespace
 
-from flask import Blueprint, abort, jsonify, request
-
 from ..blueprint import schema
 from ..blueprint.expr import to_number
 from ..engine import automations
@@ -27,6 +25,7 @@ from ..engine.records import Conflict, Engine, FieldErrors, RecordProxy
 from ..extensions import csrf, db
 from ..models import ApiKey, Run, Workspace, utcnow
 from ..security import Throttle, client_ip
+from ..webkit import Blueprint, abort, jsonify, request
 
 bp = Blueprint("api", __name__, url_prefix="/api/v1")
 hooks = Blueprint("hooks", __name__)

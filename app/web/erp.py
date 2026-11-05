@@ -1,8 +1,6 @@
 """The ERP itself: every screen is drawn from the workspace's blueprint. The routes live in erp_records (tables and
 records), erp_pages (dashboards, automations, approvals, history) and erp_ai (the assistant, reading documents, imports);
 this module holds what they share."""
-from flask import Blueprint, g, url_for
-from flask_login import current_user
 from sqlalchemy import or_
 
 from ..blueprint import schema
@@ -10,6 +8,7 @@ from ..engine.records import Engine
 from ..extensions import db
 from ..models import Approval, Notification
 from ..security import step_up, stepped_up, workspace
+from ..webkit import Blueprint, current_user, g, url_for
 
 bp = Blueprint("app", __name__, url_prefix="/w/<int:wid>/app")
 
@@ -26,7 +25,7 @@ def ctx(wid, role="viewer"):
 def confirm_step_up():
     """A form that needs a confirmed sign-in carries the person's code (or password) as "step_up_code": checked here, it
     counts for the engine of this request too. Returns whether they're confirmed now."""
-    from flask import request
+    from ..webkit import request
     if stepped_up():
         return True
     ok = step_up(current_user, request.form.get("step_up_code"))
@@ -38,7 +37,7 @@ def confirm_step_up():
 def my_space(engine):
     """The team menu this person sees (spaces in the design), or None for the whole menu: admins and the owner, people
     in no team that has one, and anyone who chose to see everything."""
-    from flask import session
+    from ..webkit import session
     if engine is None or engine.role is None or engine._at_least("admin"):
         return None
     if engine.ws.id in (session.get("whole_menu") or []):

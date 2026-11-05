@@ -1,6 +1,4 @@
 """The builder (chat on the left, the ERP on the right) and designing from Microsoft 365. Admins and owners only."""
-from flask import Blueprint, abort, flash, jsonify, redirect, render_template, request, url_for
-from flask_login import current_user, login_required
 
 from .. import ai, discovery, jobs
 from ..builder import chat
@@ -9,6 +7,7 @@ from ..extensions import db
 from ..models import Job, Message
 from ..security import workspace
 from ..storage import FileRejected, save
+from ..webkit import Blueprint, abort, current_user, flash, jsonify, login_required, redirect, render_template, request, url_for
 
 bp = Blueprint("builder", __name__)
 

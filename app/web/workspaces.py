@@ -1,10 +1,9 @@
 """The list of a person's ERPs, and starting a new one (by describing it, from Microsoft 365, or from a spreadsheet)."""
-from flask import Blueprint, flash, redirect, render_template, request, url_for
-from flask_login import current_user, login_required
 
 from ..blueprint import schema
 from ..extensions import db
 from ..models import Membership, Record, Version, Workspace
+from ..webkit import Blueprint, current_user, flash, login_required, redirect, render_template, request, url_for
 
 bp = Blueprint("workspaces", __name__)
 

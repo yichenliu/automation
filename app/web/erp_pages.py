@@ -5,8 +5,6 @@ from datetime import date, datetime, timedelta
 import json
 import re
 
-from flask import abort, flash, jsonify, redirect, render_template, request, url_for
-from flask_login import current_user, login_required
 from sqlalchemy import or_
 
 from .. import ai
@@ -16,6 +14,7 @@ from ..engine import automations
 from ..extensions import db
 from ..models import Approval, File, Notification, Run, Version
 from .erp import bp, confirm_step_up, ctx, in_my_queue, my_approvals
+from ..webkit import abort, current_user, flash, jsonify, login_required, redirect, render_template, request, url_for
 
 
 @bp.route("/")
@@ -23,7 +22,7 @@ from .erp import bp, confirm_step_up, ctx, in_my_queue, my_approvals
 def home(wid):
     """Where everyone starts: what's waiting for them, big buttons to start the things they do, their recent work, and
     (for a new app's owner) the few steps to get going. A page made the home of someone's role or team opens instead."""
-    from flask import g
+    from ..webkit import g
     from ..models import Membership, Record, RecordChange
     ws, engine = ctx(wid)
     bp_ = engine.visible_blueprint()
@@ -325,7 +324,7 @@ def page_widgets(engine, p, period=None):
             widgets.append({**w, "items": _activity(engine, w)})
             continue
         if w["type"] == "my_work":  # what's waiting for whoever is looking
-            from flask import g
+            from ..webkit import g
             mine = my_approvals(engine.ws, g.member) if g.get("member") is not None else []
             widgets.append({**w, "items": [{"a": a, "r": engine.get(a.record_id) if a.record_id else None} for a in mine[:8]],
                             "total": len(mine)})
@@ -443,7 +442,7 @@ def page(wid, key):
 @login_required
 def page_pdf(wid, key):
     """A dashboard as a report to print or send: its numbers at the top, then each breakdown and list as a table."""
-    from flask import Response
+    from ..webkit import Response
     ws, engine = ctx(wid)
     p = _page(engine, key)
     content = page_report(engine, p, request.args.get("period") or "")
@@ -860,7 +859,7 @@ def run_now(wid, key):
 def approvals(wid):
     """Approvals and tasks: what's waiting for this person, what's waiting for others, and what's been decided."""
     ws, engine = ctx(wid)
-    from flask import g
+    from ..webkit import g
     from ..models import Membership
     mine = sorted(my_approvals(ws, g.member), key=lambda a: (-(a.priority if a.priority is not None else 1), a.id))  # the most pressing first
     later = [a for a in _could_do(ws, g.member) if in_my_queue(a, later=True)]
@@ -909,7 +908,7 @@ def _could_do(ws, member):
 @login_required
 def menu_switch(wid):
     """Between a team's own menu and the whole one ("Everything else" / "Just my team's"), remembered for this person."""
-    from flask import session
+    from ..webkit import session
     ws, engine = ctx(wid)
     whole = [w for w in session.get("whole_menu") or [] if w != ws.id]
     if request.form.get("show") == "all":
@@ -922,7 +921,7 @@ def menu_switch(wid):
 @login_required
 def next_task(wid):
     """Take the next task: the most pressing, then the oldest, of those waiting for this person or their team."""
-    from flask import g
+    from ..webkit import g
     ws, engine = ctx(wid, "viewer")
     waiting = sorted([a for a in my_approvals(ws, g.member) if a.kind == "task"], key=lambda a: (-(a.priority if a.priority is not None else 1), a.id))
     if not waiting:
@@ -966,7 +965,7 @@ def away(wid):
     ws, engine = ctx(wid, "viewer")
     from datetime import date as _date
 
-    from flask import g
+    from ..webkit import g
     from ..models import Membership
     me = g.member
     if request.form.get("back_now"):
@@ -994,7 +993,7 @@ def away(wid):
 def decide(wid, aid):
     """Approve, reject, finish a task (filling in what it asks for), or pass it to someone else."""
     ws, engine = ctx(wid, "viewer")
-    from flask import g
+    from ..webkit import g
     from ..engine.records import FieldErrors
     from ..models import Membership
     approval = db.session.get(Approval, aid)
@@ -1109,7 +1108,7 @@ def notifications(wid):
 @login_required
 def design(wid):
     ws, engine = ctx(wid)
-    from flask import g
+    from ..webkit import g
     # the history names every table and field ever made, so it's for the people who may see all of them
     versions = Version.query.filter_by(workspace_id=ws.id).order_by(Version.number.desc()).limit(100).all() if g.member.can("admin") else []
     from ..blueprint import modules
@@ -1197,7 +1196,7 @@ def restore_version(wid, number):
 @login_required
 def jump(wid):
     """What ⌘K offers: pages, tables, actions and records whose name matches what's typed."""
-    from flask import jsonify
+    from ..webkit import jsonify
     ws, engine = ctx(wid)
     q = (request.args.get("q") or "").strip().lower()
     bp_ = engine.visible_blueprint()

@@ -414,7 +414,7 @@ def test_ollama_still_answers_as_it_did_and_says_what_it_cost(app, fake, monkeyp
 
 
 def test_what_a_call_is_for_comes_from_where_its_asked(app, owner):
-    from flask import g
+    from app.webkit import g
     _, ws = owner
     assert ai._who() == ("assistant", "interactive", None)
     assert ai._who("fast", "build", 9) == ("fast", "build", 9)

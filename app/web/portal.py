@@ -11,8 +11,6 @@ says how its records reach them ({"via": "customer"}, or through the record it l
 A person is invited from their record (Invite with role "portal"), so their account is tied to that record, and so to
 their kind's portal.
 """
-from flask import Blueprint, abort, flash, redirect, render_template, request, send_file, url_for
-from flask_login import current_user, login_required, login_user
 
 from ..blueprint import schema
 from ..engine import automations
@@ -21,6 +19,7 @@ from ..extensions import db
 from ..models import Approval, Comment, File, Membership, Notification, User, Workspace
 from ..security import client_ip, form_posts
 from ..storage import path_of
+from ..webkit import Blueprint, abort, current_user, flash, login_required, login_user, redirect, render_template, request, send_file, url_for
 
 bp = Blueprint("portal", __name__, url_prefix="/portal/<int:wid>")
 

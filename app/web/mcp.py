@@ -11,12 +11,11 @@ An assistant is added with the app's address and an API key from Settings › AP
 """
 import json
 
-from flask import current_app, jsonify, request
-
 from ..blueprint import schema
 from ..engine.records import FieldErrors
 from . import api
 from .api import bp
+from ..webkit import current_app, jsonify, request
 
 PROTOCOLS = ("2025-06-18", "2025-03-26", "2024-11-05")
 TOOLS = [

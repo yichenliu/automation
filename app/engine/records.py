@@ -19,7 +19,6 @@ from contextlib import contextmanager
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from flask import current_app
 from sqlalchemy import text as sql
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm.exc import StaleDataError
@@ -28,6 +27,7 @@ from ..blueprint import expr, schema
 from ..blueprint.expr import to_bool, to_date, to_datetime, to_number
 from ..extensions import db
 from ..models import ROLES, Counter, File, Membership, Record, RecordChange, User, utcnow
+from ..core.context import current_app
 
 log = logging.getLogger("engine")
 STEP_UP = "Confirm it's you first: enter the code from your authenticator app (or your password)"

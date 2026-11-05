@@ -2,15 +2,13 @@
 proof from the business's own history, applied with a click (undoable) or dismissed."""
 from datetime import datetime
 
-from flask import abort, flash, redirect, render_template, request, url_for
-from flask_login import current_user, login_required
-
 from .. import jobs, learning
 from ..builder import chat, checking
 from ..engine import automations
 from ..extensions import db
 from ..models import Feedback, Job, Run, Suggestion, Version
 from .erp import bp, ctx
+from ..webkit import abort, current_user, flash, login_required, redirect, render_template, request, url_for
 
 
 @bp.route("/improvements", methods=["GET", "POST"])

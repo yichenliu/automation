@@ -8,10 +8,9 @@ from collections import deque
 from datetime import timedelta
 from pathlib import Path
 
-from flask import g, request
-
 from .extensions import db
 from .core.settings import settings
+from .webkit import g, request
 
 KEPT = 3000
 _seen = deque(maxlen=KEPT)  # (when, screen, status, milliseconds)

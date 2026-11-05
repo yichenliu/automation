@@ -2,14 +2,13 @@
 workspace from an invitation, and resetting a forgotten password with a link."""
 import time
 
-from flask import Blueprint, current_app, flash, redirect, render_template, request, session, url_for
-from flask_login import current_user, login_required, login_user, logout_user
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 
 from .. import audit, totp
 from ..extensions import db
 from ..models import Invite, Membership, User, Workspace, utcnow
 from ..security import client_ip, decrypt, sign_ins
+from ..webkit import Blueprint, current_app, current_user, flash, login_required, login_user, logout_user, redirect, render_template, request, session, url_for
 
 bp = Blueprint("auth", __name__)
 

@@ -1,13 +1,16 @@
 """An ERP you build by chatting: describe your business (or let the platform read your Microsoft 365), and the AI shapes
-tables, screens, documents and automations that a fixed engine runs. See README.md."""
+tables, screens, documents and automations that a fixed engine runs. See README.md.
+
+create_app() makes the platform app (app.webkit.App): an ASGI app serving the pages, the v1 API, MCP and the v2 API
+(FastAPI, app/api), and the context workers and scripts run in (`with app.app_context():`)."""
 import logging
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-from flask import Flask, render_template, request
 
 from .config import Config, _secret_key
 from .extensions import csrf, db, login_manager
+from .webkit import App, render_template, request
 
 
 def _logging(app):
@@ -20,16 +23,16 @@ def _logging(app):
     if not any(isinstance(h, RotatingFileHandler) for h in root.handlers):
         root.addHandler(handler)
     root.setLevel(logging.INFO)
-    logging.getLogger("werkzeug").setLevel(logging.WARNING)
+    logging.getLogger("uvicorn.access").setLevel(logging.WARNING)  # not a line for every request
 
 
 def create_app(overrides=None):
-    app = Flask(__name__)
+    app = App(__name__)
     app.config.from_object(Config)
     if overrides:
         app.config.update(overrides)
     Path(app.config["DATA_DIR"]).mkdir(parents=True, exist_ok=True)
-    if not app.config.get("SECRET_KEY"):  # Flask's defaults include SECRET_KEY = None
+    if not app.config.get("SECRET_KEY"):  # the defaults include SECRET_KEY = None
         app.config["SECRET_KEY"] = _secret_key(app.config["DATA_DIR"])
     if not app.config.get("TESTING"):
         _logging(app)
@@ -95,6 +98,9 @@ def create_app(overrides=None):
                 db.create_all()
                 migrate.upgrade(new)
         from . import discovery, importer, intelligence, knowledge, learning  # noqa: F401 (register their background jobs)
+
+    from .api import front
+    app.asgi = front(app)  # the v2 API (FastAPI) in front, the pages behind it
 
     if app.config["WORKER"] and not app.config.get("TESTING") and not app.config.get("SIMULATION"):
         from . import worker

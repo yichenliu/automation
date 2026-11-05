@@ -1,7 +1,5 @@
 """The AI inside the ERP: the assistant, what it knows (documents, mail, records it can look through), adding a record
 from a document (an invoice, a receipt, an email), and importing spreadsheets."""
-from flask import abort, flash, jsonify, redirect, render_template, request, url_for
-from flask_login import current_user, login_required
 
 from .. import ai, assistant, importer, jobs, knowledge
 from ..blueprint import schema
@@ -10,6 +8,7 @@ from ..models import File, Job, Message
 from ..storage import FileRejected, save
 from .erp import bp, ctx
 from .erp_records import _render_form, _table, _ran
+from ..webkit import abort, current_user, flash, jsonify, login_required, redirect, render_template, request, url_for
 
 
 def _assistant_json(ws, m):
@@ -188,7 +187,7 @@ def knowledge_page(wid):
     place to try a question and see what the AI would find."""
     from ..connectors import microsoft
     from ..models import utcnow
-    from flask import g
+    from ..webkit import g
     ws, engine = ctx(wid)
     member = g.member
     if request.method == "POST":

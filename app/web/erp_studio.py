@@ -6,8 +6,6 @@ version, and the studio can take it back again (each change answers with the ver
 """
 import copy
 
-from flask import abort, current_app, g, jsonify, redirect, render_template, request, url_for
-from flask_login import current_user, login_required
 from sqlalchemy.exc import IntegrityError
 
 from .. import appmap, studio
@@ -19,6 +17,7 @@ from ..models import Record, Run
 from .erp import bp, ctx
 from ..engine import automations
 from .filters import KIND_WORDS, about_field, ago, pill, status_words
+from ..webkit import abort, current_app, current_user, g, jsonify, login_required, redirect, render_template, request, url_for
 
 
 class Refused(Exception):

@@ -22,7 +22,6 @@ import re
 from datetime import timedelta
 from typing import Annotated, Literal, Union
 
-from flask import current_app
 from pydantic import BaseModel, Field
 
 from .. import ai, lang
@@ -33,6 +32,7 @@ from ..lang import model as m, registry
 from ..models import Membership, Message, Workspace, utcnow
 from . import checking, trial
 from ..core.settings import settings
+from ..core.context import current_app
 
 _log = logging.getLogger(__name__)
 

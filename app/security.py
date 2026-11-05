@@ -8,13 +8,12 @@ from collections import defaultdict, deque
 from functools import wraps
 
 from cryptography.fernet import Fernet, InvalidToken
-from flask import abort, current_app, g, request
-from flask_login import current_user
 from sqlalchemy import text
 
 from .extensions import db
 from .models import Membership, Workspace
 from .core.settings import settings
+from .webkit import abort, current_app, current_user, g, request
 
 _log = logging.getLogger(__name__)
 
@@ -43,7 +42,7 @@ STEP_UP_SECONDS = 10 * 60  # how long a confirmed sign-in counts for steps that 
 
 def stepped_up():
     """Whether the person confirmed their sign-in in the last ten minutes (approving a payment run, a bank change)."""
-    from flask import session
+    from .webkit import session
     at = session.get("stepped_up_at")
     return bool(at) and time.time() - float(at) < STEP_UP_SECONDS
 
@@ -51,7 +50,7 @@ def stepped_up():
 def step_up(user, code):
     """Confirm it's them: the code from their authenticator app when two-step sign-in is on, else their password.
     Returns whether it was right (and if so, it counts for the next ten minutes)."""
-    from flask import session
+    from .webkit import session
 
     from . import totp
     code = (code or "").strip()
@@ -92,8 +91,7 @@ def _signed_out_if_idle(ws):
     """Shared computers on a shop floor: after the minutes the business chose without anyone using the app, the next
     click asks for the password again."""
     import time
-    from flask import flash, redirect, request, session, url_for
-    from flask_login import logout_user
+    from .webkit import flash, logout_user, redirect, request, session, url_for
     minutes = int((ws.settings or {}).get("idle_minutes") or 0)
     now, last = time.time(), session.get("active_at")
     if minutes and last and now - last > minutes * 60:
@@ -208,7 +206,7 @@ def forget_old_hits(older_than=86400):
 def client_ip():
     """Who's connecting. X-Forwarded-For is only believed when the platform runs behind a proxy that sets it
     (TRUST_PROXY=1); otherwise anyone could send a new one each time and dodge the sign-in limits."""
-    from flask import current_app
+    from .webkit import current_app
     if settings().get("TRUST_PROXY"):
         return request.headers.get("X-Forwarded-For", request.remote_addr or "").split(",")[0].strip()
     return request.remote_addr or ""

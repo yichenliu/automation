@@ -5,14 +5,12 @@ import hmac
 import json
 import time
 
-from flask import Blueprint, abort, flash, redirect, request, session, url_for
-from flask_login import current_user, login_required
-
 from .. import audit
 from ..connectors import apps
 from ..extensions import csrf, db
 from ..models import Workspace
 from ..security import workspace
+from ..webkit import Blueprint, abort, current_user, flash, login_required, redirect, request, session, url_for
 
 bp = Blueprint("apps", __name__)
 csrf.exempt("app.web.connect_apps.stripe_events")
@@ -68,7 +66,7 @@ def apps_state():
 
 
 def redirect_uri():
-    from flask import current_app
+    from ..webkit import current_app
     return f"{current_app.config['BASE_URL']}{url_for('apps.oauth_callback')}"
 
 
@@ -101,7 +99,7 @@ def oauth_callback():
 @bp.route("/paid")
 def paid():
     """Where Stripe sends a customer back after paying."""
-    from flask import current_app
+    from ..webkit import current_app
     return (f"<!doctype html><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Paid</title>"
             f"<body style='font-family:system-ui;max-width:32rem;margin:15vh auto;padding:0 16px;text-align:center'><h1>Thank you</h1>"
             f"<p>Your payment was received. You can close this page.</p><p style='color:#888'>{current_app.config.get('PLATFORM_NAME') or ''}</p></body>")
@@ -132,7 +130,7 @@ def stripe_events(wid):
         if values:
             engine.update(record, values)
     except (ValueError, FieldErrors) as exc:
-        from flask import current_app
+        from ..webkit import current_app
         current_app.logger.warning("Stripe paid record %s, but it couldn't be marked: %s", record.id, exc)
     return {"received": True}
 

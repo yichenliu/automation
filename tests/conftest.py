@@ -26,7 +26,7 @@ def app(tmp_path, database_url):
                       "SQLALCHEMY_ENGINE_OPTIONS": {"pool_size": 5, "max_overflow": 10},
                       "DEFAULT_TIMEZONE": "Australia/Perth", "MICROSOFT_CLIENT_ID": "", "MICROSOFT_CLIENT_SECRET": "",
                       "BASE_URL": "http://localhost:5050", "OLLAMA_EMBED_MODEL": ""})
-    from flask import g
+    from app.webkit import g
 
     @app.before_request
     def fresh_request():

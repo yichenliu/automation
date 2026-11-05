@@ -13,8 +13,8 @@ import time
 from urllib.parse import urlencode
 
 import requests
-from flask import url_for
 from ..core.settings import settings
+from ..webkit import url_for
 
 _DISCOVERED = {}  # issuer: (when, its configuration)
 

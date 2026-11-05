@@ -1,6 +1,5 @@
 """Public forms: a link anyone can fill in (an enquiry, a booking request). Each answer becomes a record, and starts
 the automations a new record would."""
-from flask import Blueprint, abort, render_template, request
 
 from ..blueprint import schema
 from ..engine import automations
@@ -8,6 +7,7 @@ from ..engine.records import Engine, FieldErrors
 from ..models import Workspace
 from ..security import client_ip, form_posts
 from ..storage import FileRejected, save
+from ..webkit import Blueprint, abort, render_template, request
 
 bp = Blueprint("forms", __name__)
 
