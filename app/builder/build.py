@@ -83,6 +83,9 @@ Now make what the app does by itself, need by need: a feature whenever one fits,
 each need, send the patches that make it happen in "work", or put its number in "already" if the app as it is (its
 lists, fields, features and rules) already does it. Every need is one or the other. Add a field only when a rule
 needs one.
+- What must be stopped ("can't", "prevent", "unless", "only once", "never more than") is refused by the app, not
+  only told: a gate holds a record back from a stage or a choice; add_validation refuses adding or saving a record
+  that breaks it (a job whose quote isn't approved: quote.status = 'Approved'); a limit caps how many share something.
 
 {catalog}"""
 

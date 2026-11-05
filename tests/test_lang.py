@@ -576,6 +576,16 @@ def test_a_rule_emails_a_records_own_field_called_email(app):
     assert results and all(r["ok"] for r in results), [r.get("problem") for r in results]
 
 
+def test_a_convert_with_a_stage_and_a_button_is_the_button_shown_at_that_stage(app):
+    out = lang.apply(everything(), [{"do": "convert", "from_list": "jobs", "to_list": "invoices", "when_stage": "Done", "button": "Invoice job"}])
+    assert not out.problems, out.problems
+    rule = next(a for a in out.blueprint["automations"] if a.get("feature"))
+    assert rule["trigger"]["type"] == "button" and rule["conditions"] == [{"field": "status", "op": "equals", "value": "Done"}]
+    ws = _workspace(app, out.blueprint)
+    _, results = trial.try_out(ws, patterns.checks(out.blueprint), screens=False)
+    assert results and all(r["ok"] for r in results), [r.get("problem") for r in results]
+
+
 def test_a_name_written_as_a_key_is_shown_in_words():
     out = lang.apply(schema.empty("x"), [{"do": "add_list", "key": "feedlot_buyers", "label": "Feedlot buyers", "singular": "feedlot_buyer",
                                           "fields": [{"type": "text", "key": "name", "label": "contact_person"}]}])

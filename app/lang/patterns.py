@@ -781,8 +781,9 @@ class Limit(Feature):
 
 @register("feature", {"do": "convert", "from_list": "quotes", "to_list": "jobs", "when_stage": "Accepted", "from_lines": "quote_lines", "to_lines": "job_lines"})
 class Convert(Feature):
-    """When a record gets to a stage (or its button is pressed), make a record of another list from it, linked back,
-    with the fields they share copied (and its lines copied to the new one's lines, if given)."""
+    """Make a record of another list from a record, linked back, with the fields they share copied (and its lines
+    copied to the new one's lines, if given): when it gets to when_stage; or when its button is pressed; with both,
+    by its button, shown once it's at that stage (a completed job's Invoice job button)."""
     do: Literal["convert"] = "convert"
     from_list: str
     to_list: str
@@ -826,12 +827,15 @@ class Convert(Feature):
                 raise Problem(f"{where}: from_lines must be {src['key']}'s lines and to_lines {dst['key']}'s" + hint)
             actions.append({"type": "create_for_each", "table": tl["key"], "source": {"table": fl["key"], "via": via["key"]},
                             "values": {up["key"]: "{{created}}"}, "copy_matching": True})
-        if self.when_stage:
+        if self.when_stage and not self.button:
             f, stage = _stage(d, src, self.when_stage, where)
             trigger, conds = {"type": "record_created_or_updated", "table": src["key"]}, [{"field": f["key"], "op": "changed_to", "value": stage}]
             name = f"Make {_a(dst['singular'].lower())} when {_a(src['singular'].lower())} is {stage}"
-        else:
+        else:  # its button; with a stage, shown once it's there
             trigger, conds = {"type": "button", "table": src["key"], "label": self.button[:40]}, []
+            if self.when_stage:
+                f, stage = _stage(d, src, self.when_stage, where)
+                conds = [{"field": f["key"], "op": "equals", "value": stage}]
             name = self.button
         made.rules.append({"key": key, "name": name, "trigger": trigger, "conditions": conds, "actions": actions})
         return made
@@ -845,7 +849,7 @@ class Convert(Feature):
             steps += adding(d, fl, "s1_line", {via["key"]: "s1"})
         if self.when_stage:
             steps.append({"do": "move", "record": "s1", "to": d.choice(d.stage_field(src), self.when_stage)})
-        else:
+        if self.button:
             steps.append({"do": "press", "record": "s1", "button": self.button})
         expect = [{"table": dst["key"], "count": 1}]
         if self.to_lines:
