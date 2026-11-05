@@ -60,16 +60,17 @@ class Trial:
 
 
 @contextmanager
-def copy_of(workspace):
-    """A throwaway copy of the app (see the module's notes), gone when the block ends."""
+def copy_of(workspace, blueprint=None):
+    """A throwaway copy of the app (see the module's notes), gone when the block ends. `blueprint`: a design to try in
+    its place (a candidate the builder hasn't saved)."""
     from .. import create_app
     people = [(m.user_id, m.role, list(m.teams or []), u.name, u.email) for m, u in
               db.session.query(Membership, User).filter(Membership.workspace_id == workspace.id, Membership.user_id == User.id,
                                                         Membership.role != "portal", User.email != "stand-in@example.com")]  # (a copy of a copy has one already)
-    named = _looked_up_by_name(workspace.blueprint or {})
+    named = _looked_up_by_name(blueprint or workspace.blueprint or {})
     kept = [(r.id, r.table, copy.deepcopy(r.data)) for r in Record.query.filter(Record.workspace_id == workspace.id, Record.deleted_at.is_(None),
                                                                                   Record.table.in_(named)).limit(2000)] if named else []
-    design = {"name": workspace.name, "about": workspace.about, "blueprint": copy.deepcopy(workspace.blueprint or schema.empty(workspace.name)),
+    design = {"name": workspace.name, "about": workspace.about, "blueprint": copy.deepcopy(blueprint or workspace.blueprint or schema.empty(workspace.name)),
               "settings": copy.deepcopy(workspace.settings or {}), "timezone": workspace.timezone, "currency": workspace.currency,
               "version": workspace.version}
     owner_id = workspace.owner_id
@@ -780,6 +781,12 @@ def _values(engine, t, values, names):
                     _guess(engine, names, v, f["table"])
             ids = [names.get(v, v) if isinstance(v, str) else v for v in many]
             value = ids if f.get("multiple") else ids[0]
+        elif engine.kind(f) in ("date", "datetime") and isinstance(value, str) and RELATIVE.match(value.strip()):
+            # "today+3": a date counted from the day the example is acted out (a check kept for later stays true)
+            n = int((RELATIVE.match(value.strip()).group(1) or "0").replace(" ", ""))
+            value = (date.today() + timedelta(days=n)).isoformat()
+            if engine.kind(f) == "datetime":
+                value += " 10:00"
         elif engine.kind(f) in ("date", "datetime") and names.get("_waited"):  # a date on the calendar, after days passed
             value = _shifted(engine, f, value, -names["_waited"])
         elif f["type"] == "user":  # a record's name ("s1", the staff member Sam) means that person
@@ -790,6 +797,7 @@ def _values(engine, t, values, names):
     return out
 
 
+RELATIVE = re.compile(r"^today\s*([+-]\s*\d+)?$", re.I)
 STAFF = re.compile(r"^(an? )?((ordinary|regular) )?(staff( member)?|member of staff|employee|worker|team member|someone else)$", re.I)
 ROLES_BY = {"admin": "admin", "an admin": "admin", "editor": "editor", "viewer": "viewer"}
 
@@ -1187,8 +1195,46 @@ def _shifted(engine, f, value, days):
     return (moment + timedelta(days=days)).isoformat(sep=" " if " " in str(value) else "T", timespec="minutes") if moment else value
 
 
+TOLD = re.compile(r"^(Notified|Would email|Emailed|Would text|Texted)\b")
+
+
+def _told(engine, c, names):
+    """Someone was told (in the app, by email or text) since the example began, about its record if it names one:
+    {"told": true, "record": "i1", "about": "words the message has"} (or "told": false: nobody was)."""
+    record_id = _record(engine, names, c["record"]).id if c.get("record") else None
+    runs = Run.query.filter(Run.workspace_id == engine.ws.id, Run.id > names.get("_first_run", 0)).order_by(Run.id).all()
+    about = str(c.get("about") or "").strip().lower()
+    said = [str(step.get("result") or "") for run in runs if record_id is None or run.record_id == record_id
+            for step in run.steps or [] if TOLD.match(str(step.get("result") or ""))]
+    said = [x for x in said if not about or about in x.lower()]
+    wanted = c.get("told") not in (False, "false", 0, "no")
+    what = "about it" if record_id else "at all"
+    if wanted:
+        return bool(said), (f"Told: {said[0]}" if said else f"Nobody was told {what}"), \
+            (f"told: {said[0]}" if said else f"nobody was told {what}" + (f" with “{about}” in it" if about else "")
+             + f" (rules that ran: {', '.join(dict.fromkeys(r.name or r.automation for r in runs)) or 'none'})")
+    return not said, ("Nobody was told" if not said else f"Told when nobody should be: {said[0]}"), \
+        ("nobody told" if not said else f"expected nobody to be told, but: {said[0]}")
+
+
+def _worked_out(wanted):
+    """An expected number written as its arithmetic ("=2*100+50", "=round(250*1.1, 2)"): the platform works it out, so
+    a check never carries the model's own sum."""
+    if isinstance(wanted, str) and wanted.strip().startswith("="):
+        try:
+            value = expr.evaluate(wanted.strip()[1:], expr.Context())
+        except Exception:  # noqa: BLE001 - not arithmetic: compared as written
+            return wanted
+        return round(value, 6) if isinstance(value, float) else value
+    return wanted
+
+
 def _expect(engine, c, names):
     """One thing an example expects: (ok, what it shows in plain words, the same with keys for the AI)."""
+    if c.get("told") is not None:
+        return _told(engine, c, names)
+    if "equals" in c:
+        c = {**c, "equals": _worked_out(c["equals"])}
     if c.get("count") is not None or (c.get("table") and not c.get("record")):
         t = _table(engine, c.get("table"))
         n = len(engine.rows(t["key"]))
@@ -1537,6 +1583,7 @@ def _play(trial, engine, example, names, out):
             return out
     flush()
     stopped = failed_runs(engine, last_run)
+    names["_first_run"] = last_run
     for c in example.get("expect") or []:
         try:
             ok, plain, detail = _expect(engine, c, names)
@@ -1637,13 +1684,14 @@ def _step_words(step):
     return f"{do} {step.get('record') or 'the one just added'}"
 
 
-def try_out(workspace, examples=(), screens=True):
-    """Walk the app and act out each example, each in its own throwaway copy. Returns (walked, results)."""
-    with copy_of(workspace) as trial:
+def try_out(workspace, examples=(), screens=True, blueprint=None):
+    """Walk the app and act out each example, each in its own throwaway copy. Returns (walked, results). `blueprint`: a
+    design to try instead of the app's own (a candidate the builder hasn't saved)."""
+    with copy_of(workspace, blueprint) as trial:
         walked = walk(trial, screens=screens)
     results = []
     for example in examples:
-        with copy_of(workspace) as trial:
+        with copy_of(workspace, blueprint) as trial:
             results.append(play(trial, example))
     for crash in walked["crashes"]:
         current_app.logger.warning("Trying out workspace %s: %s", workspace.id, crash)

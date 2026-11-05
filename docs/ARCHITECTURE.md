@@ -95,10 +95,33 @@ Only 1 was the model's own judgment.
 - Priorities: an owner chatting comes before background work.
 - Fairness between customers, a concurrency cap, and deadlines.
 
-**D9. FastAPI front.**
-- ASGI, with the current Flask app mounted inside (a2wsgi); routes move over one at a time.
+**D9. FastAPI replaces Flask entirely.**
+- v2 has no Flask. The core (engine, builder, language, simulator, runtime) depends on no web framework:
+  - plain SQLAlchemy 2 sessions instead of Flask-SQLAlchemy's `Model.query`;
+  - a settings object instead of `current_app.config`;
+  - context variables instead of `flask.g`.
+- FastAPI (ASGI, uvicorn) is a thin layer over that core:
+  - pages (the same Jinja templates, through Starlette);
+  - sign-in sessions and CSRF protection;
+  - REST v2, MCP and streaming.
+- While pages move over, the routes not yet moved stay mounted inside FastAPI (a2wsgi), so the app works at every
+  step. The last step deletes Flask, Flask-Login, Flask-WTF and Flask-SQLAlchemy.
 - One typed tool layer (describe, explain, what-if, apply, test, undo) serves the builder, the in-app assistant, MCP
   and REST v2.
+
+**D11. One registry, and the AI learns new components by itself.**
+- Every piece of the language registers itself (`app/lang/registry.py`): field kinds, triggers, steps, patterns and
+  patches.
+- Each one carries its shape, a one-line description, a short example, how it compiles and, for patterns, its own
+  checks.
+- Generated from the registry on every run, so a new component needs no prompt edit:
+  - the catalog in the builder's instructions;
+  - the output schema the model is held to;
+  - the App map's palette;
+  - the MCP and REST tool schemas.
+- A guard test fails the suite if a registered component has no description or example, if its example doesn't
+  compile on a sample app, or if its checks don't pass in the simulator.
+- When the registry changes, every app's checks run again (checking.after_platform_update).
 
 **D10. Tenancy and cells.**
 - Row-level security as a second lock behind the code's workspace filters.
@@ -110,14 +133,16 @@ Only 1 was the model's own judgment.
 
 | # | Work | Status |
 |---|------|--------|
-| 1 | Simulation database: the engine runs on in-memory SQLite (models portable, migrations PG-only) | in progress |
+| 1 | Simulation database: the engine runs on in-memory SQLite (models portable, migrations PG-only) | done (90700d5) |
 | 2 | Keel language: models, patches, compiler to the design, decompiler, static and whole-app checks | |
-| 3 | Patterns, each with its own checks | |
+| 3 | Patterns, each with its own checks; the registry, the generated catalog and schema, and the guard test | |
 | 4 | Checks language (given/when/then) and runner on the simulator; snapshots | |
 | 5 | Builder pipeline: needs → data → behaviour → compile → simulate → search → hand over; the chat turn moves onto it | |
 | 6 | Runtime: worker processes, SKIP LOCKED, scheduler leader, outbox, rule index | |
 | 7 | Queries in SQL: filters, sorts, search, paging, totals, unique and limit checks, imports | |
 | 8 | AI gateway: providers, priorities, fairness, deadlines | |
-| 9 | FastAPI front, typed tools, MCP and REST v2, streaming | |
+| 9a | Core free of Flask: SQLAlchemy 2 sessions, settings object, context variables (engine, builder, lang, sim, runtime) | |
+| 9b | FastAPI: pages, sessions, CSRF, typed tools, MCP and REST v2, streaming; routes moved over one by one | |
+| 9c | Flask removed (Flask, Flask-Login, Flask-WTF, Flask-SQLAlchemy out of requirements) | |
 | 10 | Tenancy: row-level security, vector filtering, object storage | |
 | 11 | Evals on the new builder | |

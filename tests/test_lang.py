@@ -1,0 +1,284 @@
+"""The Keel language (app/lang): patches compile to the design, every name is checked, features make their parts and
+prove themselves in the simulator, and every piece the registry has is one the AI can use (the guard)."""
+import json
+
+import pytest
+from pydantic import TypeAdapter
+
+from app import ai, lang
+from app.blueprint import schema
+from app.builder import trial
+from app.extensions import db
+from app.lang import model as m, patterns, registry
+from app.models import Membership, Message, User, Workspace
+
+# an app with every list the registry's examples name, for each piece's example to compile on
+EVERYTHING = [
+    {"do": "add_list", "key": "customers", "label": "Customers", "singular": "Customer", "fields": [
+        {"type": "text", "key": "name", "label": "Name", "required": True}, {"type": "email", "key": "email", "label": "Email"},
+        {"type": "number", "key": "discount_percent", "label": "Discount percent"}]},
+    {"do": "add_list", "key": "invoices", "label": "Invoices", "singular": "Invoice", "fields": [
+        {"type": "auto_number", "key": "number", "label": "Number", "prefix": "INV-"},
+        {"type": "link", "key": "customer", "label": "Customer", "to": "customers"},
+        {"type": "date", "key": "due_date", "label": "Due date"}, {"type": "money", "key": "total", "label": "Total"},
+        {"type": "file", "key": "pdf", "label": "PDF"}, {"type": "url", "key": "payment_link", "label": "Payment link"},
+        {"type": "money", "key": "balance", "label": "Balance"}, {"type": "link", "key": "job", "label": "Job", "to": "jobs"},
+        {"type": "date", "key": "issue_date", "label": "Issue date"}],
+     "stages": {"stages": ["Draft", "Sent", "Part paid", "Paid"], "moves": [
+         {"from": ["Draft"], "to": "Sent", "button": "Send"}, {"from": ["Sent"], "to": "Part paid", "button": "Part paid"},
+         {"from": ["Sent", "Part paid"], "to": "Paid", "button": "Mark paid"}]}},
+    {"do": "add_list", "key": "invoice_lines", "label": "Invoice lines", "singular": "Invoice line", "inside": "invoices", "fields": [
+        {"type": "text", "key": "description", "label": "Description"}]},
+    {"do": "add_list", "key": "payments", "label": "Payments", "singular": "Payment", "fields": [
+        {"type": "link", "key": "invoice", "label": "Invoice", "to": "invoices", "required": True},
+        {"type": "money", "key": "amount", "label": "Amount", "required": True}]},
+    {"do": "add_list", "key": "quotes", "label": "Quotes", "singular": "Quote", "fields": [
+        {"type": "link", "key": "customer", "label": "Customer", "to": "customers"}, {"type": "money", "key": "total", "label": "Total"}],
+     "stages": {"stages": ["Draft", "Sent", "Accepted", "Declined"], "moves": [
+         {"from": ["Draft"], "to": "Sent", "button": "Send"}, {"from": ["Sent"], "to": "Accepted", "button": "Accepted"},
+         {"from": ["Sent"], "to": "Declined", "button": "Declined"}]}},
+    {"do": "add_list", "key": "quote_lines", "label": "Quote lines", "singular": "Quote line", "inside": "quotes", "fields": [
+        {"type": "text", "key": "description", "label": "Description"}]},
+    {"do": "add_list", "key": "jobs", "label": "Jobs", "singular": "Job", "fields": [
+        {"type": "text", "key": "title", "label": "Title"}, {"type": "link", "key": "customer", "label": "Customer", "to": "customers"},
+        {"type": "person", "key": "assigned_to", "label": "Assigned to"}, {"type": "yes_no", "key": "billable", "label": "Billable"},
+        {"type": "date", "key": "scheduled_for", "label": "Scheduled for"}, {"type": "text", "key": "fax", "label": "Fax"},
+        {"type": "choice", "key": "priority", "label": "Priority", "options": ["Standard", "Urgent"]}],
+     "stages": {"stages": ["Booked", "In progress", "Done"]}},
+    {"do": "add_list", "key": "job_lines", "label": "Job lines", "singular": "Job line", "inside": "jobs", "fields": [
+        {"type": "text", "key": "description", "label": "Description"}]},
+    {"do": "add_list", "key": "orders", "label": "Orders", "singular": "Order", "fields": [{"type": "text", "key": "name", "label": "Name"}],
+     "stages": {"stages": ["New", "In fitting", "Ready"]}},
+    {"do": "add_list", "key": "bookings", "label": "Bookings", "singular": "Booking", "fields": [
+        {"type": "date", "key": "date", "label": "Date", "required": True}, {"type": "text", "key": "name", "label": "Name"}],
+     "stages": {"stages": ["Booked", "Done", "Cancelled"]}},
+    {"do": "add_list", "key": "appointments", "label": "Appointments", "singular": "Appointment", "fields": [
+        {"type": "date", "key": "starts_on", "label": "Starts on", "required": True},
+        {"type": "link", "key": "client", "label": "Client", "to": "customers"}]},
+    {"do": "add_list", "key": "members", "label": "Members", "singular": "Member", "fields": [
+        {"type": "text", "key": "name", "label": "Name"}, {"type": "choice", "key": "status", "label": "Status", "options": ["Active", "Lapsed"],
+                                                           "default": "Active"}]},
+    {"do": "add_list", "key": "services", "label": "Services", "singular": "Service", "fields": [
+        {"type": "text", "key": "name", "label": "Name"}, {"type": "money", "key": "price", "label": "Price"}]},
+    {"do": "add_list", "key": "notes", "label": "Notes", "singular": "Note", "fields": [{"type": "text", "key": "text", "label": "Text"}]},
+]
+
+
+def _invoices():
+    """The invoices list on its own (without its link to jobs)."""
+    patch = json.loads(json.dumps(EVERYTHING[1]))
+    patch["fields"] = [f for f in patch["fields"] if f["key"] != "job"]
+    return patch
+
+
+def everything():
+    out = lang.apply(schema.empty("Everything"), EVERYTHING)
+    assert not out.problems, out.problems
+    return out.blueprint
+
+
+def _workspace(app, bp):
+    user = User(email="owner@example.com", name="Olive")
+    user.set_password("x" * 12)
+    db.session.add(user)
+    db.session.flush()
+    ws = Workspace(owner_id=user.id, name="Test", blueprint=bp, state={}, timezone="Australia/Perth")
+    db.session.add(ws)
+    db.session.flush()
+    db.session.add(Membership(workspace_id=ws.id, user_id=user.id, role="owner"))
+    db.session.commit()
+    return ws
+
+
+def test_every_piece_of_the_language_says_what_it_does_and_shows_how():
+    for kind in registry.KINDS:
+        assert registry.items(kind), kind
+        for cls in registry.items(kind):
+            assert (cls.__doc__ or "").strip(), f"{cls.__name__} has no docstring: the AI wouldn't know what it does"
+            assert cls.__keel_example__ is not None, f"{cls.__name__} has no example"
+            TypeAdapter(cls).validate_python(cls.__keel_example__)  # its example is a valid one
+            assert cls.__name__ not in registry.catalog() or True
+    said = registry.catalog()
+    for cls in registry.items("feature") + registry.items("patch"):
+        assert registry._names(cls, cls.__keel_kind__) in said, f"{cls.__name__} isn't in what the AI is told"
+
+
+def test_each_patch_example_applies_on_an_app_that_has_what_it_names():
+    bp = everything()
+    bp = lang.apply(bp, [{"do": "add_rule", "rule": {"key": "job_done_invoice", "name": "Invoice", "when": {"on": "reaches", "list": "jobs", "stage": "Done"},
+                                                     "steps": [{"do": "notify", "message": "Done"}]}},
+                         {"do": "stage_alert", "list": "invoices", "stage": "Paid", "key": "alert_invoices_paid"}]).blueprint
+    for cls in registry.items("patch"):
+        if cls in (m.AddList,):
+            continue
+        out = lang.apply(bp, [cls.__keel_example__])
+        assert not out.problems, (cls.__name__, out.problems)
+
+
+@pytest.mark.parametrize("feature", [c.__name__ for c in registry.items("feature")])
+def test_each_feature_compiles_and_passes_its_own_checks_in_the_simulator(app, feature):
+    cls = next(c for c in registry.items("feature") if c.__name__ == feature)
+    out = lang.apply(everything(), [cls.__keel_example__])
+    assert not out.problems, out.problems
+    ws = _workspace(app, out.blueprint)
+    examples = patterns.checks(out.blueprint)
+    assert examples, f"{feature} writes no checks of its own"
+    walked, results = trial.try_out(ws, examples, screens=False)
+    failed = [(r["title"], r.get("problem")) for r in results if not r["ok"]]
+    assert not failed, failed
+    assert not [i for i in walked["issues"] if i["level"] == "fix"], walked["issues"]
+
+
+def test_a_feature_whose_parts_are_broken_fails_its_own_checks(app):
+    """The checks prove the feature works: take away the rule it made, and they fail."""
+    bp = lang.apply(everything(), [{"do": "payments", "list": "invoices", "payments": "payments", "paid_stage": "Paid"}]).blueprint
+    broken = lang.apply(bp, [{"do": "design_op", "op": {"op": "remove_automation", "key": "payments_invoices"}}]).blueprint
+    ws = _workspace(app, broken)
+    _, results = trial.try_out(ws, patterns.checks(broken), screens=False)
+    assert results and not all(r["ok"] for r in results)
+
+
+def test_names_are_checked_and_each_problem_says_where_and_what_is_there():
+    bp = everything()
+    out = lang.apply(bp, [
+        {"do": "add_rule", "rule": {"key": "r", "name": "R", "when": {"on": "reaches", "list": "invoices", "stage": "Payed"}, "steps": [{"do": "notify", "message": "x"}]}},
+        {"do": "add_rule", "rule": {"key": "r2", "name": "R2", "when": {"on": "added", "list": "payments"},
+                                    "steps": [{"do": "set", "on": "invoice", "values": [{"field": "status", "to": "Paid"}],
+                                               "only_if": [{"field": "status", "op": "equals", "value": "Sent"}]}]}},
+        {"do": "add_field", "list": "invoice", "field": {"type": "formula", "key": "x", "label": "X", "formula": "totl * 2"}},
+        {"do": "stage_alert", "list": "invoices", "stage": "Paid"},
+    ])
+    assert out.refused == [1, 2, 3]  # the good one still applied
+    said = "\n".join(out.problems)
+    assert "patch 1" in said and "“Payed” isn't a stage of Invoices" in said
+    assert "patch 2" in said and "“status” isn't a field of Payments" in said
+    assert "“totl” isn't a field of Invoices (did you mean total?)" in said
+    assert any(e["do"] == "stage_alert" for e in out.blueprint["features"])
+
+
+def test_a_condition_on_a_linked_records_choice_says_how_to_write_it():
+    bp = lang.apply(everything(), [{"do": "add_field", "list": "jobs", "field": {"type": "link", "key": "order", "label": "Order", "to": "orders"}}]).blueprint
+    out = lang.apply(bp, [{"do": "add_rule", "rule": {"key": "r", "name": "R", "when": {"on": "reaches", "list": "jobs", "stage": "Done"},
+                                                      "steps": [{"do": "set", "on": "order", "values": [{"field": "status", "to": "Ready"}],
+                                                                 "only_if": [{"field": "status", "op": "equals", "value": "In fitting"}]}]}}])
+    assert "write order.status" in out.problems[0]
+
+
+def test_lists_that_link_to_each_other_can_be_made_in_any_order_and_keep_their_field_order():
+    out = lang.apply(schema.empty(), [
+        {"do": "add_list", "key": "jobs", "label": "Jobs", "singular": "Job", "fields": [
+            {"type": "link", "key": "customer", "label": "Customer", "to": "customers"}, {"type": "text", "key": "title", "label": "Title"},
+            {"type": "lookup", "key": "phone", "label": "Phone", "path": "customer.phone"}]},
+        {"do": "add_list", "key": "customers", "label": "Customers", "singular": "Customer", "fields": [
+            {"type": "text", "key": "name", "label": "Name"}, {"type": "phone", "key": "phone", "label": "Phone"},
+            {"type": "total", "key": "jobs_count", "label": "Jobs", "of": "jobs", "link": "customer", "how": "count"}]}])
+    assert not out.problems, out.problems
+    jobs = schema.table(out.blueprint, "jobs")
+    assert [f["key"] for f in jobs["fields"]][:3] == ["customer", "title", "phone"]
+
+
+def test_changing_a_feature_remakes_its_parts_and_removing_it_takes_them_away():
+    bp = lang.apply(everything(), [{"do": "chase", "list": "invoices", "stage": "Sent", "days": 14, "key": "chase"}]).blueprint
+    assert any(a.get("feature") == "chase" for a in bp["automations"])
+    bp = lang.apply(bp, [{"do": "chase", "list": "invoices", "stage": "Sent", "days": 7, "since": "due_date", "key": "chase"}]).blueprint
+    keys = [a["key"] for a in bp["automations"] if a.get("feature") == "chase"]
+    assert keys == ["chase"]  # the stamp rule it no longer needs is gone
+    assert not schema.field(schema.table(bp, "invoices"), "sent_on")
+    out = lang.apply(bp, [{"do": "remove_feature", "feature": "chase"}])
+    assert not out.problems
+    assert not any(a.get("feature") == "chase" for a in out.blueprint["automations"])
+    assert not out.blueprint.get("features")
+
+
+def test_an_approval_puts_back_who_may_move_it_when_removed():
+    bp = everything()
+    before = schema.table(bp, "quotes")["workflow"]["transitions"]
+    bp = lang.apply(bp, [{"do": "approval", "list": "quotes", "stage": "Sent", "by": "owner"}]).blueprint
+    assert all(mv.get("who") == ["owner"] for mv in schema.table(bp, "quotes")["workflow"]["transitions"] if mv["to"] == "Sent")
+    bp = lang.apply(bp, [{"do": "remove_feature", "feature": "approval_quotes_sent"}]).blueprint
+    assert [{k: v for k, v in mv.items() if k != "feature"} for mv in schema.table(bp, "quotes")["workflow"]["transitions"]] == before
+
+
+def test_the_app_as_the_builder_reads_it_names_its_features_and_rules():
+    bp = lang.apply(everything(), [{"do": "stage_alert", "list": "invoices", "stage": "Paid"}]).blueprint
+    said = lang.describe(bp)
+    assert "alert_invoices_paid" in said and "invoices “Invoices” (Invoice)" in said
+    assert "stages (status): Draft → Sent → Part paid → Paid" in said
+
+
+class Model:
+    """Stands in for the AI in a builder turn: answers each step of the turn by what its instructions start with."""
+
+    def __init__(self, answers):
+        self.answers, self.asked = answers, []
+
+    def __call__(self, messages, schema=None, on_progress=None):
+        system = messages[0]["content"]
+        step = next((k for k, start in (("understand", "Read what the owner says"), ("data", "Now make the lists"),
+                                        ("behaviour", "Now make what the app does"), ("checks", "You check business apps"),
+                                        ("fix", "The app was tried out"), ("repair", "These patches couldn't")) if start in system), "other")
+        self.asked.append(step)
+        answer = self.answers.get(step, {"patches": []})
+        return json.dumps(answer(messages) if callable(answer) else answer), ""
+
+
+def test_a_turn_of_the_new_builder_works_out_the_needs_builds_them_and_proves_them(app):
+    app.config["BUILDER"] = "v2"
+    ws = _workspace(app, None)
+    model = Model({
+        "understand": {"needs": [{"said": "invoices with GST", "does": "Invoices add up their lines with GST"},
+                                 {"said": "tell me when one's paid", "does": "The owner is told when an invoice is paid"}],
+                       "reply": "I'll set up your invoices."},
+        "data": {"patches": [EVERYTHING[0], _invoices(), EVERYTHING[2]]},
+        "behaviour": {"work": [{"need": 1, "patches": [{"do": "line_totals", "list": "invoices", "lines": "invoice_lines", "tax_percent": 10, "tax_label": "GST"}]},
+                               {"need": 2, "patches": [{"do": "stage_alert", "list": "invoices", "stage": "Paid"}]}]},
+    })
+    ai.set_backend(model)
+    q = Message(workspace_id=ws.id, channel="builder", user_id=ws.owner_id, role="user", text="Invoices with GST, and tell me when one's paid")
+    a = Message(workspace_id=ws.id, channel="builder", role="assistant", status="queued")
+    db.session.add_all([q, a])
+    db.session.commit()
+    from app.builder import chat
+    chat.work(a.id)
+    a = db.session.get(Message, a.id)
+    assert a.status == "done", a.error
+    assert model.asked[:3] == ["understand", "data", "behaviour"]
+    assert "fix" not in model.asked  # it came out right: nothing to search for
+    titles = {x["title"]: x["ok"] for x in a.checks["examples"]}
+    assert titles and all(titles.values()), titles
+    assert "Invoices add up their lines with GST" in a.text
+    ws = db.session.get(Workspace, ws.id)
+    assert {e["do"] for e in ws.blueprint["features"]} == {"line_totals", "stage_alert"}
+
+
+def test_what_fails_is_put_right_by_the_best_of_several_candidate_fixes(app):
+    app.config["BUILDER"] = "v2"
+    ws = _workspace(app, None)
+    good = {"patches": [{"do": "payments", "list": "invoices", "payments": "payments", "paid_stage": "Paid", "key": "payments_invoices"}]}
+    bad = {"patches": [{"do": "add_field", "list": "invoices", "field": {"type": "text", "key": "memo", "label": "Memo"}}]}
+    fixes = iter([bad, good, bad])
+    model = Model({
+        "understand": {"needs": [{"said": "payments", "does": "Invoices are marked paid when paid"}], "reply": "OK."},
+        "data": {"patches": [EVERYTHING[0], _invoices(), EVERYTHING[3]]},
+        # a rule that doesn't do what's needed: its worked example fails, and the best candidate fix makes it come out right
+        "behaviour": {"work": [{"need": 1, "patches": [{"do": "add_rule", "rule": {"key": "paid", "name": "Note a payment",
+                                                                                   "when": {"on": "added", "list": "payments"},
+                                                                                   "steps": [{"do": "notify", "message": "A payment came in"}]}}]}]},
+        "checks": {"examples": [{"need": 1, "title": "A paid invoice is Paid", "steps": [
+            {"do": "add", "table": "invoices", "as": "i1", "values": {"total": 100}},
+            {"do": "add", "table": "payments", "as": "p1", "values": {"invoice": "i1", "amount": 100}}],
+            "expect": [{"record": "i1", "field": "status", "equals": "Paid"}]}]},
+        "fix": lambda messages: next(fixes),
+    })
+    ai.set_backend(model)
+    q = Message(workspace_id=ws.id, channel="builder", user_id=ws.owner_id, role="user", text="Mark invoices paid when they're paid")
+    a = Message(workspace_id=ws.id, channel="builder", role="assistant", status="queued")
+    db.session.add_all([q, a])
+    db.session.commit()
+    from app.builder import chat
+    chat.work(a.id)
+    a = db.session.get(Message, a.id)
+    assert a.status == "done", a.error
+    assert model.asked.count("fix") == 3  # three candidates at once
+    assert all(x["ok"] for x in a.checks["examples"]), a.checks["examples"]
+    assert a.checks["fixes"] == 1
