@@ -166,6 +166,9 @@ def _check_all(member=None):
                 e = Engine(ws, by="x", member=who)
                 want = e.aggregate(_reference(e, "orders", filters, q), aggregate, "amount")
                 assert Engine(ws, by="x", member=who).total("orders", aggregate, "amount", filters, q=q) == want, (aggregate, filters, q)
+                paged = Engine(ws, by="x", member=who)  # a list page's totals, added up as its records were counted
+                paged.page("orders", filters, q=q, limit=5, sums=["amount", "discount"])
+                assert paged.total("orders", aggregate, "amount", filters, q=q) == want, ("paged", aggregate, filters, q)
             first, n = Engine(ws, by="x", member=who).find("orders", q or "a", limit=5)
             e = Engine(ws, by="x", member=who)
             everything = e.search(e.visible_rows("orders"), q or "a")

@@ -45,6 +45,7 @@ COMPARE = {"greater_than": "__gt__", "less_than": "__lt__", "at_least": "__ge__"
 COMPARE_AST = {"greater_than": expr.ast.Gt(), "less_than": expr.ast.Lt(), "at_least": expr.ast.GtE(), "at_most": expr.ast.LtE()}
 RELATIVE = {"before_today", "after_today", "within_next_days", "within_last_days", "more_than_days_ago", *schema.PERIOD_OPS}
 CONSTANT = {"none": None, "": "", "[]": [], "true": True, "false": False}  # values told apart by type alone, as kept
+KINDS = (*CONSTANT, "number", "text", "list", "object")  # and those whose value matters: every kind of value there is
 NEAR = 1000  # parents whose lines are fetched together at most; more than that and the line table is read whole
 UNSURE = object()  # SQL can't tell for this kind of value: the record is checked in Python
 
@@ -209,29 +210,36 @@ class Scalar:
             return False
         return select(literal(1)).select_from(each).where(_sql(cond)).exists()
 
-    def classes(self):
-        """The kinds of value a record can keep under a key, each as a SQL test."""
-        return {"none": self.none(), "": and_(self.string(), self.text == ""), "[]": and_(self.array(), self.length() == 0),
-                "true": self.true(), "false": self.false(), "number": self.number(), "text": and_(self.string(), self.text != ""),
-                "list": and_(self.array(), self.length() > 0), "object": self.object()}
+    def by_kind(self, of):
+        """One test made of a test for each kind of value (KINDS): CASE on the value's type, so the type is read once a
+        record rather than once for each kind (on a list of a million, that's most of the work)."""
+        if all(of[k] is True for k in KINDS) or all(of[k] is False for k in KINDS):
+            return of["none"]
+
+        def split(test, a, b):
+            return a if a is b else case((test, _sql(a)), else_=_sql(b))
+        text, listed = split(self.text == "", of[""], of["text"]), split(self._length == 0, of["[]"], of["list"])
+        if self.pg:
+            whens = {"missing": of["none"], "null": of["none"], "string": text, "number": of["number"],
+                     "boolean": split(self.text == "true", of["true"], of["false"]), "array": listed, "object": of["object"]}
+        else:
+            whens = {"missing": of["none"], "null": of["none"], "text": text, "integer": of["number"], "real": of["number"],
+                     "true": of["true"], "false": of["false"], "array": listed, "object": of["object"]}
+        return _sure(case({k: _sql(x) for k, x in whens.items()}, value=self.kind, else_=false()))
 
 
 def combine(v, outcomes):
     """(yes, maybe) from what each kind of value gives: True, False, UNSURE, or (yes, unsure) tests for that kind."""
-    guards = v.classes()
-    yes, maybe = [], []
-    for kind, out in outcomes.items():
-        guard = guards[kind]
+    yes, maybe = {}, {}
+    for kind in KINDS:
+        out = outcomes.get(kind, False)
         if out is UNSURE:
-            maybe.append(guard)
-        elif out is True:
-            yes.append(guard)
-            maybe.append(guard)
-        elif out is not False:
-            y, u = out
-            yes.append(_all(guard, y))
-            maybe.append(_all(guard, _any(y, u)))
-    return _sure(_any(*yes)), _sure(_any(*maybe))
+            yes[kind], maybe[kind] = False, True
+        elif out is True or out is False:
+            yes[kind] = maybe[kind] = out
+        else:
+            yes[kind], maybe[kind] = out[0], _any(out[0], out[1])
+    return v.by_kind(yes), v.by_kind(maybe)
 
 
 class Planner:
@@ -778,28 +786,53 @@ class Plan:
         """Whether SQL leaves out any record at all (if not, reading the whole table, and keeping it, is no worse)."""
         return self.usable and len(self.where) > 3
 
-    def _stats(self, *extra):
-        """(how many it finds, how many of those SQL didn't settle, how many SQL can't put in order, *extra)."""
+    def _stats(self, sums=()):
+        """(how many it finds, how many of those SQL didn't settle, how many SQL can't put in order). A page and its
+        totals ask the same: what's found is counted once a request (until something is written), and the sums of the
+        columns a page will total (`sums`) are added up in the same reading of the table."""
         settled = _all((self.access or (True, True))[0], self.yes_f, self.yes_q)
         unordered = self.order[1] if self.order else False
+        asked = (self.table, repr(self.filters), self.q)
+        adding = [k for k in sums if (asked, k) not in self.e._counted and self._adding(k)]
+        if unordered is False and asked in self.e._counted and not adding:
+            return (*self.e._counted[asked], 0)
         cols = [func.count(Record.id),
                 literal(0) if settled is True else func.sum(case((_sql(settled), 0), else_=1)),
-                literal(0) if unordered is False else func.sum(case((_sql(unordered), 1), else_=0)), *extra]
-        return db.session.query(*cols).filter(*self.where).one()
+                literal(0) if unordered is False else func.sum(case((_sql(unordered), 1), else_=0))]
+        for k in adding:
+            amount, floats, odd = self._adding(k)
+            cols += [func.sum(amount), func.count(amount), floats, func.sum(case((_sql(odd), 1), else_=0))]
+        found = db.session.query(*cols).filter(*self.where).one()
+        self.e._counted[asked] = tuple(found[:2])
+        for i, k in enumerate(adding):
+            self.e._counted[(asked, k)] = tuple(found[3 + 4 * i: 7 + 4 * i])
+        return found[:3]
 
-    def exact(self, *extra):
-        """(how many it finds, whether SQL alone settles which, whether SQL alone puts them in order, *extra)."""
-        total, unsettled, unordered, *more = self._stats(*extra)
+    def _adding(self, key):
+        """(each record's amount as SQL adds it, whether any was written with a point, whether any is one Python reads
+        its own way) for a kept number field; None for anything else."""
+        f = self.e.field(self.table, key) if key else None
+        if f is None or f["type"] not in NUMERIC or f.get("sensitive") or not KEY.match(key):
+            return None
+        v = self.planner.value(key)
+        odd = _any(and_(v.string(), v.text != ""), v.boolean())  # to_number reads text and true/false its own way
+        if self.planner.pg:  # added as decimals, exactly; whether any was written with a point decides int or float
+            return case((v.number(), cast(v.text, Numeric))), func.bool_or(_all(v.number(), v.text.op("~")("[.eE]"))), odd
+        return v.num, func.max(case((v.kind == "real", 1), else_=0)), odd
+
+    def exact(self, sums=()):
+        """(how many it finds, whether SQL alone settles which, whether SQL alone puts them in order)."""
+        total, unsettled, unordered = self._stats(sums)
         whole = not self.residual and self.access is not None and not unsettled
-        return (total or 0, whole, whole and self.order is not None and not unordered, *more)
+        return total or 0, whole, whole and self.order is not None and not unordered
 
     def count(self):
         total, whole, _ = self.exact()
         return total if whole else len(self.rows(ordered=False))
 
-    def page(self, offset, limit):
-        """(the records on this page, how many there are in all)."""
-        total, _, ordered = self.exact()
+    def page(self, offset, limit, sums=()):
+        """(the records on this page, how many there are in all). `sums`: the columns it will be totalled by."""
+        total, _, ordered = self.exact(sums)
         if ordered:
             rows = db.session.query(Record).filter(*self.where).order_by(*self.order[0]).offset(offset).limit(limit).all()
             self.e._found(self.table, rows)
@@ -860,15 +893,15 @@ class Plan:
         """Engine.aggregate over the records found, from SQL when the field is a kept number; UNSURE when SQL can't say."""
         if aggregate == "count":
             return self.count()
-        f = self.e.field(self.table, key) if key else None
-        if f is None or f["type"] not in NUMERIC or f.get("sensitive") or not KEY.match(key) \
-                or aggregate not in ("sum", "avg", "min", "max", "median"):
+        if aggregate not in ("sum", "avg", "min", "max", "median") or self._adding(key) is None:
+            return UNSURE
+        total, whole, _ = self.exact([key])
+        if not whole:
+            return UNSURE
+        added, n, fraction, odd_ones = self.e._counted[((self.table, repr(self.filters), self.q), key)]
+        if odd_ones:
             return UNSURE
         v = self.planner.value(key)
-        odd = _any(and_(v.string(), v.text != ""), v.boolean())  # to_number reads text and true/false its own way
-        total, whole, _, odd_ones = self.exact(func.sum(case((_sql(odd), 1), else_=0)))
-        if not whole or odd_ones:
-            return UNSURE
         numbers = and_(*self.where, v.number())
         if aggregate in ("min", "max"):  # the first lowest (or highest), as Python's min and max give
             pick = v.num.asc() if aggregate == "min" else v.num.desc()
@@ -876,12 +909,6 @@ class Plan:
             return row[0] if row else None
         if aggregate == "median":
             return self.e.of_numbers([x for (x,) in db.session.query(Record.data[key]).filter(numbers).order_by(Record.id)], "median")
-        if self.planner.pg:  # added as decimals, exactly; whether any was written with a point decides int or float
-            amount = case((v.number(), cast(v.text, Numeric)))
-            floats = func.bool_or(_all(v.number(), v.text.op("~")("[.eE]")))
-        else:
-            amount, floats = v.num, func.max(case((v.kind == "real", 1), else_=0))
-        added, n, fraction = db.session.query(func.sum(amount), func.count(amount), floats).filter(*self.where).one()
         if not n:
             return 0 if aggregate == "sum" else None
         if aggregate == "sum":

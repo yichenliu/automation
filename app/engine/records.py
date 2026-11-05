@@ -288,6 +288,7 @@ class Engine:
         self.rates = {str(k).upper(): float(v) for k, v in (money.get("rates") or {}).items() if to_number(v)}
         self._rows, self._by_id, self._memo, self._index, self._computing, self._seals = {}, {}, {}, {}, set(), {}
         self._kids, self._near, self._titled, self._misses, self._queried = {}, {}, {}, {}, {}  # lines per parent, what is shown
+        self._counted = {}  # how many a query finds, counted by SQL (engine/planner.py)
         self.started = []  # automation runs this engine started (so a screen can say what ran)
         self._members, self._files, self._sources = None, {}, None
         self._depth, self._after, self._touched, self._failed = 0, [], set(), False
@@ -482,6 +483,7 @@ class Engine:
         self._rows, self._by_id, self._memo, self._index, self._files = {}, {}, {}, {}, {}
         self._seals, self._asked_ids = {}, None
         self._kids, self._near, self._titled, self._misses, self._queried, self._dirty = {}, {}, {}, {}, {}, set()
+        self._counted = {}
 
     def _forget(self, tables):
         """After a write that isn't committed yet (inside atomic()): only what was read from the tables written is read
@@ -495,7 +497,7 @@ class Engine:
                     del kept[key]
             for key in [k for k in self._titled if k[0] == table]:
                 del self._titled[key]
-        self._memo, self._files, self._seals, self._asked_ids, self._queried = {}, {}, {}, None, {}
+        self._memo, self._files, self._seals, self._asked_ids, self._queried, self._counted = {}, {}, {}, None, {}, {}
         self._dirty = set()
 
     def _sql_plan(self, table, filters=None, q=None, sort=None):
@@ -507,14 +509,15 @@ class Engine:
         plan = Plan(self, table, filters, q, sort)
         return plan if plan.usable else None
 
-    def page(self, table, filters=None, q=None, sort=None, offset=0, limit=50):
+    def page(self, table, filters=None, q=None, sort=None, offset=0, limit=50, sums=()):
         """(one page of a query's records, how many it finds in all): query(...)[offset:offset + limit] and its length,
-        from SQL alone (LIMIT, COUNT) when SQL can settle every record."""
+        from SQL alone (LIMIT, COUNT) when SQL can settle every record. `sums`: the columns the page will be totalled by
+        (total()), added up as the records are counted."""
         plan = self._sql_plan(table, filters, q, sort)
         if plan is None:
             rows = self.query(table, filters, q=q, sort=sort)
             return rows[offset:offset + limit], len(rows)
-        return plan.page(offset, limit)
+        return plan.page(offset, limit, sums)
 
     def count(self, table, filters=None, q=None):
         """len(query(table, filters, q)), counted by SQL when it can be."""

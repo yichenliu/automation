@@ -163,7 +163,8 @@ def table(wid, table):
     first = PAGE_SIZE if listing else {"gallery": 200, "inbox": 300, "sheet": 500}.get(kind)
     if first and group_field is None:  # a page of a list: only what's shown is read (engine.page), the count from SQL
         offset = (page - 1) * PAGE_SIZE if listing else 0
-        rows, total = engine.page(t["key"], filters, q=q, sort=sort, offset=offset, limit=first)
+        summed = [f["key"] for f in columns(t, view) if engine.summable(f)] if listing else []  # added up as they're counted
+        rows, total = engine.page(t["key"], filters, q=q, sort=sort, offset=offset, limit=first, sums=summed)
     else:  # a board, a calendar, a map, a grouped list: every record has its place
         rows = engine.query(t["key"], filters, q=q, sort=sort)
         total = len(rows)
