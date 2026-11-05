@@ -931,6 +931,84 @@ class Recurring(Feature):
         return f"makes {self.to_list} for each {self.from_list.rstrip('s')} every {self.every}"
 
 
+@register("feature", {"do": "gate", "list": "jobs", "stage": "In progress", "needs": ["assigned_to", "billable"]})
+class Gate(Feature):
+    """A record can't move into a stage until these fields are filled in (a yes/no field: ticked): a unit can't be
+    assigned until the ID is checked and the agreement signed; a job can't start until it has someone on it."""
+    do: Literal["gate"] = "gate"
+    list: str
+    stage: str
+    needs: list[str]
+
+    def default_key(self):
+        return f"gate_{self.list}_{self.stage}"
+
+    def build(self, d, where):
+        t = _t(d, self.list, where)
+        f, stage = _stage(d, t, self.stage, where)
+        fields = []
+        for name in self.needs:
+            nf = d.field(t, name)
+            if nf is None:
+                raise Problem(f"{where} › needs: {name} isn't a field of {t['label']} (its fields: {', '.join(d.field_names(t))})")
+            if nf["type"] in schema.CALCULATED:
+                raise Problem(f"{where} › needs: {nf['key']} is worked out, so nobody fills it in: name the fields people fill in")
+            fields.append(nf)
+        flow = copy.deepcopy(t.get("workflow") or {})
+        entry = next((e for e in d.bp.get("features", []) if e["key"] == self.feature_key()), None)
+        original = (entry or {}).get("undo", {}).get("workflow", {}).get(t["key"]) or flow.get("transitions") or []
+        if not any(mv["to"] == stage for mv in original):
+            raise Problem(f"{where}: no move takes {_a(t['singular'].lower())} to {stage} by hand, so there's nothing to hold back; add one (set_stages)")
+        ticks = [nf["key"] for nf in fields if nf["type"] == "checkbox"]
+        filled = [nf["key"] for nf in fields if nf["type"] != "checkbox"]
+        moves = copy.deepcopy(original)
+        for mv in moves:
+            if mv["to"] != stage:
+                continue
+            mv["feature"] = self.feature_key()
+            if filled:
+                mv["requires"] = list(dict.fromkeys(list(mv.get("requires") or []) + filled))
+            if ticks:
+                mv["only_if"] = list(mv.get("only_if") or []) + [{"field": k, "op": "equals", "value": True} for k in ticks]
+        flow["transitions"] = moves
+        made = Made()
+        made.ops.append({"op": "update_table", "table": t["key"], "workflow": flow})
+        made.undo = {"workflow": {t["key"]: original}}
+        return made
+
+    def checks(self, d):
+        t = d.list(self.list)
+        stage = d.choice(d.stage_field(t), self.stage)
+        flow = t.get("workflow") or {}
+        before = next((mv["from"][0] for mv in flow.get("transitions", []) if mv["to"] == stage and mv.get("from")), None)
+        start = flow.get("start") or d.stages(t)[0]
+        lead = [{"do": "move", "record": "{alias}", "to": before}] if before and before != start else []
+        empty = {}
+        for name in self.needs:
+            nf = d.field(t, name)
+            if nf["type"] == "checkbox":
+                empty[nf["key"]] = False
+        full = {}
+        for i, name in enumerate(self.needs):
+            nf = d.field(t, name)
+            full[nf["key"]] = True if nf["type"] == "checkbox" else ("today" if d.kind(nf) == "date" else _sample(d, nf, i, "r2"))
+        steps1 = adding(d, t, "r1", empty) + [{**s, "record": "r1"} for s in lead] + [{"do": "move", "record": "r1", "to": stage, "refused": True}]
+        steps2 = adding(d, t, "r2", full) + [{**s, "record": "r2"} for s in lead] + [{"do": "move", "record": "r2", "to": stage}]
+        for s_ in steps1[:-1]:  # what the gate needs is left out of the first, whatever adding() would have filled in
+            if s_.get("do") == "add" and s_.get("as") == "r1":
+                for name in self.needs:
+                    nf = d.field(t, name)
+                    if nf["type"] != "checkbox":
+                        s_["values"].pop(nf["key"], None)
+        return [{"title": f"{_a(t['singular'])} can't move to {stage} until {', '.join(self.needs)} {'is' if len(self.needs) == 1 else 'are'} done",
+                 "steps": steps1, "expect": [{"record": "r1", "field": d.stage_field(t)["key"], "not_equals": stage}]},
+                {"title": f"Once {', '.join(self.needs)} {'is' if len(self.needs) == 1 else 'are'} done, it can move to {stage}",
+                 "steps": steps2, "expect": [{"record": "r2", "field": d.stage_field(t)["key"], "equals": stage}]}]
+
+    def said(self, d):
+        return f"keeps {self.list} from {self.stage} until {', '.join(self.needs)} {'is' if len(self.needs) == 1 else 'are'} done"
+
+
 @register("feature", {"do": "lock", "list": "invoices", "stages": ["Sent", "Paid"]})
 class Lock(Feature):
     """Records at these stages can't be changed (except by the owner): a sent invoice stays as it was sent."""
