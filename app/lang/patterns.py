@@ -312,7 +312,7 @@ class ApprovalNeeded(Feature):
         values, after = big
         out = [{"title": f"Staff can't move {_a(t['singular'].lower())} to {stage} without the OK" + (f" (over {self.over.amount:g})" if self.over else ""),
                 "steps": adding(d, t, "q1", values) + after + [{"do": "move", "record": "q1", "to": stage, "by": "staff", "refused": True}],
-                "expect": [{"record": "q1", "field": d.stage_field(t)["key"], "equals": (t.get("workflow") or {}).get("start") or d.stages(t)[0]}]}]
+                "expect": [{"record": "q1", "field": d.stage_field(t)["key"], "not_equals": stage}]}]
         if approver is None:
             values2, after2 = setting(d, t, schema.slug(self.over.field), self.over.amount * 10 + 100, "q2") if self.over else ({}, [])
             out.append({"title": f"The owner can move it to {stage}",
@@ -708,11 +708,18 @@ class Convert(Feature):
         values = {back_key: "{{record}}", **ir_values(d, src, dst, self.values, where)}
         actions = [{"type": "create_record", "table": dst["key"], "values": values, "copy_matching": True}]
         if self.from_lines or self.to_lines:
-            fl, tl = _t(d, self.from_lines or "", where, "from_lines"), _t(d, self.to_lines or "", where, "to_lines")
+            lines_of = lambda t: [x["key"] for x in d.lists if any(f["type"] == "link" and f.get("table") == t["key"] for f in x["fields"]) and x.get("embedded")]  # noqa: E731
+            hint = (f" ({src['key']}'s lines: {', '.join(lines_of(src)) or 'none'}; {dst['key']}'s lines: {', '.join(lines_of(dst)) or 'none'}; "
+                    f"to copy just the record, leave out from_lines and to_lines)")
+            if not self.from_lines or not self.to_lines:
+                raise Problem(f"{where}: give both from_lines and to_lines, or neither" + hint)
+            fl, tl = d.list(self.from_lines), d.list(self.to_lines)
+            if fl is None or tl is None:
+                raise Problem(f"{where}: {self.from_lines if fl is None else self.to_lines} isn't a list" + hint)
             via = next((x for x in fl["fields"] if x["type"] == "link" and x.get("table") == src["key"]), None)
             up = next((x for x in tl["fields"] if x["type"] == "link" and x.get("table") == dst["key"]), None)
             if via is None or up is None:
-                raise Problem(f"{where}: {fl['key']} needs a link to {src['key']} and {tl['key']} a link to {dst['key']}")
+                raise Problem(f"{where}: from_lines must be {src['key']}'s lines and to_lines {dst['key']}'s" + hint)
             actions.append({"type": "create_for_each", "table": tl["key"], "source": {"table": fl["key"], "via": via["key"]},
                             "values": {up["key"]: "{{created}}"}, "copy_matching": True})
         if self.when_stage:

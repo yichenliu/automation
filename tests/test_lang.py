@@ -254,8 +254,8 @@ def test_a_turn_of_the_new_builder_works_out_the_needs_builds_them_and_proves_th
 def test_what_fails_is_put_right_by_the_best_of_several_candidate_fixes(app):
     app.config["BUILDER"] = "v2"
     ws = _workspace(app, None)
-    good = {"patches": [{"do": "payments", "list": "invoices", "payments": "payments", "paid_stage": "Paid", "key": "payments_invoices"}]}
-    bad = {"patches": [{"do": "add_field", "list": "invoices", "field": {"type": "text", "key": "memo", "label": "Memo"}}]}
+    good = {"work": [{"need": 1, "patches": [{"do": "payments", "list": "invoices", "payments": "payments", "paid_stage": "Paid", "key": "payments_invoices"}]}]}
+    bad = {"work": [{"need": 0, "patches": [{"do": "add_field", "list": "invoices", "field": {"type": "text", "key": "memo", "label": "Memo"}}]}]}
     fixes = iter([bad, good, bad])
     model = Model({
         "understand": {"needs": [{"said": "payments", "does": "Invoices are marked paid when paid"}], "reply": "OK."},
@@ -282,3 +282,28 @@ def test_what_fails_is_put_right_by_the_best_of_several_candidate_fixes(app):
     assert model.asked.count("fix") == 3  # three candidates at once
     assert all(x["ok"] for x in a.checks["examples"]), a.checks["examples"]
     assert a.checks["fixes"] == 1
+    assert a.checks["needs"] == [{"does": "Invoices are marked paid when paid", "said": "payments", "suggested": False, "state": "ok"}]
+    assert a.text.startswith("Your app is ready to try.") and "What your app does now:\n- Invoices are marked paid when paid" in a.text
+
+
+def test_a_need_whose_patches_were_all_refused_is_said_as_not_made_yet(app):
+    app.config["BUILDER"] = "v2"
+    ws = _workspace(app, None)
+    wrong = {"work": [{"need": 1, "patches": [{"do": "stage_alert", "list": "invoices", "stage": "Settled"}]}]}
+    model = Model({
+        "understand": {"needs": [{"said": "tell me when paid", "does": "The owner is told when an invoice is paid"}], "reply": "OK."},
+        "data": {"patches": [EVERYTHING[0], _invoices()]},
+        "behaviour": wrong, "repair": wrong, "fix": wrong,
+    })
+    ai.set_backend(model)
+    q = Message(workspace_id=ws.id, channel="builder", user_id=ws.owner_id, role="user", text="Tell me when an invoice is paid")
+    a = Message(workspace_id=ws.id, channel="builder", role="assistant", status="queued")
+    db.session.add_all([q, a])
+    db.session.commit()
+    from app.builder import chat
+    chat.work(a.id)
+    a = db.session.get(Message, a.id)
+    assert a.status == "done", a.error
+    assert a.checks["needs"][0]["state"] == "unmade"
+    assert a.text.startswith("Not everything works yet") and "I couldn't make this yet: The owner is told when an invoice is paid" in a.text
+    assert "(not made yet)" in a.text

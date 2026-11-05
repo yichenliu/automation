@@ -1233,6 +1233,11 @@ def _expect(engine, c, names):
     """One thing an example expects: (ok, what it shows in plain words, the same with keys for the AI)."""
     if c.get("told") is not None:
         return _told(engine, c, names)
+    if "not_equals" in c:  # anything but this ("not Approved" after a move that's refused part of the way)
+        same, plain, said = _expect(engine, {k: v for k, v in c.items() if k != "not_equals"} | {"equals": c["not_equals"]}, names)
+        if same:
+            return False, f"{plain}, expected anything but that", said.replace("; expected", "; expected anything but")
+        return True, plain.replace(" came out ", " is ").replace(", expected ", ", not "), said
     if "equals" in c:
         c = {**c, "equals": _worked_out(c["equals"])}
     if c.get("count") is not None or (c.get("table") and not c.get("record")):

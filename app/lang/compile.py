@@ -604,23 +604,39 @@ def apply(bp, raw_patches, allowed=None):
         have = [f["key"] for f in t["fields"]]
         if [k for k in have if k in wanted] != [k for k in wanted if k in have]:
             _apply_ops(out, [{"op": "order_fields", "table": t["key"], "fields": [k for k in wanted if k in have] + [k for k in have if k not in wanted]}], where(n, p))
-    # everything else, one patch at a time
-    for n, p in rest:
-        here = where(n, p)
-        try:
-            if isinstance(p, patterns.ALL):
-                ok = patterns.apply(out, p, here)
-                if ok:
-                    out.features.append(p.feature_key())
-            elif isinstance(p, m.RemoveFeature):
-                ok = patterns.remove(out, schema.slug(p.feature), here)
+    # everything else, one patch at a time; one refused is tried again once the rest are in (a feature that reads a
+    # total another feature in the same batch makes), and only its last problems are kept
+    waiting, said = list(rest), {}
+    for _ in range(3):
+        again = []
+        for n, p in waiting:
+            here = where(n, p)
+            before = len(out.problems)
+            try:
+                if isinstance(p, patterns.ALL):
+                    ok = patterns.apply(out, p, here)
+                    if ok:
+                        out.features.append(p.feature_key())
+                elif isinstance(p, m.RemoveFeature):
+                    ok = patterns.remove(out, schema.slug(p.feature), here)
+                else:
+                    ok = _apply_ops(out, translate(Design(out.blueprint), p, here), here)
+            except Problem as exc:
+                out.problems.append(str(exc))
+                ok = False
+            new = out.problems[before:]
+            del out.problems[before:]
+            if ok:
+                said.pop(n, None)
             else:
-                ok = _apply_ops(out, translate(Design(out.blueprint), p, here), here)
-        except Problem as exc:
-            out.problems.append(str(exc))
-            ok = False
-        if not ok:
-            refused.add(n)
+                said[n] = new
+                again.append((n, p))
+        if not again or len(again) == len(waiting):
+            break
+        waiting = again
+    for n in sorted(said):
+        out.problems.extend(said[n])
+        refused.add(n)
     out.refused = sorted(refused)
     return out
 
@@ -689,6 +705,13 @@ def translate(d, p, where):
         return [{"op": "add_records", "table": t["key"], "records": p.records}]
     if isinstance(p, m.AddRule):
         return [{"op": "add_automation", "automation": ir_rule(d, p.rule, where)}]
+    if isinstance(p, (m.ChangeRule, m.RemoveRule)):
+        name = schema.slug(p.rule)
+        made = next((a for a in d.bp.get("automations", []) if a["key"] == name and a.get("feature")), None)
+        entry = next((e for e in d.bp.get("features", []) if e["key"] in (name, (made or {}).get("feature"))), None)
+        if entry is not None:
+            raise Problem(f"{where}: “{p.rule}” is made by the feature {entry['key']} ({entry['do']}): change the feature instead "
+                          f"(send it again with \"key\": \"{entry['key']}\" and what should be different), or remove_feature it")
     if isinstance(p, m.ChangeRule):
         old = next((a for a in d.bp.get("automations", []) if a["key"] == schema.slug(p.rule) or a["name"].lower() == p.rule.lower()), None)
         if old is None:

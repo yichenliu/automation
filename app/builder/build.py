@@ -91,16 +91,17 @@ Expect:
 
 FIX = BASE + """
 
-The app was tried out in a copy and the checks below didn't come out right. Send the patches that make them come out
-right. The checks are what the owner needs: change the app, never the checks. Change only what's needed; leave what
-works as it is.
+The app was tried out in a copy and the checks below didn't come out right, and some needs aren't made yet. Send the
+patches that make them come out right and make what's missing, each for its need (need 0: a fix that isn't about one
+need). The checks are what the owner needs: change the app, never the checks. Change only what's needed; leave what
+works as it is. A feature's parts are changed by sending the feature again with its key.
 
 {catalog}"""
 
 REPAIR = BASE + """
 
-These patches couldn't be applied, for the reasons given. Send them again, corrected (only these; what else you sent
-is saved). If one can't be done in Keel, leave it out and say why in "reply".
+These patches couldn't be applied, for the reasons given. Send each of them again, corrected, for the same need (what
+else you sent is saved). Leave one out only if Keel truly can't do it, and say why in "reply".
 
 {catalog}"""
 
@@ -262,6 +263,8 @@ class Turn:
         self.message, self.workspace, self.question = message, workspace, question
         self.notes, self.changes, self.log = [], [], []  # log: each patch set sent, and what the platform said to it
         self.by = question.user_id if question else None
+        self.tried, self.made = set(), set()  # the needs (by number) patches were sent for, and made for
+        self.features = {}  # feature key -> the need it was made for
 
     def note(self, text):
         self.notes.append(text)
@@ -297,29 +300,71 @@ class Turn:
             self.changes += out.changes
             db.session.commit()
 
-    def apply(self, patches, group, needs_text):
+    def credit(self, patches, out, owners):
+        """Which needs the applied patches were for (and which features they made)."""
+        made = credited(patches, out, owners)
+        for i, p in enumerate(patches):
+            if owners.get(i):
+                self.tried.add(owners[i])
+        self.made |= made["needs"]
+        self.features.update(made["features"])
+
+    def apply(self, patches, group, needs_text, owners=None):
         """Apply patches; send the refused ones back to be corrected, twice at most. The outcome as finally saved."""
+        owners = owners or {}
         out = lang.apply(self.bp, patches)
         self.log.append({"step": group, "patches": patches, "problems": out.problems})
         self.save(out)
+        self.credit(patches, out, owners)
         sent = list(patches)
         for _ in range(REPAIRS):
             if not out.problems:
                 break
-            refused = [sent[n - 1] for n in out.refused if 0 < n <= len(sent)]
+            refused = [(sent[n - 1], owners.get(n - 1)) for n in out.refused if 0 < n <= len(sent)]
             if not refused:
                 break
             self.note(f"Correcting {len(refused)} change{'s' if len(refused) != 1 else ''} the platform couldn't make as sent")
             user = (f"{self.about()}\n\nThe needs:\n{needs_text}\n\nThe app now:\n{lang.describe(self.bp)}\n\nRefused patches:\n"
-                    + "\n".join(json.dumps(p, ensure_ascii=False)[:1500] for p in refused) + "\n\nWhy:\n- " + "\n- ".join(out.problems[:12]))
-            answer = _ask(REPAIR.format(catalog=catalog(group)), user, _answer_schema(group), self.progress)
-            sent = answer.get("patches") or []
+                    + "\n".join((f"(need {need}) " if need else "") + json.dumps(p, ensure_ascii=False)[:1500] for p, need in refused)
+                    + "\n\nWhy:\n- " + "\n- ".join(out.problems[:12]))
+            by_need = group == "behaviour"
+            answer = _ask(REPAIR.format(catalog=catalog(group)), user, _answer_schema(group, by_need=by_need), self.progress)
+            sent, owners = flatten(answer) if by_need else (answer.get("patches") or [], {})
             if not sent:
                 break
             out = lang.apply(self.bp, sent)
             self.log.append({"step": f"{group} corrected", "patches": sent, "problems": out.problems})
             self.save(out)
+            self.credit(sent, out, owners)
         return out
+
+
+def flatten(answer):
+    """(patches, {index: need}) from an answer that groups its patches by need."""
+    sent, owners = [], {}
+    for w in answer.get("work") or []:
+        for p in w.get("patches") or []:
+            if w.get("need"):
+                owners[len(sent)] = w.get("need")
+            sent.append(p)
+    return sent, owners
+
+
+def credited(patches, out, owners):
+    """The needs whose patches applied, and the features they made: {"needs": {n}, "features": {key: n}}."""
+    from ..lang import compile as lc
+    needs, features = set(), {}
+    refused = set(out.refused)
+    for i, p in enumerate(patches):
+        if i + 1 in refused:
+            continue
+        need = owners.get(i)
+        if need:
+            needs.add(need)
+        parsed, _ = lc.parse([p])
+        if parsed and hasattr(parsed[0][1], "feature_key"):
+            features[parsed[0][1].feature_key()] = need
+    return {"needs": needs, "features": features}
 
 
 def work(message_id):
@@ -388,25 +433,21 @@ def _turn(turn):
         turn.note("Making what it does")
         behaviour = _ask(BEHAVIOUR.format(catalog=catalog("behaviour")), f"{turn.about()}\n\nThe needs:\n{needs_text}\n\nThe app now:\n{lang.describe(turn.bp)}",
                          _answer_schema("behaviour", by_need=True), turn.progress)
-        sent, owners = [], {}
-        for w in behaviour.get("work") or []:
-            for p in w.get("patches") or []:
-                owners[len(sent)] = w.get("need")
-                sent.append(p)
+        sent, owners = flatten(behaviour)
         if sent:
-            turn.apply(sent, "behaviour", needs_text)
-        # worked examples for the needs no feature checks (a feature writes its own)
-        featured = {e["key"] for e in turn.bp.get("features", [])}
-        by_rule = sorted({owners[i] for i, p in enumerate(sent) if isinstance(p, dict) and p.get("do") in ("add_rule", "change_rule")} - {None})
+            turn.apply(sent, "behaviour", needs_text, owners)
+        # worked examples for the needs met by rules (a feature writes its own checks)
+        by_rule = sorted({owners[i] for i, p in enumerate(sent) if isinstance(p, dict) and p.get("do") in ("add_rule", "change_rule")
+                          and owners.get(i) in turn.made})
         if by_rule:
             turn.note("Writing checks for what isn't a ready-made feature")
             wanted = "\n".join(f"{i}. {needs[i - 1].does}" for i in by_rule if 0 < i <= len(needs))
             found = _ask(CHECKS.format(when_none=""), f"{turn.about()}\n\nThe needs to check:\n{wanted}\n\nThe app:\n{lang.describe(turn.bp)}",
                          EXAMPLE_SCHEMA, turn.progress).get("examples") or []
             titles = {x.get("title") for x in custom}
-            custom += [{**{k: v for k, v in x.items() if k != "need"}, "by": "builder", "need": needs[x["need"] - 1].does if 0 < x.get("need", 0) <= len(needs) else ""}
+            custom += [{**{k: v for k, v in x.items() if k != "need"}, "by": "builder",
+                        "need": needs[x["need"] - 1].does if 0 < (x.get("need") or 0) <= len(needs) else ""}
                        for x in found if isinstance(x, dict) and x.get("steps") and x.get("expect") and x.get("title") not in titles][:6]
-        del featured
     if not turn.changes and not mending and not needs:
         turn.message.text, turn.message.status, turn.message.finished_at = reply or "Tell me what you'd like your app to do.", "done", utcnow()
         db.session.commit()
@@ -420,34 +461,52 @@ def _turn(turn):
     required = [x.get("title") for x in examples]
     rounds = 0
     for rounds in range(1, SEARCH_ROUNDS + 1 + (1 if mending else 0)):
-        failing = _failing(best)
-        if not failing and not best["hard"]:
+        failing, unmade = _failing(best), sorted(turn.tried - turn.made)
+        if not failing and not best["hard"] and not unmade:
             rounds -= 1
             break
-        turn.note(f"Putting right {len(failing) + len(best['hard'])} thing{'s' if len(failing) + len(best['hard']) != 1 else ''} "
-                  f"that didn't come out right (trying {CANDIDATES} ways)")
+        n = len(failing) + len(best["hard"]) + len(unmade)
+        turn.note(f"Putting right {n} thing{'s' if n != 1 else ''} that didn't come out right or aren't made yet (trying {CANDIDATES} ways)")
         user = (f"{turn.about()}\n\nThe needs:\n{needs_text or '(as the app is)'}\n\nThe app now:\n{lang.describe(turn.bp)}\n\n"
-                f"Didn't come out right:\n{_said_failing(best)}")
-        answers = _ask_many(FIX.format(catalog=catalog("all")), user, _answer_schema("all"), CANDIDATES)
+                + (f"Didn't come out right:\n{_said_failing(best)}\n\n" if failing or best["hard"] else "")
+                + (f"Not made yet: {', '.join(f'need {i}' for i in unmade)} (what was sent for them was refused)\n" if unmade else ""))
+        answers = _ask_many(FIX.format(catalog=catalog("all")), user, _answer_schema("all", by_need=True), CANDIDATES)
         tried = []
         for answer in answers:
-            patches = answer.get("patches") or []
+            patches, owners = flatten(answer)
             if not patches:
                 continue
             out = lang.apply(turn.bp, patches)
             turn.log.append({"step": f"fix {rounds}", "patches": patches, "problems": out.problems})
             if not out.changes:
                 continue
+            made = credited(patches, out, owners)
             run = _run(workspace, out.blueprint, _suite(workspace, out.blueprint, custom))
-            tried.append((_score(run, required), out, run))
+            passing, issues = _score(run, required)
+            tried.append(((passing + len(made["needs"] & set(unmade)), issues), out, run, patches, owners))
         if not tried:
             break
-        score, out, run = max(tried, key=lambda x: x[0])
+        score, out, run, patches, owners = max(tried, key=lambda x: x[0])
         if score <= _score(best, required):  # nothing tried did better: what there is stands
             break
         turn.save(out)
+        turn.credit(patches, out, owners)
         best = run
     _hand_over(turn, needs, best, reply=reply, first=first, rounds=rounds, custom=custom)
+
+
+def _need_states(turn, needs, run):
+    """Each need, and whether it's made and comes out right: "ok", "wrong" (a check of it failed) or "unmade"."""
+    failing = {x.get("title") for x, r in zip(run["examples"], run["results"]) if not r["ok"]} if run else set()
+    states = []
+    for i, n in enumerate(needs, start=1):
+        if i in turn.tried and i not in turn.made:
+            states.append((n, "unmade"))
+            continue
+        mine = [x for x in (run or {}).get("examples", []) if x.get("need") == n.does
+                or str(x.get("by", "")).removeprefix("feature:") in {k for k, v in turn.features.items() if v == i}]
+        states.append((n, "wrong" if any(x.get("title") in failing for x in mine) else "ok"))
+    return states
 
 
 def _hand_over(turn, needs, run, reply="", first=None, rounds=0, custom=(), stopped=None):
@@ -466,16 +525,22 @@ def _hand_over(turn, needs, run, reply="", first=None, rounds=0, custom=(), stop
         workspace.state = state
         db.session.commit()
         checking.remember(workspace, run["walked"], [r for _, r in playable], "this change", [x for x, _ in playable], tell=False)
-    made = "; ".join(n.does.rstrip(".") for n in needs[:8])
-    text = reply.strip() or ("Done." if turn.changes else "")
-    if made and turn.changes:
-        text += f"\n\nWhat your app does now: {made}."
-    if wrong or issues:
-        text = _not_yet([{"title": r["title"]} for r in wrong], issues) + ("\n\nWhat I changed: " + text if turn.changes else "")
+    states = _need_states(turn, needs, run)
+    unmade = [n.does.rstrip(".") for n, s in states if s == "unmade"]
+    lines = [f"- {n.does.rstrip('.')}" + {"ok": "", "wrong": " (not right yet)", "unmade": " (not made yet)"}[s] for n, s in states]
+    if wrong or issues or unmade:
+        text = _not_yet([{"title": r["title"]} for r in wrong], issues + [f"I couldn't make this yet: {u}" for u in unmade])
+    elif turn.changes:
+        text = "Your app is ready to try." if not turn.message.version_before else "Done."
+    else:
+        text = reply.strip() or "Nothing needed changing."
+    if lines and turn.changes:
+        text += "\n\nWhat your app does now:\n" + "\n".join(lines)
     if stopped:
         text += f"\n\n(The AI stopped answering before I'd finished: {stopped}. What's built is saved.)"
     message.text = plain(text, workspace.blueprint, (turn.question.text if turn.question else ""))
-    message.checks = {"examples": shown, "issues": issues, "fixes": rounds, "first": first or {}}
+    message.checks = {"examples": shown, "issues": issues, "fixes": rounds, "first": first or {},
+                      "needs": [{"does": n.does, "said": n.said, "suggested": n.suggested, "state": s} for n, s in states]}
     message.ops = turn.log  # what was sent and what the platform said to it: for looking into a turn, and training
     message.changes = turn.changes
     message.navigate = navigate_url(workspace, None)
