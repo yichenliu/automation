@@ -287,9 +287,13 @@ class Engine:
         self.base_currency = (money.get("base") or "").upper() or currency_for(str(tz))  # unset: the one where the business is
         self.rates = {str(k).upper(): float(v) for k, v in (money.get("rates") or {}).items() if to_number(v)}
         self._rows, self._by_id, self._memo, self._index, self._computing, self._seals = {}, {}, {}, {}, set(), {}
+        self._kids, self._near, self._titled, self._misses, self._queried = {}, {}, {}, {}, {}  # lines per parent, what is shown
+        self._counted = {}  # how many a query finds, counted by SQL (engine/planner.py)
         self.started = []  # automation runs this engine started (so a screen can say what ran)
         self._members, self._files, self._sources = None, {}, None
         self._depth, self._after, self._touched, self._failed = 0, [], set(), False
+        self._dirty = set()  # tables written since the caches were last brought up to date (only theirs are thrown away)
+        self._batch = None  # an import's rows, committed together (see batch())
         self._open = set()  # records that weren't locked when this save began (a locked status set in it applies next time)
         self._asked_ids = None
         self._naming = set()  # records whose names are being worked out (one named by another that's named by it)
@@ -437,7 +441,9 @@ class Engine:
             if t.get("embedded"):
                 continue
             codes = [f for f in t["fields"] if f["type"] in ("barcode", "autonumber")]
-            for r in self.visible_rows(t["key"]):
+            if not codes and not names:
+                continue  # nothing here it could be
+            for r in self._coded(t, codes, wanted, names):
                 said = {str((r.data or {}).get(f["key"]) or "").strip().lower() for f in codes} | \
                     {self.display(f, (r.data or {}).get(f["key"])).lower() for f in codes} | ({self.title(r).strip().lower()} if names else set())
                 if wanted in said:
@@ -445,6 +451,23 @@ class Engine:
             if len(found) > 1:
                 return None
         return found[0] if found else None
+
+    def _coded(self, t, codes, wanted, names):
+        """The records of t this person may see whose code (or with `names`, name) may be `wanted`: found by SQL, a
+        superset by_code checks one by one; the whole table when SQL can't read it."""
+        plan = self._sql_plan(t["key"])
+        if plan is None or plan.access is None:
+            return self.visible_rows(t["key"])
+        from .planner import _sql
+        test = _sql(plan.planner.coded(codes, wanted))
+        rows = {r.id: r for r in db.session.query(Record).filter(*plan.where, test).order_by(Record.id)}
+        if names:  # its name has what was typed in it (stripped, it may be all of it)
+            seen = plan.planner.access()[1]
+            rows.update({r.id: r for r in plan.planner.titled(wanted, True) if seen is True or self.allowed(r)})
+        found = [rows[i] for i in sorted(rows)]
+        for r in found:
+            self._by_id[r.id] = r
+        return found
 
     def visible_rows(self, table):
         rows = self.rows(table)
@@ -459,6 +482,120 @@ class Engine:
     def reset(self):
         self._rows, self._by_id, self._memo, self._index, self._files = {}, {}, {}, {}, {}
         self._seals, self._asked_ids = {}, None
+        self._kids, self._near, self._titled, self._misses, self._queried, self._dirty = {}, {}, {}, {}, {}, set()
+        self._counted = {}
+
+    def _forget(self, tables):
+        """After a write that isn't committed yet (inside atomic()): only what was read from the tables written is read
+        again. Records of other tables stay as they were read; what's worked out (formulas, rollups) is worked out again,
+        since it may total what changed."""
+        for table in tables:
+            self._rows.pop(table, None)
+            self._near.pop(table, None)
+            for kept in (self._index, self._kids, self._misses):
+                for key in [k for k in kept if k[0] == table]:
+                    del kept[key]
+            for key in [k for k in self._titled if k[0] == table]:
+                del self._titled[key]
+        self._memo, self._files, self._seals, self._asked_ids, self._queried, self._counted = {}, {}, {}, None, {}, {}
+        self._dirty = set()
+
+    def _sql_plan(self, table, filters=None, q=None, sort=None):
+        """How SQL answers a query of this table (engine/planner.py), or None to read it in Python: a table already read
+        whole is checked where it is, and a sealed one only Python can read."""
+        if table in self._rows or table not in self.tables:
+            return None
+        from .planner import Plan
+        plan = Plan(self, table, filters, q, sort)
+        return plan if plan.usable else None
+
+    def page(self, table, filters=None, q=None, sort=None, offset=0, limit=50, sums=()):
+        """(one page of a query's records, how many it finds in all): query(...)[offset:offset + limit] and its length,
+        from SQL alone (LIMIT, COUNT) when SQL can settle every record. `sums`: the columns the page will be totalled by
+        (total()), added up as the records are counted."""
+        plan = self._sql_plan(table, filters, q, sort)
+        if plan is None:
+            rows = self.query(table, filters, q=q, sort=sort)
+            return rows[offset:offset + limit], len(rows)
+        return plan.page(offset, limit, sums)
+
+    def count(self, table, filters=None, q=None):
+        """len(query(table, filters, q)), counted by SQL when it can be."""
+        plan = self._sql_plan(table, filters, q)
+        return plan.count() if plan is not None else len(self.query(table, filters, q=q))
+
+    def total(self, table, aggregate="count", key=None, filters=None, q=None):
+        """aggregate(query(table, filters, q), aggregate, key): a count, sum, average, lowest, highest or middle, from SQL
+        when the field is kept (not worked out) and SQL can settle every record."""
+        from .planner import UNSURE
+        plan = self._sql_plan(table, filters, q)
+        got = plan.total(aggregate, key) if plan is not None else UNSURE
+        if got is not UNSURE:
+            return got
+        asked = (table, repr(filters), q)  # a list's worked-out columns totalled one after another: its records read once
+        if asked not in self._queried:
+            self._queried[asked] = self.query(table, filters, q=q)
+        return self.aggregate(self._queried[asked], aggregate, key)
+
+    def neighbours(self, table, record):
+        """The records before and after this one among those this person may see, in the order they were added, and where
+        it is among them: {"prev", "next", "at", "of"}."""
+        plan = self._sql_plan(table)
+        if plan is None or plan.access is None:
+            order = [x.id for x in self.visible_rows(table)]
+            at = order.index(record.id) if record.id in order else -1
+            return {"prev": order[at - 1] if at > 0 else None, "next": order[at + 1] if 0 <= at < len(order) - 1 else None,
+                    "at": at + 1, "of": len(order)}
+        rid, n = record.id, db.func
+        of, before, prev, nxt, here = db.session.query(
+            n.count(Record.id), n.sum(db.case((Record.id < rid, 1), else_=0)), n.max(db.case((Record.id < rid, Record.id))),
+            n.min(db.case((Record.id > rid, Record.id))), n.sum(db.case((Record.id == rid, 1), else_=0))).filter(*plan.where).one()
+        if not here:
+            return {"prev": None, "next": None, "at": 0, "of": of or 0}
+        return {"prev": prev, "next": nxt, "at": (before or 0) + 1, "of": of or 0}
+
+    def find(self, table, q, limit=8):
+        """(the first records a search finds among those this person may see, how many it finds): search(visible_rows(
+        table), q) from SQL. The count is exact, or "2000+" when there are more than that to check in Python."""
+        plan = self._sql_plan(table, q=q)
+        if plan is None:
+            rows = self.search(self.visible_rows(table), q)
+            return rows[:limit], len(rows)
+        return plan.first(limit)
+
+    def _found(self, table, rows, fetch=True):
+        """Records of a table about to be shown or worked on: kept by id, and remembered so the lines and totals of each
+        are fetched for all of them at once (children). With `fetch`, the records their links point at are read in one
+        go too (a page's customers, for their names and lookups)."""
+        for r in rows:
+            self._by_id[r.id] = r
+        self._near[table] = {r.id for r in rows}
+        t = self.tables.get(table)
+        if not fetch or not t or not rows:
+            return
+        wanted = set()
+        for f in t["fields"]:
+            if f["type"] == "link":
+                for r in rows:
+                    v = (r.data or {}).get(f["key"])
+                    wanted.update(int(x) for x in (v if isinstance(v, list) else [v]) if isinstance(x, int) and not isinstance(x, bool))
+        wanted -= set(self._by_id)
+        if wanted:
+            for r in Record.query.filter(Record.workspace_id == self.ws.id, Record.id.in_(sorted(wanted))).all():
+                self._by_id[r.id] = r
+
+    def _titled_ids(self, table, said, part=False):
+        """The ids of a table's records whose name (title) is `said`, or with `part` has it in it, lower-cased (a link
+        filtered or searched by the name people see)."""
+        key = (table, said, part)
+        if key not in self._titled:
+            from .planner import Planner
+            if table in self._rows or table not in self.tables:
+                rows = self.rows(table)
+            else:
+                rows = Planner(self, table).titled(said, part)
+            self._titled[key] = {r.id for r in rows if (said in self.title(r).lower() if part else self.title(r).lower() == said)}
+        return self._titled[key]
 
     # --- sealed records (bids until the tender closes) -----------------------------------------------------------------
     def _seal(self, record):
@@ -793,9 +930,28 @@ class Engine:
         return value
 
     def children(self, table, via, parent_id):
-        """Records of `table` whose link field `via` points at parent_id."""
+        """Records of `table` whose link field `via` points at parent_id. They're fetched for the parents being shown
+        together (the customers on a page, for their invoice totals), not by reading the whole of `table`, unless it's
+        read already or most of it is wanted."""
         index_key = (table, via)
         if index_key not in self._index:
+            kids = self._kids.setdefault(index_key, {})
+            if parent_id in kids:
+                return kids[parent_id]
+            wanted = self._kids_wanted(table, via, parent_id, kids)
+            if wanted:
+                from .planner import children_of
+                found = {i: [] for i in wanted}
+                for r in children_of(self, table, via, wanted):
+                    self._by_id[r.id] = r
+                    target = (r.data or {}).get(via)
+                    for one in (target if isinstance(target, list) else [target]):  # as the index below counts them
+                        if one is not None and not isinstance(one, (list, dict)):
+                            key = int(one) if str(one).isdigit() else one
+                            if key in found:
+                                found[key].append(r)
+                kids.update(found)
+                return kids[parent_id]
             index = {}
             for r in self.rows(table):
                 target = (r.data or {}).get(via)
@@ -804,6 +960,22 @@ class Engine:
                         index.setdefault(int(one) if str(one).isdigit() else one, []).append(r)
             self._index[index_key] = index
         return self._index[index_key].get(parent_id, [])
+
+    def _kids_wanted(self, table, via, parent_id, kids):
+        """The parents whose lines to fetch now (this one, and the others of its table being shown), or None to read the
+        whole line table: it's read already, the parent isn't a plain id, or so many are wanted that reading it whole is
+        quicker."""
+        f = self.field(table, via)
+        if table in self._rows or f is None or f["type"] != "link" or not isinstance(parent_id, int) or isinstance(parent_id, bool) \
+                or not re.fullmatch(r"[A-Za-z_]\w*", via):
+            return None
+        index_key = (table, via)
+        self._misses[index_key] = self._misses.get(index_key, 0) + 1
+        near = self._near.get(f["table"]) or set()
+        wanted = {parent_id} | ({i for i in near if i not in kids} if parent_id in near else set())
+        if len(wanted) > 1000 or self._misses[index_key] > 40:  # one by one for most of a table: read it whole instead
+            return None
+        return wanted
 
     def related(self, record, table, via):
         """The records of `table` that reach this record through `via` (schema.reach): their link to it, a path through
@@ -840,7 +1012,11 @@ class Engine:
         if aggregate in ("min", "max") and rows and self.kind(self.field(rows[0].table, key)) in ("date", "datetime"):
             days = [str(v) for v in (self.value(r, key) for r in rows) if v not in (None, "")]  # the first or last gift: kept as written, ISO, so in order
             return (min(days) if aggregate == "min" else max(days)) if days else None
-        numbers = [n for n in (to_number(self.value(r, key)) for r in rows) if n is not None]
+        return self.of_numbers([n for n in (to_number(self.value(r, key)) for r in rows) if n is not None], aggregate)
+
+    @staticmethod
+    def of_numbers(numbers, aggregate):
+        """A sum, average, lowest, highest or middle of numbers (none: 0 for a sum, else None)."""
         if not numbers:
             return 0 if aggregate == "sum" else None
         if aggregate == "sum":
@@ -1185,7 +1361,11 @@ class Engine:
             return rows
 
     def query(self, table, filters=None, q=None, sort=None):
-        """Records of a table (those this person may see) meeting the filters, matching the search, sorted."""
+        """Records of a table (those this person may see) meeting the filters, matching the search, sorted. When SQL can
+        leave records out (engine/planner.py), only the rest are read, and only those it can't settle are checked here."""
+        plan = self._sql_plan(table, filters, q, sort)
+        if plan is not None and plan.narrows:
+            return plan.rows()
         rows = self.visible_rows(table)
         rows = [r for r in rows if self.matches(r, filters)] if filters else list(rows)
         return self.sort(self.search(rows, q), sort)
@@ -1397,13 +1577,12 @@ class Engine:
             found = self.get(int(raw), table)
             if found:
                 return found
-        text = str(raw).strip().lower()
-        rows = self.rows(table)
-        exact = [r for r in rows if self.title(r).lower() == text]
+        text = str(raw).strip().lower()  # by name: found by SQL when the name is a field (an import's thousandth row too)
+        exact = sorted(self._titled_ids(table, text))
         if len(exact) == 1:
-            return exact[0]
-        partial = [r for r in rows if text and text in self.title(r).lower()]
-        return partial[0] if len(partial) == 1 else (exact[0] if exact else None)
+            return self.get(exact[0], table)
+        partial = sorted(self._titled_ids(table, text, part=True)) if text else []
+        return self.get(partial[0], table) if len(partial) == 1 else (self.get(exact[0], table) if exact else None)
 
     def _matching(self, table, wanted):
         """The record of a table holding the values given, for a rule that names a record by what it's for rather than by
@@ -1541,15 +1720,15 @@ class Engine:
             if number is not None and "max" in f and number > f["max"] and f["type"] != "rating":
                 errors[key] = f"{f['label']} must be at most {self.display(f, f['max'])}"
             if f.get("unique"):
-                clash = next((r for r in self.rows(t["key"]) if (record is None or r.id != record.id)
-                              and str((r.data or {}).get(key, "")).strip().lower() == str(value).strip().lower()), None)
+                clash = next((r for r in self._others(t, record, {key: value}) if str((r.data or {}).get(key, "")).strip().lower()
+                              == str(value).strip().lower()), None)
                 if clash is not None:
                     errors[key] = f"{self.title(clash)} already has this {f['label']}"
         for group in t.get("unique_together", []):  # a supplier's invoice number, once
             if not set(group) & set(values) or any(merged.get(k) in (None, "", []) for k in group):
                 continue
             same = lambda r: all(str((r.data or {}).get(k, "")).strip().lower() == str(merged.get(k)).strip().lower() for k in group)  # noqa: E731
-            clash = next((r for r in self.rows(t["key"]) if (record is None or r.id != record.id) and same(r)), None)
+            clash = next((r for r in self._others(t, record, {k: merged.get(k) for k in group}) if same(r)), None)
             if clash is not None:
                 labels = [self.field(t["key"], k)["label"] for k in group if self.field(t["key"], k)]
                 errors[group[-1]] = f"{t['singular']} “{self.title(clash)}” already has this {' and '.join(labels).lower()}"
@@ -1565,6 +1744,25 @@ class Engine:
             raise FieldErrors(errors)
         return values
 
+    def _others(self, t, record, values, where=None):
+        """The other records of t (not `record`) that may hold these values read as text (str(value).strip().lower()):
+        what a unique field, fields unique together and a limit compare. Found by SQL, never fewer than hold them; the
+        caller checks each one as it always did. With `where` (a limit's conditions), those SQL can rule out are too.
+        A table SQL can't read (a sealed one) is read whole."""
+        from .planner import Planner, _sql, live
+        p = Planner(self, t["key"])
+        if t["key"] in self._rows or not p.usable():
+            return [r for r in self.rows(t["key"]) if record is None or r.id != record.id]
+        tests = [p.same(k, v) for k, v in values.items() if re.fullmatch(r"[A-Za-z_]\w*", k)]
+        tests += [got[1] for got in (p.condition(c) for c in where or []) if got is not None]
+        found = db.session.query(Record).filter(*live(self, t["key"]), *[_sql(x) for x in tests if x is not True])
+        if record is not None and record.id is not None:
+            found = found.filter(Record.id != record.id)
+        rows = found.order_by(Record.id).all()
+        for r in rows:
+            self._by_id[r.id] = r
+        return rows
+
     def _over_limit(self, t, record, draft, merged, limit):
         """What's wrong when saving this record would go past one of its table's limits, or None."""
         if limit.get("where") and not self.matches(draft, limit["where"]):
@@ -1572,8 +1770,8 @@ class Engine:
         if any(merged.get(k) in (None, "", []) for k in limit["per"]):
             return None
         same = lambda a, b: str(a if a is not None else "").strip().lower() == str(b if b is not None else "").strip().lower()  # noqa: E731
-        others = [r for r in self.rows(t["key"]) if (record is None or r.id != record.id)
-                  and all(same((r.data or {}).get(k), merged.get(k)) for k in limit["per"])
+        others = [r for r in self._others(t, record, {k: merged.get(k) for k in limit["per"]}, limit.get("where"))
+                  if all(same((r.data or {}).get(k), merged.get(k)) for k in limit["per"])
                   and (not limit.get("where") or self.matches(r, limit["where"]))]
         labels = " and ".join(self.field(t["key"], k)["label"].lower() for k in limit["per"] if self.field(t["key"], k))
         if limit.get("overlap"):
@@ -1869,7 +2067,7 @@ class Engine:
         if digits:
             n = int(digits[-1])
             params = {"w": self.ws.id, "t": t["key"], "f": f["key"], "n": n}
-            moved = db.session.execute(sql('UPDATE counter SET value = GREATEST(value, :n) WHERE workspace_id = :w AND "table" = :t AND field = :f'), params)
+            moved = db.session.execute(sql('UPDATE counter SET value = CASE WHEN value < :n THEN :n ELSE value END WHERE workspace_id = :w AND "table" = :t AND field = :f'), params)
             if not moved.rowcount:
                 db.session.add(Counter(workspace_id=self.ws.id, table=t["key"], field=f["key"], value=n))
                 db.session.flush()
@@ -1891,7 +2089,11 @@ class Engine:
     @contextmanager
     def atomic(self):
         """Writes inside the block happen together or not at all. Rules are checked, and automations, AI fields and
-        indexing start, once the whole block is saved."""
+        indexing start, once the whole block is saved. Inside batch(), the block is one row of it."""
+        if self._depth == 0 and self._batch is not None:
+            with self._row():
+                yield self
+            return
         self._depth += 1
         try:
             yield self
@@ -1906,6 +2108,83 @@ class Engine:
                 self._abandon()
                 raise Conflict()
             self._finish()
+
+    @contextmanager
+    def batch(self, size=200, committed=None):
+        """Many writes that each stand alone (an import's rows), committed `size` at a time rather than one by one. Each
+        `with engine.atomic():` inside is one row: it goes in whole or not at all, and its rules are checked as it ends,
+        as if it were saved on its own; what was read stays read from one row to the next. Automations, AI fields and
+        indexing start as each lot is committed, and `committed()` is called then (an import says how far it's got)."""
+        self._batch = {"size": size, "rows": 0, "committed": committed}
+        try:
+            yield self
+        finally:
+            done, self._batch = self._batch, None
+            if done["rows"]:  # what was saved before anything went wrong stays saved, as it did row by row
+                self._finish(rules=False)
+
+    @contextmanager
+    def _row(self):
+        """One row of a batch, in a savepoint: released when the row is saved whole, rolled back (only it) when not."""
+        savepoint = db.session.begin_nested()
+        before, self._log = (set(self._touched), list(self._after), set(self._open)), []
+        self._depth += 1
+        try:
+            yield
+            if self._failed:
+                raise Conflict()
+            db.session.flush()
+            self._forget(self._dirty)
+            self._check_rules(self._touched - before[0])
+            savepoint.commit()
+        except BaseException as exc:
+            savepoint.rollback()
+            self._touched, self._after, self._open = before
+            self._failed = False
+            self._unwrite(self._log)
+            if isinstance(exc, StaleDataError):
+                raise Conflict() from exc
+            raise
+        finally:
+            self._depth -= 1
+            self._log = None
+        self._batch["rows"] += 1
+        if self._batch["rows"] >= self._batch["size"]:
+            self._batch["rows"] = 0
+            self._finish(rules=False)
+            if self._batch["committed"]:
+                self._batch["committed"]()
+
+    def _wrote(self, record, how):
+        """Keep what's been read in step with a write not committed yet: a table read whole stays read (the new record
+        added to it, a deleted one taken out); what's found by its values (lines, names) is found again."""
+        rows = self._rows.get(record.table)
+        if rows is not None:
+            if how == "created" and (not rows or rows[-1].id < record.id):
+                rows.append(record)
+            elif how == "deleted":
+                self._rows[record.table] = [r for r in rows if r.id != record.id]
+            elif how != "updated":
+                del self._rows[record.table]
+        if record.id is not None:
+            self._by_id[record.id] = record
+        self._dirty.add(record.table)
+        if getattr(self, "_log", None) is not None:
+            self._log.append((how, record))
+
+    def _unwrite(self, log):
+        """A batch's row rolled back: the records it added are gone again (SQLAlchemy reads back the ones it changed)."""
+        if any(how not in ("created", "updated") for how, _ in log):
+            self.reset()
+            return
+        made = {r.id for how, r in log if how == "created"}
+        for table in {r.table for _, r in log}:
+            if table in self._rows:
+                self._rows[table] = [r for r in self._rows[table] if r.id not in made]
+            self._dirty.add(table)
+        for rid in made:
+            self._by_id.pop(rid, None)
+        self._forget(self._dirty)
 
     def _abandon(self):
         db.session.rollback()
@@ -1926,11 +2205,13 @@ class Engine:
             if other is None or (other.data or {}).get(back[0]["key"]) not in (None, "", []):
                 continue
             other.data = {**(other.data or {}), back[0]["key"]: record.id}  # its version goes up as it's saved
+            self._wrote(other, "updated")
             db.session.add(RecordChange(workspace_id=self.ws.id, record_id=other.id, kind="updated", by=f"{by or self.by} (linked from its {f['label'].lower()})",
                                         by_id=self.user_id, changes={back[0]["key"]: [None, record.id]}))
 
-    def _saved(self, record, after=None):
-        """A write is ready: commit it now, or at the end of the atomic block it's part of."""
+    def _saved(self, record, after=None, how="updated"):
+        """A write is ready: commit it now, or at the end of the atomic block it's part of. Until it's committed, only
+        what was read from the tables written is read again."""
         self._touched.add(record.id)
         if after:
             self._after.append(after)
@@ -1940,15 +2221,21 @@ class Engine:
             except StaleDataError as exc:
                 self._failed = True  # the whole block is refused when it ends, even if this is caught inside it
                 raise Conflict() from exc
-            self.reset()
+            self._wrote(record, how)
+            self._forget(self._dirty)
             return
+        self._wrote(record, how)
         self._finish()
 
-    def _finish(self):
+    def _finish(self, rules=True):
+        """Commit what's been written. Everything read is thrown away after: committed records are read afresh, which
+        reading them again in one go does better than record by record. (rules: whether to check the rules; a batch
+        checked each row's as it ended.)"""
         try:
             db.session.flush()
-            self.reset()
-            self._check_rules()
+            self._forget(self._dirty)
+            if rules:
+                self._check_rules()
             db.session.commit()
         except StaleDataError as exc:
             self._abandon()
@@ -2003,11 +2290,11 @@ class Engine:
         link = next((f for f in t["fields"] if f["type"] == "link" and not (self.tables.get(f["table"]) or {}).get("embedded")), None)
         return self.get((record.data or {}).get(link["key"]), link["table"]) if link else None
 
-    def _check_rules(self):
+    def _check_rules(self, touched=None):
         """Every rule of every record just written (and of the records whose lines were written) must hold, and what was
-        approved stays as approved (see _held)."""
+        approved stays as approved (see _held). `touched`: only these (one row of a batch)."""
         seen = set()
-        for rid in sorted(self._touched):
+        for rid in sorted(self._touched if touched is None else touched):
             r = self.get(rid)
             for target in (r, self._parent(r) if r is not None else None):
                 if target is None or target.id in seen:
@@ -2174,7 +2461,7 @@ class Engine:
                 from . import automations as auto
                 auto.on_change(self, self.get(record.id) or record, None, depth=depth)
             self._combine(record)
-        self._saved(record, after)
+        self._saved(record, after, "created")
         return record
 
     def _not_combined(self, t):
@@ -2278,12 +2565,12 @@ class Engine:
                 from . import automations as auto
                 auto.on_delete(self, record, depth=depth)
             self._combine(record)
-        self._saved(record, after)
+        self._saved(record, after, "deleted")
 
     def restore(self, record, *, by=None):
         record.deleted_at = None
         db.session.add(RecordChange(workspace_id=self.ws.id, record_id=record.id, kind="restored", by=by or self.by))
-        self._saved(record, lambda: self._combine(record))
+        self._saved(record, lambda: self._combine(record), "restored")
 
     def counts(self):
         rows = (db.session.query(Record.table, db.func.count(Record.id))

@@ -344,11 +344,17 @@ def page_widgets(engine, p, period=None):
             widgets.append({**w, "t": t, "fields": [f for f in fields if f["type"] not in schema.FILES][:8],
                             "options": _options(engine, t), "members": engine.members()})
             continue
-        rows = engine.query(t["key"], w.get("filters"), sort=w.get("sort"))
         dated = w.get("date_field") or (w.get("compare") or {}).get("date_field")
-        if span and dated and not w.get("compare"):
-            rows = [r for r in rows if (d := expr.to_date(engine.value(r, dated))) is not None and span[0] <= d <= span[1]]
+        windowed = bool(span and dated and not w.get("compare"))
         item = {**w, "t": t, "where": _words(engine, t, w.get("filters")), "dated": bool(dated)}
+        if not windowed and w["type"] in ("metric", "goal") and not w.get("compare"):  # a number: worked out by SQL
+            rows = None
+        elif not windowed and w["type"] not in ("map", "metric", "goal", "chart", "pivot"):  # a list: its first few, and how many
+            rows, item["total"] = engine.page(t["key"], w.get("filters"), sort=w.get("sort"), limit=w.get("limit", 5))
+        else:
+            rows = engine.query(t["key"], w.get("filters"), sort=w.get("sort"))
+            if windowed:
+                rows = [r for r in rows if (d := expr.to_date(engine.value(r, dated))) is not None and span[0] <= d <= span[1]]
         if w["type"] == "map":
             from .erp_records import _map
             item.update(_map(engine, t, {"location_field": w["location_field"]}, rows))
@@ -357,7 +363,8 @@ def page_widgets(engine, p, period=None):
         if w["type"] == "metric" and w.get("compare"):
             item.update(_compare(engine, t, w, rows))
         elif w["type"] in ("metric", "goal"):
-            value = engine.aggregate(rows, w.get("aggregate", "count"), w.get("field"))
+            value = engine.aggregate(rows, w.get("aggregate", "count"), w.get("field")) if rows is not None else \
+                engine.total(t["key"], w.get("aggregate", "count"), w.get("field"), w.get("filters"))
             item["value"] = _shown(engine, t, w, value)
             if w["type"] == "goal":
                 target = w["target"]
@@ -394,7 +401,7 @@ def page_widgets(engine, p, period=None):
             list_view = next((v for v in t["views"] if v["type"] == "list"), {})
             keys = w.get("columns") or [c for c in (list_view.get("columns") or [f["key"] for f in t["fields"]])][:4]
             item["columns"] = [schema.field(t, c) for c in keys if schema.field(t, c)]
-            item["total"] = len(rows)
+            item.setdefault("total", len(rows))
         widgets.append(item)
     return widgets
 
@@ -1215,7 +1222,7 @@ def jump(wid):
         for t in bp_.get("tables", []):
             if t.get("embedded"):
                 continue
-            for r in engine.search(engine.visible_rows(t["key"]), q)[:5]:
+            for r in engine.find(t["key"], q, limit=5)[0]:  # by SQL, never the whole table
                 found.append({"label": engine.title(r), "kind": t["singular"], "url": url_for("app.record", wid=wid, table=t["key"], rid=r.id)})
             if len(found) > 30:
                 break
@@ -1235,9 +1242,9 @@ def search(wid):
         for t in engine.bp.get("tables", []):
             if t.get("embedded") or not engine.can(t):
                 continue
-            rows = engine.search(engine.visible_rows(t["key"]), q)
+            rows, total = engine.find(t["key"], q, limit=8)  # by SQL; a count past 2,000 to check is said as "2000+"
             if rows:
-                found.append({"t": engine.visible(t), "rows": rows[:8], "total": len(rows)})
+                found.append({"t": engine.visible(t), "rows": rows, "total": total})
         if len(q.split()) >= 2 or not found:  # a question or a phrase: also look through documents, mail and notes by meaning
             from .. import knowledge
             passages = [h for h in knowledge.search(engine, q, k=8) if h["source"] != "record" or not found]
