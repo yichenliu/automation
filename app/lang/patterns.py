@@ -79,7 +79,10 @@ def _email_to(d, t, to, where):
     try:
         f, _, keys = d.path(t, to)
     except NameProblem as exc:
-        raise Problem(f"{where} › email_to: {exc}") from None
+        reach = d.paths_to(t, {"email"})
+        raise Problem(f"{where} › email_to: {exc}. The email addresses {_a(t['singular'].lower())} can reach: "
+                      f"{', '.join(reach) or 'none (add an email field where the person is kept)'}; to tell the business's own people "
+                      f"in the app instead, leave email_to out and set tell") from None
     if f.get("type") not in ("email", "text", "lookup", "formula"):
         raise Problem(f"{where} › email_to: {to} isn't an email address field ({f.get('type')})")
     return "{{" + ".".join(keys) + "}}"

@@ -433,26 +433,9 @@ def _turn(turn):
             turn.note("What I'll make it do: " + "; ".join(n.does.rstrip(".") for n in needs[:6]))
     needs_text = "\n".join(f"{i}. {n.does} (from: “{n.said}”)" for i, n in enumerate(needs, start=1))
     if needs:
-        turn.note("Making the lists")
-        data = _ask(DATA.format(catalog=catalog("data")), f"{turn.about()}\n\nThe needs:\n{needs_text}\n\nThe app now:\n{lang.describe(turn.bp, with_rules=False)}",
-                    _answer_schema("data"), turn.progress)
-        if data.get("patches"):
-            turn.apply(data["patches"], "data", needs_text)
-        from ..lang.design import Design
-        missing = [name for name in data.get("lists") or [] if Design(turn.bp).list(name) is None]
-        if missing:  # named as needed, but not made: asked for once more, those alone
-            turn.note(f"Making the list{'s' if len(missing) != 1 else ''} still missing: {', '.join(missing)}")
-            more = _ask(DATA.format(catalog=catalog("data")), f"{turn.about()}\n\nThe needs:\n{needs_text}\n\nThe app now:\n"
-                        f"{lang.describe(turn.bp, with_rules=False)}\n\nYou named these lists as needed, but sent no add_list for them, so "
-                        f"they aren't made: {', '.join(missing)}. Send an add_list for each now (only those).", _answer_schema("data"), turn.progress)
-            if more.get("patches"):
-                turn.apply(more["patches"], "data", needs_text)
+        _make_lists(turn, needs_text)
         turn.note("Making what it does")
-        behaviour = _ask(BEHAVIOUR.format(catalog=catalog("behaviour")), f"{turn.about()}\n\nThe needs:\n{needs_text}\n\nThe app now:\n{lang.describe(turn.bp)}",
-                         _answer_schema("behaviour", by_need=True), turn.progress)
-        sent, owners = flatten(behaviour)
-        if sent:
-            turn.apply(sent, "behaviour", needs_text, owners)
+        sent, owners = _make_behaviour(turn, needs, needs_text)
         # worked examples for the needs met by rules (a feature writes its own checks)
         by_rule = sorted({owners[i] for i, p in enumerate(sent) if isinstance(p, dict) and p.get("do") in ("add_rule", "change_rule")
                           and owners.get(i) in turn.made})
@@ -460,8 +443,11 @@ def _turn(turn):
         if by_rule:
             turn.note("Writing checks for what isn't a ready-made feature")
             wanted = "\n".join(f"{i}. {needs[i - 1].does}" for i in by_rule if 0 < i <= len(needs))
-            found = _ask(CHECKS.format(when_none=""), f"{turn.about()}\n\nThe needs to check:\n{wanted}\n\nThe app:\n{lang.describe(turn.bp)}",
-                         EXAMPLE_SCHEMA, turn.progress).get("examples") or []
+            try:
+                found = _ask(CHECKS.format(when_none=""), f"{turn.about()}\n\nThe needs to check:\n{wanted}\n\nThe app:\n{lang.describe(turn.bp)}",
+                             EXAMPLE_SCHEMA, turn.progress).get("examples") or []
+            except (ai.CutOff, ai.Stuck):  # no worked examples this time: those needs are said as not tried out
+                found = []
             titles = {x.get("title") for x in custom}
             custom += [{**{k: v for k, v in x.items() if k != "need"}, "by": "builder",
                         "need": needs[x["need"] - 1].does if 0 < (x.get("need") or 0) <= len(needs) else ""}
@@ -523,6 +509,66 @@ def _turn(turn):
         turn.credit(patches, out, owners)
         best = run
     _hand_over(turn, needs, best, reply=reply, first=first, rounds=rounds, custom=custom)
+
+
+TOO_MUCH = (ai.CutOff, ai.Stuck)
+
+
+def _make_lists(turn, needs_text):
+    """The lists the needs require: asked for all at once, then a few at a time for any named but not made (and a few
+    at a time from the start if all at once is too much to write)."""
+    from ..lang.design import Design
+
+    def ask(extra="", tries=0):
+        return _ask(DATA.format(catalog=catalog("data")), f"{turn.about()}\n\nThe needs:\n{needs_text}\n\nThe app now:\n"
+                    f"{lang.describe(turn.bp, with_rules=False)}{extra}", _answer_schema("data"), turn.progress, tries)
+    turn.note("Making the lists")
+    try:
+        data = ask()
+    except TOO_MUCH:
+        turn.note("That was too much in one go; making the lists a few at a time")
+        data = ask("\n\nName every list in \"lists\", but send at most four add_list patches in this answer (the first four "
+                   "not made yet); the rest are asked for next.", tries=1)
+    if data.get("patches"):
+        turn.apply(data["patches"], "data", needs_text)
+    named = list(data.get("lists") or [])
+    for n in range(3):
+        missing = [name for name in named if Design(turn.bp).list(name) is None]
+        if not missing:
+            return
+        turn.note(f"Making the list{'s' if len(missing) != 1 else ''} still to make: {', '.join(missing)}")
+        try:
+            more = ask(f"\n\nThese lists are named as needed but aren't made yet: {', '.join(missing)}. Send an add_list for at most "
+                       f"four of them now (only those).", tries=n + 1)
+        except TOO_MUCH:
+            continue
+        if not more.get("patches"):
+            return
+        turn.apply(more["patches"], "data", needs_text)
+
+
+def _make_behaviour(turn, needs, needs_text):
+    """(patches, {index: need}) for what the app does: all needs at once, or one need at a time if that's too much."""
+    def ask(extra="", by_need=True, tries=0):
+        return _ask(BEHAVIOUR.format(catalog=catalog("behaviour")), f"{turn.about()}\n\nThe needs:\n{needs_text}\n\nThe app now:\n"
+                    f"{lang.describe(turn.bp)}{extra}", _answer_schema("behaviour", by_need=by_need), turn.progress, tries)
+    try:
+        sent, owners = flatten(ask())
+    except TOO_MUCH:
+        turn.note("That was too much in one go; making it one need at a time")
+        sent, owners = [], {}
+        for i, n in enumerate(needs, start=1):
+            try:
+                one = ask(f"\n\nNow only need {i}: {n.does}. Send just the patches for it (none if the lists already meet it).",
+                          by_need=False, tries=1)
+            except TOO_MUCH:
+                continue
+            for p in one.get("patches") or []:
+                owners[len(sent)] = i
+                sent.append(p)
+    if sent:
+        turn.apply(sent, "behaviour", needs_text, owners)
+    return sent, owners
 
 
 def _need_states(turn, needs, run):

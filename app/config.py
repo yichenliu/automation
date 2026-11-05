@@ -72,6 +72,13 @@ class Config:
     AI_THINK = (os.getenv("AI_THINK") or "false").lower() == "true"
     # The builder's own reasoning-heavy work (designing, fixing what the try-out found, writing worked examples) thinks
     # first when this is on, whatever AI_THINK says for the quick jobs; AI_THINK_TOKENS is the room for that thinking.
+    FILES_BACKEND = (os.getenv("FILES_BACKEND") or "local").lower()  # local (the data folder) or s3 (S3-compatible object storage)
+    S3_BUCKET = os.getenv("S3_BUCKET") or ""
+    S3_PREFIX = os.getenv("S3_PREFIX") or ""
+    S3_ENDPOINT = os.getenv("S3_ENDPOINT") or ""  # MinIO, R2 and the like; empty for AWS
+    S3_REGION = os.getenv("S3_REGION") or ""
+    S3_ACCESS_KEY = os.getenv("S3_ACCESS_KEY") or ""
+    S3_SECRET_KEY = os.getenv("S3_SECRET_KEY") or ""
     BUILDER = os.getenv("BUILDER") or "v2"  # v2: the Keel language, features, the simulator and search (app/builder/build.py); v1: the old one
     AI_THINK_BUILDER = (os.getenv("AI_THINK_BUILDER") or os.getenv("AI_THINK") or "false").lower() == "true"
     AI_THINK_TOKENS = int(os.getenv("AI_THINK_TOKENS") or 8000)

@@ -380,7 +380,8 @@ def ir_step(d, t, s, where, made=None):
             try:
                 f, _, keys = d.path(t, to)
             except NameProblem as exc:
-                raise Problem(f"{where} › to: {exc}") from None
+                reach = d.paths_to(t, {"email"})
+                raise Problem(f"{where} › to: {exc}. The email addresses it can reach: {', '.join(reach) or 'none: add an email field'}") from None
             if f.get("type") not in ("email", "text", "lookup", "formula"):
                 raise Problem(f"{where} › to: {to} isn't an email address field ({f.get('type')})")
             to = "{{" + ".".join(keys) + "}}"

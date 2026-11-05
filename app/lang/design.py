@@ -113,6 +113,20 @@ class Design:
             return ftype
         return "text"
 
+    def paths_to(self, t, types, depth=2, _here="", _seen=None):
+        """Every path from list t to a field of these types, through links (customer.email, dog.owner.email)."""
+        seen = _seen or {t["key"]} if t else set()
+        out = []
+        for f in (t or {}).get("fields", []):
+            path = f"{_here}{f['key']}"
+            if f["type"] in types:
+                out.append(path)
+            elif f["type"] == "link" and depth > 0 and f.get("table") not in seen:
+                other = self.list(f.get("table"))
+                if other is not None:
+                    out += self.paths_to(other, types, depth - 1, f"{path}.", seen | {other["key"]})
+        return out
+
     # stages ---------------------------------------------------------------------------------------------------------
     def stage_field(self, t):
         flow = (t or {}).get("workflow") or {}

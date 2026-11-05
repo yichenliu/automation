@@ -350,3 +350,36 @@ def test_lists_named_as_needed_but_not_made_are_asked_for_again(app):
     assert model.asked.count("data") == 2
     ws = db.session.get(Workspace, ws.id)
     assert {t["key"] for t in ws.blueprint["tables"]} >= {"customers", "invoices"}
+
+
+def test_an_answer_too_long_to_write_is_asked_for_again_in_smaller_pieces(app):
+    app.config["BUILDER"] = "v2"
+    ws = _workspace(app, None)
+    data = iter(["cut", {"lists": ["customers", "invoices"], "patches": [EVERYTHING[0]]}, {"lists": ["invoices"], "patches": [_invoices()]}])
+    behaviour = iter(["cut", {"patches": [{"do": "stage_alert", "list": "invoices", "stage": "Paid"}]}])
+
+    def answer(steps):
+        def one(messages):
+            got = next(steps)
+            if got == "cut":
+                raise ai.CutOff("The AI's answer was cut off at the length limit")
+            return got
+        return one
+    model = Model({"understand": {"needs": [{"said": "tell me when paid", "does": "The owner is told when an invoice is paid"}], "reply": "OK."},
+                   "data": answer(data), "behaviour": answer(behaviour)})
+    ai.set_backend(model)
+    q = Message(workspace_id=ws.id, channel="builder", user_id=ws.owner_id, role="user", text="Invoices, and tell me when one is paid")
+    a = Message(workspace_id=ws.id, channel="builder", role="assistant", status="queued")
+    db.session.add_all([q, a])
+    db.session.commit()
+    from app.builder import chat
+    chat.work(a.id)
+    a = db.session.get(Message, a.id)
+    assert a.status == "done", a.error
+    assert a.checks["needs"][0]["state"] == "ok"
+    assert any("a few at a time" in p for p in a.progress) and any("one need at a time" in p for p in a.progress)
+
+
+def test_an_email_to_someone_the_record_cant_reach_says_which_addresses_it_can():
+    out = lang.apply(everything(), [{"do": "reminder_before", "list": "appointments", "date_field": "starts_on", "days": 1, "email_to": "owner"}])
+    assert "The email addresses an appointment can reach: client.email" in out.problems[0]
