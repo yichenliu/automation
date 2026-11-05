@@ -1150,8 +1150,11 @@ def translate(d, p, where):
         f = d.field(t, p.field)
         if f is None:
             raise Problem(f"{where}: {t['label']} has no field “{p.field}” (its fields: {', '.join(d.field_names(t))})")
-        if f.get("feature"):
-            raise Problem(f"{where}: {f['key']} is made by the feature {f['feature']}: change the feature (send it again with its key)")
+        from .patterns import LOOKS
+        if f.get("feature") and not set(p.settings) <= set(LOOKS):  # how it looks is anyone's to change; what it is, the feature's
+            raise Problem(f"{where}: {f['key']} is made by the feature {f['feature']}, which decides "
+                          f"{', '.join(k for k in p.settings if k not in LOOKS)}: change the feature (send it again with its key); "
+                          f"how it looks ({', '.join(LOOKS[:6])}…) can be set here")
         wrong = [k for k in p.settings if k not in SETTINGS]
         if wrong:
             raise Problem(f"{where}: “{wrong[0]}” isn't a setting a field has (settings: {', '.join(sorted(SETTINGS - {'access', 'many'}))})")
@@ -1215,7 +1218,13 @@ def translate(d, p, where):
     if isinstance(p, m.RemoveMove):
         t = _list(d, p.list, where)
         flow, _ = _stages_of(d, t, where)
-        return _studio(studio.stage_ops, d, {"do": "remove_move", "table": t["key"], "i": _button_at(d, t, flow, p.button, where)}, where)
+        i = _button_at(d, t, flow, p.button, where)
+        gone = flow["transitions"][i]
+        rest = {**t, "workflow": {**flow, "transitions": [mv for n, mv in enumerate(flow["transitions"]) if n != i]}}
+        if any(mv["to"] == gone["to"] for mv in schema.complete_moves(d.bp, rest)):  # it was the only way there
+            raise Problem(f"{where}: “{gone.get('label') or gone['to']}” is the only way to {gone['to']}: add another way there first "
+                          f"(add_move), or take the stage away (remove_stage)")
+        return _studio(studio.stage_ops, d, {"do": "remove_move", "table": t["key"], "i": i}, where)
     if isinstance(p, (m.AddStep, m.ChangeStep, m.RemoveStep, m.MoveStep)):
         new, t = _rule_to_change(d, p.rule, where)
         actions = list(new.get("actions") or [])
@@ -1259,6 +1268,8 @@ def translate(d, p, where):
         if old is None:
             raise Problem(f"{where}: {t['label']} has no field “{p.field.key}” (its fields: {', '.join(d.field_names(t))}); add_field adds one")
         new = ir_field(d, t, p.field, where)
+        if new.get("type") != old.get("type"):  # its records' values must fit the new kind: checked as the App map checks it
+            _studio(studio.data_ops, d, {"do": "update_field", "table": t["key"], "key": old["key"], "type": new.get("type")}, where)
         return [{"op": "update_field", "table": t["key"], "key": old["key"], "changes": {**new, "key": old["key"]}}]
     if isinstance(p, m.RemoveField):
         t = _list(d, p.list, where)

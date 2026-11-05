@@ -94,3 +94,19 @@ def test_a_new_list_is_named_and_shown_by_its_fields_links_included():
     t = schema.table(out.blueprint, "movements")
     assert t["title_field"] == "item"
     assert next(v for v in t["views"] if v["key"] == "all")["columns"][:3] == ["item", "location", "change"]
+
+
+def test_how_a_features_field_looks_is_anyones_and_stays_when_the_feature_is_made_again():
+    bp = _apply(everything(), m.ChangeRule.__keel_example__ if False else {"do": "line_totals", "list": "invoices", "lines": "invoice_lines", "tax_percent": 10, "tax_label": "GST"})
+    total = next(f for f in schema.table(bp, "invoices")["fields"] if f.get("feature") and f["key"] == "total")
+    bp = _apply(bp, {"do": "set_field", "list": "invoices", "field": total["key"], "settings": {"label": "Amount due", "help": "With GST"}})
+    bp = _apply(bp, {"do": "line_totals", "list": "invoices", "lines": "invoice_lines", "tax_percent": 15, "tax_label": "GST"})
+    again = schema.field(schema.table(bp, "invoices"), total["key"])
+    assert again["label"] == "Amount due" and again["help"] == "With GST"
+    refused = lang.apply(bp, [{"do": "set_field", "list": "invoices", "field": total["key"], "settings": {"required": True}}])
+    assert refused.problems and "change the feature" in refused.problems[0]
+
+
+def test_taking_away_the_only_way_to_a_stage_says_so_rather_than_coming_back():
+    out = lang.apply(everything(), [{"do": "remove_move", "list": "quotes", "button": "Accepted"}])
+    assert out.problems and "only way to Accepted" in out.problems[0]

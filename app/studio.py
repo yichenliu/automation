@@ -906,8 +906,9 @@ def _said_in_keel(bp, op):
         f, changes = schema.field(t, op["key"]), dict(op["changes"])
         kind = {k: v for k, v in changes.items() if k in ("type", "table", "expression", "format")}  # what goes in it
         settings = {k: v for k, v in changes.items() if k in SETTINGS}
-        if f.get("feature") or set(changes) - set(kind) - set(settings) - {"ai"}:
-            return [op]  # a feature's own field: the language changes it only through the feature (set_field refuses it)
+        from .lang.patterns import LOOKS
+        if (f.get("feature") and not set(changes) <= set(LOOKS)) or set(changes) - set(kind) - set(settings) - {"ai"}:
+            return [op]  # what a feature's own field is, the feature decides: the language changes that only through it
         out = []
         if kind:  # a new kind, or a formula's sum: the field said again whole
             said = _field_said({**f, **changes})

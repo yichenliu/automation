@@ -1270,6 +1270,10 @@ def _turned(conditions, where):
     return out[0] if len(out) == 1 else {"any": out}
 
 
+# what a field made by a feature shows people, which they may change as they like: the feature keeps it when it's made again
+LOOKS = ("label", "help", "placeholder", "unit", "decimals", "currency", "prefix", "digits", "option_colors", "before", "after",
+         "yes_label", "no_label")
+
 FLIPPED = {expr.ast.Eq: expr.ast.NotEq, expr.ast.NotEq: expr.ast.Eq, expr.ast.Lt: expr.ast.GtE, expr.ast.GtE: expr.ast.Lt,
            expr.ast.Gt: expr.ast.LtE, expr.ast.LtE: expr.ast.Gt, expr.ast.In: expr.ast.NotIn, expr.ast.NotIn: expr.ast.In}
 
@@ -1598,6 +1602,8 @@ def apply(out, p, where, quiet=False):
         t = schema.table(out.blueprint, tk)
         have = schema.field(t, f["key"]) if t else None
         wanted_fields.add((tk, f["key"]))
+        if have is not None and have.get("feature") == key:  # how people set it to look (its label, units, help) stays theirs
+            f = {**f, **{k: v for k, v in have.items() if k in LOOKS}}
         if have is None:
             ir_ops.append({"op": "add_field", "table": tk, "field": f})
         elif {k: v for k, v in have.items() if k != "feature"} != {k: v for k, v in f.items() if k != "feature"} and have.get("feature") in (None, key):
