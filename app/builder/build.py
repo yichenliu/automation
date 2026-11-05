@@ -446,9 +446,7 @@ def _turn(turn):
     reply = ""
     if not (mending and only_fixing(asked)):  # anything more than "fix it" is read: a change, or what should happen
         turn.note("Working out what you need")
-        understood = Understood.model_validate(_ask(
-            UNDERSTAND, f"{turn.about()}\n\nThe app now:\n{lang.describe(turn.bp)}\n\nEarlier:\n{turn.history() or '(nothing yet)'}\n\n"
-                        f"The owner says: {asked}", Understood.model_json_schema(), turn.progress, kind="understand"))
+        understood = _understand(turn, asked)
         needs, reply = understood.needs, understood.reply
         if understood.question and not needs:
             turn.message.text, turn.message.status, turn.message.finished_at = understood.question, "done", utcnow()
@@ -539,6 +537,20 @@ def _turn(turn):
 
 
 TOO_MUCH = (ai.CutOff, ai.Stuck)
+
+
+def _understand(turn, asked):
+    """The owner's needs: asked once, then again a little differently, then for fewer, if the answer runs away (a model
+    repeating itself, or writing more than fits)."""
+    user = (f"{turn.about()}\n\nThe app now:\n{lang.describe(turn.bp)}\n\nEarlier:\n{turn.history() or '(nothing yet)'}\n\n"
+            f"The owner says: {asked}")
+    for tries, extra in ((0, ""), (1, ""), (2, "\n\n(Keep it short: at most six needs, one sentence each.)")):
+        try:
+            return Understood.model_validate(_ask(UNDERSTAND, user + extra, Understood.model_json_schema(), turn.progress, tries,
+                                                  kind="understand"))
+        except TOO_MUCH:
+            turn.note("That came out too long; asking again more briefly")
+    raise ai.Stuck("The AI kept repeating itself working out what's needed")
 FIX_ONLY = re.compile(r"^\W*(please\W+)?(fix|sort out|sort|correct|repair|mend)\b.{0,40}$|^\W*(yes|yeah|yep|ok|okay|sure|go ahead|do it|"
                       r"please)\W*(please|thanks|do it)?\W*$", re.I | re.S)
 
@@ -563,8 +575,11 @@ def _make_lists(turn, needs_text):
         data = ask()
     except TOO_MUCH:
         turn.note("That was too much in one go; making the lists a few at a time")
-        data = ask("\n\nName every list in \"lists\", but send at most four add_list patches in this answer (the first four "
-                   "not made yet); the rest are asked for next.", tries=1)
+        try:
+            data = ask("\n\nName every list in \"lists\", but send at most four add_list patches in this answer (the first four "
+                       "not made yet); the rest are asked for next.", tries=1)
+        except TOO_MUCH:
+            data = {}
     if data.get("patches"):
         turn.apply(data["patches"], "data", needs_text)
     named = list(data.get("lists") or [])

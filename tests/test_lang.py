@@ -474,3 +474,26 @@ def test_an_expected_date_can_be_today_on_the_examples_own_calendar(app):
         "expect": [{"record": "i1", "field": "chased_sent", "equals": "today"}, {"record": "i1", "field": "sent_on", "equals": "today-14"}]}
     _, results = trial.try_out(ws, [example], screens=False)
     assert results[0]["ok"], results[0].get("problem")
+
+
+def test_a_model_repeating_itself_while_working_out_the_needs_is_asked_again_and_the_turn_goes_on(app):
+    app.config["BUILDER"] = "v2"
+    ws = _workspace(app, None)
+    understood = iter(["stuck", {"needs": [{"said": "invoices", "does": "Keeps invoices"}], "reply": "OK."}])
+
+    def understand(messages):
+        got = next(understood)
+        if got == "stuck":
+            raise ai.Stuck("The AI got stuck writing its answer (it kept repeating itself).")
+        return got
+    model = Model({"understand": understand, "data": {"lists": ["invoices"], "patches": [_invoices()]}, "behaviour": {"work": []}})
+    ai.set_backend(model)
+    q = Message(workspace_id=ws.id, channel="builder", user_id=ws.owner_id, role="user", text="I need invoices")
+    a = Message(workspace_id=ws.id, channel="builder", role="assistant", status="queued")
+    db.session.add_all([q, a])
+    db.session.commit()
+    from app.builder import chat
+    chat.work(a.id)
+    a = db.session.get(Message, a.id)
+    assert a.status == "done", a.error
+    assert model.asked.count("understand") == 2
