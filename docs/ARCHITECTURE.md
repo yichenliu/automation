@@ -148,7 +148,7 @@ Only 1 was the model's own judgment.
 | 9b | FastAPI: typed tools, MCP and REST v2, streaming | done |
 | 9c | The pages on a Starlette web kit, and Flask removed | done |
 | 10 | Tenancy: row-level security, per-workspace vector search, object storage; cells | done |
-| 11 | Evals on the finished platform | after 9c |
+| 11 | Evals on the finished platform | next: v2 is complete |
 | 12 | The first builder deleted | done (dc3a1ce) |
 
 ## Adding a feature
