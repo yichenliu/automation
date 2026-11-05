@@ -279,7 +279,8 @@ class Email(Base):
 
 @register("step", {"do": "document", "document": "invoice", "save_to": "pdf"})
 class MakeDocument(Base):
-    """Make the list's document (a PDF) for the record, kept in a file field if save_to is given."""
+    """Make the record's document (a PDF; a standard one is made for the list if it has none by that name), kept in a
+    file field if save_to is given."""
     do: Literal["document"]
     document: str
     save_to: str | None = None
@@ -447,6 +448,17 @@ class RemoveFeature(Base):
     feature: str
 
 
+@register("patch", {"do": "add_stage", "list": "jobs", "stage": "On hold", "after": "Booked", "button": "Put on hold"}, "data")
+class AddStage(Base):
+    """Add one stage to a list's stages, after another: a button moves a record from that stage into it, and from it a
+    record moves on wherever it could from that stage. Everything else about the stages stays as it is."""
+    do: Literal["add_stage"]
+    list: str
+    stage: str
+    after: str
+    button: str | None = None
+
+
 @register("patch", {"do": "add_view", "list": "jobs", "view": {"type": "calendar", "label": "Job calendar", "date_field": "scheduled_for"}}, group="data")
 class AddView(Base):
     """Add a view to a list."""
@@ -463,9 +475,33 @@ class AddRecords(Base):
     records: list[dict]
 
 
+@register("patch", {"do": "add_document", "list": "jobs", "key": "job_report", "label": "Job report", "title": "Job report"}, "data")
+class AddDocument(Base):
+    """A PDF each record of a list can be made into (a quote, an invoice, a report, a certificate), laid out by the
+    platform from the record's fields and lines. A rule's document step or a send_document feature makes and sends it."""
+    do: Literal["add_document"]
+    list: str
+    key: str
+    label: str
+    title: str | None = None
+
+
+@register("patch", {"do": "import_rows", "file": 12, "sheet": "Customers", "list": "customers", "columns": {"Customer name": "name", "E-mail": "email"}}, "data")
+class ImportRows(Base):
+    """Bring an attached spreadsheet's rows into a list: each column heading to the field it fills in (a linked
+    record's field as customer.email, a line's as order_lines.quantity). Only when the owner wants their rows in."""
+    do: Literal["import_rows"]
+    file: int = Field(description="the attached file's id")
+    list: str
+    columns: dict[str, str]
+    sheet: str | None = None
+
+
 @register("patch", {"do": "design_op", "op": {"op": "add_page", "page": {"key": "today", "label": "Today", "widgets": []}}}, group="behaviour")
 class DesignOp(Base):
-    """Anything else, as an op of the platform's design format (pages, documents, forms, portals, flows, syncs)."""
+    """Only for what no other patch makes: an op of the platform's design format for pages, documents, forms,
+    portals, flows, syncs, spaces, teams, the theme or the app's name; or update_table for who may see and change a
+    list's records (access, row_access, rules, unique_together). Lists, fields, stages and rules are never made here."""
     do: Literal["design_op"]
     op: dict
 

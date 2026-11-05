@@ -9,6 +9,7 @@ $25 with 15% off") and compares what the app then shows with what the owner woul
 What's found is an issue: {"level": "fix" (it's wrong) or "check" (it may be meant), "text": for the AI, with keys,
 "plain": for people}. A fault of the platform's own (a screen that crashes) is a crash: logged, never the AI's to fix.
 """
+import logging
 import copy
 import json
 import re
@@ -18,7 +19,6 @@ from contextlib import contextmanager
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-from flask import current_app
 
 from .. import database
 from ..blueprint import expr, schema
@@ -26,6 +26,9 @@ from ..engine import automations
 from ..engine.records import Engine, FieldErrors, NoRate, RecordContext, automations_words, mask, masked, parse_duration, to_number
 from ..extensions import db
 from ..models import Approval, Membership, Record, Run, User, Workspace
+from ..core.settings import settings
+
+_log = logging.getLogger(__name__)
 
 STAND_IN = "Alex Stand-in"  # someone other than whoever raised a thing, for the approvals kept apart from them
 FIELD_TRIES = 3  # other values tried for a field a sample was refused over
@@ -74,16 +77,16 @@ def copy_of(workspace, blueprint=None):
               "settings": copy.deepcopy(workspace.settings or {}), "timezone": workspace.timezone, "currency": workspace.currency,
               "version": workspace.version}
     owner_id = workspace.owner_id
-    root = Path(current_app.config["DATA_DIR"]) / "trials"
+    root = Path(settings()["DATA_DIR"]) / "trials"
     root.mkdir(parents=True, exist_ok=True)
     folder = Path(tempfile.mkdtemp(dir=root))
-    config = {k: v for k, v in current_app.config.items() if k.isupper()}
+    config = {k: v for k, v in settings().items() if k.isupper()}
     config.update({"TESTING": True, "WORKER": False, "TRYING_OUT": True, "DATA_DIR": folder, "SECRET_KEY": "try-out",
                    "SQLALCHEMY_BINDS": {}, "WTF_CSRF_ENABLED": False, "SQLALCHEMY_ENGINE_OPTIONS": {"pool_size": 2, "max_overflow": 4},
                    "MICROSOFT_CLIENT_ID": "", "MICROSOFT_CLIENT_SECRET": "", "OLLAMA_EMBED_MODEL": "", "SERVER_NAME": None})
     try:
-        if current_app.config.get("TRY_IN_POSTGRES"):  # the old way: an empty PostgreSQL database of its own
-            place = database.throwaway(current_app.config["SQLALCHEMY_DATABASE_URI"], "tryout")
+        if settings().get("TRY_IN_POSTGRES"):  # the old way: an empty PostgreSQL database of its own
+            place = database.throwaway(settings()["SQLALCHEMY_DATABASE_URI"], "tryout")
             config["SQLALCHEMY_DATABASE_URI"] = place.__enter__()
         else:  # the simulator: the same engine on an in-memory database, made in a fraction of a second
             from .. import sim
@@ -922,6 +925,11 @@ def _act(trial, engine, step, names, hold=False):
             words = APPROVING if do == "approve" else REJECTING
             if t.get("workflow") and _press_move(engine, record, t, lambda m: words.search(f"{m.get('label') or ''} {m['to']}")):
                 return
+            if do == "approve" and t.get("workflow"):  # the approver lets it through: the move only they may make (an
+                # approval kept as who may make a move, not as a request to answer)
+                theirs = [m for _, m, problem in engine.moves(record) if m.get("who") and not problem]
+                if theirs and _press_move(engine, record, t, lambda m: m in theirs):
+                    return
             asking = {a["key"] for a in engine.bp.get("automations", []) if a["trigger"].get("table") == t["key"]
                       and any(act["type"] == "request_approval" for act in schema.steps_of(a["actions"]))}
             if not asking:  # nothing ever asks: the example meant a move
@@ -1240,6 +1248,9 @@ def _expect(engine, c, names):
         return True, plain.replace(" came out ", " is ").replace(", expected ", ", not "), said
     if "equals" in c:
         c = {**c, "equals": _worked_out(c["equals"])}
+        if isinstance(c["equals"], str) and RELATIVE.match(c["equals"].strip()):  # "today+3" on the example's own calendar
+            n = int((RELATIVE.match(c["equals"].strip()).group(1) or "0").replace(" ", ""))
+            c = {**c, "equals": (date.today() + timedelta(days=n + int(names.get("_waited") or 0))).isoformat()}
     if c.get("count") is not None or (c.get("table") and not c.get("record")):
         t = _table(engine, c.get("table"))
         n = len(engine.rows(t["key"]))
@@ -1517,16 +1528,23 @@ def _both(example):
 
 
 def _meant_refused(engine, example, step, names):
-    """Someone else tries a move (“by”: "staff") and the example expects the record to stay at the stage it's at: it
-    shows them being stopped, though it doesn't say "refused"."""
-    if step.get("do") != "move" or not step.get("by") or not step.get("record") or step["record"] not in names:
+    """Someone else tries a move (“by”: "staff") that the example shows them being stopped at, though it doesn't say
+    "refused": it expects the record to stay at the stage it's at, or the same move is made again later by someone else
+    (staff can't send it; the owner then does)."""
+    alias = step.get("record") or (step.get("as") if step.get("as") in names else None)
+    if step.get("do") != "move" or not step.get("by") or not alias or alias not in names:
         return False
-    record = engine.get(names[step["record"]])
+    steps = [s for s in example.get("steps") or [] if isinstance(s, dict)]
+    later = steps[steps.index(step) + 1:] if step in steps else []
+    if any(((s.get("do") == "move" and str(s.get("to") or "").lower() == str(step.get("to") or "").lower()) or s.get("do") == "approve")
+           and (s.get("record") or s.get("as")) == alias and str(s.get("by") or "owner").lower() != str(step.get("by")).lower() for s in later):
+        return True  # the same move made later by someone else, or someone else approving it: this one is stopped
+    record = engine.get(names[alias])
     flow = (engine.tables.get(record.table) or {}).get("workflow") if record is not None else None
     if not flow:
         return False
     now = str((record.data or {}).get(flow["field"]) or "").strip().lower()
-    return any(isinstance(c, dict) and c.get("record") == step["record"] and c.get("field") == flow["field"]
+    return any(isinstance(c, dict) and c.get("record") == alias and c.get("field") == flow["field"]
                and str(c.get("equals") or "").strip().lower() == now for c in example.get("expect") or [])
 
 
@@ -1575,7 +1593,7 @@ def _play(trial, engine, example, names, out):
                        kind="example" if left_out else "app", plain=f"{_plain_step(engine, step, names)} wasn't allowed: {reason}")
             return out
         except Exception as exc:  # noqa: BLE001 - a fault of ours: not the app's design, not the example's
-            current_app.logger.warning("Example %r crashed at step %s: %s", out["title"], n, exc, exc_info=True)
+            _log.warning("Example %r crashed at step %s: %s", out["title"], n, exc, exc_info=True)
             db.session.rollback()
             out.update(problem=f"step {n} ({said}): {type(exc).__name__}", kind="crash")
             return out
@@ -1699,5 +1717,5 @@ def try_out(workspace, examples=(), screens=True, blueprint=None):
         with copy_of(workspace, blueprint) as trial:
             results.append(play(trial, example))
     for crash in walked["crashes"]:
-        current_app.logger.warning("Trying out workspace %s: %s", workspace.id, crash)
+        _log.warning("Trying out workspace %s: %s", workspace.id, crash)
     return walked, results

@@ -71,10 +71,16 @@ def _answer(engine, message):
         return _ok(mid, {})
     if method == "tools/list":
         tools = TOOLS if engine.member.role != "viewer" else [t for t in TOOLS if t["name"] not in ("create_record", "update_record")]
+        if _designs(engine):  # the owner's and admins' keys may also change the app itself, in the Keel language
+            from ..lang import tools as keel
+            tools = tools + keel.schemas()
         return _ok(mid, {"tools": tools})
     if method == "tools/call":
         try:
-            result = _call(engine, params.get("name"), params.get("arguments") or {})
+            if str(params.get("name") or "").startswith("keel_"):
+                result = _design(engine, params.get("name"), params.get("arguments") or {})
+            else:
+                result = _call(engine, params.get("name"), params.get("arguments") or {})
         except _Wrong as exc:
             return _ok(mid, {"content": [{"type": "text", "text": str(exc)}], "isError": True})
         return _ok(mid, {"content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False, default=str)}], "isError": False})
@@ -83,6 +89,23 @@ def _answer(engine, message):
 
 class _Wrong(Exception):
     """A tool call that can't be done: said to the assistant as the tool's answer, so it can put it right."""
+
+
+def _designs(engine):
+    return engine.member.role in ("owner", "admin")
+
+
+def _design(engine, name, args):
+    """A Keel language tool (app/lang/tools.py): the same ones the builder uses, for the owner's own agent."""
+    from pydantic import ValidationError
+
+    from ..lang import tools as keel
+    if not _designs(engine):
+        raise _Wrong("Only the owner's or an admin's key may change the app itself")
+    try:
+        return keel.call(engine.ws, name, args, by=getattr(engine, "user_id", None))
+    except (KeyError, ValidationError) as exc:
+        raise _Wrong(str(exc)) from None
 
 
 def _table(engine, key, action="view"):

@@ -9,6 +9,7 @@ New lists are made in phases (their plain fields and stages, then links, then to
 their stage moves), so a batch can make lists that link to each other in any order.
 """
 import ast
+import contextvars
 import copy
 import re
 from dataclasses import dataclass, field as dfield
@@ -32,6 +33,7 @@ class Outcome:
     problems: list = dfield(default_factory=list)  # "patch 3 (add_rule “Chase…”) › step 2: …"
     refused: list = dfield(default_factory=list)  # the numbers of the patches refused
     features: list = dfield(default_factory=list)  # keys of the features made or changed
+    data: list = dfield(default_factory=list)  # records to add and files to bring in, done once the design is saved
     navigate: str | None = None
 
 
@@ -380,13 +382,14 @@ def ir_step(d, t, s, where, made=None):
             try:
                 f, _, keys = d.path(t, to)
             except NameProblem as exc:
-                raise Problem(f"{where} › to: {exc}") from None
+                reach = d.paths_to(t, {"email"})
+                raise Problem(f"{where} › to: {exc}. The email addresses it can reach: {', '.join(reach) or 'none: add an email field'}") from None
             if f.get("type") not in ("email", "text", "lookup", "formula"):
                 raise Problem(f"{where} › to: {to} isn't an email address field ({f.get('type')})")
             to = "{{" + ".".join(keys) + "}}"
         else:
             _template(d, t, to, f"{where} › to")
-        docs = {x["key"] for x in t.get("documents", [])}
+        docs = {x["key"] for x in t.get("documents", [])} | _new_documents().get(t["key"], set())
         for key in s.attach:
             if schema.slug(key) not in docs and not d.field(t, key):
                 raise Problem(f"{where} › attach: {t['label']} has no document or file field “{key}” (documents: {', '.join(docs) or 'none'})")
@@ -396,8 +399,8 @@ def ir_step(d, t, s, where, made=None):
             out["attach"] = [schema.slug(a) for a in s.attach]
     elif isinstance(s, m.MakeDocument):
         docs = {x["key"] for x in t.get("documents", [])}
-        if schema.slug(s.document) not in docs:
-            raise Problem(f"{where}: {t['label']} has no document “{s.document}” (documents: {', '.join(docs) or 'none'})")
+        if schema.slug(s.document) not in docs:  # none by that name: a standard one, laid out from the record, is made
+            _new_documents().setdefault(t["key"], set()).add(schema.slug(s.document))
         out = {"type": "generate_document", "document": schema.slug(s.document)}
         if s.save_to:
             f = d.field(t, s.save_to)
@@ -496,6 +499,7 @@ def _apply_ops(out, ir_ops, where):
         return False
     out.blueprint = result.blueprint
     out.changes.extend(result.changes)
+    out.data.extend(getattr(result, "data", None) or [])
     out.navigate = out.navigate or getattr(result, "navigate", None)
     return True
 
@@ -511,6 +515,23 @@ def _name(p):
 
 
 LATE = (m.Link, m.Lookup, m.Total, m.Formula)
+_NEW_DOCUMENTS = contextvars.ContextVar("keel_new_documents", default=None)
+
+
+def _new_documents():
+    """While a rule is compiled: the documents its steps name that the list doesn't have yet (made with it). Each
+    compile has its own (builder turns and API calls compile at the same time)."""
+    found = _NEW_DOCUMENTS.get()
+    if found is None:
+        found = {}
+        _NEW_DOCUMENTS.set(found)
+    return found
+# what a design_op may do: only what the language has no patch of its own for
+ESCAPE = {"add_page", "update_page", "remove_page", "add_document", "update_document", "remove_document", "set_public_form",
+          "set_portal", "set_team", "set_space", "remove_space", "set_sync", "remove_sync", "add_flow", "update_flow",
+          "remove_flow", "set_theme", "rename_app", "set_module", "update_view", "remove_view", "order_fields", "update_table"}
+POLICY_KEYS = {"op", "table", "access", "permissions", "row_access", "own_records", "rules", "validations", "unique_together",
+               "approve_changes", "sealed", "colors", "journey", "portal", "audit_views", "wizard"}
 
 
 def apply(bp, raw_patches, allowed=None):
@@ -641,6 +662,18 @@ def apply(bp, raw_patches, allowed=None):
     return out
 
 
+def _documents_for(d):
+    """The standard documents a rule's steps named that their lists don't have yet."""
+    out = []
+    for table, keys in _new_documents().items():
+        t = d.list(table)
+        for key in sorted(keys):
+            label = schema.label_of(key)
+            out.append({"op": "add_document", "table": t["key"], "document": {"key": key, "label": label, "title": label}})
+    _new_documents().clear()
+    return out
+
+
 def translate(d, p, where):
     """The design ops for one patch (not a new list, not a feature)."""
     if isinstance(p, m.ChangeList):
@@ -686,6 +719,26 @@ def translate(d, p, where):
             first = {"op": "update_field", "table": t["key"], "key": old["key"], "changes": {**old, "type": "select", "options": status["options"],
                                                                                              "default": status["default"]}}
         return [first, {"op": "update_table", "table": t["key"], "workflow": flow}]
+    if isinstance(p, m.AddStage):
+        t = _list(d, p.list, where)
+        f = d.stage_field(t)
+        if f is None:
+            raise Problem(f"{where}: {t['label']} has no stages yet: set_stages gives it some")
+        after = d.choice(f, p.after)
+        if after is None:
+            raise Problem(f"{where}: “{p.after}” isn't a stage of {t['label']} (its stages: {', '.join(f.get('options') or [])})")
+        new = p.stage.strip()
+        if d.choice(f, new) is not None:
+            raise Problem(f"{where}: {t['label']} already has the stage “{new}”")
+        options = list(f.get("options") or [])
+        options.insert(options.index(after) + 1, new)
+        flow = copy.deepcopy(t.get("workflow") or {"field": f["key"], "transitions": []})
+        onward = [mv for mv in flow.get("transitions", []) if after in (mv.get("from") or [])]
+        for mv in onward:  # from the new stage, on wherever the one before it could go
+            mv["from"] = list(mv["from"]) + [new]
+        flow.setdefault("transitions", []).append({"from": [after], "to": new, "label": (p.button or f"Move to {new}")[:60]})
+        return [{"op": "update_field", "table": t["key"], "key": f["key"], "changes": {**f, "options": options}},
+                {"op": "update_table", "table": t["key"], "workflow": flow}]
     if isinstance(p, m.AddView):
         t = _list(d, p.list, where)
         v = p.view
@@ -703,8 +756,30 @@ def translate(d, p, where):
     if isinstance(p, m.AddRecords):
         t = _list(d, p.list, where)
         return [{"op": "add_records", "table": t["key"], "records": p.records}]
+    if isinstance(p, m.ImportRows):
+        t = _list(d, p.list, where)
+        mapping = {}
+        for heading, name in p.columns.items():
+            try:
+                _, _, keys = d.path(t, name)
+            except NameProblem as exc:
+                child = next((x for x in d.lists if x["key"] == schema.slug(name.partition(".")[0])), None)
+                if child is not None and d.field(child, name.partition(".")[2]):  # a line's field: order_lines.quantity
+                    mapping[heading] = f"{child['key']}.{d.field(child, name.partition('.')[2])['key']}"
+                    continue
+                raise Problem(f"{where} › columns › {heading}: {exc}") from None
+            mapping[heading] = ".".join(keys)
+        op = {"op": "import_file", "table": t["key"], "file_id": p.file, "mapping": mapping}
+        if p.sheet:
+            op["sheet"] = p.sheet
+        return [op]
     if isinstance(p, m.AddRule):
-        return [{"op": "add_automation", "automation": ir_rule(d, p.rule, where)}]
+        _new_documents().clear()
+        rule = ir_rule(d, p.rule, where)
+        return _documents_for(d) + [{"op": "add_automation", "automation": rule}]
+    if isinstance(p, m.AddDocument):
+        t = _list(d, p.list, where)
+        return [{"op": "add_document", "table": t["key"], "document": {"key": schema.slug(p.key), "label": p.label, "title": p.title or p.label}}]
     if isinstance(p, (m.ChangeRule, m.RemoveRule)):
         name = schema.slug(p.rule)
         made = next((a for a in d.bp.get("automations", []) if a["key"] == name and a.get("feature")), None)
@@ -730,6 +805,7 @@ def translate(d, p, where):
                 raise Problem(f"{where}: this rule isn't about a list's records, so it has no only_if")
             whens = [c for c in new.get("conditions", []) if c.get("op") in ("changed", "changed_to")]
             new["conditions"] = whens + ir_conditions(d, t, p.only_if, f"{where} › only_if")
+        _new_documents().clear()
         if p.steps is not None:
             if t is None:
                 raise Problem(f"{where}: steps need the list the rule is about")
@@ -738,12 +814,23 @@ def translate(d, p, where):
                 step, made = ir_step(d, t, s, f"{where} › step {n}", made)
                 actions.append(step)
             new["actions"] = actions
-        return [{"op": "add_automation", "automation": new}]
+        return _documents_for(d) + [{"op": "add_automation", "automation": new}]
     if isinstance(p, m.RemoveRule):
         old = next((a for a in d.bp.get("automations", []) if a["key"] == schema.slug(p.rule) or a["name"].lower() == p.rule.lower()), None)
         if old is None:
             raise Problem(f"{where}: there's no rule “{p.rule}”")
         return [{"op": "remove_automation", "key": old["key"]}]
     if isinstance(p, m.DesignOp):
+        name = schema.slug(str(p.op.get("op") or ""))
+        if name not in ESCAPE:
+            raise Problem(f"{where}: “{name or 'no op'}” can't be sent as a design_op: design_op is only for "
+                          f"{', '.join(sorted(ESCAPE))}; lists, fields, stages and rules are made with add_list, add_field, "
+                          f"set_stages, add_rule or a feature")
+        if name == "update_table":
+            other = set(p.op) - POLICY_KEYS
+            if other:
+                raise Problem(f"{where}: an update_table design_op may only set who may see and change a list's records "
+                              f"({', '.join(sorted(POLICY_KEYS - {'op', 'table'}))}), not {', '.join(sorted(other))}: "
+                              f"change_list, set_stages and the field patches change the rest")
         return [p.op]
     raise Problem(f"{where}: unknown patch")

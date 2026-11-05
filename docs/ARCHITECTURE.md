@@ -133,16 +133,32 @@ Only 1 was the model's own judgment.
 
 | # | Work | Status |
 |---|------|--------|
-| 1 | Simulation database: the engine runs on in-memory SQLite (models portable, migrations PG-only) | done (90700d5) |
-| 2 | Keel language: models, patches, compiler to the design, decompiler, static and whole-app checks | |
-| 3 | Patterns, each with its own checks; the registry, the generated catalog and schema, and the guard test | |
-| 4 | Checks language (given/when/then) and runner on the simulator; snapshots | |
-| 5 | Builder pipeline: needs → data → behaviour → compile → simulate → search → hand over; the chat turn moves onto it | |
-| 6 | Runtime: worker processes, SKIP LOCKED, scheduler leader, outbox, rule index | |
-| 7 | Queries in SQL: filters, sorts, search, paging, totals, unique and limit checks, imports | |
-| 8 | AI gateway: providers, priorities, fairness, deadlines | |
-| 9a | Core free of Flask: SQLAlchemy 2 sessions, settings object, context variables (engine, builder, lang, sim, runtime) | |
-| 9b | FastAPI: pages, sessions, CSRF, typed tools, MCP and REST v2, streaming; routes moved over one by one | |
-| 9c | Flask removed (Flask, Flask-Login, Flask-WTF, Flask-SQLAlchemy out of requirements) | |
-| 10 | Tenancy: row-level security, vector filtering, object storage | |
-| 11 | Evals on the new builder | |
+| 1 | Simulation database: the engine runs on in-memory SQLite (models portable, migrations PG-only) | done |
+| 2 | Keel language: models, patches, compiler to the design, the app as the builder reads it, name and path checks | done |
+| 3 | Features with their own checks; the registry, generated catalog and schema, and the guard test | done: 13 features (gate added) |
+| 4 | Checks: told and not-equals expectations, numbers as arithmetic, today±N dates in values and expectations, unsaved designs tried, a move tried by staff then made by the approver read as staff being stopped | done |
+| 5 | Builder: needs → data → behaviour → checks → simulate → best of several fixes → need-by-need handover | done, the default for every turn (files and records included); recovers from answers that run away; its calls are kept for training |
+| 6 | Runtime: worker processes, SKIP LOCKED, scheduler leader, outbox, rule index | done; SMS waits for a `send_sms` step and a texting service |
+| 7 | Queries in SQL: filters, sorts, search, paging, totals, unique and limit checks, imports | in progress |
+| 8 | AI gateway: providers, priorities, fairness, deadlines | done |
+| 9a | Core free of Flask: plain SQLAlchemy 2 sessions (`core/database.py`), settings (`core/settings.py`), who is acting (`core/actor.py`) | done |
+| 9b | FastAPI: typed tools, MCP and REST v2, streaming | done; the pages are moving onto a Starlette web kit |
+| 9c | Flask removed | in progress, with 9b's pages |
+| 10 | Tenancy: row-level security (`core/tenancy.py`), per-workspace vector search, files in object storage | done; cells: an enterprise runs as a deployment of its own (its own database, workers and model servers), the same code |
+| 11 | Evals on the new builder | round 32 running on the same twelve businesses the old builder had |
+| 12 | Delete the old builder (`chat._work`, `prompts.SYSTEM`) | after the evals confirm the new one |
+
+## Adding a feature
+
+1. Write its class in `app/lang/patterns.py`:
+   - decorate it with `@register("feature", <an example>)`;
+   - give it `do: Literal["<name>"]` and its parameters;
+   - write a docstring saying in one or two sentences what it does for a business. The AI reads exactly this.
+2. Write `build(d, where)`. It returns a `Made`: the fields, rules and design ops it needs. Raise `Problem` with what's
+   wrong and what's there instead.
+3. Write `checks(d)`: worked examples, in the try-out's format, that prove it works.
+4. Run `pytest tests/test_lang.py`. The guard test applies your example to a sample app that has every list, runs its
+   checks in the simulator, and fails if anything is missing or wrong.
+
+Nothing else is needed. The builder's catalog, the output schema and the MCP tools pick the feature up on the next
+run.

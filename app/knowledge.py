@@ -16,7 +16,6 @@ import re
 from datetime import timedelta
 
 import numpy as np
-from flask import current_app
 from sqlalchemy import func
 from sqlalchemy import text as sql
 
@@ -24,6 +23,7 @@ from . import ai, jobs
 from .blueprint import schema
 from .extensions import db
 from .models import Chunk, Comment, File, IndexTask, Record, Workspace, utcnow
+from .core.settings import settings
 
 log = logging.getLogger("knowledge")
 PASSAGE = 1400  # characters per passage
@@ -265,7 +265,7 @@ def work(limit=BATCH):
                 db.session.delete(task)
             db.session.commit()
     texts = [f"{doc['title']}\n{doc['text']}" for _, _, docs in prepared for doc in docs]
-    model = current_app.config.get("OLLAMA_EMBED_MODEL") or None
+    model = settings().get("OLLAMA_EMBED_MODEL") or None
     vectors, waiting = None, False
     if texts and model:
         try:
@@ -330,16 +330,19 @@ def search(engine, query, k=6, sources=None):
         rows = db.session.execute(sql("SELECT id FROM chunk, websearch_to_tsquery('english', :q) AS q WHERE workspace_id = :ws "
                                       "AND words @@ q ORDER BY ts_rank_cd(words, q, 1) DESC, id LIMIT 80"), {"q": words, "ws": ws_id}).fetchall()
         rankings.append([r[0] for r in rows])
-    model = current_app.config.get("OLLAMA_EMBED_MODEL")
+    model = settings().get("OLLAMA_EMBED_MODEL")
     similarity = {}
     if model and db.session.query(Chunk.id).filter(Chunk.workspace_id == ws_id, Chunk.model == model).first() is not None:
         try:
             q = [float(x) for x in _unit(ai.embed([query]))[0]]
             dims = len(q)
-            # pgvector, through the HNSW index for this length: 1 - cosine distance is the similarity
-            rows = db.session.execute(sql(f"SELECT id, 1 - ((embedding::vector({dims})) <=> CAST(:q AS vector({dims}))) AS sim FROM chunk "
-                                          f"WHERE workspace_id = :ws AND model = :model AND dims = {dims} "
-                                          f"ORDER BY (embedding::vector({dims})) <=> CAST(:q AS vector({dims})) LIMIT 80"),
+            # pgvector, through the HNSW index for this length: 1 - cosine distance is the similarity. The index is
+            # shared by every workspace, so it's scanned on until this one's nearest are found (an iterative scan),
+            # never the nearest of all filtered afterwards (which leaves a small workspace in a big index with none)
+            db.session.execute(sql("SET LOCAL hnsw.iterative_scan = 'relaxed_order'"))
+            rows = db.session.execute(sql(f"SELECT id, sim FROM (SELECT id, 1 - ((embedding::vector({dims})) <=> CAST(:q AS vector({dims}))) AS sim "
+                                          f"FROM chunk WHERE workspace_id = :ws AND model = :model AND dims = {dims} "
+                                          f"ORDER BY (embedding::vector({dims})) <=> CAST(:q AS vector({dims})) LIMIT 80) found ORDER BY sim DESC"),
                                       {"q": str(q), "ws": ws_id, "model": model}).fetchall()
             if rows:
                 floor = max(MIN_SIMILARITY, float(rows[0][1]) - CLOSE_TO_BEST)
@@ -386,7 +389,7 @@ def status(workspace):
     waiting = db.session.query(func.count(IndexTask.id)).filter(IndexTask.workspace_id == workspace.id).scalar() or 0
     return {"records": counts.get("record", 0), "files": counts.get("file", 0), "emails": counts.get("email", 0),
             "passages": passages_, "by_words_only": without, "waiting": waiting,
-            "model": current_app.config.get("OLLAMA_EMBED_MODEL") or None}
+            "model": settings().get("OLLAMA_EMBED_MODEL") or None}
 
 
 # --- learning from Microsoft 365 -----------------------------------------------------------------------------------------
@@ -427,7 +430,7 @@ def _learn_onedrive(job):
     folder = job.payload.get("folder") or ""
     jobs.stage(job, f"Looking through {folder or 'OneDrive'}", 5)
     items = [i for i in microsoft.walk(workspace, folder, limit=int(job.payload.get("limit") or 300))
-             if kind_of(i["name"]) in DOCUMENT_KINDS and (i.get("size") or 0) < current_app.config["MAX_UPLOAD_MB"] * 1024 * 1024]
+             if kind_of(i["name"]) in DOCUMENT_KINDS and (i.get("size") or 0) < settings()["MAX_UPLOAD_MB"] * 1024 * 1024]
     conn = microsoft.connection(workspace)
     known = dict((conn.state or {}).get("knowledge_items") or {})
     added = 0

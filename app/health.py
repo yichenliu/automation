@@ -8,9 +8,10 @@ from collections import deque
 from datetime import timedelta
 from pathlib import Path
 
-from flask import current_app, g, request
+from flask import g, request
 
 from .extensions import db
+from .core.settings import settings
 
 KEPT = 3000
 _seen = deque(maxlen=KEPT)  # (when, screen, status, milliseconds)
@@ -99,7 +100,7 @@ def report(ws):
                     "do": "Some screens went wrong: the log in data/logs says which and why." if seen["errors"] else
                           "Screens are slow: a big list may need a filtered view, or the computer may be busy." if seen["slow"] >= 2000 else "",
                     "slowest": seen["slowest"]})
-    data = Path(current_app.config["DATA_DIR"])
+    data = Path(settings()["DATA_DIR"])
     from .blueprint import schema  # every part of the design fits the rest (made before a newer check, it may not)
     problems = schema.check(ws.blueprint or {})
     out.append({"name": "Design", "ok": not problems,

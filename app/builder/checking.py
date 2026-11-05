@@ -13,7 +13,6 @@ import json
 import sys
 from pathlib import Path
 
-from flask import current_app
 
 from .. import ai, jobs
 from ..blueprint import schema
@@ -21,7 +20,9 @@ from ..engine import automations
 from ..engine.records import Engine
 from ..extensions import db
 from ..models import Workspace, utcnow
+from .. import lang
 from . import prompts, trial
+from ..core.settings import settings
 
 KEEP = 30  # checks kept per app
 _PLATFORM = {}
@@ -37,6 +38,12 @@ def platform_version():
             digest.update(path.read_bytes())
         _PLATFORM["v"] = digest.hexdigest()[:12]
     return _PLATFORM["v"]
+
+
+def theirs(check):
+    """Whether a check is the owner's own (written from what they said), not the builder's or a feature's."""
+    by = str((check or {}).get("by") or "builder")
+    return by != "builder" and not by.startswith("feature:")
 
 
 def examples(workspace):
@@ -102,10 +109,11 @@ def add(workspace, said, by=None):
     convo = [{"role": "system", "content": prompts.EXAMPLES.format(count="Write exactly one example: the one the owner describes below, "
                                                                            "with their numbers.", when_none=prompts.ALWAYS_ONE)},
              {"role": "user", "content": f"The owner wants this checked, always: {said[:1500]}\n\nToday: {schema.today_words(engine.today)}"
-                                         f"\n\nThe app:\n{prompts.outline(workspace.blueprint, engine.counts())}"}]
+                                         f"\n\nThe app (use only the lists, fields, stages, buttons and rules named here, by their keys; its "
+                                         f"features say how it already works):\n{lang.describe(workspace.blueprint or {})}"}]
     steady = ai.building.set(True)
     try:
-        content, _ = ai.chat(convo, schema=prompts.ONE_EXAMPLE_SCHEMA, think=current_app.config.get("AI_THINK_BUILDER", False))
+        content, _ = ai.chat(convo, schema=prompts.ONE_EXAMPLE_SCHEMA, think=settings().get("AI_THINK_BUILDER", False))
     finally:
         ai.building.reset(steady)
     found = [x for x in ai.parse_json(content).get("examples") or [] if isinstance(x, dict) and x.get("steps")][:1]
@@ -138,7 +146,7 @@ def _again(workspace, engine, convo, said, example, result):
         said=said[:1500], how=how, what=what[:3000], example=json.dumps({k: v for k, v in example.items() if k != "by"}, ensure_ascii=False)[:6000])}]
     steady = ai.building.set(True)
     try:
-        content, _ = ai.chat(ask, schema=prompts.CHECK_AGAIN_SCHEMA, think=current_app.config.get("AI_THINK_BUILDER", False))
+        content, _ = ai.chat(ask, schema=prompts.CHECK_AGAIN_SCHEMA, think=settings().get("AI_THINK_BUILDER", False))
         answer = ai.parse_json(content)
     except ai.AIError:
         return example, result

@@ -3,14 +3,16 @@ backups, private values revealed, API keys, changes to how the app works, printe
 of the one before it, so an entry changed or taken out afterwards shows: `verify` says whether the chain holds.
 
 Records keep their own history (every change to each field); this is the rest."""
+import logging
 import hashlib
 import json
 
-from flask import has_request_context, request
-from flask_login import current_user
 
 from .extensions import db
 from .models import AuditEvent, utcnow
+from .core import actor
+
+_log = logging.getLogger(__name__)
 
 WORDS = {  # what each kind of entry is, for people reading the log
     "signed_in": "Signed in", "sign_in_failed": "Sign-in refused", "signed_out": "Signed out", "password_reset": "Password reset",
@@ -25,12 +27,11 @@ def log(workspace_id, action, detail="", user=None, by=None):
     """Add an entry, chained to the last one of its workspace (or of the platform's own, for sign-ins before one is
     chosen). Never fails the thing being done: a log that can't be written is itself logged by the app."""
     try:
-        who = user if user is not None else (current_user if has_request_context() and current_user.is_authenticated else None)
+        who = user if user is not None else actor.user()
         last = AuditEvent.query.filter_by(workspace_id=workspace_id).order_by(AuditEvent.id.desc()).first()
         entry = AuditEvent(workspace_id=workspace_id, user_id=getattr(who, "id", None), at=utcnow(),
                            by=(by or getattr(who, "display", None) or "the app")[:200], action=action[:32], detail=str(detail or "")[:1000],
-                           ip=(request.headers.get("X-Forwarded-For", request.remote_addr or "").split(",")[0].strip()[:64]
-                               if has_request_context() else None))
+                           ip=actor.ip())
         entry.previous = last.fingerprint if last else ""
         entry.fingerprint = _fingerprint(entry)
         db.session.add(entry)
@@ -38,8 +39,7 @@ def log(workspace_id, action, detail="", user=None, by=None):
         return entry
     except Exception:  # noqa: BLE001
         db.session.rollback()
-        from flask import current_app
-        current_app.logger.exception("Couldn't write to the audit log: %s %s", action, detail)
+        _log.exception("Couldn't write to the audit log: %s %s", action, detail)
         return None
 
 

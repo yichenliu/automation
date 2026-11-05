@@ -7,25 +7,32 @@ steps happen at once, so people see the result as they save; runs with AI steps 
 AI can't be reached, wait and carry on from the step they stopped at. A step that asks a person to approve pauses the
 run until they decide. Every run keeps its steps, so what an automation did (or why it didn't) can always be seen.
 """
+import logging
+import base64
 import contextvars
 import hashlib
 import random
 import hmac
 import json
 import re
+import threading
+import time
+from collections import OrderedDict
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import requests
-from flask import current_app
-from sqlalchemy import or_
+from sqlalchemy import event, inspect as sa_inspect, or_
 from sqlalchemy.exc import SQLAlchemyError
 
-from .. import ai
+from .. import ai, leases, outbox
 from ..blueprint import expr, schema
 from ..extensions import db
-from ..models import Approval, File, Membership, Notification, Record, Run, utcnow
+from ..models import Approval, File, Membership, Notification, Record, Run, ScheduleRun, Workspace, utcnow
 from .records import Engine, FieldErrors, RecordContext, RecordProxy, automations_words
+from ..core.settings import settings
+
+_log = logging.getLogger(__name__)
 
 MAX_DEPTH = 5  # automations started by automations, at most this deep (stops loops)
 AI_RETRY_SECONDS = 30
@@ -68,6 +75,72 @@ def _by(automation):
     return f"the rule “{automation['name']}”"
 
 
+# --- which rules a change starts: an index of the design's rules -----------------------------------------------------
+# Every save asks which rules watch its list. Instead of reading every rule of the design each time, the rules are
+# indexed by (list, trigger) once for each design version of each workspace, and the index is kept (the most recently
+# used RULES_KEPT of them) for as long as the design stays that version.
+RULES_KEPT = 256
+_rule_index = OrderedDict()  # key -> (the rules it was made from, or None for a saved version; {(table, trigger): ((n, key), …)})
+_rule_lock = threading.Lock()
+CREATED = ("record_created", "record_created_or_updated")
+UPDATED = ("record_updated", "record_created_or_updated")
+
+
+def _rules_key(engine, found):
+    """A saved design is known by its database, workspace and version (each change of design makes a new version). Any
+    other (a design being looked at, one not saved yet, a simulation on SQLite) by the very list of its rules."""
+    ws = engine.ws
+    if isinstance(ws, Workspace) and db.engine.dialect.name == "postgresql":
+        state = sa_inspect(ws)
+        if state.persistent and not state.attrs.blueprint.history.has_changes() and not state.attrs.version.history.has_changes():
+            return ("saved", db.engine.url.database, ws.id, ws.version, ws.created_at)
+    return ("design", id(found))
+
+
+def _index_of(found):
+    index = {}
+    for n, a in enumerate(found):
+        trig = a.get("trigger") or {}
+        index.setdefault((trig.get("table"), trig.get("type")), []).append((n, a.get("key")))
+    return {k: tuple(v) for k, v in index.items()}
+
+
+def rules(engine, table, types):
+    """The design's rules on `table` started by any of `types` of trigger, in the design's order (on or off, and before
+    their conditions are looked at): found in the index, which is made the first time it's needed."""
+    found = engine.bp.get("automations") or []
+    key = _rules_key(engine, found)
+    with _rule_lock:
+        kept = _rule_index.get(key)
+        if kept is not None and key[0] == "design" and kept[0] is not found:
+            kept = None
+        if kept is not None:
+            _rule_index.move_to_end(key)
+    if kept is not None:
+        picked = sorted(x for t in types for x in kept[1].get((table, t), ()))
+        out = [found[n] for n, k in picked if n < len(found) and found[n].get("key") == k]
+        if len(out) == len(picked) and all((a.get("trigger") or {}).get("table") == table for a in out):
+            return out
+    index = _index_of(found)  # not made yet, or this design isn't the one it was made from: made from this one
+    with _rule_lock:
+        _rule_index[key] = (found if key[0] == "design" else None, index)  # (holding the list keeps its id its own)
+        _rule_index.move_to_end(key)
+        while len(_rule_index) > RULES_KEPT:
+            _rule_index.popitem(last=False)
+    return [found[n] for n, _ in sorted(x for t in types for x in index.get((table, t), ()))]
+
+
+@event.listens_for(Workspace.blueprint, "set")
+def _forget_rules(target, value, old, initiator):
+    """A design set without a new version (a test, a repair by hand): its index is made again when it's next needed."""
+    identity = sa_inspect(target).identity
+    if not identity:
+        return
+    with _rule_lock:
+        for key in [k for k in _rule_index if k[0] == "saved" and k[2] == identity[0]]:
+            del _rule_index[key]
+
+
 def on_change(engine, record, old, depth=0):
     """A record was created (old is None) or changed: start every automation it triggers, and have the runs waiting for
     this record to meet conditions look again."""
@@ -80,17 +153,8 @@ def on_change(engine, record, old, depth=0):
     # Which rules this change starts is decided before any of them runs: one that runs at once can change the record (a
     # check that approves it), and that's a change of its own, starting its own rules. Asked again afterwards, the record
     # would already look approved, and the rule for "changed to Approved" would run twice.
-    due = []
-    for a in engine.bp.get("automations", []):
-        trig = a["trigger"]
-        if not a.get("enabled", True) or trig.get("table") != record.table:
-            continue
-        if trig["type"] == "record_created" and not created or trig["type"] == "record_updated" and created:
-            continue
-        if trig["type"] not in ("record_created", "record_updated", "record_created_or_updated"):
-            continue
-        if engine.matches(record, a["conditions"], old=old):
-            due.append(a)
+    due = [a for a in rules(engine, record.table, CREATED if created else UPDATED)
+           if a.get("enabled", True) and engine.matches(record, a["conditions"], old=old)]
     t = engine.tables[record.table]
     what = f"{t['singular']} “{engine.title(record)}” {'was added' if created else 'was changed'}"
     return [start(engine, a, record, what, depth) for a in due]
@@ -99,9 +163,8 @@ def on_change(engine, record, old, depth=0):
 def on_delete(engine, record, depth=0):
     """A record was deleted: start the automations that watch for that (tidy up, tell someone, update a total elsewhere)."""
     started = []
-    for a in engine.bp.get("automations", []):
-        if a.get("enabled", True) and a["trigger"]["type"] == "record_deleted" and a["trigger"].get("table") == record.table \
-                and engine.matches(record, a["conditions"]):
+    for a in rules(engine, record.table, ("record_deleted",)):
+        if a.get("enabled", True) and engine.matches(record, a["conditions"]):
             t = engine.tables[record.table]
             started.append(start(engine, a, record, f"{t['singular']} “{engine.title(record)}” was deleted", depth, context={"deleted": True}))
     return started
@@ -130,26 +193,34 @@ def _run_other(engine, automation, action, record, run, ctx):
             **({"link": _link(target.table, target.id)} if target is not None else {})}
 
 
+def _at_once(automation):
+    """Whether a rule's run is carried out in the save that starts it: all but rules with AI steps (the worker does those)."""
+    return stand_in.get() is not None or not any(act["type"] in SLOW for act in schema.steps_of(automation["actions"]))
+
+
 def start(engine, automation, record, trigger, depth=0, context=None):
+    now = _at_once(automation)
+    # a run carried out here is held by this save from the moment it's made, so no worker picks it up beside it
+    held = {"claimed_by": leases.me(), "lease_until": utcnow() + timedelta(seconds=leases.HOLD_SECONDS)} if now else {}
     run = Run(workspace_id=engine.ws.id, automation=automation["key"], name=automation["name"], trigger=trigger[:300],
               record_id=record.id if record is not None else None, table=record.table if record is not None else None,
-              depth=depth, steps=[], status="queued", context=context or {})
+              depth=depth, steps=[], status="queued", context=context or {}, **held)
     db.session.add(run)
     db.session.commit()
     engine.started.append(run)  # so the screen can say what the save set off
-    if stand_in.get() is not None or not any(act["type"] in SLOW for act in schema.steps_of(automation["actions"])):
+    if now:
         execute(engine.system(), run)
     return run
 
 
 def hook_token(workspace_id, key):
     """The secret part of an automation's webhook address: only someone given the address can start it."""
-    secret = str(current_app.config["SECRET_KEY"]).encode()
+    secret = str(settings()["SECRET_KEY"]).encode()
     return hmac.new(secret, f"hook:{workspace_id}:{key}".encode(), hashlib.sha256).hexdigest()[:32]
 
 
 def hook_url(workspace_id, key):
-    return f"{current_app.config['BASE_URL']}/hooks/{workspace_id}/{key}/{hook_token(workspace_id, key)}"
+    return f"{settings()['BASE_URL']}/hooks/{workspace_id}/{key}/{hook_token(workspace_id, key)}"
 
 
 def press(engine, automation, record, by):
@@ -182,7 +253,7 @@ class _Item:
 def _mail_ready(engine):
     """Whether the business's mailbox is connected (Microsoft 365), so emails can go out by themselves. A copy being tried
     out acts as if it were (it reaches nothing outside): it's the app's rules being tried, not the mailbox."""
-    if current_app.config.get("TRYING_OUT"):
+    if settings().get("TRYING_OUT"):
         return True
     from ..connectors import microsoft
     try:
@@ -292,7 +363,31 @@ def find(engine, key):
 
 def execute(engine, run):
     """Do a run's steps in order, carrying on after the last one it finished. A step's place in the run is its "at": "2",
-    or "3.1.0" for the first step of a branch's second path, so a run waiting inside a branch picks up where it was."""
+    or "3.1.0" for the first step of a branch's second path, so a run waiting inside a branch picks up where it was.
+
+    The run is held while this goes on (leases.py): one that a worker or another save is carrying out right now is left
+    to them, and returned as it is."""
+    if not (leases.mine(run) or leases.hold(run)):
+        return run
+    try:
+        return _execute(engine, run)
+    finally:
+        _let_go(run)
+
+
+def _let_go(run):
+    try:
+        leases.let_go(run)
+    except SQLAlchemyError:  # the run's own failure left the session to be rolled back first
+        db.session.rollback()
+        try:
+            leases.let_go(run)
+        except SQLAlchemyError:
+            _log.exception("Couldn't let go of run %s (it's free again once its claim runs out)", run.id)
+            db.session.rollback()
+
+
+def _execute(engine, run):
     automation = find(engine, run.automation)
     if automation is None:
         run.status, run.error, run.finished_at = "skipped", "This automation no longer exists.", utcnow()
@@ -447,7 +542,7 @@ def _attempt(engine, automation, action, record, run, entry, log, do=None):
         if isinstance(exc, MicrosoftProblem):
             message = str(exc)
         else:
-            current_app.logger.exception("Automation %s failed at step %s", run.automation, entry["at"])
+            _log.exception("Automation %s failed at step %s", run.automation, entry["at"])
             if isinstance(exc, SQLAlchemyError):
                 db.session.rollback()
             message = f"Something went wrong on our side ({type(exc).__name__}); it's been logged"
@@ -937,12 +1032,12 @@ def email_notifications(limit=40):
             continue
         from ..builder.chat import navigate_url
         link = navigate_url(ws, n.link) if n.link else None
-        body = n.text + (f"\n\n[Open it]({current_app.config['BASE_URL']}{link})" if link else "")
+        body = n.text + (f"\n\n[Open it]({settings()['BASE_URL']}{link})" if link else "")
         for person in people:
             try:
                 microsoft.send_mail(ws, person.email, f"{(ws.blueprint or {}).get('name') or ws.name}: {n.text[:90]}", body)
             except Exception as exc:  # a mailbox problem doesn't stop the platform; the notification is still in the app
-                current_app.logger.warning("Couldn't email a notification to %s: %s", person.email, exc)
+                _log.warning("Couldn't email a notification to %s: %s", person.email, exc)
     if pending:
         db.session.commit()
     return len(pending)
@@ -1064,7 +1159,6 @@ def _do(engine, automation, action, record, run):
         notify(engine, text, link, action.get("to", "everyone"), record)
         return {"result": f"Notified: “{text}”", "link": link}
     if kind == "send_email":
-        from ..connectors import microsoft
         to = str(_render(action["to"], ctx) or "").strip()
         if not to and "{{" in str(action["to"]):  # the address it's sent to is empty (a customer with no email): not sent, said
             whose = humanize(engine, action["to"], record.table if record is not None else None)
@@ -1080,11 +1174,22 @@ def _do(engine, automation, action, record, run):
         attachments = []
         for key in action.get("attach", []):
             attachments += _attachments(engine, record, key, run)
-        names = f" with {', '.join(a[0] for a in attachments)}" if attachments else ""
-        if current_app.config.get("TRYING_OUT"):  # a copy being tried reaches nothing outside
-            return {"result": f"Would email {to}: “{subject}”{names} (not sent while trying the app out)"}
-        microsoft.send_mail(engine.ws, to, subject, body, cc=cc, attachments=attachments)
-        return {"result": f"Emailed {to}: “{subject}”{names}"}
+        # into the outbox with this step's save: the worker sends it (a test or a try-out there and then), and the rule
+        # carries on now instead of waiting on the mailbox
+        return outbox.step(outbox.add(engine.ws.id, run.id, "email", to, subject=subject, body=body, cc=cc, attachments=attachments))
+    if kind == "send_sms":
+        to = str(_render(action.get("to") or "", ctx) or "").strip()
+        message = str(_render(action.get("message") or action.get("body") or "", ctx))
+        if not to and "{{" in str(action.get("to") or ""):  # the number it's sent to is empty: not sent, said
+            whose = humanize(engine, action["to"], record.table if record is not None else None)
+            what = f"{engine.title(record)}: " if record is not None else ""
+            notify(engine, f"{what}a text message wasn't sent: {whose} is empty. Fill it in and send it from the record.",
+                   _link(record.table, record.id) if record is not None else None, "admin", record)
+            return {"result": f"Not texted: {whose} is empty"}
+        number = re.sub(r"[\s().\-]", "", to)
+        if not re.fullmatch(r"\+?\d{6,15}", number):
+            raise ValueError(f"“{to or 'nothing'}” isn't a phone number to send a text message to")
+        return outbox.step(outbox.add(engine.ws.id, run.id, "sms", number, body=message))
     if kind == "generate_document":
         from ..documents import produce
         target = record
@@ -1108,7 +1213,7 @@ def _do(engine, automation, action, record, run):
         currency = (str(_render(action["currency"], ctx)) if action.get("currency") else "") or engine.base_currency  # set, or where it is
         if not currency or not re.fullmatch(r"[A-Za-z]{3}", currency):
             raise ValueError("a payment link needs the currency: set your currency's code under Settings › Business (AUD, GBP, USD…)")
-        if current_app.config.get("TRYING_OUT"):
+        if settings().get("TRYING_OUT"):
             return {"result": f"Would make a payment link for {currency.upper()} {amount:,.2f} (not while trying the app out)"}
         stripe, conn = apps.get("stripe"), apps.connection(engine.ws, "stripe")
         if conn is None or conn.status != "connected":
@@ -1116,7 +1221,7 @@ def _do(engine, automation, action, record, run):
         description = str(_render(action["description"], ctx)) if action.get("description") else engine.title(record)
         try:
             url, _ = stripe.checkout(apps.creds(conn), amount, currency, description,
-                                     f"{current_app.config['BASE_URL']}/paid",
+                                     f"{settings()['BASE_URL']}/paid",
                                      {"workspace": engine.ws.id, "record": record.id, "paid": json.dumps(action.get("paid") or {})})
         except apps.AppProblem as exc:
             raise ValueError(str(exc)) from exc
@@ -1127,7 +1232,7 @@ def _do(engine, automation, action, record, run):
         payload = _deep(engine, action.get("payload") or {}, ctx, record)
         path = _render(action["url"], ctx) if "{{" in action["url"] else action["url"]
         app = apps.get(action["app"])
-        if current_app.config.get("TRYING_OUT"):
+        if settings().get("TRYING_OUT"):
             return {"result": f"Would send to {app.name if app else action['app']} {path} (not sent while trying the app out)"}
         try:
             answer = apps.call(engine.ws, action["app"], action.get("method", "POST"), path, payload=payload)
@@ -1146,7 +1251,7 @@ def _do(engine, automation, action, record, run):
             payload = {"id": record.id, "table": record.table,
                        "record": {f["key"]: _plain(engine.value(record, f["key"])) for f in engine.tables[record.table]["fields"]}}
         url = _render(action["url"], ctx) if "{{" in action["url"] else action["url"]
-        if current_app.config.get("TRYING_OUT"):  # a copy being tried reaches nothing outside
+        if settings().get("TRYING_OUT"):  # a copy being tried reaches nothing outside
             return {"result": f"Would send to {url} (not sent while trying the app out)"}
         if action.get("method", "POST") == "GET":
             response = requests.get(url, params={k: v for k, v in (payload or {}).items() if not isinstance(v, (dict, list))}, timeout=15)
@@ -1278,7 +1383,7 @@ def _tell_contact(engine, record, field_key, token, what, by):
     by email when the business's mailbox is connected, and in the portal when they use it."""
     from ..connectors import microsoft
     address = engine.value(record, field_key) if "." not in field_key else engine._at_path(record, field_key)[1]
-    url = f"{current_app.config.get('BASE_URL', '')}/c/{token}"
+    url = f"{settings().get('BASE_URL', '')}/c/{token}"
     text = (f"{by} changed {what} on your record with {(engine.bp.get('name') or engine.ws.name)}. If this wasn't you or "
             f"someone you trust, cancel it here before it's approved: {url}")
     sent = False
@@ -1287,7 +1392,7 @@ def _tell_contact(engine, record, field_key, token, what, by):
             microsoft.send_mail(engine.ws, address, f"A change to {what}: please check it", text)
             sent = True
         except Exception as exc:  # the change still waits for approval; the approver sees nobody was told by email
-            current_app.logger.warning("Couldn't tell %s about a change: %s", address, exc)
+            _log.warning("Couldn't tell %s about a change: %s", address, exc)
     for uid in portal_people(engine, record):
         db.session.add(Notification(workspace_id=engine.ws.id, user_id=uid, kind="approval", text=text[:2000], link=f"cancel:{token}"))
     db.session.commit()
@@ -1396,16 +1501,17 @@ def _source_files(run, record, source):
 
 
 def _attachments(engine, record, key, run):
-    """(name, bytes, mime) for a document template (the one produced earlier in this run, or a fresh one) or the files in a
-    file field."""
+    """What an email attaches, as the outbox keeps it: a document template's PDF (the one produced earlier in this run,
+    or a fresh one) or the files in a file field, by their file ({"file", "name"}); a page's report, made now, by its
+    contents ({"name", "mime", "data"})."""
     from ..documents import produce
-    from ..storage import path_of
     if key.startswith("page:"):  # a dashboard as a report: the weekly sales page, emailed every Monday
         from ..web.erp_pages import page_report
         page = next((p for p in engine.bp.get("pages", []) if p["key"] == key[5:]), None)
         if page is None:
             raise ValueError(f"there's no page “{key[5:]}” to attach")
-        return [(f"{page['label']} {engine.today.isoformat()}.pdf", page_report(engine, page), "application/pdf")]
+        return [{"name": f"{page['label']} {engine.today.isoformat()}.pdf", "mime": "application/pdf",
+                 "data": base64.b64encode(page_report(engine, page)).decode()}]
     t = engine.tables[record.table] if record is not None else {}
     created = (run.context or {}).get("created") or []
     if not any(d["key"] == key for d in t.get("documents", [])) and created:  # the new invoice's PDF, after making the invoice
@@ -1415,9 +1521,9 @@ def _attachments(engine, record, key, run):
     if any(d["key"] == key for d in t.get("documents", [])):
         made = next((db.session.get(File, s["file"]) for s in reversed(run.steps or []) if s.get("file")), None)
         file = made if made is not None and made.record_id == record.id else produce(engine, record, key, by=f"automation run {run.id}")
-        return [(file.name, path_of(file).read_bytes(), file.mime)]
+        return [{"file": file.id, "name": file.name}]
     files = File.query.filter_by(record_id=record.id, field=key, deleted_at=None).all()
-    return [(f.name, path_of(f).read_bytes(), f.mime) for f in files]
+    return [{"file": f.id, "name": f.name} for f in files]
 
 
 ROLE_WORDS = {"owner": "the owner", "admin": "an admin", "editor": "an editor"}
@@ -1659,11 +1765,30 @@ def kept_from(engine, approval, record):
 
 
 def _carry_on(engine, run):
-    run.status, run.next_try = "queued", None
-    db.session.commit()
     automation = find(engine, run.automation)
-    if automation and (stand_in.get() is not None or not any(act["type"] in SLOW for act in schema.steps_of(automation["actions"]))):
-        execute(engine.system(), run)  # the rule carries on as itself: the person who answered moves records only by its buttons
+    if automation and _at_once(automation):
+        # held as it's queued, so no worker takes it in between; a worker looking at it this moment (a reminder) has a few
+        # seconds to finish, and if it's still on it, it's asked to look again as soon as it's done
+        if leases.hold(run, wait=5, status="queued", next_try=None):
+            execute(engine.system(), run)  # the rule carries on as itself: the person who answered moves records only by its buttons
+        else:
+            leases.when_free(run, wait=10, next_try=utcnow())
+    elif not leases.when_free(run, wait=5, status="queued", next_try=None):
+        leases.when_free(run, wait=10, next_try=utcnow())
+    return run
+
+
+def _wait_for_worker(run):
+    """A worker may be looking at this run at the very moment someone answers it (its reminder is due): its look is over
+    in a moment, and then the run is read again, so the answer carries it on instead of being missed."""
+    if run.status == "running" and not leases.mine(run):
+        db.session.commit()
+        deadline = utcnow() + timedelta(seconds=5)
+        while utcnow() < deadline:
+            db.session.refresh(run)
+            if run.lease_until is None or run.lease_until < utcnow():
+                break
+            time.sleep(0.2)
     return run
 
 
@@ -1682,7 +1807,7 @@ def decide(engine, approval, approved, by, comment=None, by_id=None, onward=True
     record = engine.get(approval.record_id) if approved and approval.record_id and (approval.kind or "approval") == "approval" else None
     if record is not None:  # held to what it was approved at
         engine.mark_approved(record, by=by, by_id=by_id)
-    run = db.session.get(Run, approval.run_id)
+    run = _wait_for_worker(db.session.get(Run, approval.run_id))
     if run.status != "waiting_approval":
         db.session.commit()
         return run
@@ -1722,7 +1847,7 @@ def complete(engine, task, by, values=None, comment=None):
         engine.update(record, wanted, by=by)
     task.status, task.decided_by, task.decided_at = "done", by, utcnow()
     task.comment = (comment or "").strip()[:1000] or None
-    run = db.session.get(Run, task.run_id)
+    run = _wait_for_worker(db.session.get(Run, task.run_id))
     if run.status != "waiting_approval":
         db.session.commit()
         return run
@@ -1759,15 +1884,52 @@ def _last_slot(trigger, now):
     return slot
 
 
+def _next_slot(trigger, now):
+    """The schedule's next time after now (in the workspace's own time)."""
+    last, every = _last_slot(trigger, now), trigger.get("every", "day")
+    if every in ("hour", "day", "week"):
+        return last + {"hour": timedelta(hours=1), "day": timedelta(days=1), "week": timedelta(days=7)}[every]
+    return last.replace(year=last.year + (last.month == 12), month=last.month % 12 + 1)
+
+
+LOOK_AGAIN = timedelta(days=1)  # the longest a workspace's schedules go without being looked at
+
+
+def _take_slot(engine, key, slot):
+    """Take this schedule's time: True for the one process whose row goes in, False if someone has taken it already
+    (two schedulers for a moment, as one takes over from another, can't both send the Monday report)."""
+    values = {"workspace_id": engine.ws.id, "automation_key": key, "slot": slot, "created_at": utcnow()}
+    dialect = db.engine.dialect.name
+    if dialect in ("postgresql", "sqlite"):
+        if dialect == "postgresql":
+            from sqlalchemy.dialects.postgresql import insert
+        else:
+            from sqlalchemy.dialects.sqlite import insert
+        table = ScheduleRun.__table__
+        done = db.session.execute(insert(table).values(**values).on_conflict_do_nothing(
+            index_elements=["workspace_id", "automation_key", "slot"]).returning(table.c.id))
+        return done.first() is not None  # a row back: this one went in
+    from sqlalchemy.exc import IntegrityError
+    try:
+        with db.session.begin_nested():
+            db.session.add(ScheduleRun(**values))
+        return True
+    except IntegrityError:
+        return False
+
+
 def due(engine):
-    """Start every schedule whose time has come since it last ran. A new schedule waits for its first time."""
+    """Start every schedule whose time has come since it last ran. A new schedule waits for its first time. Each time is
+    taken first (_take_slot), so it runs once however many processes look. Then the workspace is told when its schedules
+    are next due, so the scheduler doesn't look at it again before."""
     state = dict(engine.ws.state or {})
     last = dict(state.get("schedules") or {})
-    started = []
+    started, upcoming = [], []
     for a in engine.bp.get("automations", []):
         if not a.get("enabled", True) or a["trigger"]["type"] != "schedule":
             continue
         slot = _last_slot(a["trigger"], engine.now)
+        upcoming.append(_next_slot(a["trigger"], engine.now))
         seen = last.get(a["key"])
         if seen is None:
             last[a["key"]] = engine.now.isoformat(timespec="minutes")
@@ -1775,10 +1937,17 @@ def due(engine):
         if datetime.fromisoformat(seen) >= slot:
             continue
         last[a["key"]] = engine.now.isoformat(timespec="minutes")
-        started += run_schedule(engine, a, f"Scheduled: {describe_trigger(engine, a['trigger'])}")
+        if _take_slot(engine, a["key"], slot):
+            started += run_schedule(engine, a, f"Scheduled: {describe_trigger(engine, a['trigger'])}")
     if last != (state.get("schedules") or {}):
         engine.ws.state = {**state, "schedules": last}
-        db.session.commit()
+    if isinstance(engine.ws, Workspace):
+        soonest = min(upcoming, default=None)
+        later = utcnow() + LOOK_AGAIN
+        if soonest is not None:
+            soonest = soonest.replace(tzinfo=engine.now_tz).astimezone(ZoneInfo("UTC")).replace(tzinfo=None)
+        engine.ws.next_due_at = min(soonest, later) if soonest is not None else later
+    db.session.commit()
     return started
 
 
@@ -1910,6 +2079,10 @@ def looks_like_sum(engine, table, value):
 def humanize(engine, value, table=None):
     """A value with {{ }} as words. On its own: {{record}} → this Project, {{record.amount}} → its Amount.
     Inside text: "Invoice {{record.number}} is overdue" → “Invoice ‹Invoice number› is overdue”."""
+    if value is None or value == []:
+        return "empty"  # never “null” to someone who doesn't write code
+    if isinstance(value, bool):
+        return "yes" if value else "no"
     if not isinstance(value, str):
         return json.dumps(value) if not isinstance(value, (int, float)) else str(value)
     t = engine.tables.get(table)

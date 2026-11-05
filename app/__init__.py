@@ -90,9 +90,10 @@ def create_app(overrides=None):
             store.create(db)
         else:
             from . import migrate
-            new = migrate.is_new()
-            db.create_all()
-            migrate.upgrade(new)
+            with migrate.one_at_a_time():  # the web and the worker may start together
+                new = migrate.is_new()
+                db.create_all()
+                migrate.upgrade(new)
         from . import discovery, importer, intelligence, knowledge, learning  # noqa: F401 (register their background jobs)
 
     if app.config["WORKER"] and not app.config.get("TESTING") and not app.config.get("SIMULATION"):

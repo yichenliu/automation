@@ -65,3 +65,32 @@ def test_a_read_only_key_gets_only_the_reading_tools_and_the_api_is_described(ap
     customer = spec["components"]["schemas"]["Customers"]
     assert customer["properties"]["tier"]["enum"] == ["Gold", "Silver"] and customer["required"] == ["name"]
     assert "post" not in spec["paths"]["/tables/customers/records"]  # a viewer key can't add
+
+
+def test_the_owners_own_agent_changes_the_app_in_the_keel_language_with_the_builders_tools(app, client, owner):
+    from app import lang
+    from app.blueprint import schema as design
+    user, ws = owner
+    ws.blueprint = lang.apply(design.empty("Shop"), [
+        {"do": "add_list", "key": "invoices", "label": "Invoices", "singular": "Invoice", "fields": [{"type": "text", "key": "name", "label": "Name"}],
+         "stages": {"stages": ["Draft", "Sent", "Paid"]}}]).blueprint
+    from app.extensions import db
+    db.session.commit()
+    _, staff = make_key(ws, "Staff's agent", "editor", user.id)
+    assert not [t for t in _rpc(client, staff, "tools/list").get_json()["result"]["tools"] if t["name"].startswith("keel_")]
+    said, wrong = _tool(client, staff, "keel_describe", {})
+    assert wrong and "owner's or an admin's key" in said
+    _, key = make_key(ws, "Owner's agent", "admin", user.id)
+    names = {t["name"] for t in _rpc(client, key, "tools/list").get_json()["result"]["tools"]}
+    assert {"keel_language", "keel_describe", "keel_what_if", "keel_apply", "keel_test", "keel_undo"} <= names
+    language, _ = _tool(client, key, "keel_language", {})
+    assert "stage_alert" in language["catalog"]
+    now, _ = _tool(client, key, "keel_describe", {})
+    patch = {"do": "stage_alert", "list": "invoices", "stage": "Paid"}
+    tried, _ = _tool(client, key, "keel_what_if", {"patches": [patch, {"do": "stage_alert", "list": "invoices", "stage": "Payed"}]})
+    assert tried["refused"] == [2] and "isn't a stage" in tried["problems"][0]
+    assert tried["checks"] and all(c["ok"] for c in tried["checks"])
+    stale, _ = _tool(client, key, "keel_apply", {"patches": [patch], "version": now["version"] + 5})
+    assert stale["saved"] is False and "describe it again" in stale["why"]
+    done, _ = _tool(client, key, "keel_apply", {"patches": [patch], "version": now["version"]})
+    assert done["saved"] and done["version"] == now["version"] + 1 and all(c["ok"] for c in done["checks"])

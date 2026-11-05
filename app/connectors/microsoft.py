@@ -18,11 +18,11 @@ from urllib.parse import quote
 import markdown
 import nh3
 import requests
-from flask import current_app
 
 from ..extensions import db
 from ..models import Connection, utcnow
 from ..security import decrypt, encrypt
+from ..core.settings import settings
 
 GRAPH = "https://graph.microsoft.com/v1.0"
 AUTHORITY = "https://login.microsoftonline.com/{tenant}/oauth2/v2.0"
@@ -36,7 +36,7 @@ class MicrosoftProblem(Exception):
 
 
 def configured():
-    cfg = current_app.config
+    cfg = settings()
     return bool(cfg["MICROSOFT_CLIENT_ID"] and cfg["MICROSOFT_CLIENT_SECRET"])
 
 
@@ -50,11 +50,11 @@ def connection(workspace, create=False):
 
 
 def redirect_uri():
-    return f"{current_app.config['BASE_URL']}/connect/callback"
+    return f"{settings()['BASE_URL']}/connect/callback"
 
 
 def _authority():
-    return AUTHORITY.format(tenant=current_app.config["MICROSOFT_TENANT"] or "organizations")
+    return AUTHORITY.format(tenant=settings()["MICROSOFT_TENANT"] or "organizations")
 
 
 def sign_in_url(session, workspace_id):
@@ -63,7 +63,7 @@ def sign_in_url(session, workspace_id):
     state, verifier = secrets.token_urlsafe(24), secrets.token_urlsafe(48)
     session["ms_oauth"] = {"state": state, "verifier": verifier, "workspace": workspace_id, "at": time.time()}
     challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
-    params = {"client_id": current_app.config["MICROSOFT_CLIENT_ID"], "response_type": "code", "redirect_uri": redirect_uri(),
+    params = {"client_id": settings()["MICROSOFT_CLIENT_ID"], "response_type": "code", "redirect_uri": redirect_uri(),
               "response_mode": "query", "scope": SCOPES, "state": state, "code_challenge": challenge,
               "code_challenge_method": "S256", "prompt": "select_account"}
     return requests.Request("GET", f"{_authority()}/authorize", params=params).prepare().url
@@ -76,7 +76,7 @@ def login_url(session):
     state, verifier, nonce = secrets.token_urlsafe(24), secrets.token_urlsafe(48), secrets.token_urlsafe(16)
     session["ms_login"] = {"state": state, "verifier": verifier, "nonce": nonce, "at": time.time()}
     challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
-    params = {"client_id": current_app.config["MICROSOFT_CLIENT_ID"], "response_type": "code", "redirect_uri": redirect_uri(),
+    params = {"client_id": settings()["MICROSOFT_CLIENT_ID"], "response_type": "code", "redirect_uri": redirect_uri(),
               "response_mode": "query", "scope": "openid email profile", "state": state, "nonce": nonce,
               "code_challenge": challenge, "code_challenge_method": "S256", "prompt": "select_account"}
     return requests.Request("GET", f"{_authority()}/authorize", params=params).prepare().url
@@ -96,7 +96,7 @@ def finish_login(session, args):
         claims = json.loads(base64.urlsafe_b64decode(token.split(".")[1] + "==="))
     except (IndexError, ValueError) as exc:
         raise MicrosoftProblem("Microsoft didn't say who signed in.") from exc
-    if claims.get("nonce") != pending["nonce"] or claims.get("aud") != current_app.config["MICROSOFT_CLIENT_ID"] or claims.get("exp", 0) < time.time():
+    if claims.get("nonce") != pending["nonce"] or claims.get("aud") != settings()["MICROSOFT_CLIENT_ID"] or claims.get("exp", 0) < time.time():
         raise MicrosoftProblem("That sign-in couldn't be checked. Try again.")
     return claims
 
@@ -123,7 +123,7 @@ def finish_sign_in(session, args, user):
 
 
 def _token(form):
-    cfg = current_app.config
+    cfg = settings()
     response = requests.post(f"{_authority()}/token", timeout=30, data={  # a sign-in asks only for its own scopes
         "scope": SCOPES, **form, "client_id": cfg["MICROSOFT_CLIENT_ID"], "client_secret": cfg["MICROSOFT_CLIENT_SECRET"]})
     body = response.json() if response.content else {}

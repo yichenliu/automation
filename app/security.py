@@ -1,4 +1,5 @@
 """Who may do what, keeping secrets secret, and the browser-side protections every response carries."""
+import logging
 import base64
 import hashlib
 import json
@@ -9,13 +10,17 @@ from functools import wraps
 from cryptography.fernet import Fernet, InvalidToken
 from flask import abort, current_app, g, request
 from flask_login import current_user
+from sqlalchemy import text
 
 from .extensions import db
 from .models import Membership, Workspace
+from .core.settings import settings
+
+_log = logging.getLogger(__name__)
 
 
 def _fernet():
-    key = hashlib.sha256(("tokens:" + current_app.config["SECRET_KEY"]).encode()).digest()
+    key = hashlib.sha256(("tokens:" + settings()["SECRET_KEY"]).encode()).digest()
     return Fernet(base64.urlsafe_b64encode(key))
 
 
@@ -29,7 +34,7 @@ def decrypt(token):
     try:
         return json.loads(_fernet().decrypt(token.encode()))
     except (InvalidToken, ValueError):
-        current_app.logger.error("A stored sign-in couldn't be decrypted (was the secret key in the data folder replaced?)")
+        _log.error("A stored sign-in couldn't be decrypted (was the secret key in the data folder replaced?)")
         return {}
 
 
@@ -112,21 +117,72 @@ def role_required(role):
 
 
 class Throttle:
-    """At most `limit` attempts per key in `window` seconds (sign-ins, public form posts)."""
+    """At most `limit` attempts per key in `window` seconds (sign-ins, public form posts, API calls).
 
-    def __init__(self, limit, window):
+    With several web processes the attempts are counted in PostgreSQL (RateHit), so a limit is the same limit whichever
+    process a request reaches: each attempt adds one to the count of the slice of time it falls in (SLICES of them per
+    window), and the slices of the last window are added up. Under TESTING, and on anything but PostgreSQL (one process),
+    they're counted in memory (`hits`), as they always were. `name` keeps each limit's counts apart (by default its
+    numbers, so two limits with the same numbers share them)."""
+
+    SLICES = 30
+
+    def __init__(self, limit, window, name=None, shared=None):
         self.limit, self.window, self.hits = limit, window, defaultdict(deque)
+        self.name = name or f"{limit}/{window}"
+        self.shared = shared  # None: in PostgreSQL unless testing; True/False: always or never
+        self.step = max(1, int(window) // self.SLICES)
 
+    # --- in memory ------------------------------------------------------------------------------------------------
     def _recent(self, key):
         now, hits = time.monotonic(), self.hits[key]
         while hits and now - hits[0] > self.window:
             hits.popleft()
         return hits
 
+    # --- in PostgreSQL -------------------------------------------------------------------------------------------
+    def _in_database(self):
+        if self.shared is not None:
+            return self.shared
+        try:
+            return not settings().get("TESTING") and db.engine.dialect.name == "postgresql"
+        except RuntimeError:  # outside the app
+            return False
+
+    def _key(self, key):
+        return hashlib.sha256(f"{self.name}|{key}".encode()).hexdigest()[:64]
+
+    def _count(self, conn, key):
+        oldest = int(time.time()) - self.window
+        return conn.execute(text("SELECT COALESCE(SUM(count), 0) FROM rate_hit WHERE key = :k AND bucket > :oldest"),
+                            {"k": self._key(key), "oldest": oldest - self.step}).scalar() or 0
+
+    def _add(self, conn, key):
+        now = int(time.time())
+        conn.execute(text("INSERT INTO rate_hit (key, bucket, count) VALUES (:k, :b, 1) "
+                          "ON CONFLICT (key, bucket) DO UPDATE SET count = rate_hit.count + 1"),
+                     {"k": self._key(key), "b": now - now % self.step})
+
+    def _shared(self, fn, key):
+        """Counted on a connection of its own, so an attempt counts even when the request's own work is undone."""
+        try:
+            with db.engine.begin() as conn:
+                return fn(conn, key)
+        except Exception as exc:  # the database busy for a moment: this attempt is counted here instead
+            _log.warning("Couldn't count an attempt for the %s limit in the database: %s", self.name, exc)
+            return None
+
+    # --- asked by the screens -----------------------------------------------------------------------------------
     def blocked(self, key):
+        if self._in_database():
+            count = self._shared(self._count, key)
+            if count is not None:
+                return count >= self.limit
         return len(self._recent(key)) >= self.limit
 
     def hit(self, key):
+        if self._in_database() and self._shared(lambda conn, k: self._add(conn, k) or True, key):
+            return
         self._recent(key).append(time.monotonic())
 
     def allow(self, key):
@@ -137,15 +193,23 @@ class Throttle:
         return True
 
 
-sign_ins = Throttle(10, 900)
-form_posts = Throttle(30, 3600)
+sign_ins = Throttle(10, 900, name="sign_ins")
+form_posts = Throttle(30, 3600, name="form_posts")
+
+
+def forget_old_hits(older_than=86400):
+    """Counts older than any limit's window are let go (the scheduler does it every hour)."""
+    if db.engine.dialect.name != "postgresql":
+        return 0
+    with db.engine.begin() as conn:
+        return conn.execute(text("DELETE FROM rate_hit WHERE bucket < :t"), {"t": int(time.time()) - older_than}).rowcount
 
 
 def client_ip():
     """Who's connecting. X-Forwarded-For is only believed when the platform runs behind a proxy that sets it
     (TRUST_PROXY=1); otherwise anyone could send a new one each time and dodge the sign-in limits."""
     from flask import current_app
-    if current_app.config.get("TRUST_PROXY"):
+    if settings().get("TRUST_PROXY"):
         return request.headers.get("X-Forwarded-For", request.remote_addr or "").split(",")[0].strip()
     return request.remote_addr or ""
 

@@ -132,7 +132,8 @@ def test_each_feature_compiles_and_passes_its_own_checks_in_the_simulator(app, f
 def test_a_feature_whose_parts_are_broken_fails_its_own_checks(app):
     """The checks prove the feature works: take away the rule it made, and they fail."""
     bp = lang.apply(everything(), [{"do": "payments", "list": "invoices", "payments": "payments", "paid_stage": "Paid"}]).blueprint
-    broken = lang.apply(bp, [{"do": "design_op", "op": {"op": "remove_automation", "key": "payments_invoices"}}]).blueprint
+    broken = json.loads(json.dumps(bp))
+    broken["automations"] = [a for a in broken["automations"] if a["key"] != "payments_invoices"]
     ws = _workspace(app, broken)
     _, results = trial.try_out(ws, patterns.checks(broken), screens=False)
     assert results and not all(r["ok"] for r in results)
@@ -162,6 +163,14 @@ def test_a_condition_on_a_linked_records_choice_says_how_to_write_it():
                                                       "steps": [{"do": "set", "on": "order", "values": [{"field": "status", "to": "Ready"}],
                                                                  "only_if": [{"field": "status", "op": "equals", "value": "In fitting"}]}]}}])
     assert "write order.status" in out.problems[0]
+
+
+def test_a_design_op_can_never_make_what_the_language_has_patches_for():
+    out = lang.apply(everything(), [{"do": "design_op", "op": {"op": "create_table", "key": "x", "label": "X", "fields": []}},
+                                    {"do": "design_op", "op": {"op": "update_table", "table": "jobs", "workflow": {}}},
+                                    {"do": "design_op", "op": {"op": "update_table", "table": "jobs", "row_access": {"field": "assigned_to"}}}])
+    assert out.refused == [1, 2]
+    assert "lists, fields, stages and rules are made with add_list" in out.problems[0]
 
 
 def test_lists_that_link_to_each_other_can_be_made_in_any_order_and_keep_their_field_order():
@@ -305,5 +314,219 @@ def test_a_need_whose_patches_were_all_refused_is_said_as_not_made_yet(app):
     a = db.session.get(Message, a.id)
     assert a.status == "done", a.error
     assert a.checks["needs"][0]["state"] == "unmade"
-    assert a.text.startswith("Not everything works yet") and "I couldn't make this yet: The owner is told when an invoice is paid" in a.text
+    assert a.text.startswith("Not everything works yet. I couldn't make this yet: The owner is told when an invoice is paid.")
     assert "(not made yet)" in a.text
+
+
+def test_a_feature_checks_itself_when_its_total_is_worked_out_by_a_formula(app):
+    bp = lang.apply(everything(), [
+        {"do": "add_field", "list": "invoices", "field": {"type": "money", "key": "base", "label": "Base"}},
+        {"do": "add_field", "list": "invoices", "field": {"type": "money", "key": "call_out_fee", "label": "Call-out fee"}},
+        {"do": "change_field", "list": "invoices", "field": {"type": "formula", "key": "total", "label": "Total", "formula": "base + call_out_fee", "shows": "money"}},
+        {"do": "payments", "list": "invoices", "payments": "payments", "paid_stage": "Paid", "part_paid_stage": "Part paid"}]).blueprint
+    examples = patterns.checks(bp)
+    assert len(examples) == 2
+    ws = _workspace(app, bp)
+    _, results = trial.try_out(ws, examples, screens=False)
+    assert all(r["ok"] for r in results), [r.get("problem") for r in results]
+
+
+def test_lists_named_as_needed_but_not_made_are_asked_for_again(app):
+    app.config["BUILDER"] = "v2"
+    ws = _workspace(app, None)
+    data = iter([{"lists": ["customers", "invoices"], "patches": [EVERYTHING[0]]}, {"lists": ["invoices"], "patches": [_invoices()]}])
+    model = Model({
+        "understand": {"needs": [{"said": "invoices", "does": "Customers get invoices"}], "reply": "OK."},
+        "data": lambda messages: next(data),
+        "behaviour": {"work": []},
+    })
+    ai.set_backend(model)
+    q = Message(workspace_id=ws.id, channel="builder", user_id=ws.owner_id, role="user", text="Customers and their invoices")
+    a = Message(workspace_id=ws.id, channel="builder", role="assistant", status="queued")
+    db.session.add_all([q, a])
+    db.session.commit()
+    from app.builder import chat
+    chat.work(a.id)
+    assert model.asked.count("data") == 2
+    ws = db.session.get(Workspace, ws.id)
+    assert {t["key"] for t in ws.blueprint["tables"]} >= {"customers", "invoices"}
+
+
+def test_an_answer_too_long_to_write_is_asked_for_again_in_smaller_pieces(app):
+    app.config["BUILDER"] = "v2"
+    ws = _workspace(app, None)
+    data = iter(["cut", {"lists": ["customers", "invoices"], "patches": [EVERYTHING[0]]}, {"lists": ["invoices"], "patches": [_invoices()]}])
+    behaviour = iter(["cut", {"patches": [{"do": "stage_alert", "list": "invoices", "stage": "Paid"}]}])
+
+    def answer(steps):
+        def one(messages):
+            got = next(steps)
+            if got == "cut":
+                raise ai.CutOff("The AI's answer was cut off at the length limit")
+            return got
+        return one
+    model = Model({"understand": {"needs": [{"said": "tell me when paid", "does": "The owner is told when an invoice is paid"}], "reply": "OK."},
+                   "data": answer(data), "behaviour": answer(behaviour)})
+    ai.set_backend(model)
+    q = Message(workspace_id=ws.id, channel="builder", user_id=ws.owner_id, role="user", text="Invoices, and tell me when one is paid")
+    a = Message(workspace_id=ws.id, channel="builder", role="assistant", status="queued")
+    db.session.add_all([q, a])
+    db.session.commit()
+    from app.builder import chat
+    chat.work(a.id)
+    a = db.session.get(Message, a.id)
+    assert a.status == "done", a.error
+    assert a.checks["needs"][0]["state"] == "ok"
+    assert any("a few at a time" in p for p in a.progress) and any("one need at a time" in p for p in a.progress)
+
+
+def test_an_email_to_someone_the_record_cant_reach_says_which_addresses_it_can():
+    out = lang.apply(everything(), [{"do": "reminder_before", "list": "appointments", "date_field": "starts_on", "days": 1, "email_to": "owner"}])
+    assert "The email addresses an appointment can reach: client.email" in out.problems[0]
+
+
+def test_the_new_builder_adds_the_records_the_owner_gave_and_brings_in_an_attached_spreadsheet(app):
+    from app import storage
+    from app.models import Job, Record
+    app.config["BUILDER"] = "v2"
+    ws = _workspace(app, None)
+    f = storage.save(ws.id, b"Customer name,E-mail\nAcme,acme@example.com\nBolt,bolt@example.com\n", "customers.csv")
+    model = Model({
+        "understand": {"needs": [{"said": "my customers are in the sheet", "does": "Keeps the customers from the spreadsheet"}], "reply": "OK."},
+        "data": {"lists": ["customers", "services"], "patches": [
+            EVERYTHING[0], {"do": "add_list", "key": "services", "label": "Services", "singular": "Service", "fields": [
+                {"type": "text", "key": "name", "label": "Name"}, {"type": "money", "key": "price", "label": "Price"}]},
+            {"do": "add_records", "list": "services", "records": [{"name": "Gutter clean", "price": 180}]},
+            {"do": "import_rows", "file": f.id, "list": "customers", "columns": {"Customer name": "name", "E-mail": "email"}}]},
+        "behaviour": {"work": []},
+    })
+    ai.set_backend(model)
+    q = Message(workspace_id=ws.id, channel="builder", user_id=ws.owner_id, role="user", text="My customers are in this sheet; I do gutter cleans for $180",
+                files=[f.id])
+    a = Message(workspace_id=ws.id, channel="builder", role="assistant", status="queued")
+    db.session.add_all([q, a])
+    db.session.commit()
+    from app.builder import chat
+    chat.work(a.id)
+    a = db.session.get(Message, a.id)
+    assert a.status == "done", a.error
+    assert Record.query.filter_by(workspace_id=ws.id, table="services").count() == 1
+    assert Job.query.filter_by(workspace_id=ws.id, kind="import").count() == 1
+    assert any("Importing" in c for c in a.changes)
+
+
+def test_a_rule_that_makes_a_document_the_list_hasnt_got_makes_a_standard_one():
+    out = lang.apply(everything(), [{"do": "add_rule", "rule": {"key": "send_report", "name": "Send the report", "when": {"on": "reaches", "list": "jobs", "stage": "Done"},
+                                                              "steps": [{"do": "document", "document": "job_report"},
+                                                                        {"do": "email", "to": "customer.email", "subject": "Your report", "body": "Attached.", "attach": ["job_report"]}]}}])
+    assert not out.problems, out.problems
+    assert [d["key"] for d in schema.table(out.blueprint, "jobs")["documents"]] == ["job_report"]
+
+
+@pytest.mark.parametrize("only_if", [[{"field": "status", "op": "equals", "value": "In progress"}], []])
+def test_a_limit_in_all_counting_only_some_stages_checks_itself(app, only_if):
+    out = lang.apply(everything(), [{"do": "limit", "list": "jobs", "max": 2, "only_if": only_if}])
+    assert not out.problems, out.problems
+    ws = _workspace(app, out.blueprint)
+    _, results = trial.try_out(ws, patterns.checks(out.blueprint), screens=False)
+    assert results and all(r["ok"] for r in results), [r.get("problem") for r in results]
+
+
+def test_a_limit_per_stage_is_refused_saying_how_to_count_only_some_stages():
+    out = lang.apply(everything(), [{"do": "limit", "list": "jobs", "per": ["status"], "max": 5}])
+    assert "leave per empty" in out.problems[0] and '"op": "one_of"' in out.problems[0]
+
+
+@pytest.mark.parametrize("said, only", [("Fix what didn't come out right", True), ("Please fix what isn't right on my Checks page:\n- x", True),
+                                        ("fix it", True), ("yes please", True), ("add a column “Team note”", False),
+                                        ("tell me when a funeral case reaches Closed", False),
+                                        ("No, the booking should wait until I approve the plan, then it moves on", False)])
+def test_only_a_plain_fix_request_skips_reading_what_the_owner_says(said, only):
+    from app.builder.build import only_fixing
+    assert only_fixing(said) is only
+
+
+def test_an_overdue_stage_the_list_has_is_put_straight_after_the_stages_it_comes_from():
+    bp = lang.apply(everything(), [{"do": "set_stages", "list": "bookings", "stages": {"stages": ["Booked", "Done", "Late"]}}]).blueprint
+    out = lang.apply(bp, [{"do": "add_field", "list": "bookings", "field": {"type": "date", "key": "due", "label": "Due"}},
+                          {"do": "overdue", "list": "bookings", "date_field": "due", "from_stages": ["Booked"], "to_stage": "Late"}])
+    assert not out.problems, out.problems
+    assert schema.field(schema.table(out.blueprint, "bookings"), "status")["options"] == ["Booked", "Late", "Done"]
+
+
+def test_a_move_tried_by_staff_and_then_by_the_owner_means_staff_are_stopped(app):
+    bp = lang.apply(everything(), [{"do": "approval", "list": "quotes", "stage": "Sent", "by": "owner"}]).blueprint
+    ws = _workspace(app, bp)
+    example = {"title": "Only I send quotes", "steps": [
+        {"do": "add", "table": "quotes", "as": "q1", "values": {"total": 100}},
+        {"do": "move", "as": "q1", "to": "Sent", "by": "staff"}, {"do": "move", "as": "q1", "to": "Sent", "by": "owner"}],
+        "expect": [{"record": "q1", "field": "status", "equals": "Sent"}]}
+    _, results = trial.try_out(ws, [example], screens=False)
+    assert results[0]["ok"], results[0].get("problem")
+
+
+def test_an_expected_date_can_be_today_on_the_examples_own_calendar(app):
+    bp = lang.apply(everything(), [{"do": "chase", "list": "invoices", "stage": "Sent", "days": 14}]).blueprint
+    ws = _workspace(app, bp)
+    example = {"title": "Chased and dated", "steps": [
+        {"do": "add", "table": "invoices", "as": "i1", "values": {}}, {"do": "move", "record": "i1", "to": "Sent"},
+        {"do": "wait", "days": 14}, {"do": "run", "rule": "chase_invoices_sent"}],
+        "expect": [{"record": "i1", "field": "chased_sent", "equals": "today"}, {"record": "i1", "field": "sent_on", "equals": "today-14"}]}
+    _, results = trial.try_out(ws, [example], screens=False)
+    assert results[0]["ok"], results[0].get("problem")
+
+
+def test_a_model_repeating_itself_while_working_out_the_needs_is_asked_again_and_the_turn_goes_on(app):
+    app.config["BUILDER"] = "v2"
+    ws = _workspace(app, None)
+    understood = iter(["stuck", {"needs": [{"said": "invoices", "does": "Keeps invoices"}], "reply": "OK."}])
+
+    def understand(messages):
+        got = next(understood)
+        if got == "stuck":
+            raise ai.Stuck("The AI got stuck writing its answer (it kept repeating itself).")
+        return got
+    model = Model({"understand": understand, "data": {"lists": ["invoices"], "patches": [_invoices()]}, "behaviour": {"work": []}})
+    ai.set_backend(model)
+    q = Message(workspace_id=ws.id, channel="builder", user_id=ws.owner_id, role="user", text="I need invoices")
+    a = Message(workspace_id=ws.id, channel="builder", role="assistant", status="queued")
+    db.session.add_all([q, a])
+    db.session.commit()
+    from app.builder import chat
+    chat.work(a.id)
+    a = db.session.get(Message, a.id)
+    assert a.status == "done", a.error
+    assert model.asked.count("understand") == 2
+
+
+def test_an_owner_approving_what_only_they_may_send_is_their_move_and_staff_trying_first_are_stopped(app):
+    bp = lang.apply(everything(), [{"do": "approval", "list": "quotes", "stage": "Sent", "by": "owner", "over": {"field": "total", "amount": 5000}}]).blueprint
+    ws = _workspace(app, bp)
+    example = {"title": "Over $5,000 waits for me", "steps": [
+        {"do": "add", "table": "quotes", "as": "q1", "values": {"total": 6000}},
+        {"do": "move", "record": "q1", "to": "Sent", "by": "staff"}, {"do": "approve", "record": "q1"}],
+        "expect": [{"record": "q1", "field": "status", "equals": "Sent"}]}
+    _, results = trial.try_out(ws, [example], screens=False)
+    assert results[0]["ok"], results[0].get("problem")
+
+
+def test_a_stage_added_after_another_leads_on_where_that_one_did_and_nothing_else_changes():
+    bp = everything()
+    out = lang.apply(bp, [{"do": "add_stage", "list": "quotes", "stage": "On hold", "after": "Sent", "button": "Put on hold"}])
+    assert not out.problems, out.problems
+    t = schema.table(out.blueprint, "quotes")
+    assert schema.field(t, "status")["options"] == ["Draft", "Sent", "On hold", "Accepted", "Declined"]
+    moves = {(tuple(mv["from"]), mv["to"]) for mv in t["workflow"]["transitions"]}
+    assert (("Sent",), "On hold") in moves and (("Sent", "On hold"), "Accepted") in moves and (("Sent", "On hold"), "Declined") in moves
+    assert (("Draft",), "Sent") in moves
+
+
+def test_a_gate_on_a_condition_keeps_a_record_from_a_stage_until_it_holds(app):
+    out = lang.apply(everything(), [{"do": "gate", "list": "jobs", "stage": "In progress",
+                                     "only_if": [{"field": "scheduled_for", "op": "within_next_days", "value": 2}]}])
+    assert not out.problems, out.problems
+    examples = patterns.checks(out.blueprint)
+    assert len(examples) == 2
+    ws = _workspace(app, out.blueprint)
+    _, results = trial.try_out(ws, examples, screens=False)
+    assert all(r["ok"] for r in results), [r.get("problem") for r in results]

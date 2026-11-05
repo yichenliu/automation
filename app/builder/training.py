@@ -23,6 +23,7 @@ outweighs every "yes". Each answer is then graded:
 
 docs/FINETUNE.md says when there's enough to train on, and how to tell whether training helped.
 """
+import logging
 import argparse
 import json
 import random
@@ -30,10 +31,13 @@ import sys
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
+from ..core.settings import settings
 
-from flask import current_app
+_log = logging.getLogger(__name__)
 
-KINDS = ("design", "review", "fix", "examples")
+
+KINDS = ("design", "review", "fix", "examples",  # the first builder's
+         "v2_understand", "v2_data", "v2_behaviour", "v2_checks", "v2_fix", "v2_repair")  # Keel v2's, in the Keel language
 GRADES = ("gold", "silver", "bronze")
 # Enough to be worth training on (docs/FINETUNE.md): fewer, or from too few businesses, and the model learns the
 # businesses rather than the platform.
@@ -42,7 +46,7 @@ NEEDED = {"gold": 300, "design": 150, "businesses": 40}
 
 def keep(message, calls):
     """Append a finished turn's calls and how it went."""
-    if not calls or not current_app.config.get("TRAINING_LOG", True):
+    if not calls or not settings().get("TRAINING_LOG", True):
         return
     from ..models import Workspace
     from . import checking
@@ -54,7 +58,7 @@ def keep(message, calls):
                "examples": [sum(1 for x in examples if x.get("ok")), len(examples)], "issues_left": len(checks.get("issues") or []),
                "fixes": checks.get("fixes", 0), "first": checks.get("first"), "build": not message.version_before,
                "left_out": sum(1 for p in message.progress or [] if str(p).startswith(("Couldn't fit", "Didn't fit")))}
-    folder = Path(current_app.config["DATA_DIR"]) / "training"
+    folder = Path(settings()["DATA_DIR"]) / "training"
     try:
         folder.mkdir(parents=True, exist_ok=True)
         now = datetime.now(timezone.utc)
@@ -64,7 +68,7 @@ def keep(message, calls):
         with open(folder / f"builder-{now:%Y-%m}.jsonl", "a", encoding="utf-8") as out:
             out.write(json.dumps(line, ensure_ascii=False, default=str) + "\n")
     except OSError:
-        current_app.logger.warning("Couldn't keep builder turn %s for training", message.id, exc_info=True)
+        _log.warning("Couldn't keep builder turn %s for training", message.id, exc_info=True)
 
 
 def verdict(folder, ok, why="", by="", workspace=None, message=None, checks=None):
