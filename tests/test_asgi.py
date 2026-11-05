@@ -1,4 +1,4 @@
-"""The FastAPI front: the Keel language's tools as REST v2, a builder turn's progress streamed, and the Flask app's pages
+"""The FastAPI front: the Keel language's tools as REST v2, a builder turn's progress streamed, and the pages
 still served through it."""
 from starlette.testclient import TestClient
 
@@ -33,7 +33,7 @@ def test_an_admins_key_changes_the_app_through_rest_v2_and_the_pages_still_work(
     assert tried["refused"] == [] and tried["checks"] and all(c["ok"] for c in tried["checks"])
     done = client.post("/api/v2/app/apply", json={"patches": [patch], "version": now["version"]}, headers={"Authorization": f"Bearer {admin}"}).json()
     assert done["saved"] and done["version"] == now["version"] + 1
-    assert client.get("/login").status_code == 200  # a Flask page, through the mount
+    assert client.get("/login").status_code == 200  # a page, through the mount
 
 
 def test_a_builder_turns_progress_streams_until_it_is_done(app, owner):

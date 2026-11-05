@@ -274,11 +274,18 @@ class App:
         self._jinja_env = None
         self.engine = None
         self.asgi = self.serve  # what an ASGI server calls: create_app puts the FastAPI front (with this inside) here
-        self.logger = _logger(self)
+        self._logger = None
         if self.static_folder:
             self.add_url_rule("/static/<path:filename>", "static", self.send_static_file)
 
     # settings ----------------------------------------------------------------------------------------------------------
+    @property
+    def logger(self):
+        """Made the first time it's used, so it finds the log files create_app set up by then."""
+        if self._logger is None:
+            self._logger = _logger(self)
+        return self._logger
+
     @property
     def debug(self):
         return bool(self.config.get("DEBUG"))

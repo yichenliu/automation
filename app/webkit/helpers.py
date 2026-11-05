@@ -82,7 +82,7 @@ def url_for(endpoint, *, _anchor=None, _method=None, _scheme=None, _external=Non
     return path
 
 
-def redirect(location, code=302, Response=Response):  # noqa: N803 - the name Flask gave it
+def redirect(location, code=302):
     location = str(location)
     shown = escape(location)
     response = Response("<!doctype html>\n<html lang=en>\n<title>Redirecting...</title>\n<h1>Redirecting...</h1>\n"
