@@ -99,7 +99,8 @@ def _either(outcomes):
 # --- JSON values as SQL reads them -----------------------------------------------------------------------------------------
 class Scalar:
     """A JSON value as SQL reads it: what a record keeps under a key, or one item of a list it keeps. `kind` is the
-    database's own name for its type (jsonb_typeof on PostgreSQL, json_type in SQLite); NULL when there's nothing."""
+    database's own name for its type (jsonb_typeof on PostgreSQL, json_type in SQLite), and "missing" when there's
+    nothing under the key: never NULL, so every test on it is true or false and NOT means what Python's `not` means."""
 
     def __init__(self, pg, kind, text, number, length=None, node=None, path=None):
         self.pg, self.kind, self.text, self._number, self._length, self.node, self.path = pg, kind, text, number, length, node, path
@@ -108,13 +109,14 @@ class Scalar:
     def field(cls, pg, key):
         node = Record.data[key]
         if pg:
-            return cls(pg, func.jsonb_typeof(node), node.as_string(), node.as_float(), func.jsonb_array_length(node), node)
+            return cls(pg, func.coalesce(func.jsonb_typeof(node), "missing"), node.as_string(), node.as_float(),
+                       func.jsonb_array_length(node), node)
         path = f'$."{key}"'
-        return cls(pg, func.json_type(Record.data, path), node.as_string(), node.as_float(), func.json_array_length(Record.data, path),
-                   node, path)
+        return cls(pg, func.coalesce(func.json_type(Record.data, path), "missing"), node.as_string(), node.as_float(),
+                   func.json_array_length(Record.data, path), node, path)
 
     def missing(self):
-        return self.kind.is_(None)
+        return self.kind == "missing"
 
     def null(self):
         return self.kind == "null"
@@ -174,16 +176,16 @@ class Scalar:
     def iso_date(self):
         """A date kept as the engine keeps it (2026-11-30, and a real day): in order as text, as Python reads it."""
         if self.pg:
-            return and_(self.string(), self.text.op("~")(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$"), func.pg_input_is_valid(self.text, "date"))
-        return and_(self.string(), func.date(self.text) == self.text, self.text >= "0001-01-01")
+            return _sure(and_(self.string(), self.text.op("~")(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$"), func.pg_input_is_valid(self.text, "date")))
+        return _sure(and_(self.string(), func.date(self.text) == self.text, self.text >= "0001-01-01"))  # date() is NULL for no date
 
     def iso_datetime(self):
         """A date and time kept as the engine keeps it (2026-11-30T14:30)."""
         if self.pg:
-            return and_(self.string(), self.text.op("~")(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T([01][0-9]|2[0-3]):[0-5][0-9]$"),
-                        func.pg_input_is_valid(self.text, "timestamp"))
-        return and_(self.string(), func.strftime("%Y-%m-%dT%H:%M", self.text) == self.text, self.text >= "0001-01-01",
-                    func.substr(self.text, 12, 2) < "24")
+            return _sure(and_(self.string(), self.text.op("~")(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T([01][0-9]|2[0-3]):[0-5][0-9]$"),
+                              func.pg_input_is_valid(self.text, "timestamp")))
+        return _sure(and_(self.string(), func.strftime("%Y-%m-%dT%H:%M", self.text) == self.text, self.text >= "0001-01-01",
+                          func.substr(self.text, 12, 2) < "24"))
 
     def items(self):
         """(the items of the list kept here, to look through with EXISTS, and one item as a Scalar). Anything but a list
@@ -710,7 +712,8 @@ def children_of(engine, table, via, ids):
     in a list), in the order they were added. Engine.children sorts them under their parents.
 
     On PostgreSQL a few parents are found by containment (data @> {"order": 12}), which the GIN index answers; many are
-    read from the table's records by their link's text. SQLite reads the link's value either way."""
+    read from the table's records by their link's value. SQLite reads the link's value either way. A link kept as a
+    number (12 or 12.0), as its digits ("12"), or as true (which Python counts as 1) is found, alone or in a list."""
     pg = db.session.get_bind().dialect.name == "postgresql"
     ids = sorted(ids)
     v = Scalar.field(pg, via)
@@ -719,12 +722,9 @@ def children_of(engine, table, via, ids):
         test = or_(*[Record.data.op("@>")(cast(literal(json.dumps({via: form})), JSONB)) for form in forms])
     else:
         said = [str(i) for i in ids]
-        if pg:
-            test = or_(v.text.in_(said), _all(v.number(), v.num.in_(ids)), v.true() if 1 in ids else False,
-                       v.some(lambda i: _any(i.text.in_(said), _all(i.number(), i.num.in_(ids)), i.true() if 1 in ids else False)))
-        else:  # json_extract gives 12 for 12 and "12" for "12": both asked for (true reads as 1)
-            either = [literal(i) for i in ids] + [literal(s) for s in said]
-            test = or_(v.text.in_(either), v.some(lambda i: i.text.in_(either)))
+        points = lambda x: _any(_all(x.string(), x.text.in_(said)), _all(x.number(), x.num.in_(ids)),  # noqa: E731
+                                x.true() if 1 in ids else False)
+        test = _any(points(v), v.some(points))
     return db.session.query(Record).filter(*live(engine, table), _sql(test)).order_by(Record.id).all()
 
 
@@ -838,19 +838,18 @@ class Plan:
         return found[:limit], (f"{len(found)}+" if seen < total else len(found))
 
     def total(self, aggregate, key):
-        """Engine.aggregate over the records found, from SQL when the field is a kept number; None when SQL can't say."""
+        """Engine.aggregate over the records found, from SQL when the field is a kept number; UNSURE when SQL can't say."""
         if aggregate == "count":
-            total, whole, _ = self.exact()
-            return total if whole else None
+            return self.count()
         f = self.e.field(self.table, key) if key else None
         if f is None or f["type"] not in NUMERIC or f.get("sensitive") or not KEY.match(key) \
                 or aggregate not in ("sum", "avg", "min", "max", "median"):
-            return None
+            return UNSURE
         v = self.planner.value(key)
         odd = _any(and_(v.string(), v.text != ""), v.boolean())  # to_number reads text and true/false its own way
         total, whole, _, odd_ones = self.exact(func.sum(case((_sql(odd), 1), else_=0)))
         if not whole or odd_ones:
-            return None
+            return UNSURE
         numbers = and_(*self.where, v.number())
         if aggregate in ("min", "max"):  # the first lowest (or highest), as Python's min and max give
             pick = v.num.asc() if aggregate == "min" else v.num.desc()

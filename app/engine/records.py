@@ -1550,13 +1550,12 @@ class Engine:
             found = self.get(int(raw), table)
             if found:
                 return found
-        text = str(raw).strip().lower()
-        rows = self.rows(table)
-        exact = [r for r in rows if self.title(r).lower() == text]
+        text = str(raw).strip().lower()  # by name: found by SQL when the name is a field (an import's thousandth row too)
+        exact = sorted(self._titled_ids(table, text))
         if len(exact) == 1:
-            return exact[0]
-        partial = [r for r in rows if text and text in self.title(r).lower()]
-        return partial[0] if len(partial) == 1 else (exact[0] if exact else None)
+            return self.get(exact[0], table)
+        partial = sorted(self._titled_ids(table, text, part=True)) if text else []
+        return self.get(partial[0], table) if len(partial) == 1 else (self.get(exact[0], table) if exact else None)
 
     def _matching(self, table, wanted):
         """The record of a table holding the values given, for a rule that names a record by what it's for rather than by
@@ -2041,7 +2040,7 @@ class Engine:
         if digits:
             n = int(digits[-1])
             params = {"w": self.ws.id, "t": t["key"], "f": f["key"], "n": n}
-            moved = db.session.execute(sql('UPDATE counter SET value = GREATEST(value, :n) WHERE workspace_id = :w AND "table" = :t AND field = :f'), params)
+            moved = db.session.execute(sql('UPDATE counter SET value = CASE WHEN value < :n THEN :n ELSE value END WHERE workspace_id = :w AND "table" = :t AND field = :f'), params)
             if not moved.rowcount:
                 db.session.add(Counter(workspace_id=self.ws.id, table=t["key"], field=f["key"], value=n))
                 db.session.flush()
@@ -2435,7 +2434,7 @@ class Engine:
                 from . import automations as auto
                 auto.on_change(self, self.get(record.id) or record, None, depth=depth)
             self._combine(record)
-        self._saved(record, after)
+        self._saved(record, after, "created")
         return record
 
     def _not_combined(self, t):
@@ -2539,12 +2538,12 @@ class Engine:
                 from . import automations as auto
                 auto.on_delete(self, record, depth=depth)
             self._combine(record)
-        self._saved(record, after)
+        self._saved(record, after, "deleted")
 
     def restore(self, record, *, by=None):
         record.deleted_at = None
         db.session.add(RecordChange(workspace_id=self.ws.id, record_id=record.id, kind="restored", by=by or self.by))
-        self._saved(record, lambda: self._combine(record))
+        self._saved(record, lambda: self._combine(record), "restored")
 
     def counts(self):
         rows = (db.session.query(Record.table, db.func.count(Record.id))
