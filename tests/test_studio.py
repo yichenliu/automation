@@ -303,3 +303,26 @@ def test_how_a_field_shows_is_set_once_for_every_screen(app, client, owner):
     _change(client, ws, {"do": "update_field", "table": "orders", "key": "margin", "signs": ""})
     assert not schema.table(ws.blueprint, "orders").get("colors")
     assert not schema.check(ws.blueprint)
+
+
+def test_the_app_map_changes_an_app_in_the_keel_language(app, client, owner):
+    """Each edit is said as the patches the AI builder writes and made through Keel, so a stage taken out of the middle
+    closes the chain up (New on to Shipped) as it does for the builder. Only what the language has no words for yet
+    stays a design op: a field the AI fills in, a rule's steps."""
+    user, ws = owner
+    _built(ws, SHOP)
+    bp, nothing = ws.blueprint, (lambda table, key, value=None: 0)
+    said = lambda made: [x.get("do") or x["op"] for x in made]  # noqa: E731
+    assert said(studio.data_patches(bp, {"do": "add_table", "label": "Suppliers", "section": "Buying"}, nothing)) == ["add_list", "change_list"]
+    assert said(studio.data_patches(bp, {"do": "update_field", "table": "orders", "key": "total", "type": "number", "help": "With GST",
+                                         "signs": "normal"}, nothing)) == ["change_field", "set_field", "design_op"]
+    assert said(studio.data_patches(bp, {"do": "update_field", "table": "orders", "key": "notes", "ai": "Note anything fragile"}, nothing)) == ["update_field"]
+    assert said(studio.stage_patches(bp, {"do": "add_stage", "table": "orders", "name": "Checked", "after": "New"}, nothing)) == ["set_field", "add_move", "add_move"]
+    assert said(studio.stage_patches(bp, {"do": "update_move", "table": "orders", "i": 0, "from": ["New"], "to": "Packed", "label": "Box it"},
+                                     nothing)) == ["change_move"]
+    assert said(studio.stage_patches(bp, {"do": "set_start", "table": "orders", "name": "Packed"}, nothing)) == ["order_stages"]
+    login(client)
+    done = _wf(client, ws, "stages:orders", {"do": "remove_stage", "name": "Packed"}).get_json()
+    assert done["ok"] and done["said"] == ["Removed the stage “Packed” from Orders"]
+    assert [(m["from"], m["to"]) for m in done["item"]["moves"]] == [(["New"], "Shipped")]
+    assert not schema.check(ws.blueprint)

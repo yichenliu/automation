@@ -1,14 +1,16 @@
 """The App map (app/appmap.py): the whole app drawn from its design, its processes and the data model behind them, with
 each list's stages, each rule and each step-by-step flow drawn in full (app/studio.py) and changed by hand.
 
-Everyone who can see the design can look; admins change it. Every change is checked like the builder's and saved as a
-version, and the studio can take it back again (each change answers with the version it was made from).
+Everyone who can see the design can look; admins change it. Every change is made in the Keel language, as the AI
+builder's are (app/lang), checked and saved as a version in one place (_save), and the studio can take it back again
+(each change answers with the version it was made from).
 """
 import copy
+import re
 
 from sqlalchemy.exc import IntegrityError
 
-from .. import appmap, studio
+from .. import appmap, lang, studio
 from ..blueprint import ops, schema
 from ..blueprint.schema import SchemaError
 from ..builder import chat
@@ -39,7 +41,7 @@ def _filled(ws):
 
 
 def _plain(problem, bp):
-    text = problem.split(": ", 1)[1] if problem.startswith("change ") and ": " in problem else problem
+    text = re.sub(r"^(?:patch|change) \d+ \([^)]*\)[^:]*: ", "", problem, count=1)  # which patch it was is ours, not theirs
     try:
         text = chat.plain(text, bp)
     except Exception:  # noqa: BLE001 - the words as they are, if they can't be made plainer
@@ -47,28 +49,57 @@ def _plain(problem, bp):
     return text[:1].upper() + text[1:]
 
 
-def _save(ws, ops_, what, plain=None):
-    """Apply the changes to the design, check it, and save it as a version (a choice renamed takes its records with it:
-    chat.save_version), noted as `plain` says it if given. Returns (the changes said, the version it was made from)."""
-    result = ops.apply(copy.deepcopy(ws.blueprint or {}), ops_, already=ops.wrong_already(ws.blueprint))  # what's wrong already isn't this change's
-    if result.problems:
-        raise Refused(_plain(result.problems[0], ws.blueprint))
-    changes = list(result.changes)
+def _carried(op):
+    """Whether Keel carries this design op as it is (a design_op patch: a flow, a number's colours)."""
+    from ..lang.compile import ESCAPE, POLICY_KEYS
+    return op.get("op") in ESCAPE and (op["op"] != "update_table" or set(op) <= POLICY_KEYS)
+
+
+def _make(design, made, filled):
+    """What the App map's edit makes of a design: (the new design, the changes said), or Refused saying why. `made` is
+    Keel language patches, made through app/lang as the AI builder's are (with `filled` counting the records, so what's
+    in use isn't thrown away), and design ops for what the language has no words for yet (a rule's steps, a field the
+    AI fills in: studio.rule_ops, studio.data_patches), made after them; what was wrong already isn't this change's."""
+    from ..lang import compile as keel
+    patches = [x if "do" in x else {"do": "design_op", "op": x} for x in made if "do" in x or _carried(x)]
+    rest = [x for x in made if "do" not in x and not _carried(x)]
+    bp, changes = copy.deepcopy(design or {}), []
+    if patches:
+        counting = keel.FILLED.set(filled)
+        try:
+            out = lang.apply(bp, patches)
+        finally:
+            keel.FILLED.reset(counting)
+        if out.problems:
+            raise Refused(_plain(out.problems[0], design))
+        bp, changes = out.blueprint, list(out.changes)
+    if rest:
+        result = ops.apply(bp, rest, already=ops.wrong_already(design))
+        if result.problems:
+            raise Refused(_plain(result.problems[0], design))
+        bp, changes = result.blueprint, changes + list(result.changes)
     if not changes:
         raise Refused("That's how it is already")
+    return bp, changes
+
+
+def _save(ws, made, plain=None):
+    """The one place the App map changes an app: made (_make) and saved as one version (a choice renamed
+    takes its records with it: chat.save_version), noted as `plain` says it if given. Returns (the changes said, the
+    version it was made from)."""
+    bp, changes = _make(ws.blueprint, made, _filled(ws))
     before = ws.version or 0
     changes = [plain] if plain else changes
-    chat.save_version(ws, result.blueprint, changes, "studio", by=current_user.id)
+    chat.save_version(ws, bp, changes, "studio", by=current_user.id)
     return changes, before
 
 
-def _change(ws, what, make, plain=None):
-    """Run an edit: the ops `make` returns, saved; a refusal answered as {"error"} with status 400."""
+def _change(ws, make, plain=None):
+    """Run an edit: the patches (and design ops) `make` returns, saved; a refusal answered as {"error"} with status 400."""
     if not g.member.can("admin"):
         abort(403)
     try:
-        ops_, _ = make()
-        changes, before = _save(ws, ops_, what, plain)
+        changes, before = _save(ws, make(), plain)
     except (SchemaError, Refused) as exc:
         db.session.rollback()
         show = getattr(exc, "show", None)  # the records it's about, to go and see
@@ -136,7 +167,7 @@ def studio_data_json(wid):
 def studio_data_change(wid):
     ws, engine = ctx(wid)
     change = _body()
-    done, refused = _change(ws, "data model", lambda: studio.data_ops(ws.blueprint, change, _filled(ws)))
+    done, refused = _change(ws, lambda: studio.data_patches(ws.blueprint, change, _filled(ws)))
     if refused:
         return refused
     ws, engine = ctx(wid)
@@ -359,18 +390,18 @@ def studio_workflow_change(wid):
 
     def make():
         if kind == "stages" or change.get("do") == "add_stages":
-            return studio.stage_ops(ws.blueprint, {**change, "table": change.get("table") or key}, _filled(ws))
-        if kind == "rule" or change.get("do") == "add_rule":
+            return studio.stage_patches(ws.blueprint, {**change, "table": change.get("table") or key}, _filled(ws))
+        if kind == "rule" or change.get("do") == "add_rule":  # a rule's steps: design ops, the language can't say them all yet
             made, rule = studio.rule_ops(ws.blueprint, {**change, "key": change.get("key") or key})
             opened["id"] = f"rule:{rule}" if rule else ""
-            return made, []
-        if kind == "flow":
+            return made
+        if kind == "flow":  # a flow's screens: design ops Keel carries as they are
             made = studio.flow_ops(ws.blueprint, {**change, "key": key})
             opened["id"] = "" if change.get("do") == "remove_flow" else item_id
-            return made, []
+            return made
         raise SchemaError("That can't be changed here")
     plain = studio.stage_said(ws.blueprint, {**change, "table": change.get("table") or key}) if kind == "stages" else None
-    done, refused = _change(ws, "workflow", make, plain)
+    done, refused = _change(ws, make, plain)
     if refused:
         return refused
     if change.get("do") == "add_stages":
