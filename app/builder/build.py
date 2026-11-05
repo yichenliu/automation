@@ -77,8 +77,9 @@ patches.
 BEHAVIOUR = BASE + """
 
 Now make what the app does by itself, need by need: a feature whenever one fits, a rule only for what none does. For
-each need, send the patches that make it happen (none for a need the lists already meet). Don't add lists here; add a
-field only when a rule needs one.
+each need, send the patches that make it happen in "work", or put its number in "already" if the app as it is (its
+lists, fields, features and rules) already does it. Every need is one or the other. Add a field only when a rule
+needs one.
 
 {catalog}"""
 
@@ -148,6 +149,7 @@ def _answer_schema(group, by_need=False):
 
         class Answer(BaseModel):
             work: list[Work]
+            already: list[int] = Field(default_factory=list, description="the needs the app already meets as it is (no patches)")
             reply: str = ""
     elif group == "data":
         class Answer(BaseModel):  # noqa: F811
@@ -606,7 +608,20 @@ def _make_behaviour(turn, needs, needs_text):
         return _ask(BEHAVIOUR.format(catalog=catalog("behaviour")), f"{turn.about()}\n\nThe needs:\n{needs_text}\n\nThe app now:\n"
                     f"{lang.describe(turn.bp)}{extra}", _answer_schema("behaviour", by_need=by_need), turn.progress, tries, kind="behaviour")
     try:
-        sent, owners = flatten(ask())
+        answer = ask()
+        sent, owners = flatten(answer)
+        already = {int(i) for i in answer.get("already") or [] if str(i).isdigit()}
+        silent = [i for i in range(1, len(needs) + 1) if i not in set(owners.values()) | already]
+        if silent:  # a need neither made nor said to be met already: asked for once more, those alone
+            turn.note(f"Making what's still missing: {'; '.join(needs[i - 1].does.rstrip('.') for i in silent[:3])}")
+            more = ask(f"\n\nYou sent nothing for need{'s' if len(silent) != 1 else ''} {', '.join(map(str, silent))}. Send the patches that "
+                       f"make each happen (a feature whenever one fits), or put its number in \"already\" if the app as it is "
+                       f"already does it.", tries=1)
+            more_sent, more_owners = flatten(more)
+            already |= {int(i) for i in more.get("already") or [] if str(i).isdigit()}
+            owners.update({len(sent) + k: v for k, v in more_owners.items()})
+            sent = sent + more_sent
+        turn.tried |= {i for i in range(1, len(needs) + 1) if i not in already}  # what's neither made nor already met is said
     except TOO_MUCH:
         turn.note("That was too much in one go; making it one need at a time")
         sent, owners = [], {}

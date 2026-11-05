@@ -530,3 +530,13 @@ def test_a_gate_on_a_condition_keeps_a_record_from_a_stage_until_it_holds(app):
     ws = _workspace(app, out.blueprint)
     _, results = trial.try_out(ws, examples, screens=False)
     assert all(r["ok"] for r in results), [r.get("problem") for r in results]
+
+
+def test_an_approval_records_who_let_it_through_and_when(app):
+    bp = lang.apply(everything(), [{"do": "approval", "list": "quotes", "stage": "Sent", "by": "owner"}]).blueprint
+    ws = _workspace(app, bp)
+    example = {"title": "Approved and recorded", "steps": [
+        {"do": "add", "table": "quotes", "as": "q1", "values": {"total": 100}}, {"do": "move", "record": "q1", "to": "Sent"}],
+        "expect": [{"record": "q1", "field": "sent_by", "equals": "filled in"}, {"record": "q1", "field": "sent_on", "equals": "today"}]}
+    _, results = trial.try_out(ws, [example], screens=False)
+    assert results[0]["ok"], results[0].get("problem")

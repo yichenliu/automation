@@ -293,7 +293,8 @@ class StageAlert(Feature):
 @register("feature", {"do": "approval", "list": "quotes", "stage": "Sent", "by": "owner", "over": {"field": "total", "amount": 5000}})
 class ApprovalNeeded(Feature):
     """Only the approver (by: owner, admin or a team) may move a record into a stage; with over, only when a number
-    field is above an amount (anyone may below it). tell_approver: tell them when one is waiting."""
+    field is above an amount (anyone may below it). Who moved it there and when is recorded. tell_approver: tell them
+    when one is waiting."""
     do: Literal["approval"] = "approval"
     list: str
     stage: str
@@ -339,6 +340,11 @@ class ApprovalNeeded(Feature):
                 rebuilt.append({**mv, "feature": key, "who": [by]})
         flow["transitions"] = rebuilt
         made.ops.append({"op": "update_table", "table": t["key"], "workflow": flow})
+        slug = schema.slug(stage)  # who let it through and when, filled in by the move itself (the engine's stamps)
+        if not any(d.kind(x) == "user" and x["key"].endswith("_by") for x in t["fields"]):
+            made.fields.append((t["key"], {"key": f"{slug}_by", "label": f"{stage} by", "type": "user"}))
+        if not any(d.kind(x) == "date" and x["key"] in (f"{slug}_on", f"{slug}_date", f"date_{slug}") for x in t["fields"]):
+            made.fields.append((t["key"], {"key": f"{slug}_on", "label": f"{stage} on", "type": "date"}))
         if self.tell_approver:
             waits = sorted({s for mv in into for s in mv.get("from") or []})
             if waits:
@@ -715,10 +721,17 @@ class Limit(Feature):
         t = d.list(self.list)
         stage = d.stage_field(t)
         start = ((t.get("workflow") or {}).get("start") or (stage.get("options") or [None])[0]) if stage else None
-        same, counted = {}, None
+        same, counted, first = {}, None, []
         for i, name in enumerate(self.per):
             f = d.field(t, name)
-            same[f["key"]] = "today+5" if d.kind(f) == "date" else _sample(d, f, i, "same")
+            if f["type"] == "link":  # the record they share is added first (the technician they're all booked with)
+                other = d.list(f.get("table"))
+                if other is None:
+                    return []
+                first += adding(d, other, f"same_{other['key'][:8]}")
+                same[f["key"]] = f"same_{other['key'][:8]}"
+            else:
+                same[f["key"]] = "today+5" if d.kind(f) == "date" else _sample(d, f, i, "same")
         for c in self.only_if:  # the ones counted: a stage they're moved to (every new one starts at the first), or a value
             if stage is not None and schema.slug(c.field) == stage["key"]:
                 stages = [s for s in (c.value if isinstance(c.value, list) else [c.value]) if s] if c.op in ("equals", "one_of") else \
@@ -727,7 +740,7 @@ class Limit(Feature):
                     counted = d.choice(stage, stages[0])
             elif c.op == "equals":
                 same[schema.slug(c.field)] = c.value
-        steps, made = [], {}
+        steps, made = list(first), {}
         for n in range(1, self.max + 2):
             steps += adding(d, t, f"b{n}", dict(same), made=made)
             if counted:
