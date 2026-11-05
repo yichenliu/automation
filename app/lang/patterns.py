@@ -1087,6 +1087,10 @@ class Gate(Feature):
                 raise Problem(f"{where} › needs: {name} isn't a field of {t['label']} (its fields: {', '.join(d.field_names(t))})")
             if nf["type"] in schema.CALCULATED:
                 raise Problem(f"{where} › needs: {nf['key']} is worked out, so nobody fills it in: name the fields people fill in")
+            if nf.get("required") and nf["type"] != "checkbox":
+                raise Problem(f"{where} › needs: {nf['key']} must be filled in to add {_a(t['singular'].lower())} at all, so it's always "
+                              f"done before {self.stage}: if it's filled in later, make it not required (change_field); otherwise "
+                              f"leave it out of needs")
             fields.append(nf)
         if not fields and not self.only_if and not self.blocked_if:
             raise Problem(f"{where}: say what must be done first: needs (fields filled in or ticked), only_if (what must hold) "
@@ -1141,13 +1145,16 @@ class Gate(Feature):
         t = d.list(self.list)
         f, stage = self._target(d, t, "gate")
         on_stage = f is d.stage_field(t)
-        empty, full = {}, {}
+        empty, full, linked = {}, {}, []
         for name in self.needs:
             nf = d.field(t, name)
             if nf["type"] == "checkbox":
                 empty[nf["key"]] = False
         for i, name in enumerate(self.needs):
             nf = d.field(t, name)
+            if nf["type"] == "link":  # a record of the list it links to, added first
+                linked.append(nf["key"])
+                continue
             full[nf["key"]] = True if nf["type"] == "checkbox" else ("today" if d.kind(nf) == "date" else _sample(d, nf, i, "r2"))
         for c in self.only_if:  # one that keeps to each condition, and (for the first) one that doesn't
             nf = d.field(t, c.field)
@@ -1178,7 +1185,7 @@ class Gate(Feature):
                 full.setdefault(f["key"], other)
             go = lambda r, **x: [{"do": "change", "record": r, "values": {f["key"]: stage}, **x}]  # noqa: E731
         steps1 = adding(d, t, "r1", empty) + go("r1", refused=True)
-        steps2 = adding(d, t, "r2", full) + go("r2")
+        steps2 = adding(d, t, "r2", full, through=tuple(linked)) + go("r2")
         for s_ in steps1:  # what the gate needs is left out of the first, whatever adding() would have filled in
             if s_.get("do") == "add" and s_.get("as") == "r1":
                 for name in self.needs:
@@ -1257,10 +1264,12 @@ def _entry(bp, key):
     return next((e for e in bp.get("features", []) if e["key"] == key), None)
 
 
-def apply(out, p, where):
-    """Apply one feature (new, or changed: same key) to the outcome's design, all of it or none of it."""
+def apply(out, p, where, quiet=False):
+    """Apply one feature (new, or changed: same key) to the outcome's design, all of it or none of it. A changed one
+    that adds to a list's moves is laid over them again with the others that do, in their order (see overlay)."""
     d = Design(out.blueprint)
     key = p.feature_key()
+    again = _entry(out.blueprint, key) is not None and not quiet
     made = p.build(d, where)
     ir_ops = []
     wanted_rules = set()
@@ -1300,10 +1309,113 @@ def apply(out, p, where):
     entry = {"key": key, "do": p.do, "params": p.model_dump(exclude_none=True, by_alias=True, exclude={"key"}), "undo": undo}
     if (made.undo or {}).get("made"):
         entry["made"] = made.undo["made"]
-    entries.append(entry)
+    if was is not None:  # in its place among the others
+        at = [e["key"] for e in out.blueprint.get("features", [])].index(key)
+        entries.insert(at, entry)
+    else:
+        entries.append(entry)
     out.blueprint["features"] = entries
-    out.changes.append(f"Set up: {p.said(Design(out.blueprint)) or key}")
+    if again:
+        for tk in list((entry.get("undo") or {}).get("workflow") or {}):
+            later = _shapers(out.blueprint, tk)
+            if later and later[-1]["key"] != key and not overlay(out, tk, base(out.blueprint, tk), where):
+                return False
+    if not quiet:
+        out.changes.append(f"Set up: {p.said(Design(out.blueprint)) or key}")
     return True
+
+
+# --- features that add to a list's moves, kept over them --------------------------------------------------------------
+# A gate's stops, an approval's approver, an overdue stage's way on: each is laid over the list's moves as they were
+# when it was made. When the moves change (new stages, a stage renamed, a feature before it changed or taken away),
+# they're laid over the moves again, in their order, from the moves as they'd be without any of them: a feature never
+# quietly loses its parts, nor another's.
+
+def _shapers(bp, tk):
+    """The features that add to a list's moves, in the order they were made."""
+    return [e for e in bp.get("features", []) if tk in ((e.get("undo") or {}).get("workflow") or {})]
+
+
+def base(bp, tk):
+    """A list's moves as they'd be without the features that add to them."""
+    mine = _shapers(bp, tk)
+    return copy.deepcopy(mine[0]["undo"]["workflow"][tk]) if mine else None
+
+
+def overlay(out, tk, transitions, where, skip=()):
+    """Lay the features that add to a list's moves over these moves, in their order. False (said in out.problems) when
+    one can't be any more."""
+    t = schema.table(out.blueprint, tk)
+    keys = [e["key"] for e in _shapers(out.blueprint, tk) if e["key"] not in skip]
+    if t is None or not _apply_ops(out, [{"op": "update_table", "table": tk, "workflow": {**(t.get("workflow") or {}), "transitions": transitions}}], where):
+        return False
+    for key in keys:
+        e = _entry(out.blueprint, key)
+        e["undo"]["workflow"].pop(tk, None)
+        try:
+            ok = apply(out, model_of(e), where, quiet=True)
+        except Problem as exc:
+            out.problems.append(f"{where}: it leaves the feature {key} without what it needs ({exc}); to go on without it, "
+                                f"remove_feature {key}")
+            return False
+        if not ok:
+            return False
+    return True
+
+
+LAYOUT = ("set_stages", "add_stage", "rename_choice")  # patches that lay a list's moves out anew: its features kept over them
+
+
+def kept(out, before, p, where, translate):
+    """After a patch that's not a feature: the features that add to a list's moves it changed are laid over them again.
+    A new layout (set_stages, add_stage, a stage renamed) keeps them; another patch that would take away what one does
+    is refused, saying how to change or remove the feature instead. False (said in out.problems): undo the patch."""
+    from .compile import Outcome
+    for tk in {tk for e in before.get("features", []) for tk in ((e.get("undo") or {}).get("workflow") or {})}:
+        tb, ta = schema.table(before, tk), schema.table(out.blueprint, tk)
+        if tb is None or ta is None or not ta.get("workflow"):
+            continue
+        sf = (ta.get("workflow") or {}).get("field")
+        if (tb.get("workflow") == ta.get("workflow") and (schema.field(tb, sf) or {}).get("options") == (schema.field(ta, sf) or {}).get("options")):
+            continue
+        keys = [e["key"] for e in _shapers(before, tk)]
+        if p.do == "rename_choice":  # the features name the stage by its new name
+            for e in out.blueprint.get("features", []):
+                if e["key"] in keys:
+                    e["params"] = _renamed(e["params"], p.old if hasattr(p, "old") else None, getattr(p, "new", None))
+        trial = Outcome(blueprint=copy.deepcopy(before))
+        schema.table(trial.blueprint, tk)["workflow"]["transitions"] = base(before, tk)
+        try:
+            ops = translate(Design(trial.blueprint), p, where)
+            new_base = schema.table(trial.blueprint, tk)["workflow"]["transitions"] if _apply_ops(trial, ops, where) else None
+        except Problem:
+            new_base = None
+        result = copy.deepcopy(ta["workflow"])
+        said = f"what the feature{'s' if len(keys) != 1 else ''} {', '.join(keys)} add{'' if len(keys) != 1 else 's'} to {ta['label']}'s moves"
+        if new_base is None:
+            out.problems.append(f"{where}: it changes {said}; change a feature by sending it again with its key, or take it away "
+                                f"with remove_feature")
+            return False
+        if not overlay(out, tk, new_base, where):
+            return False
+        if p.do in LAYOUT and schema.table(out.blueprint, tk)["workflow"] != result:  # said, so nobody thinks they're gone
+            d = Design(out.blueprint)
+            out.changes += [f"Kept on the new stages: {model_of(_entry(out.blueprint, k)).said(d)}" for k in keys if _entry(out.blueprint, k)]
+        if p.do not in LAYOUT and schema.table(out.blueprint, tk)["workflow"] != result:
+            out.problems.append(f"{where}: it would undo {said}; to change that, send the feature again with its key; to take it "
+                                f"away, remove_feature with its key")
+            return False
+    return True
+
+
+def _renamed(params, old, new):
+    if not old or not new:
+        return params
+    if isinstance(params, dict):
+        return {k: _renamed(v, old, new) for k, v in params.items()}
+    if isinstance(params, list):
+        return [_renamed(v, old, new) for v in params]
+    return new if isinstance(params, str) and params.strip().lower() == str(old).strip().lower() else params
 
 
 def remove(out, key, where):
@@ -1315,10 +1427,15 @@ def remove(out, key, where):
     ir_ops += [{"op": "remove_field", "table": t["key"], "key": f["key"]} for t in out.blueprint.get("tables", [])
                for f in t.get("fields", []) if f.get("feature") == key]
     undo = entry.get("undo") or {}
+    relay = {}  # the others that add to these moves, laid over them again without this one
     for tk, transitions in (undo.get("workflow") or {}).items():
         t = schema.table(out.blueprint, tk)
         if t and t.get("workflow"):
-            ir_ops.append({"op": "update_table", "table": tk, "workflow": {**t["workflow"], "transitions": transitions}})
+            others = [e for e in _shapers(out.blueprint, tk) if e["key"] != key]
+            if others:
+                relay[tk] = base(out.blueprint, tk)
+            else:
+                ir_ops.append({"op": "update_table", "table": tk, "workflow": {**t["workflow"], "transitions": transitions}})
     for tk, lock in (undo.get("lock_if") or {}).items():
         ir_ops.append({"op": "update_table", "table": tk, "lock_if": lock})
     for tk, rules in ((entry.get("made") or {}).get("rules") or {}).items():  # a gate's rules every save keeps
@@ -1333,6 +1450,9 @@ def remove(out, key, where):
     if not _apply_ops(out, ir_ops, where):
         return False
     out.blueprint["features"] = [e for e in out.blueprint.get("features", []) if e["key"] != key]
+    for tk, transitions in relay.items():
+        if not overlay(out, tk, transitions, where):
+            return False
     out.changes.append(f"Took away: {key}")
     return True
 

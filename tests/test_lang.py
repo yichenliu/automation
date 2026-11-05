@@ -316,6 +316,33 @@ def test_a_need_whose_patches_were_all_refused_is_said_as_not_made_yet(app):
     assert "(not made yet)" in a.text
 
 
+def test_a_model_stuck_while_correcting_what_was_refused_doesnt_end_the_turn(app):
+    """What was made stays made and is handed over; what was refused is said as not made yet."""
+    ws = _workspace(app, None)
+
+    def stuck(messages):
+        raise ai.Stuck("The AI got stuck writing its answer (it kept repeating itself).")
+    model = Model({
+        "understand": {"needs": [{"said": "invoices", "does": "Keeps your invoices"},
+                                 {"said": "tell me when paid", "does": "The owner is told when an invoice is paid"}], "reply": "OK."},
+        "data": {"patches": [EVERYTHING[0], _invoices()]},
+        "behaviour": {"work": [{"need": 2, "patches": [{"do": "stage_alert", "list": "invoices", "stage": "Settled"}]}], "already": [1]},
+        "repair": stuck, "fix": stuck, "checks": stuck,
+    })
+    ai.set_backend(model)
+    q = Message(workspace_id=ws.id, channel="builder", user_id=ws.owner_id, role="user", text="Invoices, and tell me when one's paid")
+    a = Message(workspace_id=ws.id, channel="builder", role="assistant", status="queued")
+    db.session.add_all([q, a])
+    db.session.commit()
+    from app.builder import chat
+    chat.work(a.id)
+    a = db.session.get(Message, a.id)
+    assert a.status == "done", a.error
+    assert "repair" in model.asked
+    assert schema.table(db.session.get(Workspace, ws.id).blueprint, "invoices") is not None
+    assert "I couldn't make this yet: The owner is told when an invoice is paid" in a.text
+
+
 def test_a_feature_checks_itself_when_its_total_is_worked_out_by_a_formula(app):
     bp = lang.apply(everything(), [
         {"do": "add_field", "list": "invoices", "field": {"type": "money", "key": "base", "label": "Base"}},
@@ -530,6 +557,7 @@ def test_a_gate_on_a_condition_keeps_a_record_from_a_stage_until_it_holds(app):
     {"do": "gate", "list": "quotes", "stage": "Sent", "blocked_if": [{"field": "total", "op": "less_than", "value": 50}]},
     {"do": "gate", "list": "jobs", "stage": "Urgent", "needs": ["assigned_to"]},
     {"do": "gate", "list": "jobs", "stage": "Urgent", "blocked_if": [{"field": "billable", "op": "equals", "value": False}]},
+    {"do": "gate", "list": "jobs", "stage": "In progress", "needs": ["customer"]},
 ])
 def test_a_gate_stops_what_its_blocked_if_says_and_holds_back_a_choice_that_isnt_a_stage(app, gate):
     """“A steer under 450kg can't be signed off”: blocked_if, as the owner says it (not only_if written backwards); and
@@ -584,6 +612,72 @@ def test_a_convert_with_a_stage_and_a_button_is_the_button_shown_at_that_stage(a
     ws = _workspace(app, out.blueprint)
     _, results = trial.try_out(ws, patterns.checks(out.blueprint), screens=False)
     assert results and all(r["ok"] for r in results), [r.get("problem") for r in results]
+
+
+def _into(bp, table, stage):
+    t = schema.table(bp, table)
+    return [mv for mv in t["workflow"]["transitions"] if mv["to"] == stage]
+
+
+def _gated_and_approved():
+    out = lang.apply(everything(), [{"do": "gate", "list": "quotes", "stage": "Accepted", "needs": ["total"]},
+                                    {"do": "approval", "list": "quotes", "stage": "Accepted", "by": "owner"}])
+    assert not out.problems, out.problems
+    return out.blueprint
+
+
+def _holds(bp, stage="Accepted"):
+    moves = _into(bp, "quotes", stage)
+    return moves and all("total" in (mv.get("requires") or []) for mv in moves) and any(mv.get("who") == ["owner"] for mv in moves)
+
+
+def test_features_on_a_lists_moves_are_kept_when_its_stages_are_laid_out_anew(app):
+    """A gate and an approval on the same move: new stages keep both; removing or changing one keeps the other; a
+    stage added or renamed keeps them; and what would quietly take one's parts away is refused, saying how."""
+    bp = _gated_and_approved()
+    relaid = lang.apply(bp, [{"do": "set_stages", "list": "quotes", "stages": {"stages": ["Draft", "Checked", "Sent", "Accepted", "Declined"], "moves": [
+        {"from": ["Draft"], "to": "Checked", "button": "Check"}, {"from": ["Checked"], "to": "Sent", "button": "Send"},
+        {"from": ["Sent"], "to": "Accepted", "button": "Accept"}, {"from": ["Sent"], "to": "Declined", "button": "Decline"}]}}])
+    assert not relaid.problems, relaid.problems
+    assert _holds(relaid.blueprint) and any(mv["from"] == ["Checked"] for mv in schema.table(relaid.blueprint, "quotes")["workflow"]["transitions"])
+    assert any(c.startswith("Kept on the new stages") for c in relaid.changes)
+    ws = _workspace(app, relaid.blueprint)
+    _, results = trial.try_out(ws, patterns.checks(relaid.blueprint), screens=False)
+    assert all(r["ok"] for r in results), [(r["title"], r.get("problem")) for r in results]
+
+    without_gate = lang.apply(bp, [{"do": "remove_feature", "feature": "gate_quotes_accepted"}])
+    assert not without_gate.problems, without_gate.problems
+    moves = _into(without_gate.blueprint, "quotes", "Accepted")
+    assert any(mv.get("who") == ["owner"] for mv in moves) and not any(mv.get("requires") for mv in moves)
+
+    changed = lang.apply(bp, [{"do": "gate", "list": "quotes", "stage": "Accepted", "needs": ["customer"]}])
+    assert not changed.problems, changed.problems
+    moves = _into(changed.blueprint, "quotes", "Accepted")
+    assert all(mv.get("requires") == ["customer"] for mv in moves) and any(mv.get("who") == ["owner"] for mv in moves)
+
+    added = lang.apply(bp, [{"do": "add_stage", "list": "quotes", "stage": "On hold", "after": "Draft", "button": "Hold"}])
+    assert not added.problems and _holds(added.blueprint), added.problems
+    gone = lang.apply(added.blueprint, [{"do": "remove_feature", "feature": "gate_quotes_accepted"},
+                                        {"do": "remove_feature", "feature": "approval_quotes_accepted"}])
+    assert not gone.problems, gone.problems
+    assert any(mv["to"] == "On hold" for mv in schema.table(gone.blueprint, "quotes")["workflow"]["transitions"])
+
+    renamed = lang.apply(bp, [{"do": "rename_choice", "list": "quotes", "field": "status", "old": "Accepted", "new": "Won"}])
+    assert not renamed.problems, renamed.problems
+    assert _holds(renamed.blueprint, "Won")
+    assert {e["params"]["stage"] for e in renamed.blueprint["features"] if e["do"] in ("gate", "approval")} == {"Won"}
+
+
+def test_a_feature_whose_field_is_taken_away_is_said_to_need_removing_first():
+    bp = _gated_and_approved()
+    out = lang.apply(bp, [{"do": "remove_field", "list": "quotes", "field": "total"}])
+    assert out.refused == [1] and "remove_feature" in " ".join(out.problems), out.problems
+    assert _holds(out.blueprint)
+
+
+def test_a_gate_waiting_for_what_must_be_filled_in_anyway_says_so():
+    out = lang.apply(everything(), [{"do": "gate", "list": "bookings", "stage": "Done", "needs": ["date"]}])
+    assert out.refused == [1] and "not required" in out.problems[0], out.problems
 
 
 def test_a_name_written_as_a_key_is_shown_in_words():

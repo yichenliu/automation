@@ -383,7 +383,11 @@ class Turn:
                     + "\n".join((f"(need {need}) " if need else "") + json.dumps(p, ensure_ascii=False)[:1500] for p, need in refused)
                     + "\n\nWhy:\n- " + "\n- ".join(out.problems[:12]))
             by_need = group == "behaviour"
-            answer = _ask(REPAIR.format(catalog=catalog(group)), user, _answer_schema(group, by_need=by_need), self.progress, kind="repair")
+            try:
+                answer = _ask(REPAIR.format(catalog=catalog(group)), user, _answer_schema(group, by_need=by_need), self.progress, kind="repair")
+            except TOO_MUCH:  # what was made stays made; what was refused is said as not made yet
+                self.note("Couldn't correct them this time")
+                break
             sent, owners = flatten(answer) if by_need else (answer.get("patches") or [], {})
             if not sent:
                 break
@@ -516,8 +520,11 @@ def _turn(turn):
         turn.note(f"Correcting {len(broken)} check{'s' if len(broken) != 1 else ''} that couldn't be acted out")
         said = "\n".join(f"- “{x.get('title')}”: {json.dumps({k: x.get(k) for k in ('steps', 'expect')}, ensure_ascii=False)[:1500]}\n  why: {r.get('problem')}"
                          for x, r in broken)
-        found = _ask(CHECKS.format(when_none=""), f"{turn.about()}\n\nThe app:\n{lang.describe(turn.bp)}\n\nThese examples couldn't be acted out. "
-                     f"Send each corrected, with the same title (need 0):\n{said}", EXAMPLE_SCHEMA, turn.progress, kind="checks").get("examples") or []
+        try:
+            found = _ask(CHECKS.format(when_none=""), f"{turn.about()}\n\nThe app:\n{lang.describe(turn.bp)}\n\nThese examples couldn't be acted out. "
+                         f"Send each corrected, with the same title (need 0):\n{said}", EXAMPLE_SCHEMA, turn.progress, kind="checks").get("examples") or []
+        except TOO_MUCH:  # they stay as they were, said as not acted out
+            found = []
         fixed = {x.get("title"): x for x in found if isinstance(x, dict) and x.get("steps") and x.get("expect")}
         custom = [{**{k: v for k, v in fixed[x.get("title")].items() if k != "need"}, "by": "builder", "need": x.get("need", "")}
                   if x.get("title") in fixed else x for x in custom]
@@ -640,9 +647,12 @@ def _make_behaviour(turn, needs, needs_text):
         silent = [i for i in range(1, len(needs) + 1) if i not in set(owners.values()) | already]
         if silent:  # a need neither made nor said to be met already: asked for once more, those alone
             turn.note(f"Making what's still missing: {'; '.join(needs[i - 1].does.rstrip('.') for i in silent[:3])}")
-            more = ask(f"\n\nYou sent nothing for need{'s' if len(silent) != 1 else ''} {', '.join(map(str, silent))}. Send the patches that "
-                       f"make each happen (a feature whenever one fits), or put its number in \"already\" if the app as it is "
-                       f"already does it.", tries=1)
+            try:
+                more = ask(f"\n\nYou sent nothing for need{'s' if len(silent) != 1 else ''} {', '.join(map(str, silent))}. Send the patches that "
+                           f"make each happen (a feature whenever one fits), or put its number in \"already\" if the app as it is "
+                           f"already does it.", tries=1)
+            except TOO_MUCH:  # what the first answer made stays; these are said as not made yet
+                more = {}
             more_sent, more_owners = flatten(more)
             already |= {int(i) for i in more.get("already") or [] if str(i).isdigit()}
             owners.update({len(sent) + k: v for k, v in more_owners.items()})

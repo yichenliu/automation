@@ -787,7 +787,11 @@ def apply(bp, raw_patches, allowed=None):
                 elif isinstance(p, m.RemoveFeature):
                     ok = patterns.remove(out, schema.slug(p.feature), here)
                 else:
+                    snapshot, said_before = copy.deepcopy(out.blueprint), len(out.changes)
                     ok = _apply_ops(out, translate(Design(out.blueprint), p, here), here)
+                    if ok and snapshot.get("features") and not patterns.kept(out, snapshot, p, here, translate):
+                        out.blueprint, ok = snapshot, False  # it would take a feature's parts away: not made
+                        del out.changes[said_before:]
             except Problem as exc:
                 out.problems.append(str(exc))
                 ok = False
@@ -820,6 +824,22 @@ def _documents_for(d):
     return out
 
 
+def _names_field(params, t, f):
+    """Whether a feature on this list names this field in its parts (a gate's needs, a chase's since, a total's field)."""
+    lists = {str(params.get(k) or "").lower() for k in ("list", "from_list", "to_list", "lines", "payments")}
+    if not lists & {t["key"].lower(), str(t.get("label") or "").lower()}:
+        return False
+    names = {f["key"].lower(), str(f.get("label") or "").lower()}
+
+    def walk(v):
+        if isinstance(v, dict):
+            return any(walk(x) for k, x in v.items() if k not in ("list", "message", "subject", "body"))
+        if isinstance(v, list):
+            return any(walk(x) for x in v)
+        return isinstance(v, str) and (v.lower() in names or v.split(".")[0].lower() in names)
+    return walk(params)
+
+
 def translate(d, p, where):
     """The design ops for one patch (not a new list, not a feature)."""
     if isinstance(p, m.ChangeList):
@@ -845,6 +865,11 @@ def translate(d, p, where):
         f = d.field(t, p.field)
         if f is None:
             raise Problem(f"{where}: {t['label']} has no field “{p.field}”")
+        using = [e["key"] for e in d.bp.get("features", []) if _names_field(e.get("params") or {}, t, f) and not f.get("feature") == e["key"]]
+        if using:
+            raise Problem(f"{where}: {f['key']} is used by the feature{'s' if len(using) != 1 else ''} {', '.join(using)}: send "
+                          f"{'each' if len(using) != 1 else 'it'} again without it, or take {'them' if len(using) != 1 else 'it'} "
+                          f"away first (remove_feature)")
         return [{"op": "remove_field", "table": t["key"], "key": f["key"]}]
     if isinstance(p, m.RenameChoice):
         t = _list(d, p.list, where)
