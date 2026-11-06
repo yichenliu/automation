@@ -110,6 +110,7 @@ Steps:
 - {{"do": "add", "table": list key, "as": a short name for the record (q1), "values": {{field: value}}}}: fill in every
   field marked *; a link's value is the short name of a record added before; dates as "today" or "today+3".
 - {{"do": "change", "record": q1, "values": {{...}}}}, {{"do": "move", "record": q1, "to": a stage}} (by its button),
+  a record the app made itself is named through its links: "j1.invoices" (the invoice made for job j1), "i1.customer";
   {{"do": "press", "record": q1, "button": its label}}, {{"do": "approve", "record": q1}}.
 - Time passing: {{"do": "wait", "days": n}}: each day of it, the app's rules that run on a schedule run as they would
   (reminders, chasing, marking overdue), so what's due by then has happened.

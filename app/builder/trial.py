@@ -703,7 +703,34 @@ def _table(engine, key):
     return t
 
 
+def _followed(engine, names, alias):
+    """A record named through another's links, as a formula reads it: j1.invoices (the latest invoice of job j1, made by a
+    rule), i1.customer (that invoice's customer). None when the path doesn't lead to one."""
+    from ..engine.records import RecordProxy
+    head, *rest = alias.split(".")
+    found = engine.get(names[head]) if head in names else None
+    for part in rest:
+        if found is None:
+            return None
+        got = RecordProxy(engine, found).field(part.strip())
+        if isinstance(got, (expr.Many, expr.Lazy, list)):
+            items = [x for x in got if isinstance(x, RecordProxy)]
+            found = max(items, key=lambda x: x.record.id).record if items else None
+        elif isinstance(got, RecordProxy):
+            found = got.record
+        else:
+            return None
+    return found
+
+
 def _record(engine, names, alias):
+    if isinstance(alias, str) and "." in alias and alias.split(".")[0] in names:  # through its links: j1.invoices
+        engine.reset()
+        found = _followed(engine, names, alias)
+        if found is None:
+            raise ExampleWrong(f"“{alias}” leads to no record (no {alias.split('.')[-1]} of {alias.split('.')[0]} yet)")
+        names[alias] = found.id
+        return found
     if alias not in names:
         alias = _guess(engine, names, alias)
     if alias not in names:

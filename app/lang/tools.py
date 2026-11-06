@@ -10,6 +10,7 @@ definition, as everywhere in the language.
     apply(ws, patches, version)    the same, saved as a new version if nothing was refused and the app is still at
                                    `version` (another change made meanwhile is never overwritten)
     test(ws)                       every check the app has, acted out in the simulator now
+    explain(ws, record, check)     why: a record's rules, what ran on it and what's open to it; a check acted out, and why
     undo(ws, version)              back to an earlier version
 """
 from pydantic import BaseModel, Field
@@ -24,6 +25,11 @@ class Patches(BaseModel):
 
 class Applying(Patches):
     version: int = Field(description="the app's version the patches were written for (describe gives it)")
+
+
+class Explaining(BaseModel):
+    record: int | None = Field(None, description="a record's id: why it's where it is, what may happen to it next, what its rules found")
+    check: str | None = Field(None, description="a check's title (as test lists them): acted out now, with why it comes out as it does")
 
 
 class Version(BaseModel):
@@ -80,6 +86,44 @@ def test(ws):
     return _tried(ws, ws.blueprint or {})
 
 
+def explain(ws, record=None, check=None):
+    """Why: for a record, the rules its list keeps and whether it keeps each now, the rules that ran on it and how they
+    ended, and the moves open to it with what stops each; for a check, it acted out now and why it comes out as it does
+    (the rules about it and what each found)."""
+    from ..builder import trial
+    from ..engine.records import Engine
+    from ..models import Run
+    out = {}
+    if check:
+        wanted = [x for x in _examples(ws, ws.blueprint or {}) if str(x.get("title", "")).strip().lower() == check.strip().lower()]
+        if not wanted:
+            return {"why": f"there's no check called “{check}”: test lists them"}
+        _, results = trial.try_out(ws, wanted[:1], screens=False)
+        r = results[0]
+        out["check"] = {"title": r["title"], "ok": r["ok"], "what": r.get("plain") or r.get("problem") or "", "why": r.get("why") or []}
+    if record:
+        engine = Engine(ws)
+        found = engine.get(int(record))
+        if found is None:
+            return {**out, "why": f"there's no record {record}"}
+        t = engine.tables[found.table]
+        rules = []
+        for rule in t.get("rules") or []:
+            applies = not rule.get("when") or engine.matches(found, rule["when"])
+            try:
+                kept = engine._keeps(t, found, rule)
+            except Exception:  # noqa: BLE001 - a rule that can't be worked out is said so
+                kept = None
+            rules.append({"rule": rule.get("message"), "applies": applies, "keeps_it": kept})
+        runs = [{"rule": r.name or r.automation, "status": r.status, "error": r.error or "", "when": r.created_at.isoformat(timespec="minutes")}
+                for r in Run.query.filter_by(workspace_id=ws.id, record_id=found.id).order_by(Run.id.desc()).limit(10)]
+        moves = [{"button": m.get("label") or m["to"], "to": m["to"], "stopped_by": problem or ""} for _, m, problem in engine.moves(found)]
+        flow = t.get("workflow") or {}
+        out["record"] = {"list": t["key"], "title": engine.title(found), "stage": (found.data or {}).get(flow.get("field")) if flow else None,
+                         "rules": rules, "rules_that_ran": runs, "moves": moves}
+    return out or {"why": "say which record (its id) or which check (its title)"}
+
+
 def undo(ws, version, by=None):
     """Put the app back as it was at an earlier version (saved as a new version, the same as that one)."""
     from ..builder.chat import restore
@@ -88,7 +132,7 @@ def undo(ws, version, by=None):
 
 
 TOOLS = {"language": (language, None), "describe": (describe, None), "what_if": (what_if, Patches), "apply": (apply, Applying),
-         "test": (test, None), "undo": (undo, Version)}
+         "test": (test, None), "explain": (explain, Explaining), "undo": (undo, Version)}
 
 
 def schemas():

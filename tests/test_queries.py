@@ -297,3 +297,36 @@ def test_a_gate_needing_a_choice_needs_its_done_answer_not_just_any(app):
     from app.lang import patterns
     _, results = trial.try_out(ws, patterns.checks(bp), screens=False)
     assert results and all(r["ok"] for r in results), [(r["title"], r.get("problem")) for r in results]
+
+
+def test_a_check_names_a_record_the_app_made_through_its_links(app):
+    """“The invoice made for j1” is j1.invoices, as a formula reads it: a check needn't guess what a rule named it."""
+    from app.builder import trial
+    bp = _app(JOBS + [{"do": "add_field", "list": "invoices", "field": {"type": "link", "key": "job", "label": "Job", "to": "jobs"}},
+                      {"do": "add_rule", "rule": {"key": "bill_it", "name": "Bill a finished job", "when": {"on": "reaches", "list": "jobs", "stage": "Done"},
+                                                  "steps": [{"do": "add", "list": "invoices", "values": [{"field": "job", "formula": "record"},
+                                                                                                        {"field": "client", "formula": "client"},
+                                                                                                        {"field": "amount", "to": 120}]}]}}])
+    ws = _workspace(bp)
+    example = {"title": "A finished job is billed", "steps": [
+        {"do": "add", "table": "clients", "as": "c1", "values": {"name": "Ann"}},
+        {"do": "add", "table": "jobs", "as": "j1", "values": {"client": "c1"}},
+        {"do": "move", "record": "j1", "to": "In progress"}, {"do": "move", "record": "j1", "to": "Done"},
+        {"do": "change", "record": "j1.invoices", "values": {"status": "Paid"}}],
+        "expect": [{"record": "j1.invoices", "field": "amount", "equals": 120}, {"record": "j1.invoices", "field": "status", "equals": "Paid"}]}
+    _, results = trial.try_out(ws, [example], screens=False)
+    assert results[0]["ok"], results[0]
+
+
+def test_explain_says_why_for_a_record_and_a_check(app):
+    from app.lang import tools
+    bp = _app(JOBS + [{"do": "gate", "list": "jobs", "stage": "In progress", "needs": ["deposit_paid"]}])
+    ws = _workspace(bp)
+    e = _owner_engine(ws)
+    sam = e.create("clients", {"name": "Sam"})
+    job = e.create("jobs", {"client": sam.id})
+    said = tools.explain(ws, record=job.id)["record"]
+    assert said["stage"] == "Booked" and any("Deposit paid" in r["rule"] for r in said["rules"])
+    assert any(m["to"] == "In progress" and m["stopped_by"] for m in said["moves"])
+    checks = tools.test(ws)["checks"]
+    assert tools.explain(ws, check=checks[0]["title"])["check"]["title"] == checks[0]["title"]

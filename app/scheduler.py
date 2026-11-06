@@ -22,7 +22,7 @@ from .extensions import db
 from .models import Connection, Job, ScheduleRun, Workspace, utcnow
 
 log = logging.getLogger("scheduler")
-EVERY = {"schedules": 30, "notifications": 60, "apps": 60, "watch": 120, "learn": 3600, "backup": 3600, "tidy": 3600}  # seconds
+EVERY = {"schedules": 30, "notifications": 60, "apps": 60, "watch": 120, "learn": 3600, "backup": 3600, "tidy": 3600, "norms": 20}  # seconds
 DUE_AT_ONCE = 500  # workspaces looked at in one go (the rest are still due next time round)
 KEEP_SLOTS = timedelta(days=60)  # how long a schedule's taken times are kept
 
@@ -166,8 +166,20 @@ def tidy():
     db.session.commit()
 
 
+def norms(batch=2000):
+    """Records saved before their values were kept as compared (models.normalised) get them, a batch at a time: until
+    then they're read along with what the index finds, so nothing is ever missed."""
+    from .models import Record, normalised
+    rows = Record.query.filter(Record.norm.is_(None)).order_by(Record.id).limit(batch).all()
+    for r in rows:
+        r.norm = normalised(r.data)
+    if rows:
+        db.session.commit()
+    return len(rows)
+
+
 WORK = {"schedules": schedules, "notifications": notifications, "apps": apps, "watch": watch, "learn": learn, "backup": backup,
-        "tidy": tidy}
+        "tidy": tidy, "norms": norms}
 
 
 class Scheduler:

@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import event
+from sqlalchemy.orm import Session
 from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
 from sqlalchemy.types import JSON
 
@@ -92,6 +93,41 @@ class Workspace(db.Model):
     # When its schedules next need looking at (UTC), so the scheduler reads only the workspaces that are due instead of
     # every one every half minute. Empty: look now (a new workspace, or its design or time zone just changed).
     next_due_at = db.Column(db.DateTime, index=True)
+
+
+ODD = "~odd"  # a value kept some other way (a map, a list of maps): never left out by what the index finds
+
+
+def normalised(data):
+    """A record's values as equality compares them: text stripped and lower-cased; a number (a link's id among them) in a
+    list, so [12] finds it whether it's kept alone or among others; yes/no as it is; anything else as ODD, which every
+    search through the index takes along (Python decides those)."""
+    def one(v):
+        if isinstance(v, str):
+            return v.strip().lower()
+        if v is None or isinstance(v, (bool, int, float)):
+            return v
+        return ODD
+    out = {}
+    for key, v in (data or {}).items():
+        if str(key).startswith("_"):
+            continue
+        if isinstance(v, list):
+            out[key] = [one(x) for x in v]
+        elif isinstance(v, (int, float)) and not isinstance(v, bool):
+            out[key] = [v]
+        else:
+            out[key] = one(v)
+    return out
+
+
+@event.listens_for(Session, "before_flush")
+def _keep_norm(session, context, instances):  # noqa: ARG001
+    """Every record saved, however it's saved (the engine, an import, the platform's own fixes), keeps its values as
+    they're compared: what a rule finds through the index is never out of date."""
+    for obj in list(session.new) + list(session.dirty):
+        if isinstance(obj, Record):
+            obj.norm = normalised(obj.data)
 
 
 @event.listens_for(Workspace.blueprint, "set")
@@ -198,6 +234,9 @@ class Record(db.Model):
     workspace_id = db.Column(db.Integer, db.ForeignKey("workspace.id"), nullable=False)
     table = db.Column(db.String(64), nullable=False)
     data = db.Column(JSON().with_variant(JSONB(), "postgresql"), nullable=False, default=dict)  # JSONB on PostgreSQL (indexed, GIN); plain JSON in the simulator
+    # its values as they're compared (text trimmed and lower-cased, a link's id always in a list): kept with every save
+    # (normalised(), below), so a rule's "equals" finds them through one GIN index on PostgreSQL. None: not yet kept
+    norm = db.Column(JSON().with_variant(JSONB(), "postgresql"))
     version = db.Column(db.Integer, nullable=False, default=1, server_default="1")
     created_by = db.Column(db.String(120))
     created_by_id = db.Column(db.Integer)  # the person who added it (for "only their own" access; names can change)

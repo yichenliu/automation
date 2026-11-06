@@ -38,7 +38,9 @@ Steps ("do"):
   Every step has "as": an added record's own name, or "" on other steps. A link field's value is the "as" name of a
   record added earlier in the same example, spelled exactly the same. Line items are added on their own, each linked
   to its parent by the parent's "as" name.
-- "change": change "record" (an "as" name) to "values".
+- "change": change "record" (an "as" name) to "values". A record the app made itself (the invoice a finished job
+  became) is named through its links, as a formula reads them: "j1.invoices" (the latest invoice linked to job j1),
+  "i1.customer"; in steps and in what's expected alike.
 - "move": move "record" to the stage "to", as its button would.
 - "press": press the button automation "button" (its key) on "record".
 - "approve" / "reject": answer what's waiting for someone's OK on "record", with "comment": what they'd write (why

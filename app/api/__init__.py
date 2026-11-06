@@ -114,6 +114,14 @@ def front(platform):
     def test(who: Caller = Depends(caller)):
         return on_app(who, tools.test)
 
+    class Explaining(BaseModel):
+        record: int | None = None
+        check: str | None = None
+
+    @api.post("/api/v2/app/explain", tags=["app"], summary=" ".join((tools.explain.__doc__ or "").split()))
+    def explain(body: Explaining, who: Caller = Depends(caller)):
+        return on_app(who, lambda ws: tools.explain(ws, body.record, body.check))
+
     @api.post("/api/v2/app/undo", tags=["app"], summary=" ".join((tools.undo.__doc__ or "").split()))
     def undo(body: Undoing, who: Caller = Depends(designer)):
         return on_app(who, lambda ws: tools.undo(ws, body.version, by=f"API key “{who.name}”"))

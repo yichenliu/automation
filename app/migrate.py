@@ -42,6 +42,11 @@ ALWAYS = [
     "DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'ix_record_data' AND indexdef LIKE '%jsonb_path_ops%') "
     "THEN DROP INDEX IF EXISTS ix_record_data; END IF; END $$",
     "CREATE INDEX IF NOT EXISTS ix_record_data ON record USING gin (data)",
+    # a record's values as equality compares them (models.normalised), kept with every save: a rule's "equals" (a
+    # stylist's other bookings, a client's invoices) found through this index; those not kept yet are read as well
+    "ALTER TABLE record ADD COLUMN IF NOT EXISTS norm JSONB",
+    "CREATE INDEX IF NOT EXISTS ix_record_norm ON record USING gin (norm jsonb_path_ops)",
+    "CREATE INDEX IF NOT EXISTS ix_record_norm_missing ON record (workspace_id, \"table\") WHERE norm IS NULL",
     "CREATE INDEX IF NOT EXISTS ix_record_ws_table_live ON record (workspace_id, \"table\") WHERE deleted_at IS NULL",
     # a page of a list in the order records were added (LIMIT/OFFSET), and the record before and after one
     "CREATE INDEX IF NOT EXISTS ix_record_ws_table_id_live ON record (workspace_id, \"table\", id) WHERE deleted_at IS NULL",

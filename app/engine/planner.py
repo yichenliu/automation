@@ -316,7 +316,33 @@ class Planner:
         if outcomes is None:
             return None
         yes, maybe = combine(v, outcomes)
+        if op in ("equals", "one_of") and not negate:  # found through the index first, then exactly as before
+            near = self._near(f, wanted if op == "one_of" and isinstance(wanted, list) else [wanted])
+            if near is not None:
+                maybe = _all(maybe, near)
         return (_not(maybe), _not(yes)) if negate else (yes, maybe)
+
+    def _near(self, f, targets):
+        """The records an "equals" can hold for, found through the GIN index on their values as compared
+        (models.normalised): every record it holds for, and some more; those whose values aren't kept yet as well.
+        None when that can't be said for sure (a number written as text, a link named by its record's name)."""
+        from ..models import ODD
+        if not self.pg or not KEY.match(f["key"]):
+            return None
+        key = f["key"]
+        tests = [_holds(key, ODD), _holds(key, [ODD])]
+        for w in targets:
+            if f["type"] == "link":
+                ids = {int(w)} if isinstance(w, int) and not isinstance(w, bool) or str(w).strip().isdigit() else set()
+                if not ids or self.e._titled_ids(f["table"], str(w).strip().lower()):
+                    return None  # it may name a record by its name: left to the exact test
+                tests += [t for i in ids for t in (_holds(key, [i]), _holds(key, str(i)), _holds(key, [str(i)]))]  # as kept: 12, "12", [12]
+            elif f["type"] in ("select", "text", "email", "phone", "url", "barcode", "autonumber") and isinstance(w, str) \
+                    and w.strip() and expr.to_number(w) is None:
+                tests.append(_holds(key, w.strip().lower()))
+            else:
+                return None
+        return or_(Record.norm.is_(None), *tests)
 
     def _from_record(self, value, f):
         """Whether a condition's value is worked out from each record ({{record.budget}}, "budget * 0.9", another of its
@@ -723,6 +749,11 @@ class Planner:
             v.missing() if said == "" else False,
             v.null() if said in ("", "none") else False,
             _any(v.array(), v.object()) if said[:1] in ("[", "{") else False))
+
+
+def _holds(key, value):
+    """norm @> {key: value}: a record whose values, as compared, hold this one (through the GIN index)."""
+    return cast(Record.norm, JSONB).op("@>")(cast(literal(json.dumps({key: value})), JSONB))
 
 
 def x_in(v, ids):
