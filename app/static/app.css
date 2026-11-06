@@ -455,7 +455,7 @@ table.lines-editor select { min-width: 110px; } table.lines-editor td:has(input[
 .questions { display: flex; flex-direction: column; gap: 12px; margin-top: 10px; }
 .questions .question { border: 0; padding: 0; margin: 0; min-width: 0; }
 .questions legend { font-weight: 600; font-size: 13.5px; margin-bottom: 6px; padding: 0; }
-.questions .input { width: 100%; }
+.questions input[type=text] { width: 100%; }
 .working { border: 1px solid var(--border); border-radius: 10px; padding: 11px 12px; background: var(--panel-2); }
 .working .line { display: flex; align-items: center; gap: 8px; font-size: 13px; }
 .working ul { list-style: none; margin: 8px 0 0; padding: 0; }

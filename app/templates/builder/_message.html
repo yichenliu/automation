@@ -23,7 +23,7 @@
         {% for c in q.choices %}<label class="chip-opt"><input type="{{ 'checkbox' if q.many else 'radio' }}" name="q{{ m.id }}_{{ qi }}" value="{{ c }}" data-ask="{{ q.ask }}"><span>{{ c }}</span></label>{% endfor %}
       </div></fieldset>
       {% endfor %}
-      <input class="input" name="more" placeholder="Anything else I should know? (optional)">
+      <input type="text" name="more" placeholder="Anything else I should know? (optional)" aria-label="Anything else I should know">
       <div class="msg-actions"><button class="btn sm primary" type="submit">{{ icon('sparkles') }}Build my app</button>
         <button class="btn sm ghost" type="button" data-starter-text="Just build what a business like mine usually needs">Skip, just build it</button></div>
     </form>
@@ -40,7 +40,7 @@
       {% endfor %}
       {% for i in tried.issues %}<div class="try bad">{{ icon('circle-x') }}<span>{{ i }}</span></div>{% endfor %}
     </div>{% endif %}
-    {% if m.progress %}<details class="steps"><summary>What I did, step by step</summary><ul>{% for line in m.progress %}<li class="{{ 'bad' if line.startswith(("Couldn't", "Didn't")) }}">{{ line }}</li>{% endfor %}</ul></details>{% endif %}
+    {% if m.progress and not asking %}<details class="steps"><summary>What I did, step by step</summary><ul>{% for line in m.progress %}<li class="{{ 'bad' if line.startswith(("Couldn't", "Didn't")) }}">{{ line }}</li>{% endfor %}</ul></details>{% endif %}
     {% if m.changes %}<div class="changes">{% for c in m.changes %}<div class="ch">{{ icon('undo-2' if c.startswith(('Went back', 'Undid')) else 'check') }}<span>{{ c }}</span></div>{% endfor %}</div>{% endif %}
     {% if m.results %}
       <div class="results"><table class="grid"><thead><tr>{% for c in m.results.columns %}<th>{{ c }}</th>{% endfor %}</tr></thead><tbody>
