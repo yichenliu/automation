@@ -162,6 +162,9 @@ def front(platform):
     from ..web import erp_records
     from ..web import erp_flows
     from ..web import erp_learn
+    from ..web import erp_pages
+    from ..web import erp_studio
+    from ..web import erp_ai
     from ..web import settings
     from ..web import builder
     from ..web import forms
@@ -177,6 +180,9 @@ def front(platform):
         erp_records.router,
         erp_flows.router,
         erp_learn.router,
+        erp_pages.router,
+        erp_studio.router,
+        erp_ai.router,
         settings.router,
         builder.router,
         forms.router,

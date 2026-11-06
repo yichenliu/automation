@@ -5,7 +5,9 @@ from datetime import date, datetime, timedelta
 import json
 import re
 
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import or_
+from starlette.responses import Response
 
 from .. import ai
 from ..blueprint import expr, ops, schema
@@ -13,30 +15,31 @@ from ..builder import chat
 from ..engine import automations
 from ..extensions import db
 from ..models import Approval, File, Notification, Run, Version
-from .erp import bp, confirm_step_up, ctx, in_my_queue, my_approvals
-from ..webkit import abort, current_user, flash, jsonify, login_required, redirect, render_template, request, url_for
+from .erp import confirm_step_up, ctx, in_my_queue, my_approvals
+from .http import (Form, PageRoute, check_csrf, current_request, current_user, flash, form_of, json_response, redirect, render, signed_in,
+                   url_for)
+
+router = APIRouter(prefix="/w/{wid:int}/app", route_class=PageRoute, dependencies=[Depends(check_csrf), Depends(signed_in)])
 
 
-@bp.route("/")
-@login_required
-def home(wid):
+@router.api_route("/", methods=["GET"], name="app.home")
+def home(request: Request, wid: int, user=Depends(signed_in)):
     """Where everyone starts: what's waiting for them, big buttons to start the things they do, their recent work, and
     (for a new app's owner) the few steps to get going. A page made the home of someone's role or team opens instead."""
-    from ..webkit import g
     from ..models import Membership, Record, RecordChange
-    ws, engine = ctx(wid)
+    ws, engine = ctx(wid, "viewer", request)
     bp_ = engine.visible_blueprint()
     pages = bp_.get("pages", [])
     mine = next((p for p in pages if engine.role in (p.get("home_for") or []) or set(p.get("home_for") or []) & engine.teams), None)
-    if mine and not request.args.get("home"):
+    if mine and not request.query_params.get("home"):
         return redirect(url_for("app.page", wid=wid, key=mine["key"]))
     tables = [t for t in bp_.get("tables", []) if not t.get("embedded")]
     if not tables:
         from ..models import Message
         building = Message.query.filter(Message.workspace_id == ws.id, Message.channel == "builder", Message.role == "assistant",
                                         Message.status.in_(["queued", "thinking", "waiting_ai"])).first()
-        return render_template("app/empty.html", ws=ws, building=building)
-    waiting = my_approvals(ws, g.member)
+        return render(request, "app/empty.html", ws=ws, building=building)
+    waiting = my_approvals(ws, request.state.member)
     # what people start themselves: the lists they've added to by hand lately, then the ones with stages or documents
     made = dict(db.session.query(Record.table, db.func.count(RecordChange.id)).join(Record, Record.id == RecordChange.record_id)
                 .filter(RecordChange.workspace_id == ws.id, RecordChange.kind == "created", RecordChange.by_id.isnot(None),
@@ -51,7 +54,7 @@ def home(wid):
                    key=lambda t: (-made.get(t["key"], 0), -((t["key"] in linked_to) + bool(t.get("workflow") or t.get("documents"))),
                                   order[t["key"]]))[:4]
     seen, recent = set(), []
-    for change in (RecordChange.query.filter_by(workspace_id=ws.id, by_id=current_user.id).order_by(RecordChange.id.desc()).limit(60)):
+    for change in (RecordChange.query.filter_by(workspace_id=ws.id, by_id=user.id).order_by(RecordChange.id.desc()).limit(60)):
         if change.record_id in seen or len(recent) >= 6:
             continue
         seen.add(change.record_id)
@@ -59,7 +62,7 @@ def home(wid):
         if r is not None and engine.allowed(r) and not (engine.tables.get(r.table) or {}).get("embedded"):
             recent.append({"r": r, "t": engine.tables[r.table], "when": change.created_at, "kind": change.kind})
     steps = None
-    if g.member.role == "owner" and not (ws.settings or {}).get("started"):
+    if request.state.member.role == "owner" and not (ws.settings or {}).get("started"):
         people = Membership.query.filter(Membership.workspace_id == ws.id, Membership.role != "portal").count()
         first = (ws.settings or {}).get("first_table")
         first_t = engine.tables.get(first) if first else None
@@ -93,15 +96,14 @@ def home(wid):
                 x["next"] = i == nxt
     hour = engine.now.hour
     hello = "Good morning" if hour < 12 else "Good afternoon" if hour < 18 else "Good evening"
-    return render_template("app/home.html", ws=ws, e=engine, waiting=waiting, start=start, recent=recent, pages=pages, steps=steps,
-                           hello=hello, first=current_user.display.split(" ")[0])
+    return render(request, "app/home.html", ws=ws, e=engine, waiting=waiting, start=start, recent=recent, pages=pages, steps=steps,
+                  hello=hello, first=user.display.split(" ")[0])
 
 
-@bp.route("/started", methods=["POST"])
-@login_required
-def started(wid):
+@router.api_route("/started", methods=["POST"], name="app.started")
+def started(request: Request, wid: int):
     """The owner has finished (or hides) the getting-started steps."""
-    ws, engine = ctx(wid, "owner")
+    ws, engine = ctx(wid, "owner", request)
     ws.settings = {**(ws.settings or {}), "started": True}
     db.session.commit()
     return redirect(url_for("app.home", wid=wid))
@@ -296,6 +298,9 @@ def page_widgets(engine, p, period=None):
     """Every widget of a page, worked out for this person (widgets about tables or fields they can't see are left out).
     `period` limits the widgets that have a date to it (this month, last year...)."""
     from .erp_records import _options
+    request = current_request()  # none when the worker reads a page (an emailed report, the AI's daily reading)
+    here = request.url.path if request is not None else None
+    member = getattr(request.state, "member", None) if request is not None else None  # whoever is looking
     span = _range(engine.today, period, engine.fy_start)
     widgets = []
     for w in p["widgets"]:
@@ -314,7 +319,7 @@ def page_widgets(engine, p, period=None):
                 if b["kind"] == "automation" and not engine._at_least("editor"):
                     continue
                 if b["kind"] == "new":
-                    b = {**b, "url": url_for("app.new", wid=engine.ws.id, table=b["table"], back=request.path,
+                    b = {**b, "url": url_for("app.new", wid=engine.ws.id, table=b["table"], back=here,
                                              **{f"f_{k}": v for k, v in (b.get("values") or {}).items()})}
                 buttons.append(b)
             if buttons:
@@ -324,8 +329,7 @@ def page_widgets(engine, p, period=None):
             widgets.append({**w, "items": _activity(engine, w)})
             continue
         if w["type"] == "my_work":  # what's waiting for whoever is looking
-            from ..webkit import g
-            mine = my_approvals(engine.ws, g.member) if g.get("member") is not None else []
+            mine = my_approvals(engine.ws, member) if member is not None else []
             widgets.append({**w, "items": [{"a": a, "r": engine.get(a.record_id) if a.record_id else None} for a in mine[:8]],
                             "total": len(mine)})
             continue
@@ -423,31 +427,28 @@ def _insight(engine, p):
 def _page(engine, key):
     p = next((p for p in engine.bp.get("pages", []) if p["key"] == key), None)
     if p is None or (p.get("access") and not engine._allowed_to(p["access"])):  # a role, or a team (Finance's own page)
-        abort(404)
+        raise HTTPException(404)
     return p
 
 
-@bp.route("/p/<key>")
-@login_required
-def page(wid, key):
-    ws, engine = ctx(wid)
-    p = _page(engine, key)
-    period = request.args.get("period") or ""
-    widgets = page_widgets(engine, p, period)
-    return render_template("app/page.html", ws=ws, e=engine, p=p, widgets=widgets, periods=PERIODS, period=period,
-                           has_dates=any(w.get("dated") for w in widgets), has_map=any(w["type"] == "map" for w in widgets))
-
-
-@bp.route("/p/<key>.pdf")
-@login_required
-def page_pdf(wid, key):
+@router.api_route("/p/{key}.pdf", methods=["GET"], name="app.page_pdf")
+def page_pdf(request: Request, wid: int, key: str):
     """A dashboard as a report to print or send: its numbers at the top, then each breakdown and list as a table."""
-    from ..webkit import Response
-    ws, engine = ctx(wid)
+    ws, engine = ctx(wid, "viewer", request)
     p = _page(engine, key)
-    content = page_report(engine, p, request.args.get("period") or "")
-    return Response(content, mimetype="application/pdf",
+    content = page_report(engine, p, request.query_params.get("period") or "")
+    return Response(content, media_type="application/pdf",
                     headers={"Content-Disposition": f"inline; filename={schema.slug(p['label']) or 'report'}-{engine.today.isoformat()}.pdf"})
+
+
+@router.api_route("/p/{key}", methods=["GET"], name="app.page")
+def page(request: Request, wid: int, key: str):
+    ws, engine = ctx(wid, "viewer", request)
+    p = _page(engine, key)
+    period = request.query_params.get("period") or ""
+    widgets = page_widgets(engine, p, period)
+    return render(request, "app/page.html", ws=ws, e=engine, p=p, widgets=widgets, periods=PERIODS, period=period,
+                  has_dates=any(w.get("dated") for w in widgets), has_map=any(w["type"] == "map" for w in widgets))
 
 
 def page_report(engine, p, period=""):
@@ -489,10 +490,9 @@ def page_report(engine, p, period=""):
     return pdf.render(doc)
 
 
-@bp.route("/automations", endpoint="automations")
-@login_required
-def automations_page(wid):
-    ws, engine = ctx(wid)
+@router.api_route("/automations", methods=["GET"], name="app.automations")
+def automations_page(request: Request, wid: int):
+    ws, engine = ctx(wid, "viewer", request)
     if engine.role == "owner" and not (ws.settings or {}).get("seen_rules"):  # the Getting started step
         ws.settings = {**(ws.settings or {}), "seen_rules": True}
         db.session.commit()
@@ -502,39 +502,37 @@ def automations_page(wid):
               "hook": automations.hook_url(ws.id, a["key"]) if a["trigger"]["type"] == "webhook_received" else None,
               "runs": Run.query.filter_by(workspace_id=ws.id, automation=a["key"]).order_by(Run.id.desc()).limit(8).all()}
              for a in engine.bp.get("automations", [])]
-    return render_template("app/automations.html", ws=ws, e=engine, items=items, reaches_out=automations.reaches_out)
+    return render(request, "app/automations.html", ws=ws, e=engine, items=items, reaches_out=automations.reaches_out)
 
 
-@bp.route("/automations/<key>/toggle", methods=["POST"])
-@login_required
-def toggle(wid, key):
-    ws, engine = ctx(wid, "admin")
+@router.api_route("/automations/{key}/toggle", methods=["POST"], name="app.toggle")
+def toggle(request: Request, wid: int, key: str, user=Depends(signed_in)):
+    ws, engine = ctx(wid, "admin", request)
     blueprint = dict(ws.blueprint)
     found = next((a for a in blueprint.get("automations", []) if a["key"] == key), None)
     if found is None:
-        abort(404)
+        raise HTTPException(404)
     blueprint["automations"] = [dict(a, enabled=not a.get("enabled", True)) if a["key"] == key else a for a in blueprint["automations"]]
     state = "on" if not found.get("enabled", True) else "off"
-    chat.save_version(ws, blueprint, [f"Turned {state} the rule “{found['name']}”"], "manual", by=current_user.id)
-    flash(f"“{found['name']}” is {state}.", "success")
+    chat.save_version(ws, blueprint, [f"Turned {state} the rule “{found['name']}”"], "manual", by=user.id)
+    flash(request, f"“{found['name']}” is {state}.", "success")
     return redirect(url_for("app.automations", wid=wid))
 
 
-@bp.route("/automations/<key>/ai/<at>", methods=["POST"])
-@login_required
-def ai_review(wid, key, at):
+@router.api_route("/automations/{key}/ai/{at}", methods=["POST"], name="app.ai_review")
+def ai_review(request: Request, wid: int, key: str, at: str, user=Depends(signed_in), form: Form = Depends(form_of)):
     """How much people check one AI step's work: every time, when the AI isn't sure, or not at all."""
-    ws, engine = ctx(wid, "admin")
+    ws, engine = ctx(wid, "admin", request)
     found = next((a for a in ws.blueprint.get("automations", []) if a["key"] == key), None)
-    mode = request.form.get("mode")
+    mode = form.get("mode")
     changed = automations.with_review(found, at, mode) if found else None
     if changed is None:
-        abort(404)
+        raise HTTPException(404)
     blueprint = dict(ws.blueprint)
     blueprint["automations"] = [changed if a["key"] == key else a for a in blueprint["automations"]]
     said = f"In “{found['name']}”, {automations.REVIEW_WORDS[mode]} of what the AI does"
-    chat.save_version(ws, blueprint, [said], "manual", by=current_user.id)
-    flash(said[0].upper() + said[1:] + ".", "success")
+    chat.save_version(ws, blueprint, [said], "manual", by=user.id)
+    flash(request, said[0].upper() + said[1:] + ".", "success")
     return redirect(url_for("app.automations", wid=wid) + f"#{key}")
 
 
@@ -542,12 +540,11 @@ AI_KINDS = {"ai_fill": ("Writes", "pencil"), "ai_extract": ("Reads documents", "
             "ai_check": ("Checks", "file-check")}
 
 
-@bp.route("/ai")
-@login_required
-def ai_page(wid):
+@router.api_route("/ai", methods=["GET"], name="app.ai_page")
+def ai_page(request: Request, wid: int):
     """The AI at work: every AI step in the business's processes, what it reads, who checks it and how it's doing, set
     up and tried out in one place."""
-    ws, engine = ctx(wid, "editor")
+    ws, engine = ctx(wid, "editor", request)
     items = []
     for a in engine.bp.get("automations", []):
         table = a["trigger"].get("table")
@@ -569,9 +566,9 @@ def ai_page(wid):
             processes.append({"a": item["a"], "when": item["when"], "items": []})
         processes[-1]["items"].append(item)
     fields = [(t, f) for t in engine.visible_blueprint().get("tables", []) for f in t["fields"] if f.get("ai")]  # fields it fills in
-    return render_template("app/ai.html", ws=ws, e=engine, processes=processes, count=len(items), kinds=AI_KINDS, ai_fields=fields,
-                           manual=_manual_tasks(engine), off=sum(1 for i in items if i["step"].get("manual")),
-                           waiting=Approval.query.filter_by(workspace_id=ws.id, kind="review", status="pending").count())
+    return render(request, "app/ai.html", ws=ws, e=engine, processes=processes, count=len(items), kinds=AI_KINDS, ai_fields=fields,
+                  manual=_manual_tasks(engine), off=sum(1 for i in items if i["step"].get("manual")),
+                  waiting=Approval.query.filter_by(workspace_id=ws.id, kind="review", status="pending").count())
 
 
 def _when(engine, automation):
@@ -639,32 +636,51 @@ def _steps_with_places(actions, prefix=""):
         yield from _steps_with_places(act.get("if_rejected"), f"{at}.r.")
 
 
-def _save_automation(ws, changed, said, back):
+def _save_automation(request, ws, changed, said, back):
     """An automation changed from the AI at work page, checked like any design change and saved as a version."""
     result = ops.apply(ws.blueprint, [{"op": "update_automation" if any(a["key"] == changed["key"] for a in ws.blueprint.get("automations", []))
                                         else "add_automation", "automation": changed}])
     if result.problems:
-        flash("That doesn't fit: " + result.problems[0], "error")
+        flash(request, "That doesn't fit: " + result.problems[0], "error")
         return redirect(back)
     if not result.changed:
-        flash("Nothing changed.", "info")
+        flash(request, "Nothing changed.", "info")
         return redirect(back)
-    chat.save_version(ws, result.blueprint, [said], "manual", by=current_user.id)
-    flash(said + ". You can undo it under Design & history.", "success")
+    chat.save_version(ws, result.blueprint, [said], "manual", by=current_user(request).id)
+    flash(request, said + ". You can undo it under Design & history.", "success")
     return redirect(back)
 
 
-@bp.route("/ai/<key>/<at>/switch", methods=["POST"])
-@login_required
-def ai_switch(wid, key, at):
+@router.api_route("/ai/take-over/{key}/{at}", methods=["POST"], name="app.ai_take_over")
+def ai_take_over(request: Request, wid: int, key: str, at: str, form: Form = Depends(form_of)):
+    """Let the AI do a job people do by hand in a process (a task with one field to fill): it drafts, a person checks every
+    one to begin with."""
+    ws, engine = ctx(wid, "admin", request)
+    found = next((a for a in ws.blueprint.get("automations", []) if a["key"] == key), None)
+    changed = json.loads(json.dumps(found)) if found else None
+    step = schema.step_at(changed["actions"], at) if changed else None
+    if step is None or step["type"] != "task" or len(step.get("fields") or []) != 1:
+        raise HTTPException(404)
+    who = step.get("to") or "editor"
+    field = step["fields"][0]
+    step.clear()
+    step.update({"type": "ai_fill", "field": field, "instructions": (form.get("instructions") or "").strip()[:2000] or "Fill this in.",
+                 "review": "always", "reviewer": who})
+    f = engine.field(found["trigger"].get("table"), field)
+    return _save_automation(request, ws, changed, f"The AI now fills in {f['label'] if f else field} in “{found['name']}”; {automations._who(engine, found['trigger'].get('table'), who)} checks every one",
+                            url_for("app.ai_page", wid=wid) + f"#ai-{key}-{at}")
+
+
+@router.api_route("/ai/{key}/{at}/switch", methods=["POST"], name="app.ai_switch")
+def ai_switch(request: Request, wid: int, key: str, at: str, form: Form = Depends(form_of)):
     """Switch an AI helper off (a person does its job instead, as a task) or back on."""
-    ws, engine = ctx(wid, "admin")
+    ws, engine = ctx(wid, "admin", request)
     found = next((a for a in ws.blueprint.get("automations", []) if a["key"] == key), None)
     changed = json.loads(json.dumps(found)) if found else None
     step = schema.step_at(changed["actions"], at) if changed else None
     if step is None or step["type"] not in schema.AI_STEPS:
-        abort(404)
-    on = request.form.get("on") == "1"
+        raise HTTPException(404)
+    on = form.get("on") == "1"
     if on:
         step.pop("manual", None)
     else:
@@ -672,43 +688,20 @@ def ai_switch(wid, key, at):
     what = automations.describe_action(engine, found, {k: v for k, v in step.items() if k not in ("review", "reviewer", "manual")})
     said = (f"Switched the AI back on in “{found['name']}”: {what[:1].lower() + what[1:]}" if on else
             f"Switched the AI off in “{found['name']}”: a person does it instead ({what[:1].lower() + what[1:]})")
-    return _save_automation(ws, changed, said, url_for("app.ai_page", wid=wid) + f"#ai-{key}-{at}")
-
-
-@bp.route("/ai/take-over/<key>/<at>", methods=["POST"])
-@login_required
-def ai_take_over(wid, key, at):
-    """Let the AI do a job people do by hand in a process (a task with one field to fill): it drafts, a person checks every
-    one to begin with."""
-    ws, engine = ctx(wid, "admin")
-    found = next((a for a in ws.blueprint.get("automations", []) if a["key"] == key), None)
-    changed = json.loads(json.dumps(found)) if found else None
-    step = schema.step_at(changed["actions"], at) if changed else None
-    if step is None or step["type"] != "task" or len(step.get("fields") or []) != 1:
-        abort(404)
-    who = step.get("to") or "editor"
-    field = step["fields"][0]
-    step.clear()
-    step.update({"type": "ai_fill", "field": field, "instructions": (request.form.get("instructions") or "").strip()[:2000] or "Fill this in.",
-                 "review": "always", "reviewer": who})
-    f = engine.field(found["trigger"].get("table"), field)
-    return _save_automation(ws, changed, f"The AI now fills in {f['label'] if f else field} in “{found['name']}”; {automations._who(engine, found['trigger'].get('table'), who)} checks every one",
-                            url_for("app.ai_page", wid=wid) + f"#ai-{key}-{at}")
+    return _save_automation(request, ws, changed, said, url_for("app.ai_page", wid=wid) + f"#ai-{key}-{at}")
 
 
 AI_JOBS = {"fill": "Write or fill something in", "check": "Check the record", "read": "Read its attached files"}
 AI_WHEN = {"added": "is added", "changed": "is changed", "becomes": "has a field set to a value", "button": "gets a button press"}
 
 
-@bp.route("/ai/new", methods=["GET", "POST"])
-@login_required
-def ai_new(wid):
+@router.api_route("/ai/new", methods=["GET", "POST"], name="app.ai_new")
+def ai_new(request: Request, wid: int, form: Form = Depends(form_of)):
     """Add an AI helper to a process, in a few plain choices: on which records, when, what job, into which field, and
     who checks its work. Anything more involved goes to the builder."""
-    ws, engine = ctx(wid, "admin")
+    ws, engine = ctx(wid, "admin", request)
     tables = [t for t in engine.tables.values() if not t.get("embedded")]
-    t = engine.tables.get(request.values.get("table") or "")
-    form = request.form
+    t = engine.tables.get((request.query_params["table"] if "table" in request.query_params else form.get("table")) or "")
     if request.method == "POST" and t is not None:
         job, when = form.get("job"), form.get("when")
         field = engine.field(t["key"], form.get("field") or "")
@@ -721,8 +714,8 @@ def ai_new(wid):
         elif job in ("fill", "check") and not said:
             problem = "Say what the AI should do, in plain words."
         if problem:
-            flash(problem, "error")
-            return render_template("app/ai_new.html", ws=ws, e=engine, tables=tables, t=t, jobs=AI_JOBS, whens=AI_WHEN, form=form)
+            flash(request, problem, "error")
+            return render(request, "app/ai_new.html", ws=ws, e=engine, tables=tables, t=t, jobs=AI_JOBS, whens=AI_WHEN, form=form)
         step = {"type": {"fill": "ai_fill", "check": "ai_check", "read": "ai_extract"}[job], "instructions": said or None}
         if job in ("fill", "check"):
             step["field"] = field["key"]
@@ -750,85 +743,83 @@ def ai_new(wid):
         existing = {a["key"] for a in ws.blueprint.get("automations", [])}
         while automation["key"] in existing:
             automation["key"] += "_2"
-        return _save_automation(ws, automation, f"Added an AI helper: on {schema.lc(t['label'])}, the AI {what}",
+        return _save_automation(request, ws, automation, f"Added an AI helper: on {schema.lc(t['label'])}, the AI {what}",
                                 url_for("app.ai_page", wid=wid) + f"#ai-{automation['key']}-0")
-    return render_template("app/ai_new.html", ws=ws, e=engine, tables=tables, t=t, jobs=AI_JOBS, whens=AI_WHEN, form=form)
+    return render(request, "app/ai_new.html", ws=ws, e=engine, tables=tables, t=t, jobs=AI_JOBS, whens=AI_WHEN, form=form)
 
 
-@bp.route("/ai/<key>/<at>", methods=["POST"])
-@login_required
-def ai_settings(wid, key, at):
+@router.api_route("/ai/{key}/{at}", methods=["POST"], name="app.ai_settings")
+def ai_settings(request: Request, wid: int, key: str, at: str, form: Form = Depends(form_of)):
     """Save how one AI step works: a new design version, so it can be undone."""
-    ws, engine = ctx(wid, "admin")
+    ws, engine = ctx(wid, "admin", request)
     found = next((a for a in ws.blueprint.get("automations", []) if a["key"] == key), None)
     changed = json.loads(json.dumps(found)) if found else None
     step = schema.step_at(changed["actions"], at) if changed else None
     if step is None or step["type"] not in schema.AI_STEPS:
-        abort(404)
+        raise HTTPException(404)
     back = url_for("app.ai_page", wid=wid) + f"#ai-{key}-{at}"
-    if step["type"] in ("ai_fill", "ai_check") and not (request.form.get("instructions") or "").strip():
-        flash("Say what the AI should do: it needs instructions.", "error")
+    if step["type"] in ("ai_fill", "ai_check") and not (form.get("instructions") or "").strip():
+        flash(request, "Say what the AI should do: it needs instructions.", "error")
         return redirect(back)
     step.clear()
-    step.update(_ai_step_from_form(engine, schema.step_at(found["actions"], at), request.form))
-    return _save_automation(ws, changed, f"Changed how the AI works in “{found['name']}”", back)
+    step.update(_ai_step_from_form(engine, schema.step_at(found["actions"], at), form))
+    return _save_automation(request, ws, changed, f"Changed how the AI works in “{found['name']}”", back)
 
 
-@bp.route("/ai/<key>/<at>/try", methods=["POST"])
-@login_required
-def ai_try(wid, key, at):
+@router.api_route("/ai/{key}/{at}/try", methods=["POST"], name="app.ai_try")
+def ai_try(request: Request, wid: int, key: str, at: str, form: Form = Depends(form_of)):
     """What the AI would make of one record (or a pasted example) with the settings as they stand in the form: nothing is
     saved and nobody is asked to check it."""
-    ws, engine = ctx(wid, "editor")
+    ws, engine = ctx(wid, "editor", request)
     from .. import intelligence
     from ..engine.records import FieldErrors
     from ..files.readers import Content
     a = next((x for x in engine.bp.get("automations", []) if x["key"] == key), None)
     step = schema.step_at(a["actions"], at) if a else None
     if step is None or step["type"] not in schema.AI_STEPS:
-        abort(404)
-    step = _ai_step_from_form(engine, step, request.form)
+        raise HTTPException(404)
+    step = _ai_step_from_form(engine, step, form)
     learned = automations.corrections(engine, key, at) if step.get("learn", True) else []
     step["_examples"] = learned
     record = None
     if step["type"] != "ai_create_record":
-        record = engine.get(request.form.get("record", type=int), a["trigger"].get("table"))
+        record = engine.get(form.get("record", type=int), a["trigger"].get("table"))
         if record is None:
-            return jsonify(ok=False, error="Choose a record to try it on.")
+            return json_response({"ok": False, "error": "Choose a record to try it on."})
     shown = lambda table, values: [[(engine.field(table, k) or {"label": k})["label"], _ai_value(engine, table, k, v)]  # noqa: E731
                                    for k, v in values.items() if engine.field(table, k)]
     try:
         if step["type"] == "ai_check":
             answer = intelligence.check_record(engine, record, step)
-            return jsonify(ok=True, values=shown(record.table, answer["values"]), sure=answer["sure"], why=answer["why"],
-                           findings=answer["findings"], learned=len(learned))
+            return json_response({"ok": True, "values": shown(record.table, answer["values"]), "sure": answer["sure"], "why": answer["why"],
+                                  "findings": answer["findings"], "learned": len(learned)})
         if step["type"] == "ai_fill":
             f = engine.field(record.table, step["field"])
             answer = intelligence.propose_field(engine, record, f, step["instructions"], use_knowledge=step.get("use_knowledge"), action=step)
-            return jsonify(ok=True, values=shown(record.table, {f["key"]: answer["value"]}), sure=answer["sure"], why=answer["why"],
-                           learned=len(learned))
+            return json_response({"ok": True, "values": shown(record.table, {f["key"]: answer["value"]}), "sure": answer["sure"],
+                                  "why": answer["why"], "learned": len(learned)})
         if step["type"] == "ai_extract":
             files = File.query.filter_by(record_id=record.id, deleted_at=None).all()
             if not files:
-                return jsonify(ok=False, error="That record has no files to read.")
+                return json_response({"ok": False, "error": "That record has no files to read."})
             result = intelligence.extract(engine, record.table, intelligence.read_files(files), step.get("instructions"), step.get("fields"),
                                           use_knowledge=step.get("use_knowledge"), examples=learned)
             table = record.table
         else:
-            text = (request.form.get("sample") or "").strip()
+            text = (form.get("sample") or "").strip()
             if not text:
-                return jsonify(ok=False, error="Paste an example email or document to try it on.")
+                return json_response({"ok": False, "error": "Paste an example email or document to try it on."})
             result = intelligence.extract(engine, step["table"], [Content(kind="text", name="example", text=text[:40000])],
                                           step.get("instructions"), use_knowledge=step.get("use_knowledge"), examples=learned)
             table = step["table"]
         lines = sum(len(rows) for rows in result["lines"].values())
-        return jsonify(ok=True, values=shown(table, result["values"]), sure=not result["unsure"], learned=len(learned),
-                       why=(f"It wasn't sure of {', '.join(result['unsure'])}" if result["unsure"] else "")
-                       + (f"{'; ' if result['unsure'] else ''}{lines} line{'s' if lines != 1 else ''} read" if lines else ""))
+        return json_response({"ok": True, "values": shown(table, result["values"]), "sure": not result["unsure"], "learned": len(learned),
+                              "why": (f"It wasn't sure of {', '.join(result['unsure'])}" if result["unsure"] else "")
+                              + (f"{'; ' if result['unsure'] else ''}{lines} line{'s' if lines != 1 else ''} read" if lines else "")})
     except ai.AIUnavailable:
-        return jsonify(ok=False, error="Your AI isn't answering right now. Try again in a minute.")
+        return json_response({"ok": False, "error": "Your AI isn't answering right now. Try again in a minute."})
     except (ai.AIError, FieldErrors) as exc:
-        return jsonify(ok=False, error=f"The AI couldn't do it this time: {exc}")
+        return json_response({"ok": False, "error": f"The AI couldn't do it this time: {exc}"})
 
 
 def _ai_value(engine, table, key, value):
@@ -839,46 +830,44 @@ def _ai_value(engine, table, key, value):
         return str(value)
 
 
-@bp.route("/automations/<key>/run", methods=["POST"])
-@login_required
-def run_now(wid, key):
-    ws, engine = ctx(wid, "editor")
+@router.api_route("/automations/{key}/run", methods=["POST"], name="app.run_now")
+def run_now(request: Request, wid: int, key: str, user=Depends(signed_in), form: Form = Depends(form_of)):
+    ws, engine = ctx(wid, "editor", request)
     a = next((a for a in engine.bp.get("automations", []) if a["key"] == key and a["trigger"]["type"] == "schedule"), None)
     if a is None:
-        abort(404)
+        raise HTTPException(404)
     if automations.reaches_out(a) and not engine._at_least("admin"):  # emails to every owner: not at the press of anyone's button
-        abort(403, description=f"“{a['name']}” sends to people outside the business, so only the people who run your app can run it early.")
-    runs = automations.run_schedule(engine, a, f"{current_user.display} ran it now")
-    flash(f"Ran “{a['name']}” for {len(runs)} record{'s' if len(runs) != 1 else ''}." if a["trigger"].get("table") else f"Ran “{a['name']}”.", "success")
-    back = request.form.get("back") or ""
+        raise HTTPException(403, f"“{a['name']}” sends to people outside the business, so only the people who run your app can run it early.")
+    runs = automations.run_schedule(engine, a, f"{user.display} ran it now")
+    flash(request, f"Ran “{a['name']}” for {len(runs)} record{'s' if len(runs) != 1 else ''}." if a["trigger"].get("table") else f"Ran “{a['name']}”.", "success")
+    back = form.get("back") or ""
     return redirect(back if back.startswith("/") and not back.startswith("//") else url_for("app.automations", wid=wid))
 
 
-@bp.route("/approvals")
-@login_required
-def approvals(wid):
+@router.api_route("/approvals", methods=["GET"], name="app.approvals")
+def approvals(request: Request, wid: int, user=Depends(signed_in)):
     """Approvals and tasks: what's waiting for this person, what's waiting for others, and what's been decided."""
-    ws, engine = ctx(wid)
-    from ..webkit import g
+    ws, engine = ctx(wid, "viewer", request)
     from ..models import Membership
-    mine = sorted(my_approvals(ws, g.member), key=lambda a: (-(a.priority if a.priority is not None else 1), a.id))  # the most pressing first
-    later = [a for a in _could_do(ws, g.member) if in_my_queue(a, later=True)]
+    member = request.state.member
+    mine = sorted(my_approvals(ws, member), key=lambda a: (-(a.priority if a.priority is not None else 1), a.id))  # the most pressing first
+    later = [a for a in _could_do(request, ws, member) if in_my_queue(a, later=True)]
     others = [a for a in Approval.query.filter_by(workspace_id=ws.id, status="pending").order_by(Approval.id).all() if a not in mine and a not in later]
-    if not g.member.can("admin"):  # people see what's waiting for others only on records they asked for (or changed)
-        others = [a for a in others if (rec := engine.get(a.record_id)) is not None and (getattr(rec, "created_by_id", None) == current_user.id
-                                                                                       or (a.proposal or {}).get("by_id") == current_user.id)]
+    if not member.can("admin"):  # people see what's waiting for others only on records they asked for (or changed)
+        others = [a for a in others if (rec := engine.get(a.record_id)) is not None and (getattr(rec, "created_by_id", None) == user.id
+                                                                                       or (a.proposal or {}).get("by_id") == user.id)]
     apart = {}  # why this person can't answer some of them themselves (separation of duties)
     for a in others:
         rec = engine.get(a.record_id) if a.record_id else None
         reason = automations.kept_from(engine, a, rec) if rec is not None else None
-        if a.kind == "change" and (a.proposal or {}).get("by_id") == current_user.id:
+        if a.kind == "change" and (a.proposal or {}).get("by_id") == user.id:
             reason = "it's your change"
         if reason:
             apart[a.id] = reason
-    away = g.member if g.member.away_until and g.member.away_until >= engine.today else None
+    away = member if member.away_until and member.away_until >= engine.today else None
     recent = (Approval.query.filter(Approval.workspace_id == ws.id, Approval.status.in_(["approved", "rejected", "done"]))
               .order_by(Approval.decided_at.desc(), Approval.id.desc()).limit(12).all())
-    people = {m.user_id: m.user.display for m in Membership.query.filter_by(workspace_id=ws.id).all() if m.role != "portal" and m.user_id != current_user.id}
+    people = {m.user_id: m.user.display for m in Membership.query.filter_by(workspace_id=ws.id).all() if m.role != "portal" and m.user_id != user.id}
     from .erp_records import _options
     forms = {}
     for a in mine:  # a task asks for some of its record's fields, a check of the AI's work shows what it put: filled in right here
@@ -890,315 +879,300 @@ def approvals(wid):
                 values.update((a.proposal or {}).get("values") or {})  # what the AI suggests, not yet saved
             forms[a.id] = {"record": rec, "values": values, "fields": [f for f in (engine.field(t["key"], k) for k in a.fields) if f],
                            "options": _options(engine, t), "unsure": set((a.proposal or {}).get("unsure") or [])}
-    return render_template("app/approvals.html", ws=ws, e=engine, mine=mine, others=others, recent=recent, people=people, forms=forms,
-                           later=later, members=engine.members(), runs={a.run_id: db.session.get(Run, a.run_id) for a in mine + others + recent + later},
-                           apart=apart, away=away, stepped=engine.stepped_up, teams={tm["key"]: tm["name"] for tm in schema.teams(engine.bp)},
-                           now=automations.utcnow(), tomorrow=(engine.today + timedelta(days=1)).isoformat())
+    return render(request, "app/approvals.html", ws=ws, e=engine, mine=mine, others=others, recent=recent, people=people, forms=forms,
+                  later=later, members=engine.members(), runs={a.run_id: db.session.get(Run, a.run_id) for a in mine + others + recent + later},
+                  apart=apart, away=away, stepped=engine.stepped_up, teams={tm["key"]: tm["name"] for tm in schema.teams(engine.bp)},
+                  now=automations.utcnow(), tomorrow=(engine.today + timedelta(days=1)).isoformat())
 
 
-def _could_do(ws, member):
+def _could_do(request, ws, member):
     """Every pending approval and task this person could answer, whoever took it or whenever it's put off till."""
     from ..engine.automations import may_decide
     from ..models import Record
     pending = Approval.query.filter_by(workspace_id=ws.id, status="pending").order_by(Approval.id).all()
-    return [a for a in pending if may_decide(a, member, current_user.id, db.session.get(Record, a.record_id) if a.record_id else None)]
+    return [a for a in pending if may_decide(a, member, current_user(request).id, db.session.get(Record, a.record_id) if a.record_id else None)]
 
 
-@bp.route("/menu", methods=["POST"])
-@login_required
-def menu_switch(wid):
+@router.api_route("/menu", methods=["POST"], name="app.menu_switch")
+def menu_switch(request: Request, wid: int, form: Form = Depends(form_of)):
     """Between a team's own menu and the whole one ("Everything else" / "Just my team's"), remembered for this person."""
-    from ..webkit import session
-    ws, engine = ctx(wid)
+    ws, engine = ctx(wid, "viewer", request)
+    session = request.state.session
     whole = [w for w in session.get("whole_menu") or [] if w != ws.id]
-    if request.form.get("show") == "all":
+    if form.get("show") == "all":
         whole.append(ws.id)
     session["whole_menu"] = whole
-    return redirect(request.referrer or url_for("app.home", wid=wid))
+    return redirect(request.headers.get("referer") or url_for("app.home", wid=wid))
 
 
-@bp.route("/approvals/next", methods=["POST"])
-@login_required
-def next_task(wid):
+@router.api_route("/approvals/next", methods=["POST"], name="app.next_task")
+def next_task(request: Request, wid: int):
     """Take the next task: the most pressing, then the oldest, of those waiting for this person or their team."""
-    from ..webkit import g
-    ws, engine = ctx(wid, "viewer")
-    waiting = sorted([a for a in my_approvals(ws, g.member) if a.kind == "task"], key=lambda a: (-(a.priority if a.priority is not None else 1), a.id))
+    ws, engine = ctx(wid, "viewer", request)
+    waiting = sorted([a for a in my_approvals(ws, request.state.member) if a.kind == "task"], key=lambda a: (-(a.priority if a.priority is not None else 1), a.id))
     if not waiting:
-        flash("Nothing's waiting: all done.", "success")
+        flash(request, "Nothing's waiting: all done.", "success")
         return redirect(url_for("app.approvals", wid=wid))
     task = waiting[0]
-    _take(engine, task)
+    _take(request, engine, task)
     if task.flow and task.record_id:
-        return _start_task_flow(engine, task)
+        return _start_task_flow(request, engine, task)
     return redirect(url_for("app.approvals", wid=wid) + f"#a{task.id}")
 
 
-def _take(engine, task):
-    if task.assignee_id is None and task.taken_by_id != current_user.id:  # a team's or a role's: now it's theirs
-        task.taken_by_id = current_user.id
-        task.history = (task.history or []) + [{"when": datetime.utcnow().isoformat(), "what": f"taken by {current_user.display}"}]
+def _take(request, engine, task):
+    user = current_user(request)
+    if task.assignee_id is None and task.taken_by_id != user.id:  # a team's or a role's: now it's theirs
+        task.taken_by_id = user.id
+        task.history = (task.history or []) + [{"when": datetime.utcnow().isoformat(), "what": f"taken by {user.display}"}]
         db.session.commit()
 
 
-def _start_task_flow(engine, task):
+def _start_task_flow(request, engine, task):
     from ..engine import flows
     from ..engine.records import FieldErrors
     flow, record = flows.of(engine, task.flow), engine.get(task.record_id)
     if flow is None or record is None:
-        flash("This task's steps aren't there any more: finish it here instead.", "error")
+        flash(request, "This task's steps aren't there any more: finish it here instead.", "error")
         return redirect(url_for("app.approvals", wid=engine.ws.id) + f"#a{task.id}")
     try:
-        run = flows.begin(engine, {**flow, "when": None}, current_user.id, record)
+        run = flows.begin(engine, {**flow, "when": None}, current_user(request).id, record)
     except FieldErrors as exc:
-        flash("; ".join(exc.errors.values()), "error")
+        flash(request, "; ".join(exc.errors.values()), "error")
         return redirect(url_for("app.approvals", wid=engine.ws.id))
     run.task_id = task.id
     db.session.commit()
     return redirect(url_for("app.flow_run", wid=engine.ws.id, run_id=run.id))
 
 
-@bp.route("/approvals/away", methods=["POST"])
-@login_required
-def away(wid):
+@router.api_route("/approvals/away", methods=["POST"], name="app.away")
+def away(request: Request, wid: int, user=Depends(signed_in), form: Form = Depends(form_of)):
     """Away (on leave): someone covers your approvals and tasks from one day to another; or back again."""
-    ws, engine = ctx(wid, "viewer")
+    ws, engine = ctx(wid, "viewer", request)
     from datetime import date as _date
 
-    from ..webkit import g
     from ..models import Membership
-    me = g.member
-    if request.form.get("back_now"):
+    me = request.state.member
+    if form.get("back_now"):
         me.away_from = me.away_until = me.cover_id = None
         db.session.commit()
-        flash("Welcome back: your approvals and tasks come to you again.", "success")
+        flash(request, "Welcome back: your approvals and tasks come to you again.", "success")
         return redirect(url_for("app.approvals", wid=wid))
     try:
-        start, end = _date.fromisoformat(request.form.get("from") or ""), _date.fromisoformat(request.form.get("until") or "")
+        start, end = _date.fromisoformat(form.get("from") or ""), _date.fromisoformat(form.get("until") or "")
     except ValueError:
-        flash("Give the first and last day you're away.", "error")
+        flash(request, "Give the first and last day you're away.", "error")
         return redirect(url_for("app.approvals", wid=wid))
-    cover = Membership.query.filter_by(workspace_id=ws.id, user_id=request.form.get("cover", type=int)).first()
-    if cover is None or cover.role == "portal" or cover.user_id == current_user.id or end < start:
-        flash("Choose who covers for you, and an end on or after the start.", "error")
+    cover = Membership.query.filter_by(workspace_id=ws.id, user_id=form.get("cover", type=int)).first()
+    if cover is None or cover.role == "portal" or cover.user_id == user.id or end < start:
+        flash(request, "Choose who covers for you, and an end on or after the start.", "error")
         return redirect(url_for("app.approvals", wid=wid))
     me.away_from, me.away_until, me.cover_id = start, end, cover.user_id
     db.session.commit()
-    flash(f"{cover.user.display} covers your approvals and tasks from {start:%d %b} to {end:%d %b}.", "success")
+    flash(request, f"{cover.user.display} covers your approvals and tasks from {start:%d %b} to {end:%d %b}.", "success")
     return redirect(url_for("app.approvals", wid=wid))
 
 
-@bp.route("/approvals/<int:aid>", methods=["POST"])
-@login_required
-def decide(wid, aid):
+@router.api_route("/approvals/{aid:int}", methods=["POST"], name="app.decide")
+def decide(request: Request, wid: int, aid: int, user=Depends(signed_in), form: Form = Depends(form_of)):
     """Approve, reject, finish a task (filling in what it asks for), or pass it to someone else."""
-    ws, engine = ctx(wid, "viewer")
-    from ..webkit import g
+    ws, engine = ctx(wid, "viewer", request)
     from ..engine.records import FieldErrors
     from ..models import Membership
     approval = db.session.get(Approval, aid)
     if approval is None or approval.workspace_id != ws.id or approval.status != "pending":
-        flash("That's already been answered.", "info")
+        flash(request, "That's already been answered.", "info")
         return redirect(url_for("app.approvals", wid=wid))
-    if approval not in my_approvals(ws, g.member):
-        abort(403)
-    back = request.form.get("back")
+    if approval not in my_approvals(ws, request.state.member):
+        raise HTTPException(403)
+    back = form.get("back")
     back = back if back and back.startswith("/") and not back.startswith("//") else url_for("app.approvals", wid=wid)
-    decision = request.form.get("decision")
+    decision = form.get("decision")
     if decision in ("take", "give_back", "defer", "start"):  # working through a queue
         if approval.kind != "task":
-            abort(400)
+            raise HTTPException(400)
         if decision == "take":
-            _take(engine, approval)
-            flash("It's yours now: nobody else in the team will pick it up.", "success")
+            _take(request, engine, approval)
+            flash(request, "It's yours now: nobody else in the team will pick it up.", "success")
         elif decision == "give_back":
             approval.taken_by_id = None
-            approval.history = (approval.history or []) + [{"when": datetime.utcnow().isoformat(), "what": f"given back by {current_user.display}"}]
+            approval.history = (approval.history or []) + [{"when": datetime.utcnow().isoformat(), "what": f"given back by {user.display}"}]
             db.session.commit()
-            flash("Given back: anyone in the team can take it.", "success")
+            flash(request, "Given back: anyone in the team can take it.", "success")
         elif decision == "defer":
             try:
-                until = date.fromisoformat(request.form.get("until") or "")
+                until = date.fromisoformat(form.get("until") or "")
             except ValueError:
-                flash("Choose the day it comes back.", "error")
+                flash(request, "Choose the day it comes back.", "error")
                 return redirect(back)
             if until <= engine.today:
-                flash("Choose a day after today.", "error")
+                flash(request, "Choose a day after today.", "error")
                 return redirect(back)
             approval.deferred_until = datetime.combine(until, datetime.min.time())
-            approval.history = (approval.history or []) + [{"when": datetime.utcnow().isoformat(), "what": f"put off till {until.strftime('%-d %b')} by {current_user.display}"}]
+            approval.history = (approval.history or []) + [{"when": datetime.utcnow().isoformat(), "what": f"put off till {until.strftime('%-d %b')} by {user.display}"}]
             db.session.commit()
-            flash(f"Put off: it comes back on {until.strftime('%-d %B')}.", "success")
+            flash(request, f"Put off: it comes back on {until.strftime('%-d %B')}.", "success")
         else:
-            _take(engine, approval)
-            return _start_task_flow(engine, approval)
+            _take(request, engine, approval)
+            return _start_task_flow(request, engine, approval)
         return redirect(back)
     if decision == "pass":
-        to = request.form.get("to", type=int)
+        to = form.get("to", type=int)
         member = Membership.query.filter_by(workspace_id=ws.id, user_id=to).first() if to else None
-        if member is None or member.role == "portal" or to == current_user.id:
-            flash("Choose someone on the team to pass it to.", "error")
+        if member is None or member.role == "portal" or to == user.id:
+            flash(request, "Choose someone on the team to pass it to.", "error")
             return redirect(back)
-        automations.pass_on(engine, approval, to, current_user.display, request.form.get("comment"))
-        flash(f"Passed to {member.user.display}.", "success")
+        automations.pass_on(engine, approval, to, user.display, form.get("comment"))
+        flash(request, f"Passed to {member.user.display}.", "success")
         return redirect(back)
     if decision == "done":
         if (approval.kind or "approval") not in ("task", "review"):
-            abort(400)
+            raise HTTPException(400)
         values = {}
         record = engine.get(approval.record_id) if approval.record_id else None
         for key in approval.fields or []:
             f = engine.field(record.table, key) if record is not None else None
             if f is None:
                 continue
-            values[key] = bool(request.form.get(key)) if f["type"] == "checkbox" else \
-                [v for v in request.form.getlist(key) if v] if f["type"] == "multi_select" or (f["type"] in ("link", "user") and f.get("multiple")) \
-                else request.form.get(key)
+            values[key] = bool(form.get(key)) if f["type"] == "checkbox" else \
+                [v for v in form.getlist(key) if v] if f["type"] == "multi_select" or (f["type"] in ("link", "user") and f.get("multiple")) \
+                else form.get(key)
         try:
             if approval.kind == "review":
-                run = automations.complete_review(engine, approval, current_user.display, values, request.form.get("comment"))
+                run = automations.complete_review(engine, approval, user.display, values, form.get("comment"))
             else:
-                run = automations.complete(engine, approval, current_user.display, values, request.form.get("comment"))
+                run = automations.complete(engine, approval, user.display, values, form.get("comment"))
         except FieldErrors as exc:
             db.session.rollback()
-            flash("; ".join(exc.errors.values()), "error")
+            flash(request, "; ".join(exc.errors.values()), "error")
             return redirect(back)
-        flash("Checked: thanks, the AI learns how often it's right from this" if approval.kind == "review" else f"Done: {approval.message}", "success")
+        flash(request, "Checked: thanks, the AI learns how often it's right from this" if approval.kind == "review" else f"Done: {approval.message}", "success")
     elif decision in ("approve", "reject"):
         if (approval.kind or "approval") not in ("approval", "change") and not (approval.kind == "review" and decision == "reject"):
-            abort(400)
+            raise HTTPException(400)
         approved = decision == "approve"
-        if approved and (approval.proposal or {}).get("step_up") and not confirm_step_up(request.form.get("step_up_code")):
-            flash("Confirm it's you to approve this: " + ("enter the code from your authenticator app (or your password)."
-                                                          if current_user.totp_secret else "type your password in the box beside Approve."), "error")
+        if approved and (approval.proposal or {}).get("step_up") and not confirm_step_up(form.get("step_up_code"), request):
+            flash(request, "Confirm it's you to approve this: " + ("enter the code from your authenticator app (or your password)."
+                                                                   if user.totp_secret else "type your password in the box beside Approve."), "error")
             return redirect(back)
         try:
-            run = automations.decide(engine.system(), approval, approved, current_user.display, request.form.get("comment"),
-                                     by_id=current_user.id)
+            run = automations.decide(engine.system(), approval, approved, user.display, form.get("comment"),
+                                     by_id=user.id)
         except FieldErrors as exc:
             db.session.rollback()
-            flash("; ".join(exc.errors.values()), "error")
+            flash(request, "; ".join(exc.errors.values()), "error")
             return redirect(back)
-        flash(f"{'Approved' if approved else 'You said no'}: {approval.message}", "success")
+        flash(request, f"{'Approved' if approved else 'You said no'}: {approval.message}", "success")
     else:
-        abort(400)
+        raise HTTPException(400)
     if run.status in ("done", "rejected", "waiting_approval"):
         said = [s.get("result", "") for s in (run.steps or [])[-3:] if s.get("result") and not s.get("quiet")]
         if said:
-            flash(f"⚡ {run.name}: " + "; ".join(said), "auto")
+            flash(request, f"⚡ {run.name}: " + "; ".join(said), "auto")
     return redirect(back)
 
 
-@bp.route("/notifications", methods=["GET", "POST"])
-@login_required
-def notifications(wid):
-    ws, engine = ctx(wid)
-    items = (Notification.query.filter(Notification.workspace_id == ws.id, or_(Notification.user_id.is_(None), Notification.user_id == current_user.id))
+@router.api_route("/notifications", methods=["GET", "POST"], name="app.notifications")
+def notifications(request: Request, wid: int, user=Depends(signed_in)):
+    ws, engine = ctx(wid, "viewer", request)
+    items = (Notification.query.filter(Notification.workspace_id == ws.id, or_(Notification.user_id.is_(None), Notification.user_id == user.id))
              .order_by(Notification.id.desc()).limit(100).all())
     if request.method == "POST":
         for n in items:
-            if current_user.id not in (n.read_by or []):
-                n.read_by = (n.read_by or []) + [current_user.id]
+            if user.id not in (n.read_by or []):
+                n.read_by = (n.read_by or []) + [user.id]
         db.session.commit()
         return redirect(url_for("app.notifications", wid=wid))
-    return render_template("app/notifications.html", ws=ws, e=engine, items=items, me=current_user.id)
+    return render(request, "app/notifications.html", ws=ws, e=engine, items=items, me=user.id)
 
 
-@bp.route("/design")
-@login_required
-def design(wid):
-    ws, engine = ctx(wid)
-    from ..webkit import g
+@router.api_route("/design", methods=["GET"], name="app.design")
+def design(request: Request, wid: int):
+    ws, engine = ctx(wid, "viewer", request)
     # the history names every table and field ever made, so it's for the people who may see all of them
-    versions = Version.query.filter_by(workspace_id=ws.id).order_by(Version.number.desc()).limit(100).all() if g.member.can("admin") else []
+    versions = Version.query.filter_by(workspace_id=ws.id).order_by(Version.number.desc()).limit(100).all() if request.state.member.can("admin") else []
     from ..blueprint import modules
     present = modules._present(ws.blueprint)
     from .. import appmap
     kept = {n for (n,) in db.session.query(Version.number).filter_by(workspace_id=ws.id)}  # what each change can be undone back to
     later_said = {v.number: [(x.changes or ["a change"])[0][:70] for x in reversed(versions) if x.number > v.number] for v in versions}  # what goes with it
     staged = sum(1 for t in engine.visible_blueprint().get("tables", []) if appmap._stages(t))  # as the App map counts them
-    return render_template("app/design.html", ws=ws, e=engine, versions=versions, counts=engine.counts(), shown=engine.visible_blueprint(),
-                           kept=kept, staged=staged, later_said=later_said,
-                           words={a["key"]: automations.describe(engine, a) for a in engine.bp.get("automations", [])},
-                           parts={k: p for k, p in modules.MODULES.items() if k not in present})
+    return render(request, "app/design.html", ws=ws, e=engine, versions=versions, counts=engine.counts(), shown=engine.visible_blueprint(),
+                  kept=kept, staged=staged, later_said=later_said,
+                  words={a["key"]: automations.describe(engine, a) for a in engine.bp.get("automations", [])},
+                  parts={k: p for k, p in modules.MODULES.items() if k not in present})
 
 
-@bp.route("/parts", methods=["POST"])
-@login_required
-def add_parts(wid):
+@router.api_route("/parts", methods=["POST"], name="app.add_parts")
+def add_parts(request: Request, wid: int, user=Depends(signed_in), form: Form = Depends(form_of)):
     """Ready-made parts added to an app (what it has already is kept; what joins them to it comes too)."""
     from ..blueprint import modules
     from .workspaces import _add_parts
-    ws, _ = ctx(wid, "admin")
-    chosen = [k for k in request.form.getlist("parts") if k in modules.MODULES]
+    ws, _ = ctx(wid, "admin", request)
+    chosen = [k for k in form.getlist("parts") if k in modules.MODULES]
     if not chosen:
-        flash("Choose a part to add.", "error")
+        flash(request, "Choose a part to add.", "error")
         return redirect(url_for("app.design", wid=wid))
     try:
-        _add_parts(ws, chosen, current_user)
+        _add_parts(ws, chosen, user)
     except ValueError as exc:
-        flash(f"They couldn't be added as they are: {exc}. Ask the builder to add them instead.", "error")
+        flash(request, f"They couldn't be added as they are: {exc}. Ask the builder to add them instead.", "error")
         return redirect(url_for("app.design", wid=wid))
-    flash(f"Added {', '.join(modules.MODULES[k]['label'] for k in chosen)}. Undo it here if it isn't what you wanted.", "success")
+    flash(request, f"Added {', '.join(modules.MODULES[k]['label'] for k in chosen)}. Undo it here if it isn't what you wanted.", "success")
     return redirect(url_for("app.design", wid=wid))
 
 
-@bp.route("/test-copy", methods=["POST"])
-@login_required
-def test_copy_make(wid):
+@router.api_route("/test-copy", methods=["POST"], name="app.test_copy_make")
+def test_copy_make(request: Request, wid: int, user=Depends(signed_in)):
     """A test copy of this app to try changes on (another replaces it), and straight into it."""
     from .. import sandbox
-    ws, _ = ctx(wid, "admin")
+    ws, _ = ctx(wid, "admin", request)
     if sandbox.live_of(ws) is not None:
-        abort(400)
-    made = sandbox.make(ws, current_user)
-    flash("This is a test copy: try changes here without touching the live app, then publish them.", "success")
+        raise HTTPException(400)
+    made = sandbox.make(ws, user)
+    flash(request, "This is a test copy: try changes here without touching the live app, then publish them.", "success")
     return redirect(url_for("app.home", wid=made.id))
 
 
-@bp.route("/publish", methods=["GET", "POST"])
-@login_required
-def publish(wid):
+@router.api_route("/publish", methods=["GET", "POST"], name="app.publish")
+def publish(request: Request, wid: int, user=Depends(signed_in)):
     """From a test copy: what publishing would change in the live app, and what that does to its records; then do it."""
     from .. import sandbox
-    from ..security import workspace as member_of
-    ws, _ = ctx(wid, "admin")
+    from ..security import workspace
+    ws, _ = ctx(wid, "admin", request)
     live = sandbox.live_of(ws)
     if live is None:
-        abort(404)
-    member_of(live.id, "admin")  # publishing changes the live app: only its admins
+        raise HTTPException(404)
+    workspace(live.id, "admin", request)  # publishing changes the live app: only its admins
     said = sandbox.changes(live.blueprint or {}, ws.blueprint or {})
     if request.method == "POST":
-        number = sandbox.publish(live, ws, current_user)
-        flash(f"Published: the live app is now at version {number}. Undo it from Versions there." if number else
-              "Nothing to publish: the live app already works this way.", "success")
+        number = sandbox.publish(live, ws, user)
+        flash(request, f"Published: the live app is now at version {number}. Undo it from Versions there." if number else
+                       "Nothing to publish: the live app already works this way.", "success")
         return redirect(url_for("app.design", wid=live.id) if number else url_for("app.publish", wid=wid))
     moved_on = (ws.settings or {}).get("based_on") != live.version  # the live app changed since this copy was made
-    return render_template("app/publish.html", ws=ws, e=ctx(wid)[1], live=live, said=said, impact=sandbox.impact(live, ws.blueprint or {}),
-                           moved_on=moved_on)
+    return render(request, "app/publish.html", ws=ws, e=ctx(wid, "viewer", request)[1], live=live, said=said,
+                  impact=sandbox.impact(live, ws.blueprint or {}), moved_on=moved_on)
 
 
-@bp.route("/design/restore/<int:number>", methods=["POST"])
-@login_required
-def restore_version(wid, number):
-    ws, _ = ctx(wid, "admin")
+@router.api_route("/design/restore/{number:int}", methods=["POST"], name="app.restore_version")
+def restore_version(request: Request, wid: int, number: int, user=Depends(signed_in)):
+    ws, _ = ctx(wid, "admin", request)
     undone = Version.query.filter(Version.workspace_id == ws.id, Version.number > number).order_by(Version.number).all()
     what = (undone[0].changes or ["a change"])[0][:120] if undone else "a change"
     try:
-        chat.restore(ws, number, by=current_user.id, why=f"Undid “{what}”" + (f" and {len(undone) - 1} later change{'s' if len(undone) != 2 else ''}" if len(undone) > 1 else ""))
+        chat.restore(ws, number, by=user.id, why=f"Undid “{what}”" + (f" and {len(undone) - 1} later change{'s' if len(undone) != 2 else ''}" if len(undone) > 1 else ""))
     except ValueError:
-        abort(404)
-    flash("Undone: your app works as it did before that change. Nothing anyone entered was deleted.", "success")
+        raise HTTPException(404)
+    flash(request, "Undone: your app works as it did before that change. Nothing anyone entered was deleted.", "success")
     return redirect(url_for("app.design", wid=wid))
 
 
-@bp.route("/jump")
-@login_required
-def jump(wid):
+@router.api_route("/jump", methods=["GET"], name="app.jump")
+def jump(request: Request, wid: int):
     """What ⌘K offers: pages, tables, actions and records whose name matches what's typed."""
-    from ..webkit import jsonify
-    ws, engine = ctx(wid)
-    q = (request.args.get("q") or "").strip().lower()
+    ws, engine = ctx(wid, "viewer", request)
+    q = (request.query_params.get("q") or "").strip().lower()
     bp_ = engine.visible_blueprint()
     items = []
     for p in bp_.get("pages", []):
@@ -1225,14 +1199,13 @@ def jump(wid):
                 found.append({"label": engine.title(r), "kind": t["singular"], "url": url_for("app.record", wid=wid, table=t["key"], rid=r.id)})
             if len(found) > 30:
                 break
-    return jsonify(items=found[:30])
+    return json_response({"items": found[:30]})
 
 
-@bp.route("/search")
-@login_required
-def search(wid):
-    ws, engine = ctx(wid)
-    q = (request.args.get("q") or "").strip()
+@router.api_route("/search", methods=["GET"], name="app.search")
+def search(request: Request, wid: int):
+    ws, engine = ctx(wid, "viewer", request)
+    q = (request.query_params.get("q") or "").strip()
     exact = engine.by_code(q, names=False) if q and re.fullmatch(r"[\w./-]{3,64}", q) else None
     if exact is not None:  # a scanner typed a record's code (its barcode, INV-0042): straight to it
         return redirect(url_for("app.record", wid=wid, table=exact.table, rid=exact.id))
@@ -1247,7 +1220,7 @@ def search(wid):
         if len(q.split()) >= 2 or not found:  # a question or a phrase: also look through documents, mail and notes by meaning
             from .. import knowledge
             passages = [h for h in knowledge.search(engine, q, k=8) if h["source"] != "record" or not found]
-    return render_template("app/search.html", ws=ws, e=engine, q=q, found=found, passages=passages)
+    return render(request, "app/search.html", ws=ws, e=engine, q=q, found=found, passages=passages)
 
 
 from .. import jobs as _jobs  # noqa: E402

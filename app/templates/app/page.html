@@ -36,12 +36,12 @@
       {% elif b.kind == 'view' %}<a class="action-tile" href="{{ url_for('app.table', wid=ws.id, table=b.table, view=b.view) }}">{{ icon(e.tables[b.table].icon or 'table') }}<span>{{ b.label or e.tables[b.table].label }}</span></a>
       {% elif b.kind == 'page' %}<a class="action-tile" href="{{ url_for('app.page', wid=ws.id, key=b.page) }}">{{ icon('layout-dashboard') }}<span>{{ b.label }}</span></a>
       {% elif b.kind == 'link' %}<a class="action-tile" href="{{ b.url }}" target="_blank" rel="noopener">{{ icon('external-link') }}<span>{{ b.label }}</span></a>
-      {% else %}<form method="post" action="{{ url_for('app.run_now', wid=ws.id, key=b.automation) }}" data-busy><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="back" value="{{ request.path }}"><button class="action-tile">{{ icon('zap') }}<span>{{ b.label }}</span></button></form>{% endif %}
+      {% else %}<form method="post" action="{{ url_for('app.run_now', wid=ws.id, key=b.automation) }}" data-busy><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="back" value="{{ request.url.path }}"><button class="action-tile">{{ icon('zap') }}<span>{{ b.label }}</span></button></form>{% endif %}
     {% endfor %}</div></div>
   {% elif w.type == 'form' %}
   <div class="card widget {{ span }}"><div class="card-head"><h2 class="grow">{{ w.label or 'New ' ~ w.t.singular|lc }}</h2><a class="btn sm ghost" href="{{ url_for('app.new', wid=ws.id, table=w.table) }}" title="The full form">{{ icon('external-link') }}</a></div>
     <form class="card-body form-grid compact-form" method="post" action="{{ url_for('app.quick_add', wid=ws.id, table=w.table) }}" data-busy>
-      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="back" value="{{ request.path }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="back" value="{{ request.url.path }}">
       {% for k, v in (w.get('values') or {}).items() %}<input type="hidden" name="{{ k }}" value="{{ v }}">{% endfor %}
       {% for f in w.fields %}{% if f.type == 'checkbox' %}<input type="hidden" name="has_{{ f.key }}" value="1">{% endif %}{{ input(e, f, f.default if f.default is not none else none, w.options, none, w.members) }}{% endfor %}
       <div class="form-actions wide"><button class="btn primary">{{ icon('check') }}{{ w.submit or 'Add' }}</button></div></form></div>
