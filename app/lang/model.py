@@ -172,12 +172,17 @@ class Condition(Base):
     """field: a field of the record, or a linked record's through dots (order.status). value: what it's compared with
     (a choice in the owner's words, a number, a date; days for within_… and more_than_days_ago; a list for one_of).
     Or, as text, a formula that must hold, which can look at other records: 'count(client.invoices where status =
-    "Unpaid" and days_since(due_date) > 30) == 0'."""
-    field: str
+    "Unpaid" and days_since(due_date) > 30) == 0'. Or a group: {"any": [conditions]} holds when one does, {"all":
+    [...]} when every one does."""
+    field: str | None = None
     op: Literal["equals", "not_equals", "contains", "is_empty", "not_empty", "greater_than", "less_than", "at_least",
                 "at_most", "one_of", "before_today", "after_today", "within_next_days", "within_last_days",
-                "more_than_days_ago", "today", "this_week", "this_month", "changed", "changed_to"]
+                "more_than_days_ago", "today", "this_week", "last_week", "this_month", "last_month", "this_quarter",
+                "last_quarter", "this_year", "last_year", "this_financial_year", "last_financial_year", "changed",
+                "changed_to"] | None = None
     value: Union[str, float, int, bool, list[str], None] = None
+    any: list["Condition | str"] | None = None
+    all: list["Condition | str"] | None = None
 
 
 class Value(Base):
@@ -185,7 +190,7 @@ class Value(Base):
     rule is about (today(), "customer", "record" for that record itself, "created" for the one the step before made,
     "item.x" for a line being copied)."""
     field: str
-    to: Scalar = None
+    to: Scalar | list[str] = None
     formula: str | None = None
 
 
@@ -235,7 +240,7 @@ class Button(Base):
 class Every(Base):
     """On a schedule, for each record of the list that matches the rule's only_if."""
     on: Literal["every"]
-    list: str
+    list: str | None = None
     period: Literal["hour", "day", "week", "month"] = "day"
     at: str = "08:00"
     weekday: Literal["mon", "tue", "wed", "thu", "fri", "sat", "sun"] | None = None
@@ -265,6 +270,14 @@ class FileIn(Base):
     folder: str
 
 
+@register("when", {"on": "webhook", "list": "orders"})
+class WebhookIn(Base):
+    """When another system sends something to the app's own web address (an online shop's new order): its steps read
+    it as payload.x; with list, it's about a record of that list."""
+    on: Literal["webhook"]
+    list: str | None = None
+
+
 When = union("when")
 
 
@@ -291,15 +304,19 @@ class AddRecord(Base):
 class AddEach(Base):
     """Add a record for each line of the rule's record (an invoice line for each job line): lines is the list of lines,
     link is their link field to the rule's record; values read the line as item.x and the record made before as
-    created."""
+    created. Or for_each: one for each record or person chosen in a field (a quote request for each invited
+    supplier: item is that one)."""
     do: Literal["add_each"]
     list: str
-    lines: str
-    link: str
+    lines: str | None = None
+    link: str | None = None
+    for_each: str | None = Field(None, description="instead of lines: one for each record or person chosen in this field of the rule's record (each invited supplier)")
+    of: str | None = Field(None, description="the lines of the record this link of the rule's record leads to (a job's quote: of quote)")
     values: list[Value] = Field(default_factory=list)
     copy_same: bool = True
     only_if: list[Condition | str] = Field(default_factory=list)
     lines_where: list[Condition | str] = Field(default_factory=list, description="only the lines that match these")
+    nested: str | None = Field(None, description="the lines' link to a sub-assembly, whose own lines a line naming one stands for")
 
 
 @register("step", {"do": "notify", "who": "owner", "message": "{{number}} is ready to invoice"})
@@ -338,24 +355,43 @@ class MakeDocument(Base):
     do: Literal["document"]
     document: str
     save_to: str | None = None
+    on: str = Field("record", description="whose document: the rule's record, or created (the one an earlier step made)")
     only_if: list[Condition | str] = Field(default_factory=list)
 
 
 @register("step", {"do": "task", "who": "assigned_to", "message": "Call {{customer.name}} about the delay"})
 class Task(Base):
-    """Give someone a task about the record."""
+    """Give someone a task about the record. fields: what they fill in to finish it (the tracking number); not_by:
+    never the person in this field (or creator): someone else does it; priority: low, normal, high or urgent."""
     do: Literal["task"]
     who: str = "editor"
     message: str
+    fields: list[str] = Field(default_factory=list)
+    not_by: list[str] = Field(default_factory=list)
+    priority: str | None = None
+    remind_after_days: int | None = Field(None, description="remind them if it's still waiting after so many days")
+    escalate_after_days: int | None = Field(None, description="then pass it to escalate_to after so many days")
+    escalate_to: str | None = None
     only_if: list[Condition | str] = Field(default_factory=list)
 
 
 @register("step", {"do": "approval", "who": "owner", "message": "Approve this refund?"})
 class Approval(Base):
-    """Ask someone to approve the record; the rule waits for their answer."""
+    """Ask someone to approve the record; the rule waits for their answer. approvers: several (with mode "all", every
+    one of them must; "any", one is enough); not_by: never the person in this field, or creator (whoever raised it
+    doesn't approve it); step_up: they confirm their sign-in first; if_rejected: the steps on a no (back to Draft, tell
+    whoever raised it), after which the rule stops."""
     do: Literal["approval"]
     who: str = "owner"
     message: str = "Please approve this."
+    approvers: list[str] = Field(default_factory=list)
+    mode: Literal["any", "all"] = "any"
+    not_by: list[str] = Field(default_factory=list)
+    step_up: bool = False
+    if_rejected: list["Step"] = Field(default_factory=list)
+    remind_after_days: int | None = Field(None, description="remind them if it's still waiting after so many days")
+    escalate_after_days: int | None = Field(None, description="then pass it to escalate_to after so many days")
+    escalate_to: str | None = None
     only_if: list[Condition | str] = Field(default_factory=list)
 
 
@@ -368,13 +404,23 @@ class Wait(Base):
 
 @register("step", {"do": "payment_link", "amount": "balance", "save_to": "payment_link"})
 class PaymentLink(Base):
-    """A card payment page for an amount (a formula), its link kept in a url field."""
+    """A card payment page for an amount (a formula), its link kept in a url field; when_paid: what's set once it's paid
+    (status Paid); currency: when it isn't the business's own."""
     do: Literal["payment_link"]
     amount: str
     save_to: str
+    when_paid: list[Value] = Field(default_factory=list)
+    currency: str | None = None
+    description: str | None = None
 
 
 REVIEW = Literal["never", "when_unsure", "always"]
+
+
+class Reads(Base):
+    """Records the AI reads besides the record (the supplier's contract prices), those matching where."""
+    list: str
+    where: list[Condition | str] = Field(default_factory=list)
 
 
 @register("step", {"do": "ai_fill", "field": "summary", "instructions": "Summarise the job in one sentence for the crew.", "review": "never"})
@@ -388,6 +434,9 @@ class AiFill(Base):
     reviewer: str | None = Field(None, description="who checks its work when it's checked: a role or a team (left out: the team)")
     read_files: bool = False
     use_knowledge: bool = False
+    reads: list[Reads] = Field(default_factory=list)
+    learn: bool = Field(True, description="it's shown people's past corrections of its work")
+    manual: bool = Field(False, description="switched off: a person does the job instead, as a task")
     only_if: list[Condition | str] = Field(default_factory=list)
 
 
@@ -400,6 +449,12 @@ class AiExtract(Base):
     fields: list[str]
     instructions: str | None = None
     review: REVIEW = "never"
+    reviewer: str | None = None
+    read_files: bool = False
+    use_knowledge: bool = False
+    reads: list[Reads] = Field(default_factory=list)
+    learn: bool = True
+    manual: bool = False
 
 
 @register("step", {"do": "ai_create", "list": "bills", "instructions": "A bill from the supplier's email: supplier, amount, due date.",
@@ -412,6 +467,12 @@ class AiCreate(Base):
     instructions: str
     attach_to: str | None = None
     review: REVIEW = "never"
+    reviewer: str | None = None
+    read_files: bool = False
+    use_knowledge: bool = False
+    reads: list[Reads] = Field(default_factory=list)
+    learn: bool = True
+    manual: bool = False
 
 
 @register("step", {"do": "ai_check", "field": "check_result", "instructions": "Pass if the quote has a price for every line.",
@@ -424,6 +485,12 @@ class AiCheck(Base):
     instructions: str
     notes_field: str | None = None
     review: REVIEW = "never"
+    reviewer: str | None = None
+    read_files: bool = False
+    use_knowledge: bool = False
+    reads: list[Reads] = Field(default_factory=list)
+    learn: bool = True
+    manual: bool = False
 
 
 @register("step", {"do": "assign", "field": "assigned_to", "among": "editor"})
@@ -432,6 +499,7 @@ class Assign(Base):
     do: Literal["assign"]
     field: str
     among: str = "editor"
+    only_if: list[Condition | str] = Field(default_factory=list)
 
 
 @register("step", {"do": "update_each", "list": "job_lines", "link": "job", "values": [{"field": "description", "formula": "description + ' (done)'"}]})
@@ -441,8 +509,11 @@ class UpdateEach(Base):
     do: Literal["update_each"]
     list: str
     link: str
+    of: str | None = Field(None, description="the lines of the record this link of the rule's record leads to (a job's quote: of quote)")
     values: list[Value]
     only_if: list[Condition | str] = Field(default_factory=list)
+    lines_where: list[Condition | str] = Field(default_factory=list, description="only the lines that match these")
+    nested: str | None = Field(None, description="the lines' link to a sub-assembly, whose own lines a line naming one stands for")
 
 
 @register("step", {"do": "copy", "values": [{"field": "status", "to": "Draft"}], "lines": True})
@@ -451,12 +522,14 @@ class Copy(Base):
     do: Literal["copy"]
     values: list[Value] = Field(default_factory=list)
     lines: bool = True
+    only_if: list[Condition | str] = Field(default_factory=list)
 
 
 @register("step", {"do": "delete"})
 class Delete(Base):
     """Delete the record the rule is about."""
     do: Literal["delete"]
+    only_if: list[Condition | str] = Field(default_factory=list)
 
 
 @register("step", {"do": "run", "rule": "send_invoice"})
@@ -464,6 +537,7 @@ class RunRule(Base):
     """Run another rule on this record."""
     do: Literal["run"]
     rule: str
+    only_if: list[Condition | str] = Field(default_factory=list)
 
 
 @register("step", {"do": "webhook", "url": "https://hooks.example.com/new-job", "method": "POST"})
@@ -472,18 +546,43 @@ class Webhook(Base):
     do: Literal["webhook"]
     url: str
     method: Literal["POST", "PUT", "PATCH", "GET"] = "POST"
+    only_if: list[Condition | str] = Field(default_factory=list)
+
+
+class Way(Base):
+    """One way a branch goes: its steps, when these hold."""
+    label: str = ""
+    when: list[Condition | str]
+    steps: list["Step"]
+
+
+@register("step", {"do": "branch", "ways": [{"label": "Big order", "when": [{"field": "total", "op": "greater_than", "value": 5000}],
+                                            "steps": [{"do": "approval", "who": "owner", "message": "Approve this big order?"}]}],
+                   "otherwise": [{"do": "notify", "who": "owner", "message": "New order {{number}}"}]})
+class Branch(Base):
+    """Go one of several ways: the first way whose when holds takes its steps; with none, otherwise."""
+    do: Literal["branch"]
+    ways: list[Way]
+    otherwise: list["Step"] = Field(default_factory=list)
+    only_if: list[Condition | str] = Field(default_factory=list)
 
 
 Step = union("step")
 
 
 class Rule(Base):
-    """What the app does by itself: when something happens (and only_if these hold), these steps."""
+    """What the app does by itself: when something happens (and only_if these hold), these steps. enabled: false keeps
+    it switched off."""
     key: str
     name: str
     when: When
     only_if: list[Condition | str] = Field(default_factory=list)
     steps: list[Step]
+    enabled: bool = True
+
+
+for _model in (Way, Branch, Approval, Condition):  # their steps (and groups) are the language's own, named after them
+    _model.model_rebuild()
 
 
 # --- views ----------------------------------------------------------------------------------------------------------
@@ -670,19 +769,22 @@ class AddMove(Base):
 
 @register("patch", {"do": "change_move", "list": "quotes", "button": "Send", "move": {"from": ["Draft"], "to": "Sent", "button": "Send to customer", "who": ["owner"]}}, group="data")
 class ChangeMove(Base):
-    """Change one move, named by its button: sent whole as it should be."""
+    """Change one move, named by its button (and, when two share a button, the stage it moves to): sent whole as it
+    should be."""
     do: Literal["change_move"]
     list: str
     button: str
+    to: str | None = None
     move: Move
 
 
 @register("patch", {"do": "remove_move", "list": "quotes", "button": "Declined"}, group="data")
 class RemoveMove(Base):
-    """Take one move away, named by its button."""
+    """Take one move away, named by its button (and, when two share a button, the stage it moves to)."""
     do: Literal["remove_move"]
     list: str
     button: str
+    to: str | None = None
 
 
 @register("patch", {"do": "remove_stages", "list": "orders"}, group="data")

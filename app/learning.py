@@ -15,7 +15,7 @@ from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 
 from . import ai, jobs
-from .blueprint import ops, schema
+from .blueprint import schema
 from .blueprint.expr import to_date
 from .engine.records import Engine
 from .extensions import db
@@ -411,10 +411,9 @@ def _said_step(step, mode):
 
 
 def _checking(bp, a, at, mode):
-    """The change that has a person check an AI step's work as `mode` says. A Keel change_step whenever the language says
-    the step exactly as it is; an AI step it can't reach (inside a branch or an approval's "if turned down", in a rule an
-    email starts) or that has settings it has no words for (what else it reads, a team checking an extraction) is changed
-    by the design's own update_automation: the one change the analyst still makes outside the language."""
+    """The change that has a person check an AI step's work as `mode` says: a Keel change_step when the step is one of
+    the rule's own; one inside a branch or an approval's "if turned down" by the whole rule written again in Keel (read
+    back from the design: app/lang/back.py)."""
     from .engine import automations
     from .lang import apply as apply_patches
     wanted = automations.with_review(a, at, mode)
@@ -430,7 +429,11 @@ def _checking(bp, a, at, mode):
             made = apply_patches(bp, [patch])
             if not made.problems and next((x for x in made.blueprint.get("automations", []) if x["key"] == a["key"]), None) == wanted:
                 return [patch]
-    return [{"op": "update_automation", "automation": wanted}]
+    from .lang import back
+    try:
+        return [{"do": "add_rule", "rule": back.rule_in_keel(bp, wanted)}]
+    except back.Unsaid:
+        return None  # a step the language has no words for: not suggested
 
 
 def questions(engine, days=60):
@@ -735,12 +738,9 @@ OLD_FORM = "it was worked out before your analyst wrote its suggestions in the K
 
 def _fitted(bp, changes):
     """A suggestion's changes applied to a design (not saved): Keel language patches, the analyst's and its detectors'
-    alike. The one exception is how much a person checks an AI step the language can't reach (see _checking): that is the
-    design's own update_automation, applied exactly. Either way, the result's blueprint, changes and problems."""
+    alike. The result's blueprint, changes and problems."""
     from .lang import Outcome, apply as apply_patches
     changes = list(changes or [])
-    if changes and all(isinstance(x, dict) and x.get("op") == "update_automation" for x in changes):
-        return ops.apply(bp, changes, already=ops.wrong_already(bp), strict=True)
     if not all(isinstance(x, dict) and "do" in x for x in changes):  # kept from before: worked out again on the next look
         return Outcome(blueprint=bp, problems=[OLD_FORM])
     return apply_patches(bp or {}, changes)

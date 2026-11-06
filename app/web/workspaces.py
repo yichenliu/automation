@@ -64,19 +64,13 @@ def new():
 
 
 def with_parts(blueprint, chosen):
-    """A design with ready-made parts added (not saved): their Keel language patches, then the design ops for the little
-    the language can't say yet. Returns the outcome (its blueprint and changes), or raises ValueError saying what didn't fit."""
+    """A design with ready-made parts added (not saved), made by their Keel language patches. Returns the outcome (its
+    blueprint and changes), or raises ValueError saying what didn't fit."""
     from .. import lang
-    from ..blueprint import modules, ops
+    from ..blueprint import modules
     out = lang.apply(blueprint, modules.ops_for(chosen, blueprint))
     if out.problems:
         raise ValueError("; ".join(out.problems))
-    unsaid = modules.unsaid_for(chosen, blueprint)
-    if unsaid:
-        rest = ops.apply(out.blueprint, unsaid, already=ops.wrong_already(out.blueprint), strict=True)
-        if rest.problems:
-            raise ValueError("; ".join(rest.problems))
-        out.blueprint, out.changes = rest.blueprint, out.changes + rest.changes
     return out
 
 

@@ -915,10 +915,10 @@ def _said_in_keel(bp, op):
             if said is None:
                 return [op]
             out.append({"do": "change_field", "list": t["key"], "field": said})
+        if "ai" in settings:  # the AI filling it in: said by its instructions (none: people fill it in)
+            settings["ai"] = (settings["ai"] or {}).get("instructions", "") if isinstance(settings["ai"], dict) or settings["ai"] is None else settings["ai"]
         if settings:
             out.append({"do": "set_field", "list": t["key"], "field": f["key"], "settings": settings})
-        if "ai" in changes:  # the AI filling a field in has no words in the language yet
-            out.append({"op": "update_field", "table": t["key"], "key": f["key"], "changes": {"ai": changes["ai"]}})
         return out
     if name == "rename_choice":
         return [{"do": "rename_choice", "list": op["table"], "field": op["key"], "old": op["old"], "new": op["new"]}]

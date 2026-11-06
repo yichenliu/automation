@@ -55,12 +55,34 @@ def _carried(op):
     return op.get("op") in ESCAPE and (op["op"] != "update_table" or set(op) <= POLICY_KEYS)
 
 
+def _in_keel(design, op):
+    """A design op the rule editor makes, as the Keel patch that makes it: a rule written whole (the rule read back into
+    the language), a rule taken away, the AI filling a field in. [op] when the language has no words for it."""
+    from ..lang import back
+    if "do" in op:
+        return [op]
+    kind = op.get("op")
+    if kind in ("add_automation", "update_automation") and isinstance(op.get("automation"), dict):
+        try:
+            return [{"do": "add_rule", "rule": back.rule_in_keel(design or {}, op["automation"])}]
+        except back.Unsaid:
+            return [op]
+    if kind == "remove_automation" and op.get("key"):
+        return [{"do": "remove_rule", "rule": op["key"]}]
+    if kind == "update_field" and set(op.get("changes") or {}) == {"ai"}:
+        ai = op["changes"]["ai"]
+        return [{"do": "set_field", "list": op["table"], "field": op["key"],
+                 "settings": {"ai": (ai or {}).get("instructions", "") if isinstance(ai, dict) or ai is None else ai}}]
+    return [op]
+
+
 def _make(design, made, filled):
     """What the App map's edit makes of a design: (the new design, the changes said), or Refused saying why. `made` is
     Keel language patches, made through app/lang as the AI builder's are (with `filled` counting the records, so what's
     in use isn't thrown away), and design ops for what the language has no words for yet (a rule's steps, a field the
     AI fills in: studio.rule_ops, studio.data_patches), made after them; what was wrong already isn't this change's."""
     from ..lang import compile as keel
+    made = [p for x in made for p in _in_keel(design, x)]  # a rule, a rule taken away, a field the AI fills in: said in Keel
     patches = [x if "do" in x else {"do": "design_op", "op": x} for x in made if "do" in x or _carried(x)]
     rest = [x for x in made if "do" not in x and not _carried(x)]
     bp, changes = copy.deepcopy(design or {}), []

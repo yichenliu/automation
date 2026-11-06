@@ -387,8 +387,7 @@ def _field_in_scope(d, t, path, scopes):
 NEEDS_VALUE = {"equals", "not_equals", "contains", "greater_than", "less_than", "at_least", "at_most", "one_of",
                "within_next_days", "within_last_days", "more_than_days_ago", "changed_to"}
 NUMBER_OPS = {"greater_than", "less_than", "at_least", "at_most"}
-DATE_OPS = {"before_today", "after_today", "within_next_days", "within_last_days", "more_than_days_ago", "today", "this_week",
-            "this_month"}
+DATE_OPS = {"before_today", "after_today", "within_next_days", "within_last_days", "more_than_days_ago", "today", *schema.PERIOD_OPS}
 
 
 def ir_conditions(d, t, conditions, where):
@@ -397,12 +396,22 @@ def ir_conditions(d, t, conditions, where):
 
 def ir_condition(d, t, c, where):
     """A condition read on records of t: its path resolved, its value as the field writes it. Text is a formula that
-    must hold (it may look at other records: count(client.invoices where …) == 0)."""
+    must hold (it may look at other records: count(client.invoices where …) == 0); {"any": [...]} or {"all": [...]} a
+    group of them."""
     if isinstance(c, str):
         if not c.strip():
             raise Problem(f"{where}: an empty condition")
         _check_formula(d, t, c, where)
         return {"formula": c.strip()}
+    if c.any is not None or c.all is not None:
+        word = "any" if c.any is not None else "all"
+        parts = c.any if c.any is not None else c.all
+        if not parts:
+            raise Problem(f"{where}: an “{word}” group needs the conditions in it")
+        return {word: [ir_condition(d, t, x, f"{where} › {word} {i}") for i, x in enumerate(parts, start=1)]}
+    if not c.field or not c.op:
+        raise Problem(f"{where}: a condition names a field and an op ({{\"field\": \"status\", \"op\": \"equals\", \"value\": \"Paid\"}}), "
+                      f"or is a formula, or a group (any / all)")
     try:
         f, _, keys = d.path(t, c.field)
     except NameProblem as exc:
@@ -488,6 +497,16 @@ def ir_when(d, when, where):
         return None, trigger, []
     if isinstance(when, m.FileIn):
         return None, {"type": "file_added", "folder": when.folder.strip("/ ")}, []
+    if isinstance(when, m.WebhookIn):  # another system sends it: what arrived is payload.x
+        if not when.list:
+            return None, {"type": "webhook_received"}, []
+        t = _list(d, when.list, f"{where} › when")
+        return t, {"type": "webhook_received", "table": t["key"]}, []
+    if isinstance(when, m.Every) and not when.list:  # on a schedule, about no one list (a weekly summary)
+        trigger = {"type": "schedule", "every": when.period, "at": when.at}
+        if when.period == "week":
+            trigger["weekday"] = when.weekday or "mon"
+        return None, trigger, []
     t = _list(d, when.list, f"{where} › when")
     trigger, conditions = {"table": t["key"]}, []
     if isinstance(when, m.Added):
@@ -524,10 +543,15 @@ def ir_when(d, when, where):
     return t, trigger, conditions
 
 
-def _target(d, t, on, where):
-    """The list a step changes, and the path the design writes for it (None for the rule's record)."""
+def _target(d, t, on, where, made=None):
+    """The list a step changes, and the path the design writes for it (None for the rule's record; created: the record
+    an earlier step of the rule made)."""
     if on in ("record", "", None, "this", "it"):
         return t, None
+    if on == "created":
+        if made is None:
+            raise Problem(f"{where} › on: created is the record an earlier step made, and no step before this one makes one")
+        return made, "created"
     try:
         f, here, keys = d.path(t, on)
     except NameProblem as exc:
@@ -547,7 +571,7 @@ def ir_step(d, t, s, where, made=None):
                       f"add), then have a rule on that list do the rest")
     only = lambda: ir_conditions(d, t, s.only_if, f"{where} › only_if") if getattr(s, "only_if", None) and t is not None else []  # noqa: E731
     if isinstance(s, m.SetValues):
-        target, path = _target(d, t, s.on, where)
+        target, path = _target(d, t, s.on, where, made)
         out = {"type": "update_record", "values": ir_values(d, t, target, s.values, where, created=made)}
         if path:
             out["target"] = path
@@ -555,14 +579,28 @@ def ir_step(d, t, s, where, made=None):
         target = _list(d, s.list, where)
         out = {"type": "create_record", "table": target["key"], "values": ir_values(d, t, target, s.values, where, created=made),
                "copy_matching": s.copy_same}
+    elif isinstance(s, m.AddEach) and s.for_each:  # one for each one chosen in a field (each invited supplier)
+        target = _list(d, s.list, where)
+        f = d.field(t, s.for_each)
+        if f is None or f["type"] not in ("link", "user"):
+            raise Problem(f"{where} › for_each: {t['label']} has no link or person field “{s.for_each}”")
+        each = d.list(f.get("table")) if f["type"] == "link" else None
+        out = {"type": "create_for_each", "table": target["key"], "source": {"field": f["key"]},
+               "values": ir_values(d, t, target, s.values, where, item=each, created=made), "copy_matching": s.copy_same}
+        if s.lines_where and each is not None:
+            out["where"] = ir_conditions(d, each, s.lines_where, f"{where} › lines_where")
     elif isinstance(s, m.AddEach):
+        if not s.lines or not s.link:
+            raise Problem(f"{where}: add_each needs lines and link (the lines and their link to the record), or for_each (a field)")
         target = _list(d, s.list, where)
         lines = _list(d, s.lines, f"{where} › lines")
         link = d.field(lines, s.link)
-        if link is None or link.get("type") != "link" or link.get("table") != t["key"]:
+        tables = {x["key"]: x for x in d.lists}
+        if link is None or link.get("type") != "link" or (link.get("table") != t["key"] and not schema.reach(t, lines, link["key"], tables)):
             links = [x["key"] for x in lines["fields"] if x["type"] == "link" and x.get("table") == t["key"]]
-            raise Problem(f"{where}: “link” is {lines['key']}'s link field to {t['key']}" + (f" ({', '.join(links)})" if links else ", and it has none"))
-        out = {"type": "create_for_each", "table": target["key"], "source": {"table": lines["key"], "via": link["key"]},
+            raise Problem(f"{where}: “link” is {lines['key']}'s link field to {t['key']} (or to the record it links to)"
+                          + (f" ({', '.join(links)})" if links else ", and it has none"))
+        out = {"type": "create_for_each", "table": target["key"], "source": {"table": lines["key"], "via": link["key"], **_of(d, t, s.of, where), **_nested(lines, s.nested, where)},
                "values": ir_values(d, t, target, s.values, where, item=lines, created=made), "copy_matching": s.copy_same}
         if s.lines_where:
             out["where"] = ir_conditions(d, lines, s.lines_where, f"{where} › lines_where")
@@ -609,14 +647,17 @@ def ir_step(d, t, s, where, made=None):
             _template(d, t, to, f"{where} › to")
         out = {"type": "send_sms", "to": to, "message": _template(d, t, s.message, f"{where} › message")}
     elif isinstance(s, m.MakeDocument):
-        docs = {x["key"] for x in t.get("documents", [])}
+        whose, path = _target(d, t, s.on, where, made)  # the rule's record's document, or the record a step made
+        docs = {x["key"] for x in whose.get("documents", [])}
         if schema.slug(s.document) not in docs:  # none by that name: a standard one, laid out from the record, is made
-            _new_documents().setdefault(t["key"], set()).add(schema.slug(s.document))
+            _new_documents().setdefault(whose["key"], set()).add(schema.slug(s.document))
         out = {"type": "generate_document", "document": schema.slug(s.document)}
+        if path:
+            out["target"] = path
         if s.save_to:
-            f = d.field(t, s.save_to)
+            f = d.field(whose, s.save_to)
             if f is None or f["type"] != "file":
-                raise Problem(f"{where} › save_to: {s.save_to} isn't a file field of {t['label']}")
+                raise Problem(f"{where} › save_to: {s.save_to} isn't a file field of {whose['label']}")
             out["field"] = f["key"]
     elif isinstance(s, m.Task):
         try:
@@ -624,12 +665,42 @@ def ir_step(d, t, s, where, made=None):
         except NameProblem as exc:
             raise Problem(f"{where} › who: {exc}") from None
         out = {"type": "task", "to": who, "message": _template(d, t, s.message, f"{where} › message")}
+        if s.fields:
+            missing = [x for x in s.fields if not d.field(t, x)]
+            if missing:
+                raise Problem(f"{where} › fields: {', '.join(missing)} aren't fields of {t['label']} (its fields: {', '.join(d.field_names(t))})")
+            out["fields"] = [d.field(t, x)["key"] for x in s.fields]
+        if s.priority:
+            out["priority"] = schema.slug(s.priority)
+        if s.not_by:
+            out["not_by"] = _not_by(d, t, s.not_by, f"{where} › not_by")
+        _follow_up(d, t, s, out, where)
     elif isinstance(s, m.Approval):
         try:
             who = d.who(t, s.who)
+            several = [d.who(t, w) for w in s.approvers]
         except NameProblem as exc:
             raise Problem(f"{where} › who: {exc}") from None
-        out = {"type": "request_approval", "approver": who, "message": _template(d, t, s.message, f"{where} › message")}
+        out = {"type": "request_approval", "approver": several[0] if several else who, "message": _template(d, t, s.message, f"{where} › message")}
+        if len(several) > 1:
+            out["approvers"], out["mode"] = list(dict.fromkeys(several)), s.mode
+        if s.not_by:
+            out["not_by"] = _not_by(d, t, s.not_by, f"{where} › not_by")
+        if s.step_up:
+            out["step_up"] = True
+        _follow_up(d, t, s, out, where)
+        if s.if_rejected:
+            out["if_rejected"] = [ir_step(d, t, x, f"{where} › if_rejected {i}", made)[0] for i, x in enumerate(s.if_rejected, start=1)]
+    elif isinstance(s, m.Branch):
+        if not s.ways:
+            raise Problem(f"{where}: a branch needs its ways (each: when, and its steps)")
+        paths = []
+        for i, way in enumerate(s.ways, start=1):  # a way with no steps yet (made a step at a time) does nothing
+            paths.append({"label": way.label[:80], "when": ir_conditions(d, t, way.when, f"{where} › way {i} › when"),
+                          "steps": [ir_step(d, t, x, f"{where} › way {i} › step {n}", made)[0] for n, x in enumerate(way.steps, start=1)]})
+        out = {"type": "branch", "paths": paths}
+        if s.otherwise:
+            out["otherwise"] = [ir_step(d, t, x, f"{where} › otherwise {n}", made)[0] for n, x in enumerate(s.otherwise, start=1)]
     elif isinstance(s, m.Wait):
         out = {"type": "wait", "days": max(int(s.days), 1)}
     elif isinstance(s, m.PaymentLink):
@@ -638,6 +709,12 @@ def ir_step(d, t, s, where, made=None):
         if f is None or f["type"] != "url":
             raise Problem(f"{where} › save_to: {s.save_to} isn't a web address (url) field of {t['label']}")
         out = {"type": "payment_link", "amount": s.amount, "save_to": f["key"]}
+        if s.when_paid:
+            out["paid"] = ir_values(d, t, t, s.when_paid, f"{where} › when_paid")
+        if s.currency:
+            out["currency"] = s.currency[:40]
+        if s.description:
+            out["description"] = s.description[:200]
     elif isinstance(s, (m.AiFill, m.AiExtract, m.AiCreate, m.AiCheck)):
         out = _ai_step(d, t, s, where)
     elif isinstance(s, m.Assign):
@@ -653,9 +730,13 @@ def ir_step(d, t, s, where, made=None):
             raise Problem(f"{where}: update_each changes the records linked to the rule's record, and an email rule has none")
         lines = _list(d, s.list, where)
         link = d.field(lines, s.link)
-        if link is None or link.get("type") != "link" or link.get("table") != t["key"]:
-            raise Problem(f"{where}: “link” is {lines['key']}'s link field to {t['key']}")
-        out = {"type": "update_each", "values": ir_values(d, t, lines, s.values, where, item=lines), "source": {"table": lines["key"], "via": link["key"]}}
+        tables = {x["key"]: x for x in d.lists}
+        if link is None or link.get("type") != "link" or (link.get("table") != t["key"] and not schema.reach(t, lines, link["key"], tables)):
+            raise Problem(f"{where}: “link” is {lines['key']}'s link field to {t['key']} (or to the record it links to)")
+        out = {"type": "update_each", "values": ir_values(d, t, lines, s.values, where, item=lines),
+               "source": {"table": lines["key"], "via": link["key"], **_of(d, t, s.of, where), **_nested(lines, s.nested, where)}}
+        if s.lines_where:
+            out["where"] = ir_conditions(d, lines, s.lines_where, f"{where} › lines_where")
     elif isinstance(s, m.Copy):
         if t is None:
             raise Problem(f"{where}: an email rule has no record to copy")
@@ -719,7 +800,7 @@ def _ai_step(d, t, s, where):
         out = {"type": "ai_check", "field": field_of(s.field, "field", ("select",)), "instructions": s.instructions}
         if s.notes_field:
             out["notes_field"] = field_of(s.notes_field, "notes_field", ("long_text", "text", "rich_text"))
-    if s.review != "never":
+    if getattr(s, "review", "never") != "never":
         reviewer = "editor"
         if getattr(s, "reviewer", None):
             try:
@@ -727,6 +808,72 @@ def _ai_step(d, t, s, where):
             except NameProblem as exc:
                 raise Problem(f"{where} › reviewer: {exc}") from None
         out.update(review=s.review, reviewer=reviewer)
+    if getattr(s, "read_files", False):
+        out["read_files"] = True
+    if getattr(s, "use_knowledge", False):
+        out["use_knowledge"] = True
+    reads = []
+    for i, r in enumerate(getattr(s, "reads", None) or [], start=1):  # what else it reads (the supplier's contract prices)
+        other = _list(d, r.list, f"{where} › reads {i}")
+        one = {"table": other["key"]}
+        if r.where:
+            one["where"] = ir_conditions(d, other, r.where, f"{where} › reads {i} › where")
+        reads.append(one)
+    if reads:
+        out["reads"] = reads[:4]
+    if getattr(s, "learn", True) is False:
+        out["learn"] = False
+    if getattr(s, "manual", False):
+        out["manual"] = True
+    return out
+
+
+def _of(d, t, of, where):
+    """{"of": the rule's record's link to the record whose lines these are}, or nothing (the lines are the record's own)."""
+    if not of:
+        return {}
+    f = d.field(t, of)
+    if f is None or f.get("type") != "link":
+        raise Problem(f"{where} › of: {t['label']} has no link “{of}” (its links: {', '.join(x['key'] for x in t['fields'] if x['type'] == 'link') or 'none'})")
+    return {"of": f["key"]}
+
+
+def _nested(lines, nested, where):
+    """{"nested": the lines' link to a sub-assembly}, or nothing."""
+    if not nested:
+        return {}
+    f = schema.field(lines, schema.slug(nested))
+    if f is None or f.get("type") != "link":
+        raise Problem(f"{where} › nested: {lines['label']} has no link “{nested}”")
+    return {"nested": f["key"]}
+
+
+def _follow_up(d, t, s, out, where):
+    """A task's or an approval's nudges: reminded after so many days, then passed up to someone else."""
+    if s.remind_after_days and s.remind_after_days > 0:
+        out["remind_after_days"] = s.remind_after_days
+    if s.escalate_after_days and s.escalate_after_days > 0:
+        try:
+            out.update(escalate_after_days=s.escalate_after_days, escalate_to=d.who(t, s.escalate_to or "owner"))
+        except NameProblem as exc:
+            raise Problem(f"{where} › escalate_to: {exc}") from None
+
+
+def _not_by(d, t, names, where):
+    """Whoever mustn't do it: creator (whoever raised it), or the person in a field of the record."""
+    out = []
+    for name in names:
+        said = schema.slug(name)
+        if said in ("creator", "created_by", "raised_by", "requester", "whoever_raised_it"):
+            out.append("creator")
+            continue
+        if said in schema.WHO_WORDS or said in d.teams():  # never someone in this team, or with this role
+            out.append(said)
+            continue
+        f = d.field(t, name) if t else None
+        if f is None or f["type"] not in ("user", "link"):
+            raise Problem(f"{where}: “{name}” is creator (whoever raised it), a team, or a person field of {(t or {}).get('label', 'the record')}")
+        out.append(f["key"])
     return out
 
 
@@ -743,6 +890,8 @@ def ir_rule(d, rule, where, feature=None):
     if not actions:
         raise Problem(f"{where}: a rule needs at least one step")
     out = {"key": schema.slug(rule.key), "name": rule.name, "trigger": trigger, "conditions": conditions, "actions": actions}
+    if not rule.enabled:
+        out["enabled"] = False
     if feature:
         out["feature"] = feature
     return out
@@ -969,6 +1118,8 @@ def apply(bp, raw_patches, allowed=None):
                     if ok and snapshot.get("features") and not patterns.kept(out, snapshot, p, here, translate):
                         out.blueprint, ok = snapshot, False  # it would take a feature's parts away: not made
                         del out.changes[said_before:]
+                    if ok and isinstance(p, m.AddRule):  # a feature's rule written anew is the writer's own from now on
+                        _given_up(out, snapshot, schema.slug(p.rule.key))
             except Problem as exc:
                 out.problems.append(str(exc))
                 ok = False
@@ -1001,6 +1152,18 @@ def _complete_stages(out):
         said = len(out.problems)
         if not _apply_ops(out, [{"op": "update_table", "table": t["key"], "workflow": flow}], f"the stages of {t['label']}"):
             del out.problems[said:]  # not the builder's to put right: left as it was
+
+
+def _given_up(out, before, key):
+    """A rule a feature made, written anew by someone (by hand on the App map, or by the builder): it's theirs now, and
+    the feature no longer makes it (so making the feature again never undoes their change)."""
+    was = next((a for a in before.get("automations", []) if a["key"] == key), None)
+    feature = (was or {}).get("feature")
+    entry = next((e for e in out.blueprint.get("features", []) if e["key"] == feature), None) if feature else None
+    if entry is None:
+        return
+    entry["given_up"] = sorted(set(entry.get("given_up") or []) | {key})
+    out.changes.append(f"“{was.get('name') or key}” is your own rule now: {feature} no longer changes it")
 
 
 def _documents_for(d):
@@ -1052,7 +1215,7 @@ def _studio(fn, d, change, where):
 
 SETTINGS = {"label", "help", "required", "unique", "default", "placeholder", "options", "multiple", "sensitive", "readonly",
             "decimals", "unit", "currency", "prefix", "digits", "min", "max", "visible_to", "access", "option_colors", "before",
-            "after", "yes_label", "no_label", "many"}
+            "after", "yes_label", "no_label", "many", "ai"}
 
 
 def _stages_of(d, t, where):
@@ -1099,9 +1262,10 @@ def _with_move_extra(ops_, index, extra):
     return ops_
 
 
-def _button_at(d, t, flow, button, where):
+def _button_at(d, t, flow, button, where, to=None):
     said = str(button or "").strip().lower()
-    i = next((i for i, mv in enumerate(flow.get("transitions") or []) if str(mv.get("label") or mv["to"]).lower() == said), None)
+    i = next((i for i, mv in enumerate(flow.get("transitions") or []) if str(mv.get("label") or mv["to"]).lower() == said
+              and (to is None or str(mv["to"]).lower() == str(to).strip().lower())), None)
     if i is None:
         raise Problem(f"{where}: {t['label']} has no move with the button “{button}” (its buttons: "
                       f"{', '.join(mv.get('label') or mv['to'] for mv in flow.get('transitions') or [])})")
@@ -1213,12 +1377,12 @@ def translate(d, p, where):
         change, extra = _move_parts(d, t, names, p.move, f"{where} › move")
         if isinstance(p, m.AddMove):
             return _with_move_extra(_studio(studio.stage_ops, d, {"do": "add_move", "table": t["key"], **change}, where), -1, extra)
-        i = _button_at(d, t, flow, p.button, where)
+        i = _button_at(d, t, flow, p.button, where, p.to)
         return _with_move_extra(_studio(studio.stage_ops, d, {"do": "update_move", "table": t["key"], "i": i, **change}, where), i, extra)
     if isinstance(p, m.RemoveMove):
         t = _list(d, p.list, where)
         flow, _ = _stages_of(d, t, where)
-        i = _button_at(d, t, flow, p.button, where)
+        i = _button_at(d, t, flow, p.button, where, p.to)
         gone = flow["transitions"][i]
         rest = {**t, "workflow": {**flow, "transitions": [mv for n, mv in enumerate(flow["transitions"]) if n != i]}}
         if any(mv["to"] == gone["to"] for mv in schema.complete_moves(d.bp, rest)):  # it was the only way there
@@ -1418,6 +1582,10 @@ def translate(d, p, where):
     if isinstance(p, m.AddRule):
         _new_documents().clear()
         rule = ir_rule(d, p.rule, where)
+        same = lambda a: {k: a.get(k) for k in ("trigger", "conditions", "actions")}  # noqa: E731
+        twin = next((a for a in d.bp.get("automations", []) if a["key"] != rule["key"] and same(a) == same(rule)), None)
+        if twin is not None:  # made twice, it would do everything twice
+            raise Problem(f"{where}: the rule “{twin['name']}” does exactly this already")
         return _documents_for(d) + [{"op": "add_automation", "automation": rule}]
     if isinstance(p, m.AddDocument):
         t = _list(d, p.list, where)

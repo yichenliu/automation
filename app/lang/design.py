@@ -78,6 +78,8 @@ class Design:
                 raise NameProblem(f"“{part}” isn't a field of {here['label']}" + (f" (did you mean {', '.join(near)}?)" if near else "")
                                   + f"; its fields: {', '.join(self.field_names(here))}")
             keys.append(f["key"])
+            if i < len(parts) - 1 and f["type"] == "user" and parts[i + 1] in ("name", "email", "first_name") and i + 1 == len(parts) - 1:
+                return {"key": parts[i + 1], "type": "email" if parts[i + 1] == "email" else "text", "label": parts[i + 1]}, here, keys + [parts[i + 1]]
             if i < len(parts) - 1:
                 if f["type"] == "link":
                     here = self.list(f.get("table"))
@@ -146,6 +148,13 @@ class Design:
             return {"money": "number", "percent": "number", "checkbox": "yes_no"}.get(f.get("format"), f.get("format") or "number")
         if ftype == "rollup":
             return "number"
+        if ftype == "lookup" and f.get("link"):  # a lookup is what it looks up (a job's wedding date is a date)
+            t = next((x for x in self.lists if any(g is f for g in x.get("fields", []))), None)
+            link = self.field(t, f["link"]) if t else None
+            there = self.list((link or {}).get("table"))
+            inner = self.field(there, str(f.get("field") or "").split(".")[0]) if there else None
+            if inner is not None and inner is not f and inner.get("type") != "lookup":
+                return self.kind(inner)
         if ftype in NUMBERS:
             return "number"
         if ftype in ("date", "datetime", "created_time", "modified_time"):
@@ -203,7 +212,7 @@ class Design:
         aliases = {"staff": "editor", "editors": "editor", "admins": "admin", "manager": "admin", "managers": "admin", "me": "owner",
                    "boss": "owner", "all": "everyone", "team": "everyone", "the_owner": "owner", "creator": "creator"}
         word = aliases.get(word, word)
-        if word in schema.WHO_WORDS:
+        if word in schema.WHO_WORDS or word == "approver":  # approver: whoever answered the approval before this step
             return word
         if word in self.teams():
             return word

@@ -4,9 +4,8 @@ in the Keel language like anything the builder makes, so the builder carries on 
 
 They fit together: a list two parts both need (Products) is made once with the fields of both, and what joins two parts
 (an order shipped takes its stock off; a purchase order received puts it on) comes only when both are chosen.
-`ops_for(keys, bp)` is the Keel patches for the chosen parts, leaving out what the app has already; `unsaid_for(keys, bp)`
-the design ops for the little the language can't say yet (who may not approve a purchase order, and what happens when
-it's turned down).
+`ops_for(keys, bp)` is the Keel patches for the chosen parts, leaving out what the app has already: every part is said
+in the language, like everything else that changes an app.
 """
 from . import schema
 
@@ -219,10 +218,10 @@ MODULES = {
                 _f("product", "Product", "link", to="products", required=True),
                 _f("quantity", "Quantity", "number", required=True, default=1), _f("unit_cost", "Unit cost", "money"),
                 _f("amount", "Amount", "formula", formula="quantity * unit_cost", shows="money"), _f("received", "Received", "number")]),
-            # the language's approval asks admin and waits; who may not give it, and back to Draft when it's turned down,
-            # are said in design ops (unsaid_for)
+            # never approved by whoever made it, and back to Draft when it's turned down
             _rule("approve_po", "A big purchase order is approved first", _changed("purchase_orders", "Waiting for approval"), [
-                {"do": "approval", "who": "admin", "message": "Please approve this purchase order."},
+                {"do": "approval", "who": "admin", "message": "Please approve this purchase order.", "not_by": ["creator"],
+                 "if_rejected": [{"do": "set", "values": [_set("status", to="Draft")]}]},
                 {"do": "set", "values": [_set("status", to="Approved")]}]),
             {"do": "design_op", "op": {"op": "add_flow", "flow": {
                 "key": "receive_po", "label": "Receive the delivery", "table": "purchase_orders", "start": "record",
@@ -234,13 +233,6 @@ MODULES = {
                            "options": [{"label": "Received", "value": "Received"}, {"label": "Not yet", "value": "Sent"}]}],
                 "then": [{"type": "update_record", "values": {"short_note": "{{flow.count_it_in.reason}}"}}]}}},
         ],
-        "unsaid": [
-            {"op": "update_automation", "automation": {
-                "key": "approve_po", "name": "A big purchase order is approved first", "trigger": {"type": "record_updated", "table": "purchase_orders"},
-                "conditions": [{"field": "status", "op": "changed_to", "value": "Waiting for approval"}],
-                "actions": [{"type": "request_approval", "approver": "admin", "message": "Please approve this purchase order.", "not_by": ["creator"],
-                             "if_rejected": [{"type": "update_record", "values": {"status": "Draft"}}]},
-                            {"type": "update_record", "values": {"status": "Approved"}}]}}],
         "with": {"inventory": [
             _rule("received_adds_stock", "A received delivery puts its stock on", _changed("purchase_orders", "Received"), [
                 {"do": "add_each", "list": "stock_movements", "lines": "po_lines", "link": "purchase_order",
@@ -322,12 +314,6 @@ def ops_for(keys, bp=None):
             if (k in keys and (other in keys or other in present)) or (k in present and other in keys):
                 out += joins
     return sorted(out, key=_place)
-
-
-def unsaid_for(keys, bp=None):
-    """The design ops for what the chosen parts need that the Keel language can't say yet, applied after their patches:
-    a purchase order is never approved by whoever made it, and goes back to Draft when it's turned down."""
-    return [op for k in MODULES if k in keys for op in MODULES[k].get("unsaid", [])]
 
 
 def _present(bp):

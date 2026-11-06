@@ -1592,7 +1592,10 @@ def apply(out, p, where, quiet=False):
     made = p.build(d, where)
     ir_ops = []
     wanted_rules = set()
+    given_up = set((_entry(out.blueprint, key) or {}).get("given_up") or [])  # its rules someone has since made their own
     for a in made.rules:
+        if a["key"] in given_up:
+            continue
         a = {**a, "feature": key}
         wanted_rules.add(a["key"])
         ir_ops.append({"op": "add_automation", "automation": a})
@@ -1628,6 +1631,8 @@ def apply(out, p, where, quiet=False):
         for tk, original in v.items():
             undo[k].setdefault(tk, original)
     entry = {"key": key, "do": p.do, "params": p.model_dump(exclude_none=True, by_alias=True, exclude={"key"}), "undo": undo}
+    if (was or {}).get("given_up"):
+        entry["given_up"] = list(was["given_up"])
     if (made.undo or {}).get("made"):
         entry["made"] = made.undo["made"]
     if was is not None:  # in its place among the others
