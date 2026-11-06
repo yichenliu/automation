@@ -170,12 +170,18 @@ inside it and builds there, not for a chat feature on the side.
 - **It builds to how it will be tried.** How each need beyond keeping records will be tried is written before what makes
   it, and the behaviour step is shown it.
 - **What it builds scales with the business.** A formula that looks across a list is answered by the database where it
-  can be: narrowed by SQL, counted and added up there, with every record counted whoever is saving. Open: SQL that can
-  use indexes on large lists needs values normalised when they're saved (a typed copy of each field rules filter on).
-  The planner's exact JSON tests can't use an index today.
+  can be: narrowed by SQL, counted and added up there, with every record counted whoever is saving. Every record keeps
+  its values as equality compares them (`record.norm`, set on every save), and one GIN index over them answers a rule's
+  "equals" first; the exact test then runs on what it finds (never fewer records than match). One save with an overlap
+  rule and a count rule over 200,000 bookings: about 0.4 s.
+- **Every rule reads back into Keel** (app/lang/back.py): the App map's rule editor, the ready-made parts and the
+  analyst all write rules in Keel. A feature's rule rewritten by someone becomes theirs, and the feature leaves it be.
+- **explain** (a tool for the AI and outside agents): why a record is where it is, and why a check comes out as it
+  does.
 - **The web layer is invisible to the AI.** FastAPI on Starlette serves the screens, REST and MCP. The tool schemas come
-  from the same Pydantic models as the language. The Flask-shaped kit (app/webkit) only exists so the old views kept
-  their code; moving those views onto FastAPI routes would remove it.
+  from the same Pydantic models as the language. The Flask-shaped kit (app/webkit, 2,950 lines under 165 routes) only
+  exists so the old views kept their code. It's retired a route at a time, as a screen is changed anyway; a rewrite in
+  one go would change nothing for owners or the AI, and would put every screen at risk.
 
 **D10. Tenancy and cells.**
 - Row-level security as a second lock behind the code's workspace filters.
