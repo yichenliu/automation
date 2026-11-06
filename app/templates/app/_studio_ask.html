@@ -1,4 +1,4 @@
-<form class="studio-ask only-standalone" data-studio-ask data-send="{{ url_for('builder.send', wid=ws.id) }}" data-poll="/w/{{ ws.id }}/chat/" data-page="{{ request.path }}">
+<form class="studio-ask only-standalone" data-studio-ask data-send="{{ url_for('builder.send', wid=ws.id) }}" data-poll="/w/{{ ws.id }}/chat/" data-page="{{ request.url.path }}">
   {{ icon('sparkles') }}<label class="sr-only" for="studio-ask-text">Tell the AI what to change</label>
   <textarea id="studio-ask-text" name="text" rows="1" autocomplete="off" maxlength="2000" placeholder="{{ ask_hint|default('Say what should change, in your own words') }}"></textarea>
   <button class="btn primary sm">Change it</button>

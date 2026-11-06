@@ -162,6 +162,9 @@ def front(platform):
     from ..web import erp_records
     from ..web import erp_flows
     from ..web import erp_learn
+    from ..web import erp_pages
+    from ..web import erp_studio
+    from ..web import erp_ai
     http.install(api, platform, [
         auth.router,
         account.router,
@@ -169,6 +172,9 @@ def front(platform):
         erp_records.router,
         erp_flows.router,
         erp_learn.router,
+        erp_pages.router,
+        erp_studio.router,
+        erp_ai.router,
     ])
     api.state.platform = platform
     return api

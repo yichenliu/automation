@@ -8,18 +8,22 @@ builder's are (app/lang), checked and saved as a version in one place (_save), a
 import copy
 import re
 
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.exc import IntegrityError
 
 from .. import appmap, lang, studio
 from ..blueprint import ops, schema
 from ..blueprint.schema import SchemaError
 from ..builder import chat
+from ..core.context import current_app
 from ..extensions import db
 from ..models import Record, Run
-from .erp import bp, ctx
+from .erp import ctx
 from ..engine import automations
 from .filters import KIND_WORDS, about_field, ago, pill, status_words
-from ..webkit import abort, current_app, current_user, g, jsonify, login_required, redirect, render_template, request, url_for
+from .http import PageRoute, check_csrf, current_user, json_of, json_response, redirect, render, signed_in, url_for
+
+router = APIRouter(prefix="/w/{wid:int}/app", route_class=PageRoute, dependencies=[Depends(check_csrf), Depends(signed_in)])
 
 
 class Refused(Exception):
@@ -105,30 +109,30 @@ def _make(design, made, filled):
     return bp, changes
 
 
-def _save(ws, made, plain=None):
+def _save(ws, made, plain, user):
     """The one place the App map changes an app: made (_make) and saved as one version (a choice renamed
-    takes its records with it: chat.save_version), noted as `plain` says it if given. Returns (the changes said, the
-    version it was made from)."""
+    takes its records with it: chat.save_version), noted as `plain` says it if given, as `user`'s. Returns (the changes
+    said, the version it was made from)."""
     bp, changes = _make(ws.blueprint, made, _filled(ws))
     before = ws.version or 0
     changes = [plain] if plain else changes
-    chat.save_version(ws, bp, changes, "studio", by=current_user.id)
+    chat.save_version(ws, bp, changes, "studio", by=user.id)
     return changes, before
 
 
-def _change(ws, make, plain=None):
+def _change(request, ws, make, plain=None):
     """Run an edit: the patches (and design ops) `make` returns, saved; a refusal answered as {"error"} with status 400."""
-    if not g.member.can("admin"):
-        abort(403)
+    if not request.state.member.can("admin"):
+        raise HTTPException(403)
     try:
-        changes, before = _save(ws, make(), plain)
+        changes, before = _save(ws, make(), plain, current_user(request))
     except (SchemaError, Refused) as exc:
         db.session.rollback()
         show = getattr(exc, "show", None)  # the records it's about, to go and see
-        return None, (jsonify(error=str(exc), **({"show": {"label": show["label"], "url": _records_at(ws, show)}} if show else {})), 400)
+        return None, json_response({"error": str(exc), **({"show": {"label": show["label"], "url": _records_at(ws, show)}} if show else {})}, 400)
     except IntegrityError:  # two changes at the same moment (a double click): the first stands
         db.session.rollback()
-        return None, (jsonify(error="That arrived twice at once: the first one was saved. Have a look, and change it again if you need to"), 409)
+        return None, json_response({"error": "That arrived twice at once: the first one was saved. Have a look, and change it again if you need to"}, 409)
     return {"said": changes, "before": before, "version": ws.version}, None
 
 
@@ -138,10 +142,6 @@ def _records_at(ws, show):
     views = t.get("views") or []
     whole = next((v["key"] for v in views if not v.get("filters")), "_all" if views else None)
     return url_for("app.table", wid=ws.id, table=show["table"], **({"view": whole} if whole else {}), **{f"f_{show['field']}": show["value"]})
-
-
-def _body():
-    return request.get_json(silent=True) or {}
 
 
 # --- the data model ------------------------------------------------------------------------------------------------------
@@ -167,71 +167,66 @@ def _model(ws, engine):
     return model
 
 
-@bp.route("/studio/data")
-@login_required
-def studio_data(wid):
+@router.api_route("/studio/data", methods=["GET"], name="app.studio_data")
+def studio_data(request: Request, wid: int):
     """The data model: the App map's Data view (a list named in ?open= selected)."""
-    ctx(wid)
-    opened = request.args.get("open")
-    add = {"add": "column"} if opened and request.args.get("add") == "column" else {}  # its add-a-column form open
+    ctx(wid, "viewer", request)
+    opened = request.query_params.get("open")
+    add = {"add": "column"} if opened and request.query_params.get("add") == "column" else {}  # its add-a-column form open
     return redirect(url_for("app.studio_map", wid=wid, view="data", open=f"data:{opened}" if opened else "data", **add))
 
 
-@bp.route("/studio/data.json")
-@login_required
-def studio_data_json(wid):
-    ws, engine = ctx(wid)
-    return jsonify(_model(ws, engine))
+@router.api_route("/studio/data.json", methods=["GET"], name="app.studio_data_json")
+def studio_data_json(request: Request, wid: int):
+    ws, engine = ctx(wid, "viewer", request)
+    return json_response(_model(ws, engine))
 
 
-@bp.route("/studio/data/change", methods=["POST"])
-@login_required
-def studio_data_change(wid):
-    ws, engine = ctx(wid)
-    change = _body()
-    done, refused = _change(ws, lambda: studio.data_patches(ws.blueprint, change, _filled(ws)))
+@router.api_route("/studio/data/change", methods=["POST"], name="app.studio_data_change")
+def studio_data_change(request: Request, wid: int, data=Depends(json_of)):
+    ws, engine = ctx(wid, "viewer", request)
+    change = data or {}
+    done, refused = _change(request, ws, lambda: studio.data_patches(ws.blueprint, change, _filled(ws)))
     if refused:
         return refused
-    ws, engine = ctx(wid)
-    return jsonify(ok=True, **done, model=_model(ws, engine))
+    ws, engine = ctx(wid, "viewer", request)
+    return json_response({"ok": True, **done, "model": _model(ws, engine)})
 
 
-@bp.route("/studio/data/place", methods=["POST"])
-@login_required
-def studio_data_place(wid):
+@router.api_route("/studio/data/place", methods=["POST"], name="app.studio_data_place")
+def studio_data_place(request: Request, wid: int, data=Depends(json_of)):
     """Where the lists are drawn: kept for the workspace, apart from the design (moving a box isn't a change to it)."""
-    ws, engine = ctx(wid, "admin")
+    ws, engine = ctx(wid, "admin", request)
     keys = {t["key"] for t in ws.blueprint.get("tables", [])}
-    given = _body().get("positions") or {}
+    given = (data or {}).get("positions") or {}
     places = dict(((ws.settings or {}).get("studio") or {}).get("positions") or {})
     for key, at in given.items():
         if key in keys and isinstance(at, list) and len(at) == 2 and all(isinstance(v, (int, float)) for v in at):
             places[key] = [round(at[0]), round(at[1])]
-    if _body().get("reset"):
+    if (data or {}).get("reset"):
         places = {}
     ws.settings = {**(ws.settings or {}), "studio": {**((ws.settings or {}).get("studio") or {}), "positions": places}}
     db.session.commit()
-    return jsonify(ok=True)
+    return json_response({"ok": True})
 
 
-@bp.route("/studio/undo", methods=["POST"])
-@login_required
-def studio_undo(wid):
+@router.api_route("/studio/undo", methods=["POST"], name="app.studio_undo")
+def studio_undo(request: Request, wid: int, user=Depends(signed_in), data=Depends(json_of)):
     """Take back a change made in a studio: the design goes back to the version it was made from."""
-    ws, engine = ctx(wid, "admin")
-    to = _body().get("to")
+    ws, engine = ctx(wid, "admin", request)
+    to = (data or {}).get("to")
     if not isinstance(to, int) or to < 1 or to >= (ws.version or 0):
-        return jsonify(error="There's nothing to take back"), 400
+        return json_response({"error": "There's nothing to take back"}, 400)
     try:  # (restore names the records as they were then too: choices renamed since get their old names back)
-        chat.restore(ws, to, by=current_user.id, why="Undid a change made on the App map")
+        chat.restore(ws, to, by=user.id, why="Undid a change made on the App map")
     except ValueError:
-        return jsonify(error="That version isn't there any more"), 400
-    return jsonify(ok=True, version=ws.version)
+        return json_response({"error": "That version isn't there any more"}, 400)
+    return json_response({"ok": True, "version": ws.version})
 
 
 # --- workflows -----------------------------------------------------------------------------------------------------------
 
-def _item(ws, engine, item_id):
+def _item(request, ws, engine, item_id):
     kind, _, key = str(item_id or "").partition(":")
     if kind == "stages":
         t = engine.visible_blueprint() and next((x for x in engine.visible_blueprint()["tables"] if x["key"] == key), None)
@@ -249,8 +244,9 @@ def _item(ws, engine, item_id):
                             "error": r.error if r.status not in ("done",) else "",
                             "steps": [{"text": x.get("result") or x.get("action") or "", "skipped": bool(x.get("skipped"))} for x in (r.steps or [])][:12]}
                            for r in runs[:8]]
-        drawn["hook"] = automations.hook_url(ws.id, key) if a["trigger"]["type"] == "webhook_received" and g.member.can("admin") else None
-        drawn["can_run"] = a["trigger"]["type"] == "schedule" and g.member.can("admin" if automations.reaches_out(a) else "editor")
+        member = request.state.member
+        drawn["hook"] = automations.hook_url(ws.id, key) if a["trigger"]["type"] == "webhook_received" and member.can("admin") else None
+        drawn["can_run"] = a["trigger"]["type"] == "schedule" and member.can("admin" if automations.reaches_out(a) else "editor")
         return drawn
     if kind == "flow":
         f = next((x for x in engine.bp.get("flows") or [] if x["key"] == key), None)
@@ -276,12 +272,12 @@ def _workflow_page_data(ws, engine):
             "teams": [{"key": tm["key"], "name": tm["name"]} for tm in schema.teams(engine.bp)]}
 
 
-@bp.route("/studio/workflows")
-@login_required
-def studio_workflows(wid):
+@router.api_route("/studio/workflows", methods=["GET"], name="app.studio_workflows")
+def studio_workflows(request: Request, wid: int):
     """The processes: the App map, with what's named in ?open= (or a list's own, ?table=) opened."""
-    ctx(wid)
-    return redirect(url_for("app.studio_map", wid=wid, **{k: v for k, v in (("open", request.args.get("open")), ("table", request.args.get("table"))) if v}))
+    ctx(wid, "viewer", request)
+    args = request.query_params
+    return redirect(url_for("app.studio_map", wid=wid, **{k: v for k, v in (("open", args.get("open")), ("table", args.get("table"))) if v}))
 
 
 # --- the App map ---------------------------------------------------------------------------------------------------------
@@ -309,21 +305,20 @@ def _map(ws, engine):
     return found
 
 
-@bp.route("/studio")
-@login_required
-def studio_map(wid):
+@router.api_route("/studio", methods=["GET"], name="app.studio_map")
+def studio_map(request: Request, wid: int):
     """The App map: every process the app runs, from the first list to the last, drawn from its design, with the data
     model behind it; click into any part to see it in full and (admins) change it."""
-    ws, engine = ctx(wid)
+    ws, engine = ctx(wid, "viewer", request)
     data = _workflow_page_data(ws, engine)
-    table = request.args.get("table")  # a list's own: its stages, else its first rule or flow
+    table = request.query_params.get("table")  # a list's own: its stages, else its first rule or flow
     own = next((i["id"] for grp in data["items"] if grp["table"] == table for i in grp["items"]), None) if table else None
-    opened = request.args.get("open") or own or "map"
-    item = _item(ws, engine, opened) if opened.partition(":")[0] in ("stages", "rule", "flow") else None
+    opened = request.query_params.get("open") or own or "map"
+    item = _item(request, ws, engine, opened) if opened.partition(":")[0] in ("stages", "rule", "flow") else None
     drawn = _map(ws, engine)
-    return render_template("app/studio.html", ws=ws, e=engine, data=data, opened=item, open_id=opened, map=drawn,
-                           model=_model(ws, engine), view="data" if request.args.get("view") == "data" or opened.startswith("data") else "map",
-                           can_edit=g.member.can("admin"), ask_example=_ask_example(drawn), quiet_ask=True, email_on=_email_on(ws))
+    return render(request, "app/studio.html", ws=ws, e=engine, data=data, opened=item, open_id=opened, map=drawn,
+                  model=_model(ws, engine), view="data" if request.query_params.get("view") == "data" or opened.startswith("data") else "map",
+                  can_edit=request.state.member.can("admin"), ask_example=_ask_example(drawn), quiet_ask=True, email_on=_email_on(ws))
 
 
 def _email_on(ws):
@@ -343,23 +338,21 @@ def _ask_example(drawn):
     return f"when a new {lists[0]['singular'].lower()} is added, tell me" if lists else "keep a list of our customers and their jobs"
 
 
-@bp.route("/studio/map.json")
-@login_required
-def studio_map_json(wid):
+@router.api_route("/studio/map.json", methods=["GET"], name="app.studio_map_json")
+def studio_map_json(request: Request, wid: int):
     """The map worked out again, with the stages, rules and flows its panels open (after a change made anywhere)."""
-    ws, engine = ctx(wid)
-    return jsonify(map=_map(ws, engine), data=_workflow_page_data(ws, engine))
+    ws, engine = ctx(wid, "viewer", request)
+    return json_response({"map": _map(ws, engine), "data": _workflow_page_data(ws, engine)})
 
 
-@bp.route("/studio/map/name", methods=["POST"])
-@login_required
-def studio_map_name(wid):
+@router.api_route("/studio/map/name", methods=["POST"], name="app.studio_map_name")
+def studio_map_name(request: Request, wid: int, data=Depends(json_of)):
     """A process named as the business calls it (“Quote to cash”): kept with the workspace, apart from the design."""
-    ws, engine = ctx(wid, "admin")
-    body = _body()
+    ws, engine = ctx(wid, "admin", request)
+    body = data or {}
     key, name = str(body.get("process") or ""), " ".join(str(body.get("name") or "").split())[:60]
     if key not in {p["key"] for p in appmap.processes(engine.bp)[0]}:
-        return jsonify(error="That process isn't there any more"), 400
+        return json_response({"error": "That process isn't there any more"}, 400)
     names = dict(((ws.settings or {}).get("map") or {}).get("names") or {})
     if name:
         names[key] = name
@@ -367,45 +360,42 @@ def studio_map_name(wid):
         names.pop(key, None)  # named after its lists again
     ws.settings = {**(ws.settings or {}), "map": {**((ws.settings or {}).get("map") or {}), "names": names}}
     db.session.commit()
-    return jsonify(ok=True, map=_map(ws, engine))
+    return json_response({"ok": True, "map": _map(ws, engine)})
 
 
-@bp.route("/studio/map/play", methods=["POST"])
-@login_required
-def studio_map_play(wid):
+@router.api_route("/studio/map/play", methods=["POST"], name="app.studio_map_play")
+def studio_map_play(request: Request, wid: int, data=Depends(json_of)):
     """One of the app's kept examples acted out in a throwaway copy: what it went through (each record's stages, in
     order, and the rules that ran) and whether it came out as expected. Nothing in the real app changes."""
-    ws, engine = ctx(wid, "editor")
+    ws, engine = ctx(wid, "editor", request)
     kept = (ws.state or {}).get("examples") or []
-    n = _body().get("example")
+    n = (data or {}).get("example")
     if not isinstance(n, int) or not 0 <= n < len(kept):
-        return jsonify(error="That example isn't there any more"), 400
+        return json_response({"error": "That example isn't there any more"}, 400)
     from ..builder import trial
     try:
         played = trial.walkthrough(ws, kept[n])
     except Exception:  # noqa: BLE001 - a fault of ours: said, never the app's
         current_app.logger.exception("Playing an example for workspace %s failed", ws.id)
         db.session.rollback()
-        return jsonify(error="Something went wrong on our side playing that: it's been logged"), 500
-    return jsonify(title=played["title"], ok=played["ok"], lines=[[ok, line] for ok, line in played["lines"]],
-                   problem=played.get("plain") or "", went=played["went"], ran=played["ran"])
+        return json_response({"error": "Something went wrong on our side playing that: it's been logged"}, 500)
+    return json_response({"title": played["title"], "ok": played["ok"], "lines": [[ok, line] for ok, line in played["lines"]],
+                          "problem": played.get("plain") or "", "went": played["went"], "ran": played["ran"]})
 
 
-@bp.route("/studio/workflows/item")
-@login_required
-def studio_workflow_item(wid):
-    ws, engine = ctx(wid)
-    item = _item(ws, engine, request.args.get("id"))
+@router.api_route("/studio/workflows/item", methods=["GET"], name="app.studio_workflow_item")
+def studio_workflow_item(request: Request, wid: int):
+    ws, engine = ctx(wid, "viewer", request)
+    item = _item(request, ws, engine, request.query_params.get("id"))
     if item is None:
-        abort(404)
-    return jsonify(item)
+        raise HTTPException(404)
+    return json_response(item)
 
 
-@bp.route("/studio/workflows/change", methods=["POST"])
-@login_required
-def studio_workflow_change(wid):
-    ws, engine = ctx(wid)
-    body = _body()
+@router.api_route("/studio/workflows/change", methods=["POST"], name="app.studio_workflow_change")
+def studio_workflow_change(request: Request, wid: int, data=Depends(json_of)):
+    ws, engine = ctx(wid, "viewer", request)
+    body = data or {}
     item_id, change = str(body.get("id") or ""), body.get("change") or {}
     kind, _, key = item_id.partition(":")
     opened = {"id": item_id}
@@ -423,47 +413,45 @@ def studio_workflow_change(wid):
             return made
         raise SchemaError("That can't be changed here")
     plain = studio.stage_said(ws.blueprint, {**change, "table": change.get("table") or key}) if kind == "stages" else None
-    done, refused = _change(ws, make, plain)
+    done, refused = _change(request, ws, make, plain)
     if refused:
         return refused
     if change.get("do") == "add_stages":
         opened["id"] = f"stages:{change.get('table') or key}"
     if change.get("do") == "remove_stages":
         opened["id"] = ""
-    ws, engine = ctx(wid)
+    ws, engine = ctx(wid, "viewer", request)
     data = _workflow_page_data(ws, engine)
-    return jsonify(ok=True, **done, items=data["items"], tables=data["tables"], id=opened["id"],
-                   item=_item(ws, engine, opened["id"]) if opened["id"] else None)
+    return json_response({"ok": True, **done, "items": data["items"], "tables": data["tables"], "id": opened["id"],
+                          "item": _item(request, ws, engine, opened["id"]) if opened["id"] else None})
 
 
-@bp.route("/studio/workflows/try", methods=["POST"])
-@login_required
-def studio_workflow_try(wid):
+@router.api_route("/studio/workflows/try", methods=["POST"], name="app.studio_workflow_try")
+def studio_workflow_try(request: Request, wid: int, data=Depends(json_of)):
     """What a rule would do for one record, step by step, without doing any of it."""
-    ws, engine = ctx(wid)
-    body = _body()
+    ws, engine = ctx(wid, "viewer", request)
+    body = data or {}
     key = str(body.get("id") or "").partition(":")[2]
     a = next((x for x in engine.bp.get("automations", []) if x["key"] == key), None)
     if a is None or not a["trigger"].get("table"):
-        return jsonify(error="Only a rule about a list's records can be tried on one"), 400
+        return json_response({"error": "Only a rule about a list's records can be tried on one"}, 400)
     record = engine.get(int(body.get("record") or 0)) if str(body.get("record") or "").isdigit() else None
     if record is None or record.table != a["trigger"]["table"]:
-        return jsonify(error="Choose a record to try it on"), 400
-    return jsonify(studio.preview(engine, a, record))
+        return json_response({"error": "Choose a record to try it on"}, 400)
+    return json_response(studio.preview(engine, a, record))
 
 
-@bp.route("/studio/workflows/records")
-@login_required
-def studio_workflow_records(wid):
+@router.api_route("/studio/workflows/records", methods=["GET"], name="app.studio_workflow_records")
+def studio_workflow_records(request: Request, wid: int):
     """Records of a list to try a rule on: the latest, or those whose name has the words typed."""
-    ws, engine = ctx(wid)
-    table = request.args.get("table", "")
+    ws, engine = ctx(wid, "viewer", request)
+    table = request.query_params.get("table", "")
     if table not in engine.tables or not engine.can(engine.tables[table]):
-        abort(404)
-    q = (request.args.get("q") or "").strip().lower()
+        raise HTTPException(404)
+    q = (request.query_params.get("q") or "").strip().lower()
     rows = list(reversed(engine.rows(table)[-400:]))
     found = [{"id": r.id, "title": engine.title(r), "detail": _told_apart(engine, table, r)} for r in rows if not q or q in str(engine.title(r)).lower()][:30]
-    return jsonify(items=found)
+    return json_response({"items": found})
 
 
 def _told_apart(engine, table, r):

@@ -44,7 +44,7 @@
     </div>
     {% if not off and mode == 'always' and r.checked >= 20 and r.lower >= 0.9 %}<p class="ai-hint good">{{ icon('circle-check') }}It's been right {{ r.right }} of {{ r.checked }} times. You could let it run on its own when it's sure (it still asks when it isn't).</p>
     {% elif not off and mode != 'always' and r.checked >= 10 and r.share < 0.8 %}<p class="ai-hint bad">{{ icon('triangle-alert') }}People had to fix {{ r.checked - r.right }} of its last {{ r.checked }}. Have every one checked, or switch it off.</p>{% endif %}
-    <details class="ai-setup" {{ 'open' if request.args.get('open') == x.a.key ~ '-' ~ x.at }}><summary>{{ icon('settings') }}Set it up and try it</summary>
+    <details class="ai-setup" {{ 'open' if request.query_params.get('open') == x.a.key ~ '-' ~ x.at }}><summary>{{ icon('settings') }}Set it up and try it</summary>
       <form method="post" action="{{ url_for('app.ai_settings', wid=ws.id, key=x.a.key, at=x.at) }}" class="stack mt-2"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <fieldset class="stack" {{ 'disabled' if not admin }}><input type="hidden" name="edited" value="1">
           <label class="field wide"><span>{{ 'What to check' if s.type == 'ai_check' else 'What the AI does' }}</span>
