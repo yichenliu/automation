@@ -8,7 +8,8 @@ each one that's waiting on the model.
     /api/v2/app/test              POST  every check the app has, acted out now
     /api/v2/app/undo              POST  {version}: back to an earlier version
     /api/v2/builder/{id}/events   GET   a builder turn's progress as it happens (server-sent events)
-    everything else               the pages, the v1 API and MCP: the platform app's own (app.webkit), mounted here
+    the pages written natively    sign-in, your account, your apps (app/web/auth.py, account.py, workspaces.py: docs/WEB.md)
+    everything else               the other pages, the v1 API and MCP: the old web kit's (app.webkit), mounted behind
 
 Each call is checked against an API key (Authorization: Bearer keel_…). Changing the app needs an admin's key. The
 tools are the same ones the builder and MCP use (app/lang/tools.py).
@@ -154,6 +155,14 @@ def front(platform):
 
         return StreamingResponse(stream(), media_type="text/event-stream")
 
-    api.mount("/", platform.serve)  # the pages, the v1 API and MCP
+    # the pages: those written natively (app/web/http.py) first, then, behind them, those the old web kit still serves
+    # (with the v1 API and MCP)
+    from ..web import http
+    from ..web import auth, account, workspaces  # one module a line: docs/WEB.md
+    http.install(api, platform, [
+        auth.router,
+        account.router,
+        workspaces.router,
+    ])
     api.state.platform = platform
     return api

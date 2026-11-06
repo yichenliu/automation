@@ -20,7 +20,8 @@ Only 1 was the model's own judgment.
 ```
             owner · App map · outside agents (MCP / REST)
                               │
-   app/api      FastAPI (ASGI) front: typed tools, REST v2, MCP, streaming; the pages (app/webkit) mounted inside
+   app/api      FastAPI (ASGI) front: typed tools, REST v2, MCP, streaming; the pages (app/web/http.py native, the
+                rest still app/webkit, mounted behind)
                               │
    app/builder  understand → needs and checks → data → behaviour → compile → simulate → repair by search → hand over
                               │                              ▲
@@ -109,6 +110,9 @@ Only 1 was the model's own judgment.
   names and with the same behaviour, so each view kept its code. Each request runs in a worker thread in the
   platform's context (settings, its own database session, who is acting). The kit is mounted inside the FastAPI front,
   so one ASGI app serves everything. Flask, Flask-Login, Flask-WTF and Flask-SQLAlchemy are gone.
+- The kit is being retired for native FastAPI routes (`app/web/http.py`: `PageRoute`, the session, sign-in, CSRF,
+  messages, url_for, render; docs/WEB.md). Converted pages sit in front of the kit's mount and share its session
+  cookie, sign-in, CSRF token, messages and addresses, so modules move one at a time with nobody signed out.
 - One typed tool layer (describe, explain, what-if, apply, test, undo) serves the builder, the in-app assistant, MCP
   and REST v2.
 
@@ -204,6 +208,7 @@ inside it and builds there, not for a chat feature on the side.
 | 9a | Core free of Flask (database, settings, who is acting) | done |
 | 9b | FastAPI: typed tools, MCP and REST v2, streaming | done |
 | 9c | The pages on a Starlette web kit, and Flask removed | done |
+| 9d | The pages on native FastAPI routes, and the web kit deleted (docs/WEB.md) | phase 1 done: the foundation (app/web/http.py), sign-in, your account, your apps; phase 2 (15 modules, 151 routes) next |
 | 10 | Tenancy: row-level security, per-workspace vector search, object storage; cells | done |
 | 11 | Evals on the finished platform | next: v2 is complete |
 | 12 | The first builder deleted | done (dc3a1ce) |

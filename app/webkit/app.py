@@ -203,6 +203,7 @@ class RequestContext:
         self.app, self.request, self.session = app, request, session
         self.flashes = None
         self._tokens = []
+        self._native_tokens = []
 
     def match_request(self):
         try:
@@ -226,6 +227,10 @@ class RequestContext:
         self._tokens.append((local.request_ctx.set(self), actx))
         if self.session is None:
             self.session = self.app.session_interface.open_session(self.app, self.request)
+        # transition: the request seen as a native one too, so the helpers both layers use are written once (app/web/http.py)
+        from ..web import http
+        native = http.seen_natively(self.request.scope, local.app_ctx.get().g.__dict__, self.session)
+        self._native_tokens.append(http._request.set(native))
         self.match_request()
         return self
 
@@ -238,6 +243,9 @@ class RequestContext:
                 self.app.do_teardown_request(exc)
                 self.request.close()
         finally:
+            if self._native_tokens:
+                from ..web import http
+                http._request.reset(self._native_tokens.pop())
             token, actx = self._tokens.pop()
             local.request_ctx.reset(token)
             if actx is not None:
@@ -526,6 +534,7 @@ class App:
         return None
 
     def handle_user_exception(self, ctx, exc):
+        exc = _from_native(exc)
         if isinstance(exc, HTTPException):
             if exc.code is None or isinstance(exc, RequestRedirect):
                 return exc
@@ -609,6 +618,28 @@ class App:
                 problem = str(exc) or None
                 form = files = None
         return Request(scope, body, form, files, too_large, problem)
+
+
+def _from_native(exc):
+    """An error a native helper raised (app/web/http.py; app/security.py), as this layer's own (transition): an
+    HTTPException(403, "why") is a 403 with its words, a Redirect is the redirect."""
+    from starlette.exceptions import HTTPException as NativeHTTPException
+
+    from ..web import http
+    from .exceptions import for_code
+    from .helpers import _from_native as response_of, redirect
+    if isinstance(exc, http.Redirect):
+        return HTTPException(response=redirect(exc.url, exc.code))
+    if isinstance(exc, http.Answer):
+        return HTTPException(response=response_of(exc.response))
+    if isinstance(exc, NativeHTTPException):
+        out = for_code(exc.status_code)(description=http.said(exc))
+        if exc.headers and hasattr(out, "get_headers"):
+            extra = list(exc.headers.items())
+            plain = out.get_headers
+            out.get_headers = lambda: plain() + extra
+        return out
+    return exc
 
 
 async def _parse_form(scope, body, mimetype, config):

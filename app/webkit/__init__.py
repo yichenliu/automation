@@ -1,4 +1,6 @@
-"""The platform's own small web kit, on Starlette (Keel v2, D9): what the pages are written with.
+"""The platform's own small web kit, on Starlette (Keel v2, D9): what the pages not converted yet are written with.
+It's being retired a module at a time for native FastAPI routes (app/web/http.py; docs/WEB.md), and shares its
+session cookie, sign-in, CSRF token, messages and addresses with them meanwhile.
 
 It gives the views the handful of things they use, under the names they have always used, with the same behaviour:
 a Blueprint and its routes, `request`, `session`, `g`, `url_for`, `redirect`, `abort`, `flash`, `render_template`,

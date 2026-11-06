@@ -1068,7 +1068,7 @@ def decide(wid, aid):
         if (approval.kind or "approval") not in ("approval", "change") and not (approval.kind == "review" and decision == "reject"):
             abort(400)
         approved = decision == "approve"
-        if approved and (approval.proposal or {}).get("step_up") and not confirm_step_up():
+        if approved and (approval.proposal or {}).get("step_up") and not confirm_step_up(request.form.get("step_up_code")):
             flash("Confirm it's you to approve this: " + ("enter the code from your authenticator app (or your password)."
                                                           if current_user.totp_secret else "type your password in the box beside Approve."), "error")
             return redirect(back)
@@ -1135,7 +1135,7 @@ def add_parts(wid):
         flash("Choose a part to add.", "error")
         return redirect(url_for("app.design", wid=wid))
     try:
-        _add_parts(ws, chosen)
+        _add_parts(ws, chosen, current_user)
     except ValueError as exc:
         flash(f"They couldn't be added as they are: {exc}. Ask the builder to add them instead.", "error")
         return redirect(url_for("app.design", wid=wid))

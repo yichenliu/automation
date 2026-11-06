@@ -4,7 +4,6 @@ may open (`login_required`, which sends anyone else to the sign-in page and back
 Who is signed in is kept in the session under the keys it always has been (`_user_id`, `_fresh`, `_id`), and "keep me
 signed in" in a `remember_token` cookie of the same form, so nobody is signed out by the move to this kit."""
 import hashlib
-import hmac
 from datetime import datetime, timedelta, timezone
 from functools import wraps
 from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
@@ -26,22 +25,15 @@ class AnonymousUser:
         return None
 
 
-def _digest(app, payload):
-    key = app.config["SECRET_KEY"]
-    key = key.encode("latin1") if isinstance(key, str) else key
-    return hmac.new(key, payload.encode("utf-8"), hashlib.sha512).hexdigest()
-
-
 def encode_cookie(app, payload):
-    return f"{payload}|{_digest(app, payload)}"
+    """The "keep me signed in" cookie, as the native pages write it (app/web/http.py), so one cookie serves both."""
+    from ..web.http import remember_value
+    return remember_value(app.config, payload)
 
 
 def decode_cookie(app, cookie):
-    try:
-        payload, digest = cookie.rsplit("|", 1)
-    except ValueError:
-        return None
-    return payload if hmac.compare_digest(_digest(app, payload), digest) else None
+    from ..web.http import remembered
+    return remembered(app.config, cookie)
 
 
 def _identifier(request):

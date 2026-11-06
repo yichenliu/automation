@@ -9,8 +9,9 @@ from markupsafe import Markup, escape
 
 from ..blueprint.schema import lc
 from ..models import utcnow
+from ..core.context import current_app
 from ..storage import human_size
-from ..webkit import current_app, g
+from .http import current_request
 
 PILL_COLOURS = ["slate", "blue", "amber", "green", "violet", "red", "teal", "pink"]
 SPECIAL = {"done": "green", "paid": "green", "complete": "green", "completed": "green", "won": "green", "active": "blue",
@@ -63,9 +64,14 @@ def render_markdown(text):
                             attributes={"a": {"href", "title"}}, url_schemes={"http", "https", "mailto"}, link_rel="noopener noreferrer"))
 
 
+def _here(name):
+    """What the page being served has looked up (request.state: its engine, its workspace), or None outside a page."""
+    request = current_request()
+    return getattr(request.state, name, None) if request is not None else None
+
+
 def when(stamp):
     """A stored UTC time (or its ISO text) as people read it, in the business's time: "9 Nov 2026, 8:41 am"."""
-    from ..webkit import g
     from zoneinfo import ZoneInfo
     if isinstance(stamp, str):
         try:
@@ -74,7 +80,7 @@ def when(stamp):
             return stamp
     if stamp is None:
         return ""
-    engine = g.get("engine")
+    engine = _here("engine")
     if engine is not None:
         stamp = stamp.replace(tzinfo=ZoneInfo("UTC")).astimezone(engine.now_tz)
     return f"{stamp.day} {stamp:%b %Y}, {stamp.hour % 12 or 12}:{stamp:%M} {'am' if stamp.hour < 12 else 'pm'}"
@@ -185,9 +191,9 @@ def _printer_for(ws, role):
 
 def _combined_from(t):
     """“Stock movements, purchase order lines and sales order lines”: what a combined list is put together from."""
-    from ..webkit import g
     from ..engine.combined import sources
-    bp = g.engine.bp if g.get("engine") is not None else {}
+    engine = _here("engine")
+    bp = engine.bp if engine is not None else {}
     names = [n.lower() for n in sources(bp, t)]
     return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1] if names else "other lists"
 
@@ -202,5 +208,4 @@ def register(app):
 
     @app.context_processor
     def platform():
-        return {"platform_name": current_app.config["PLATFORM_NAME"], "member": getattr(g, "member", None),
-                "ws": getattr(g, "ws", None)}
+        return {"platform_name": current_app.config["PLATFORM_NAME"], "member": _here("member"), "ws": _here("ws")}

@@ -8,12 +8,13 @@ from collections import defaultdict, deque
 from functools import wraps
 
 from cryptography.fernet import Fernet, InvalidToken
+from fastapi import HTTPException
 from sqlalchemy import text
 
 from .extensions import db
 from .models import Membership, Workspace
 from .core.settings import settings
-from .webkit import abort, current_user, g, request
+from .web.http import Redirect, current_request, current_user, flash, full_path, logout_user, url_for
 
 _log = logging.getLogger(__name__)
 
@@ -40,19 +41,17 @@ def decrypt(token):
 STEP_UP_SECONDS = 10 * 60  # how long a confirmed sign-in counts for steps that need one
 
 
-def stepped_up():
+def stepped_up(request=None):
     """Whether the person confirmed their sign-in in the last ten minutes (approving a payment run, a bank change)."""
-    from .webkit import session
-    at = session.get("stepped_up_at")
+    at = (request or current_request()).state.session.get("stepped_up_at")
     return bool(at) and time.time() - float(at) < STEP_UP_SECONDS
 
 
-def step_up(user, code):
+def step_up(user, code, request=None):
     """Confirm it's them: the code from their authenticator app when two-step sign-in is on, else their password.
     Returns whether it was right (and if so, it counts for the next ten minutes)."""
-    from .webkit import session
-
     from . import totp
+    session = (request or current_request()).state.session
     code = (code or "").strip()
     if not code or user is None:
         return False
@@ -64,43 +63,47 @@ def step_up(user, code):
 
 
 def membership(ws, user=None):
-    user = user or current_user
+    if user is None:
+        request = current_request()
+        user = current_user(request) if request is not None else None
     if not getattr(user, "is_authenticated", False):
         return None
     return Membership.query.filter_by(workspace_id=ws.id, user_id=user.id).first()
 
 
-def workspace(wid, role="viewer"):
+def workspace(wid, role="viewer", request=None):
     """The workspace, if the signed-in person belongs to it with at least `role` (404 if they don't belong at all, so
-    other people's workspaces can't even be confirmed to exist; 403 if their role is too low)."""
+    other people's workspaces can't even be confirmed to exist; 403 if their role is too low). It's kept for the rest of
+    the request as request.state.ws (and the person's membership as request.state.member)."""
+    request = request or current_request()
     ws = db.session.get(Workspace, wid)
-    member = membership(ws) if ws else None
+    member = membership(ws, current_user(request)) if ws else None
     if member is None:
-        abort(404)
-    _signed_out_if_idle(ws)
+        raise HTTPException(404)
+    _signed_out_if_idle(request, ws)
     if not member.can(role):
-        abort(403)
-    g.ws, g.member = ws, member
+        raise HTTPException(403)
+    request.state.ws, request.state.member = ws, member
     return ws
 
 
 IDLE_CHOICES = (0, 15, 30, 60, 240)  # minutes; 0: never
 
 
-def _signed_out_if_idle(ws):
+def _signed_out_if_idle(request, ws):
     """Shared computers on a shop floor: after the minutes the business chose without anyone using the app, the next
     click asks for the password again."""
     import time
-    from .webkit import flash, logout_user, redirect, request, session, url_for
+    session = request.state.session
     minutes = int((ws.settings or {}).get("idle_minutes") or 0)
     now, last = time.time(), session.get("active_at")
     if minutes and last and now - last > minutes * 60:
         from . import audit
         audit.log(ws.id, "signed_out", f"after {minutes} minutes without use")
-        logout_user()
+        logout_user(request)
         session.pop("active_at", None)
-        flash(f"You were signed out after {minutes} minutes without use. Sign in again to carry on.", "info")
-        abort(redirect(url_for("auth.login", next=request.full_path if request.method == "GET" else None)))
+        flash(request, f"You were signed out after {minutes} minutes without use. Sign in again to carry on.", "info")
+        raise Redirect(url_for("auth.login", next=full_path(request) if request.method == "GET" else None))
     session["active_at"] = now
 
 
@@ -112,6 +115,21 @@ def role_required(role):
             return view(*args, **kwargs)
         return wrapped
     return decorator
+
+
+def member_of(role="viewer"):
+    """A dependency for a native page under /w/{wid:int}/...: the workspace, if the signed-in person may open it with at
+    least `role` (as workspace(wid, role); request.state.ws and .member are set). Someone not signed in is sent to sign
+    in first (signed_in), as @login_required did before the view looked the workspace up.
+
+        def settings_page(request: Request, wid: int, ws=Depends(member_of("admin"))): ..."""
+    from fastapi import Depends, Request
+
+    from .web.http import signed_in
+
+    def dependency(request: Request, wid: int, user=Depends(signed_in)):
+        return workspace(wid, role, request)
+    return dependency
 
 
 class Throttle:
@@ -203,25 +221,29 @@ def forget_old_hits(older_than=86400):
         return conn.execute(text("DELETE FROM rate_hit WHERE bucket < :t"), {"t": int(time.time()) - older_than}).rowcount
 
 
-def client_ip():
+def client_ip(request=None):
     """Who's connecting. X-Forwarded-For is only believed when the platform runs behind a proxy that sets it
     (TRUST_PROXY=1); otherwise anyone could send a new one each time and dodge the sign-in limits."""
+    request = request or current_request()
+    address = request.client.host if request.client else ""
     if settings().get("TRUST_PROXY"):
-        return request.headers.get("X-Forwarded-For", request.remote_addr or "").split(",")[0].strip()
-    return request.remote_addr or ""
+        return request.headers.get("X-Forwarded-For", address or "").split(",")[0].strip()
+    return address or ""
 
 
-def headers(response):
-    response.headers.setdefault("X-Content-Type-Options", "nosniff")
-    response.headers.setdefault("Referrer-Policy", "same-origin")
-    response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
-    if response.mimetype != "text/html":  # a PDF or image opened in the browser needs its own viewer
-        return response
-    response.headers.setdefault("Content-Security-Policy",
-                                "default-src 'self'; img-src 'self' data: blob: https://tile.openstreetmap.org; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; "
-                                "script-src 'self'; frame-src 'self' https:; object-src 'none'; base-uri 'self'; frame-ancestors 'self'; "
-                                # signing in to Microsoft 365 is a form whose redirect goes to Microsoft
-                                "form-action 'self' https://login.microsoftonline.com")
-    if request.path.startswith(("/w/", "/workspaces")):
-        response.headers.setdefault("Cache-Control", "no-store")
-    return response
+CSP = ("default-src 'self'; img-src 'self' data: blob: https://tile.openstreetmap.org; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; "
+       "script-src 'self'; frame-src 'self' https:; object-src 'none'; base-uri 'self'; frame-ancestors 'self'; "
+       # signing in to Microsoft 365 is a form whose redirect goes to Microsoft
+       "form-action 'self' https://login.microsoftonline.com")
+
+
+def page_headers(path, mimetype):
+    """The browser-side protections every response carries, as (name, value) to set where the view didn't: a page
+    (text/html) also gets the content security policy, and a workspace's pages aren't kept in the browser's cache."""
+    out = [("X-Content-Type-Options", "nosniff"), ("Referrer-Policy", "same-origin"), ("X-Frame-Options", "SAMEORIGIN")]
+    if mimetype != "text/html":  # a PDF or image opened in the browser needs its own viewer
+        return out
+    out.append(("Content-Security-Policy", CSP))
+    if path.startswith(("/w/", "/workspaces")):
+        out.append(("Cache-Control", "no-store"))
+    return out

@@ -48,6 +48,15 @@ def _parse_cookies(header):
     return out
 
 
+class URL(str):
+    """A request's address as text, with its path and query as a native request's URL has them."""
+
+    def __new__(cls, text, path, query):
+        out = super().__new__(cls, text)
+        out.path, out.query = path, query
+        return out
+
+
 class Request:
     """One request, as the view sees it."""
 
@@ -100,8 +109,16 @@ class Request:
 
     @property
     def url(self):
+        """The whole address, as text; also `request.url.path` and `request.url.query`, as a native (Starlette)
+        request has them, so a template written for the native pages works here too (transition)."""
         query = self.query_string.decode("latin-1")
-        return self.base_url + (f"?{query}" if query else "")
+        return URL(self.base_url + (f"?{query}" if query else ""), self.path, self.query_string.decode("utf-8", "replace"))
+
+    @property
+    def query_params(self):
+        """`request.args` by its native (Starlette) name, so a template written for the native pages works here too
+        (transition)."""
+        return self.args
 
     @property
     def full_path(self):

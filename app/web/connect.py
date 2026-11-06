@@ -24,7 +24,8 @@ def callback():
     """Microsoft sends people back here both after connecting Microsoft 365 and after signing in with Microsoft."""
     if session.get("ms_login"):
         from .auth import finish_microsoft_login
-        return finish_microsoft_login(request.args)
+        from .http import current_request
+        return finish_microsoft_login(current_request(), request.args)
     if not current_user.is_authenticated:
         return redirect(url_for("auth.login"))
     target = session.pop("ms_next", None)

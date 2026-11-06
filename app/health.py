@@ -10,22 +10,16 @@ from pathlib import Path
 
 from .extensions import db
 from .core.settings import settings
-from .webkit import g, request
 
 KEPT = 3000
 _seen = deque(maxlen=KEPT)  # (when, screen, status, milliseconds)
 
 
-def started():
-    g.started_at = time.perf_counter()
-
-
-def finished(response):
-    began = g.get("started_at")
-    rule = request.url_rule.rule if request.url_rule is not None else None
+def record(rule, status, began):
+    """A request served: its screen (the address pattern, "/w/<int:wid>/app/t/<table>"), its status, and when it began
+    (time.perf_counter()). Files (/static) aren't screens."""
     if began is not None and rule and not rule.startswith("/static"):
-        _seen.append((time.time(), rule, response.status_code, (time.perf_counter() - began) * 1000))
-    return response
+        _seen.append((time.time(), rule, status, (time.perf_counter() - began) * 1000))
 
 
 WORDS = {"t": "a list", "app": "", "studio": "App map", "data": "What each list keeps", "workflows": "Processes", "map.json": "", "design": "Versions", "approvals": "To do",

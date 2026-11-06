@@ -52,8 +52,13 @@ def jsonify(*args, **kwargs):
 
 def url_for(endpoint, *, _anchor=None, _method=None, _scheme=None, _external=None, **values):
     """The address of a view: `url_for("app.record", wid=1, table="orders", rid=7)`. Values the address doesn't name go in
-    its query string; `_external` gives the whole address with its host; `.name` is a view of the current blueprint."""
+    its query string; `_external` gives the whole address with its host; `.name` is a view of the current blueprint.
+    A page served natively (app/web/http.py) is found by its name too, and on a native page this is http.url_for."""
     ctx = request_ctx.get()
+    if ctx is None:
+        from ..web import http
+        if http.current_request() is not None:  # transition: a native page's request
+            return http.url_for(endpoint, _anchor=_anchor, _external=bool(_external), _method=_method, **values)
     if ctx is not None:
         app, request = ctx.app, ctx.request
         if endpoint[:1] == ".":
@@ -74,12 +79,20 @@ def url_for(endpoint, *, _anchor=None, _method=None, _scheme=None, _external=Non
         host = app.config["SERVER_NAME"]
         scheme = _scheme or app.config.get("PREFERRED_URL_SCHEME") or "http"
         root = (app.config.get("APPLICATION_ROOT") or "/").rstrip("/")
-    path = root + app.url_map.build(endpoint, values, method=_method)
+    path = root + _path(app, endpoint, values, _method)
     if _external:
         path = f"{scheme}://{host}{path}"
     if _anchor is not None:
         path = f"{path}#{quote(str(_anchor), safe='%!#$&' + chr(39) + '()*+,/:;=?@')}"
     return path
+
+
+def _path(app, endpoint, values, method):
+    """The path of a view of this layer, or (transition) of a page served natively (app/web/http.py)."""
+    if endpoint not in app.url_map.by_endpoint and endpoint in (app.extensions.get("pages") or {}):
+        from ..web import http
+        return http.path_for(app, endpoint, values, method)
+    return app.url_map.build(endpoint, values, method=method)
 
 
 def redirect(location, code=302):
@@ -114,6 +127,7 @@ def make_response(*args):
             raise TypeError("A view's answer as a tuple is (body, status), (body, headers) or (body, status, headers)")
     if rv is None:
         raise TypeError("The view didn't return an answer: it ended without a return statement")
+    rv = _from_native(rv)
     if isinstance(rv, HTTPException):
         rv = rv.get_response()
     if not isinstance(rv, Response):
@@ -132,6 +146,22 @@ def make_response(*args):
     if headers:
         rv.headers.update(headers)
     return rv
+
+
+def _from_native(rv):
+    """A native (Starlette) response a converted helper gave back (render, redirect, json_response, send_file), as this
+    layer's (transition)."""
+    from starlette.responses import FileResponse, Response as NativeResponse, StreamingResponse
+    if not isinstance(rv, NativeResponse):
+        return rv
+    if isinstance(rv, StreamingResponse):
+        raise TypeError("A streamed native response can't be answered by the old layer's pages")
+    headers = [(k.decode("latin-1"), v.decode("latin-1")) for k, v in rv.raw_headers]
+    if isinstance(rv, FileResponse):
+        out = Response(None, rv.status_code, headers=headers)
+        out._path = str(rv.path)
+        return out
+    return Response(rv.body, rv.status_code, headers=headers)
 
 
 def send_file(path_or_file, mimetype=None, as_attachment=False, download_name=None, conditional=True, etag=True,

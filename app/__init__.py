@@ -26,6 +26,41 @@ def _logging(app):
     logging.getLogger("uvicorn.access").setLevel(logging.WARNING)  # not a line for every request
 
 
+def _old_layer_hooks(app):
+    """What the old web kit's pages are finished with (transition: the native pages' PageRoute does the same, and these
+    go with app/webkit): the time each took (Settings › Health), the security headers, and the errors' pages."""
+    import time
+
+    from . import health, security
+    from .web.http import error_words
+    from .webkit import g
+
+    @app.before_request
+    def started():
+        g.started_at = time.perf_counter()
+
+    @app.after_request
+    def finished(response):
+        health.record(request.url_rule.rule if request.url_rule is not None else None, response.status_code, g.get("started_at"))
+        return response
+
+    @app.after_request
+    def headers(response):
+        for key, value in security.page_headers(request.path, response.mimetype):
+            response.headers.setdefault(key, value)
+        return response
+
+    def page(code):
+        def handler(error):
+            if code == 500:
+                app.logger.error("Error on %s: %s", request.path, error)
+            return render_template("error.html", **error_words(code, getattr(error, "description", None))), code
+        return handler
+
+    for code in (403, 404, 413, 500):
+        app.register_error_handler(code, page(code))
+
+
 def create_app(overrides=None):
     app = App(__name__)
     app.config.from_object(Config)
@@ -49,41 +84,27 @@ def create_app(overrides=None):
     def load_user(user_id):
         return db.session.get(User, int(user_id))
 
-    from .web import account, api, auth, builder, connect, connect_apps, erp, filters, forms, mcp, portal, settings, workspaces  # noqa: F401 (mcp adds to api.bp)
-    for module in (auth, workspaces, builder, erp, settings, forms, connect, connect_apps, api, portal, account):
-        app.register_blueprint(module.bp)
-    app.register_blueprint(api.hooks)
-    app.register_blueprint(portal.join)
+    # the pages the old web kit still serves, one a line (the native ones, app/web/http.py, are served by the FastAPI
+    # front: app/api; docs/WEB.md says how a module moves from here to there)
+    from .web import filters
+    from .web import erp  # noqa: F401 (with erp_ai, erp_flows, erp_learn, erp_pages, erp_records, erp_studio on its bp)
+    from .web import mcp  # noqa: F401 (adds to api.bp)
+    from .web import api, builder, connect, connect_apps, forms, portal, settings
+    for blueprint in (
+        builder.bp,
+        erp.bp,
+        settings.bp,
+        forms.bp,
+        connect.bp,
+        connect_apps.bp,
+        api.bp,
+        api.hooks,
+        portal.bp,
+        portal.join,
+    ):
+        app.register_blueprint(blueprint)
     filters.register(app)
-    from . import health
-    app.before_request(health.started)
-    app.after_request(health.finished)
-    app.after_request(security.headers)
-    if not app.config.get("TESTING") and not app.debug:  # every page's layout read now, with the code it goes with: a layout
-        for name in app.jinja_env.list_templates():     # changed on disk while it runs waits for the next start, never mixes
-            if name.endswith(".html"):
-                app.jinja_env.get_template(name)
-
-    @app.errorhandler(403)
-    def forbidden(error):
-        said = getattr(error, "description", "") or ""
-        why = said if said and not said.startswith("You don't have the permission") else "Ask the person who runs your app if you need it."
-        return render_template("error.html", code=403, title="This isn't open to you", text=why), 403
-
-    @app.errorhandler(404)
-    def not_found(_):
-        return render_template("error.html", code=404, title="We can't find this page", text="It may have been moved or deleted, or it may not be open to you."), 404
-
-    @app.errorhandler(413)
-    def too_large(_):
-        return render_template("error.html", code=413, title="That file is too large",
-                               text=f"Files can be up to {app.config['MAX_UPLOAD_MB']} MB."), 413
-
-    @app.errorhandler(500)
-    def broken(exc):
-        app.logger.error("Error on %s: %s", request.path, exc)
-        return render_template("error.html", code=500, title="Sorry, something went wrong",
-                               text="It's not your fault, and nothing you entered was lost. Go back and try again."), 500
+    _old_layer_hooks(app)
 
     with app.app_context():
         if db.engine.dialect.name != "postgresql" and not app.config.get("SIMULATION"):
@@ -100,7 +121,11 @@ def create_app(overrides=None):
         from . import discovery, importer, intelligence, knowledge, learning  # noqa: F401 (register their background jobs)
 
     from .api import front
-    app.asgi = front(app)  # the v2 API (FastAPI) in front, the pages behind it
+    app.asgi = front(app)  # the v2 API (FastAPI) and the native pages in front, the old web kit's pages behind them
+    if not app.config.get("TESTING") and not app.debug:  # every page's layout read now, with the code it goes with: a layout
+        for name in app.jinja_env.list_templates():     # changed on disk while it runs waits for the next start, never mixes
+            if name.endswith(".html"):
+                app.jinja_env.get_template(name)
 
     if app.config["WORKER"] and not app.config.get("TESTING") and not app.config.get("SIMULATION"):
         from . import worker

@@ -7,7 +7,7 @@
   <p class="muted mt-1">New here? <a href="{{ url_for('auth.register') }}"><b>Create your free app</b></a> instead.</p>
   <form method="post" class="stack mt-3">{{ flashes() }}
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-    <input type="hidden" name="next" value="{{ request.args.get('next', '') }}">
+    <input type="hidden" name="next" value="{{ request.query_params.get('next', '') }}">
     <label class="field"><span>Email</span><input type="email" name="email" value="{{ email }}" required autofocus autocomplete="email"></label>
     <label class="field"><span>Password</span><input type="password" name="password" required autocomplete="current-password"></label>
     <button class="btn primary block">Sign in</button>

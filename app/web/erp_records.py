@@ -1248,7 +1248,7 @@ def move(wid, table, rid, index):
     t = _table(engine, table, "edit")
     r = _record(engine, t, rid)
     flow = (t.get("workflow") or {}).get("transitions") or []
-    if 0 <= index < len(flow) and flow[index].get("step_up") and request.form.get("step_up_code") and not confirm_step_up():
+    if 0 <= index < len(flow) and flow[index].get("step_up") and request.form.get("step_up_code") and not confirm_step_up(request.form.get("step_up_code")):
         flash("That code (or password) wasn't right.", "error")
         return redirect(url_for("app.record", wid=wid, table=t["key"], rid=r.id))
     filled = {k: request.form[f"fill_{k}"] for k in (flow[index].get("requires") or [] if 0 <= index < len(flow) else [])

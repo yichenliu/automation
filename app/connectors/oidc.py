@@ -14,7 +14,7 @@ from urllib.parse import urlencode
 
 import requests
 from ..core.settings import settings
-from ..webkit import url_for
+from ..web.http import url_for
 
 _DISCOVERED = {}  # issuer: (when, its configuration)
 

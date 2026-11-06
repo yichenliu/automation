@@ -1,6 +1,10 @@
 """The ERP itself: every screen is drawn from the workspace's blueprint. The routes live in erp_records (tables and
 records), erp_pages (dashboards, automations, approvals, history) and erp_ai (the assistant, reading documents, imports);
-this module holds what they share."""
+this module holds what they share.
+
+Its helpers are written for the native pages (app/web/http.py, docs/WEB.md): what the page has looked up is on
+request.state (ws, member, engine), and the person is current_user(request). The pages the old web kit still serves
+use them too (their `g` is the same request.state), with the request found by current_request()."""
 from sqlalchemy import or_
 
 from ..blueprint import schema
@@ -8,39 +12,53 @@ from ..engine.records import Engine
 from ..extensions import db
 from ..models import Approval, Notification
 from ..security import step_up, stepped_up, workspace
-from ..webkit import Blueprint, current_user, g, url_for
+from ..webkit import Blueprint
+from .http import context_processor, current_request, current_user, template_global, url_for
 
 bp = Blueprint("app", __name__, url_prefix="/w/<int:wid>/app")
 
 
-def ctx(wid, role="viewer"):
+def ctx(wid, role="viewer", request=None):
     """The workspace (checked against the person's role) and an engine acting as them: it shows them only the tables,
-    records and fields their role allows."""
-    ws = workspace(wid, role)
-    g.engine = Engine(ws, by=current_user.display, member=g.member)
-    g.engine.stepped_up = stepped_up()
-    return ws, g.engine
+    records and fields their role allows. Both are kept on request.state (ws, member, engine)."""
+    request = request or current_request()
+    ws = workspace(wid, role, request)
+    engine = Engine(ws, by=current_user(request).display, member=request.state.member)
+    engine.stepped_up = stepped_up(request)
+    request.state.engine = engine
+    return ws, engine
 
 
-def confirm_step_up():
-    """A form that needs a confirmed sign-in carries the person's code (or password) as "step_up_code": checked here, it
-    counts for the engine of this request too. Returns whether they're confirmed now."""
-    from ..webkit import request
-    if stepped_up():
+def confirm_step_up(code, request=None):
+    """A form that needs a confirmed sign-in carries the person's code (or password) as "step_up_code" (`code` here):
+    checked, it counts for the engine of this request too. Returns whether they're confirmed now."""
+    request = request or current_request()
+    if stepped_up(request):
         return True
-    ok = step_up(current_user, request.form.get("step_up_code"))
-    if ok and g.get("engine") is not None:
-        g.engine.stepped_up = True
+    ok = step_up(current_user(request), code, request)
+    engine = getattr(request.state, "engine", None)
+    if ok and engine is not None:
+        engine.stepped_up = True
     return ok
+
+
+def _here(name):
+    """What the page being served has looked up (request.state: its ws, member or engine), or None."""
+    request = current_request()
+    return getattr(request.state, name, None) if request is not None else None
+
+
+def _me():
+    """The person the page being served is for."""
+    return current_user(current_request())
 
 
 def my_space(engine):
     """The team menu this person sees (spaces in the design), or None for the whole menu: admins and the owner, people
     in no team that has one, and anyone who chose to see everything."""
-    from ..webkit import session
     if engine is None or engine.role is None or engine._at_least("admin"):
         return None
-    if engine.ws.id in (session.get("whole_menu") or []):
+    if engine.ws.id in (current_request().state.session.get("whole_menu") or []):
         return None
     return next((sp for sp in schema.spaces(engine.bp) if set(sp["for"]) & engine.teams or engine.role in sp["for"]), None)
 
@@ -82,7 +100,7 @@ def nav(ws):
     """The ERP's menu: its sections, each with its pages and tables, then anything without a section. Line-item tables
     (edited inside their parent) and tables this person may not see aren't listed. Someone whose team has its own menu
     (a space) sees that instead."""
-    engine = g.get("engine")
+    engine = _here("engine")
     space = my_space(engine) if engine is not None and engine.ws.id == ws.id else None
     if space is not None:
         return _space_sections(engine, space)
@@ -112,13 +130,14 @@ def nav(ws):
 def _flows_offered(engine):
     """Whether "Step by step" is in this person's menu: a flow they can start from it, or one they left part way."""
     from ..engine import flows
-    return bool(flows.in_menu(engine)) or bool(flows.unfinished(engine, current_user.id))
+    return bool(flows.in_menu(engine)) or bool(flows.unfinished(engine, _me().id))
 
 
 def unread(ws):
+    me = _me()
     items = Notification.query.filter(Notification.workspace_id == ws.id,
-                                      or_(Notification.user_id.is_(None), Notification.user_id == current_user.id)).order_by(Notification.id.desc()).limit(200).all()
-    return sum(1 for n in items if current_user.id not in (n.read_by or []) and n.kind != "approval")  # those are counted under To do
+                                      or_(Notification.user_id.is_(None), Notification.user_id == me.id)).order_by(Notification.id.desc()).limit(200).all()
+    return sum(1 for n in items if me.id not in (n.read_by or []) and n.kind != "approval")  # those are counted under To do
 
 
 def my_approvals(ws, member):
@@ -126,9 +145,11 @@ def my_approvals(ws, member):
     from ..engine.automations import may_decide
     from ..models import Record
     pending = Approval.query.filter_by(workspace_id=ws.id, status="pending").order_by(Approval.id).all()
-    engine = g.get("engine") if g.get("engine") is not None and g.engine.ws.id == ws.id else None
+    engine = _here("engine")
+    engine = engine if engine is not None and engine.ws.id == ws.id else None
+    me = _me()
     needs_record = lambda a: a.record_id and (a.assignee_id is None or (a.proposal or {}).get("not_by"))  # noqa: E731
-    return [a for a in pending if may_decide(a, member, current_user.id, db.session.get(Record, a.record_id) if needs_record(a) else None,
+    return [a for a in pending if may_decide(a, member, me.id, db.session.get(Record, a.record_id) if needs_record(a) else None,
                                              engine=engine) and in_my_queue(a)]
 
 
@@ -136,7 +157,7 @@ def in_my_queue(a, later=False):
     """A task someone else in its team took isn't in anyone else's queue; one put off ("not now") comes back on its day.
     With `later`, the ones put off instead."""
     from ..models import utcnow
-    if a.taken_by_id and a.taken_by_id != current_user.id:
+    if a.taken_by_id and a.taken_by_id != _me().id:
         return False
     put_off = bool(a.deferred_until and a.deferred_until > utcnow())
     return put_off if later else not put_off
@@ -154,20 +175,20 @@ def ai_count(ws):
             + sum(1 for t in (ws.blueprint or {}).get("tables", []) for f in t["fields"] if f.get("ai")))
 
 
-@bp.app_context_processor
+@context_processor
 def chrome():
     return {"nav_for": nav, "unread_for": unread, "approvals_for": my_approvals, "suggestions_for": open_suggestions, "ai_count_for": ai_count,
             "feedback_for": lambda ws: url_for("app.feedback", wid=ws.id), "checks_for": lambda ws: url_for("app.checks", wid=ws.id)}
 
 
-@bp.app_template_global()
+@template_global
 def target_url(ws, target):
     """'table:invoices:record:7' (as automation steps record it) -> a link."""
     from ..builder.chat import navigate_url
     return navigate_url(ws, target) if target else None
 
 
-@bp.app_template_global()
+@template_global
 def source_url(ws, link):
     """Where a passage the AI found came from: a record, a kept file, or an email in Outlook."""
     if not link:
