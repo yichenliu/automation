@@ -16,15 +16,15 @@
   </div>
   {% else %}<a class="btn" href="{{ url_for('app.export', wid=ws.id, table=t.key) }}">{{ icon('download') }}Export</a>{% endif %}
 </div>
-<div class="tabs-row"><div class="tabs">{% for v in views %}<a href="{{ url_for('app.table', wid=ws.id, table=t.key, view=v.key) }}" class="{{ 'active' if v.key == view.key and not request.args.get('my') }}">{{ icon({'list': 'list', 'board': 'square-kanban', 'calendar': 'calendar', 'gallery': 'layout-grid', 'timeline': 'chart-gantt', 'map': 'map-pin', 'tree': 'layers', 'sheet': 'table', 'inbox': 'inbox'}[v.type]) }}{{ v.label }}</a>{% endfor %}{% for m in mine or [] %}<a href="{{ url_for('app.table', wid=ws.id, table=t.key) }}?{{ m.params }}{{ '&' if m.params }}my={{ m.id }}" class="mine {{ 'active' if request.args.get('my') == m.id|string }}">{{ icon('star') }}{{ m.label }}</a>{% endfor %}</div>
+<div class="tabs-row"><div class="tabs">{% for v in views %}<a href="{{ url_for('app.table', wid=ws.id, table=t.key, view=v.key) }}" class="{{ 'active' if v.key == view.key and not request.query_params.get('my') }}">{{ icon({'list': 'list', 'board': 'square-kanban', 'calendar': 'calendar', 'gallery': 'layout-grid', 'timeline': 'chart-gantt', 'map': 'map-pin', 'tree': 'layers', 'sheet': 'table', 'inbox': 'inbox'}[v.type]) }}{{ v.label }}</a>{% endfor %}{% for m in mine or [] %}<a href="{{ url_for('app.table', wid=ws.id, table=t.key) }}?{{ m.params }}{{ '&' if m.params }}my={{ m.id }}" class="mine {{ 'active' if request.query_params.get('my') == m.id|string }}">{{ icon('star') }}{{ m.label }}</a>{% endfor %}</div>
   <details class="save-view"><summary class="btn sm ghost" title="Keep this search and these filters as a tab of your own">{{ icon('plus') }}Save as my tab</summary><form method="post" action="{{ url_for('app.save_view', wid=ws.id, table=t.key) }}" class="row"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="query" value="{{ here_query }}">
     <input type="text" name="label" placeholder="Name it, e.g. My overdue" required maxlength="80"><button class="btn sm primary">Save</button></form></details>
-  {% if request.args.get('my') %}<form method="post" action="{{ url_for('app.save_view', wid=ws.id, table=t.key) }}" class="inline-form"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn sm ghost" name="forget" value="{{ request.args.get('my') }}" title="Forget this view">{{ icon('x') }}</button></form>{% endif %}</div>
+  {% if request.query_params.get('my') %}<form method="post" action="{{ url_for('app.save_view', wid=ws.id, table=t.key) }}" class="inline-form"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn sm ghost" name="forget" value="{{ request.query_params.get('my') }}" title="Forget this view">{{ icon('x') }}</button></form>{% endif %}</div>
 <form class="toolbar" method="get">
   <input type="hidden" name="view" value="{{ view.key }}">
-  {% if request.args.get('month') %}<input type="hidden" name="month" value="{{ request.args.get('month') }}">{% endif %}
+  {% if request.query_params.get('month') %}<input type="hidden" name="month" value="{{ request.query_params.get('month') }}">{% endif %}
   <div class="search-box">{{ icon('search') }}<input type="search" name="q" value="{{ q }}" placeholder="Search {{ t.label|lc }}…"></div>
-  {% set filtering = quick or request.args.get('group') %}
+  {% set filtering = quick or request.query_params.get('group') %}
   {% if filterable or (groupable is defined and groupable) %}<button class="btn {{ 'on' if filtering }}" type="button" data-toggle-filters aria-expanded="{{ 'true' if filtering else 'false' }}">{{ icon('filter') }}Filter{% if quick %} ({{ quick|length }}){% endif %}</button>{% endif %}
   <div class="filters" {{ '' if filtering else 'hidden' }}>
   {% for f in filterable %}
@@ -34,7 +34,7 @@
     <option value="__none__" {{ 'selected' if quick.get(f.key) == '__none__' }}>No {{ f.label|lc }}</option>
   </select>
   {% endfor %}
-  {% if groupable is defined and groupable %}<select name="group" data-autosubmit aria-label="Group by" class="{{ 'on' if request.args.get('group') }}"><option value="">Group by…</option>{% for f in groupable %}<option value="{{ f.key }}" {{ 'selected' if group_field and group_field.key == f.key }}>Group by {{ f.label|lc }}</option>{% endfor %}</select>{% endif %}
+  {% if groupable is defined and groupable %}<select name="group" data-autosubmit aria-label="Group by" class="{{ 'on' if request.query_params.get('group') }}"><option value="">Group by…</option>{% for f in groupable %}<option value="{{ f.key }}" {{ 'selected' if group_field and group_field.key == f.key }}>Group by {{ f.label|lc }}</option>{% endfor %}</select>{% endif %}
   </div>
   {% if view.type == 'calendar' %}<div class="seg">{% for m, label in [('month', 'Month'), ('week', 'Week')] %}<a class="{{ 'on' if (mode or 'month') == m }}" href="{{ url_for('app.table', wid=ws.id, table=t.key, view=view.key, mode=m) }}">{{ label }}</a>{% endfor %}</div>{% endif %}
   {% if q or quick %}<a class="btn sm ghost" href="{{ url_for('app.table', wid=ws.id, table=t.key, view=view.key) }}">{{ icon('x') }}Clear</a>{% endif %}

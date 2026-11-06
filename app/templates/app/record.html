@@ -60,7 +60,7 @@
       {% elif open_moves %}{{ icon('arrow-right') }}Next: {{ (open_moves[0][1].label or ('move it to ' ~ open_moves[0][1].to))|lc }}
       {% elif blocked %}{{ icon('info') }}<span>{% for b in blocked[:2] %}{{ b[2] }}.{{ ' ' if not loop.last }}{% endfor %}</span>
       {% else %}{{ icon('circle-check') }}Nothing more to do here.{% endif %}</div></div>
-  {% if first and first.kind == 'approval' %}<form method="post" action="{{ url_for('app.decide', wid=ws.id, aid=first.id) }}" class="moves"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="back" value="{{ request.path }}">
+  {% if first and first.kind == 'approval' %}<form method="post" action="{{ url_for('app.decide', wid=ws.id, aid=first.id) }}" class="moves"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="back" value="{{ request.url.path }}">
       <input type="text" name="comment" placeholder="Add a note (optional)" aria-label="Note">{% if (first.proposal or {}).step_up and not stepped %}<input type="password" name="step_up_code" class="step-up" autocomplete="one-time-code" placeholder="Code or password" aria-label="Confirm it's you">{% endif %}
       <button class="btn primary" name="decision" value="approve">{{ icon('check') }}Approve</button><button class="btn danger" name="decision" value="reject">{{ icon('x') }}Say no</button></form>
   {% elif first %}<a class="btn primary" href="{{ url_for('app.approvals', wid=ws.id) }}#a{{ first.id }}">{{ icon('list-todo') }}{{ 'Check it' if first.kind in ('review', 'change') else 'Do it' }}</a>
@@ -83,7 +83,7 @@
   {% if a.history %}<div class="faint tiny">{% for h in a.history %}{{ {'reminded': 'Reminded', 'escalated': 'Passed up (no answer in time)', 'escalation': 'Passed up from ' ~ (h.by or 'someone'), 'passed on': 'Passed on by ' ~ (h.by or 'someone')}.get(h.what, h.what) }}{{ ' · ' if not loop.last }}{% endfor %}</div>{% endif %}</div>
   {% if a.id in mine %}
     {% if a.kind in ('task', 'review') %}<a class="btn primary sm" href="{{ url_for('app.approvals', wid=ws.id) }}#a{{ a.id }}">{{ icon('list-todo') }}{{ 'Check it' if a.kind == 'review' else 'Do it' }}</a>
-    {% else %}<form method="post" action="{{ url_for('app.decide', wid=ws.id, aid=a.id) }}" class="row"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="back" value="{{ request.path }}">
+    {% else %}<form method="post" action="{{ url_for('app.decide', wid=ws.id, aid=a.id) }}" class="row"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="back" value="{{ request.url.path }}">
     <input type="text" name="comment" placeholder="Note (optional)" aria-label="Note"><button class="btn primary sm" name="decision" value="approve">Approve</button><button class="btn sm danger" name="decision" value="reject">Say no</button></form>{% endif %}
   {% else %}<span class="faint small">Waiting for {{ e.members().get(a.assignee_id, 'someone') if a.assignee_id else teams.get((a.role or '')[5:], 'a team') if (a.role or '').startswith('team:') else {'owner': 'the owner', 'admin': 'an admin', 'editor': 'an editor'}.get(a.role or 'admin') }}</span>{% endif %}
 </div>{% endif %}{% endfor %}
@@ -116,7 +116,7 @@
     {% for rel in related %}
     <div class="card"><div class="card-head"><h2 class="grow">{{ icon(rel.table.icon or 'table') }}{{ rel.table.label }}{% if rel.via.label|lc != t.singular|lc %} <span class="muted">· {{ rel.via.label }}</span>{% endif %} <span class="faint small">{{ rel.rows|length }}</span></h2>
       {% if rel.rows|length > 1 %}<a class="btn sm ghost" href="{{ url_for('app.compare', wid=ws.id, table=rel.table.key, ids=rel.rows[:8]|map(attribute='id')|list) }}">{{ icon('scale') }}Compare</a>{% endif %}
-      {% if can_edit and e.can(rel.table, 'edit') %}<a class="btn sm" href="{{ url_for('app.new', wid=ws.id, table=rel.table.key, back=request.path, **{('f_' ~ rel.via.key): r.id}) }}">{{ icon('plus') }}Add {{ rel.table.singular|lc }}</a>{% endif %}</div>
+      {% if can_edit and e.can(rel.table, 'edit') %}<a class="btn sm" href="{{ url_for('app.new', wid=ws.id, table=rel.table.key, back=request.url.path, **{('f_' ~ rel.via.key): r.id}) }}">{{ icon('plus') }}Add {{ rel.table.singular|lc }}</a>{% endif %}</div>
       {% if rel.rows %}<div class="table-wrap"><table class="grid as-cards"><thead><tr>{% for f in rel.columns %}<th class="{{ is_num(e, f) }}">{{ f.label }}</th>{% endfor %}</tr></thead><tbody>
         {% for x in rel.rows %}<tr data-open="{{ url_for('app.record', wid=ws.id, table=rel.table.key, rid=x.id) }}">{% for f in rel.columns %}<td class="{{ is_num(e, f) }}" data-label="{{ f.label }}">{{ value(e, f, e.value(x, f.key)) }}</td>{% endfor %}</tr>{% endfor %}</tbody>
         {% if rel.totals %}<tfoot><tr>{% for f in rel.columns %}<td class="{{ is_num(e, f) }}">{% if f.key in rel.totals %}{{ e.display(f, rel.totals[f.key]) }}{% endif %}</td>{% endfor %}</tr></tfoot>{% endif %}

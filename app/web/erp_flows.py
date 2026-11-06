@@ -2,85 +2,86 @@
 import base64
 import json
 
+from fastapi import APIRouter, Depends, HTTPException, Request
+
 from ..blueprint import expr, schema
 from ..engine import flows
 from ..engine.records import FieldErrors, RecordContext
 from ..extensions import db
 from ..models import FlowRun
 from ..storage import FileRejected, save
-from .erp import bp, ctx
+from .erp import ctx
 from .erp_records import _options
-from ..webkit import abort, current_user, flash, g, jsonify, login_required, redirect, render_template, request, url_for
+from .http import Form, PageRoute, check_csrf, current_user, flash, form_of, json_response, redirect, render, signed_in, url_for
+
+router = APIRouter(prefix="/w/{wid:int}/app", route_class=PageRoute, dependencies=[Depends(check_csrf)])
 
 
-def _run(engine, run_id):
+def _run(request, engine, run_id):
     run = db.session.get(FlowRun, run_id)
-    if run is None or run.workspace_id != engine.ws.id or (run.user_id != current_user.id and not g.member.can("admin")):
-        abort(404)
+    if run is None or run.workspace_id != engine.ws.id or (run.user_id != current_user(request).id and not request.state.member.can("admin")):
+        raise HTTPException(404)
     flow = flows.of(engine, run.flow)
     if flow is None:
-        abort(404)
+        raise HTTPException(404)
     return run, flow
 
 
-@bp.route("/flows")
-@login_required
-def flow_list(wid):
+@router.api_route("/flows", methods=["GET"], name="app.flow_list")
+def flow_list(request: Request, wid: int, user=Depends(signed_in)):
     """The work done step by step that this person can start, and what they left part way."""
-    ws, engine = ctx(wid)
-    started = [(r, flows.of(engine, r.flow)) for r in flows.unfinished(engine, current_user.id)]
-    return render_template("app/flows.html", ws=ws, e=engine, offered=flows.in_menu(engine),
+    ws, engine = ctx(wid, "viewer", request)
+    started = [(r, flows.of(engine, r.flow)) for r in flows.unfinished(engine, user.id)]
+    return render(request, "app/flows.html", ws=ws, e=engine, offered=flows.in_menu(engine),
                            started=[(r, f) for r, f in started if f is not None])
 
 
-@bp.route("/flows/<key>/start", methods=["POST"])
-@login_required
-def flow_start(wid, key):
-    ws, engine = ctx(wid, "editor")
+@router.api_route("/flows/{key}/start", methods=["POST"], name="app.flow_start")
+def flow_start(request: Request, wid: int, key: str, user=Depends(signed_in), form: Form = Depends(form_of)):
+    ws, engine = ctx(wid, "editor", request)
     flow = flows.of(engine, key)
     if flow is None:
-        abort(404)
+        raise HTTPException(404)
     record = None
     if flow["start"] == "record":
-        rid = request.values.get("record", "")
+        rid = request.query_params["record"] if "record" in request.query_params else form.get("record", "")
         record = engine.get(int(rid), flow["table"]) if rid.isdigit() else None
         if record is None or not engine.allowed(record):
-            abort(404)
+            raise HTTPException(404)
     try:
-        run = flows.begin(engine, flow, current_user.id, record)
+        run = flows.begin(engine, flow, user.id, record)
     except FieldErrors as exc:
-        flash("; ".join(exc.errors.values()), "error")
-        return redirect(request.referrer or url_for("app.flow_list", wid=wid))
+        flash(request, "; ".join(exc.errors.values()), "error")
+        return redirect(request.headers.get("referer") or url_for("app.flow_list", wid=wid))
     return redirect(url_for("app.flow_run", wid=wid, run_id=run.id))
 
 
-@bp.route("/flows/run/<int:run_id>", methods=["GET", "POST"])
-@login_required
-def flow_run(wid, run_id):
-    ws, engine = ctx(wid, "editor")
-    run, flow = _run(engine, run_id)
+@router.api_route("/flows/run/{run_id:int}", methods=["GET", "POST"], name="app.flow_run")
+def flow_run(request: Request, wid: int, run_id: int, user=Depends(signed_in), form: Form = Depends(form_of)):
+    ws, engine = ctx(wid, "editor", request)
+    run, flow = _run(request, engine, run_id)
     if run.status == "done":
         return redirect(url_for("app.flow_done", wid=wid, run_id=run.id))
     if run.status != "open":
-        flash("That was cancelled.", "info")
+        flash(request, "That was cancelled.", "info")
         return redirect(url_for("app.flow_list", wid=wid))
     steps = flow["steps"]
     run.at = min(max(run.at or 0, 0), len(steps) - 1)
     step = steps[run.at]
     errors = {}
     if request.method == "POST":
-        action = request.form.get("go", "next")
+        action = form.get("go", "next")
         if action == "cancel":
             run.status, run.finished_at = "cancelled", None
             db.session.commit()
-            flash(f"Stopped “{flow['label']}”. Nothing was saved.", "info")
+            flash(request, f"Stopped “{flow['label']}”. Nothing was saved.", "info")
             record = flows.record_of(engine, run)
             return redirect(url_for("app.record", wid=wid, table=flow["table"], rid=record.id) if record else url_for("app.flow_list", wid=wid))
         if action == "back":
             run.at = max(0, run.at - 1)
             db.session.commit()
             return redirect(url_for("app.flow_run", wid=wid, run_id=run.id))
-        values, files = _posted(engine, ws, flow, step)
+        values, files = _posted(request, form, engine, ws, flow, step)
         if isinstance(values, dict) and "_upload" in values:
             errors = {"_": values["_upload"]}
         else:
@@ -93,23 +94,23 @@ def flow_run(wid, run_id):
                 db.session.commit()
                 return redirect(url_for("app.flow_run", wid=wid, run_id=run.id))
             try:
-                record = flows.finish(engine, run, current_user.display)
+                record = flows.finish(engine, run, user.display)
             except FieldErrors as exc:
                 errors = exc.errors
                 back = next((n for n, s in enumerate(steps) if s["kind"] == "form" and set(s["fields"]) & set(exc.errors)), None)
                 if back is not None and back != run.at:  # the step that asked for it, to put it right
                     run.at = back
                     db.session.commit()
-                    flash("; ".join(exc.errors.values()), "error")
+                    flash(request, "; ".join(exc.errors.values()), "error")
                     return redirect(url_for("app.flow_run", wid=wid, run_id=run.id))
             else:
                 for s_ in steps:  # what prints by itself, where there's a printer for it
                     if s_["kind"] == "print" and s_.get("auto") and printer_chosen(ws, _role(engine, flow, s_, record)):
-                        _print_step(engine, flow, s_, record)
+                        _print_step(request, engine, flow, s_, record)
                 return redirect(url_for("app.flow_done", wid=wid, run_id=run.id, rid=record.id))
     record = flows.record_of(engine, run)
     shown = [n for n, s in enumerate(steps) if s["kind"] != "print"]
-    return render_template("app/flow.html", ws=ws, e=engine, flow=flow, run=run, step=step, errors=errors, record=record,
+    return render(request, "app/flow.html", ws=ws, e=engine, flow=flow, run=run, step=step, errors=errors, record=record,
                            t=engine.tables[flow["table"]], text=_text(engine, record, step.get("text")),
                            lines=flows.pick_lines(engine, flow, step, record) if step["kind"] == "pick" else [],
                            options=_options(engine, engine.tables[flow["table"]]) if step["kind"] == "form" else {},
@@ -117,7 +118,7 @@ def flow_run(wid, run_id):
                            of=len(shown), first=run.at == (shown[0] if shown else 0))
 
 
-def _posted(engine, ws, flow, step):
+def _posted(request, form, engine, ws, flow, step):
     """A step's answers as its screen sent them, and the ids of any photo or signature kept for it."""
     kind = step["kind"]
     if kind == "form":
@@ -125,29 +126,29 @@ def _posted(engine, ws, flow, step):
         out = {}
         for k in step["fields"]:
             f = schema.field(t, k)
-            out[k] = request.form.getlist(k) if f and f["type"] in ("multi_select", "tags") or (f and f.get("multiple")) else request.form.get(k)
+            out[k] = form.getlist(k) if f and f["type"] in ("multi_select", "tags") or (f and f.get("multiple")) else form.get(k)
             if f and f["type"] == "checkbox":
-                out[k] = bool(request.form.get(k))
+                out[k] = bool(form.get(k))
         return out, []
     if kind in ("scan", "pick"):
         try:
-            return json.loads(request.form.get("answer") or "{}"), []
+            return json.loads(form.get("answer") or "{}"), []
         except ValueError:
             return {}, []
     if kind == "decide":
-        return {"choice": request.form.get("choice")}, []
+        return {"choice": form.get("choice")}, []
     if kind == "photo":
         fids = []
-        for upload in [u for u in request.files.getlist("photo") if u and u.filename][:6]:
+        for upload in [u for u in form.files.getlist("photo") if u and u.filename][:6]:
             try:
-                fids.append(save(ws.id, upload, upload.filename, by=current_user.display).id)
+                fids.append(save(ws.id, upload, upload.filename, by=current_user(request).display).id)
             except FileRejected as exc:
                 return {"_upload": str(exc)}, []
         return {}, fids
     if kind == "signature":
-        drawn = request.form.get("signature") or ""
+        drawn = form.get("signature") or ""
         if drawn.startswith("data:image/png;base64,") and len(drawn) < 3_000_000:
-            return {}, [save(ws.id, base64.b64decode(drawn.split(",", 1)[1]), f"{step['label']}.png", by=current_user.display,
+            return {}, [save(ws.id, base64.b64decode(drawn.split(",", 1)[1]), f"{step['label']}.png", by=current_user(request).display,
                              mime="image/png").id]
         return {}, []
     return {}, []
@@ -163,19 +164,18 @@ def _text(engine, record, text):
         return text
 
 
-@bp.route("/flows/run/<int:run_id>/code")
-@login_required
-def flow_code(wid, run_id):
+@router.api_route("/flows/run/{run_id:int}/code", methods=["GET"], name="app.flow_code", dependencies=[Depends(signed_in)])
+def flow_code(request: Request, wid: int, run_id: int):
     """What a scanned code is, for a scan step: {"id", "title"}, or 404 with what to say."""
-    ws, engine = ctx(wid, "editor")
-    run, flow = _run(engine, run_id)
+    ws, engine = ctx(wid, "editor", request)
+    run, flow = _run(request, engine, run_id)
     step = flow["steps"][min(run.at or 0, len(flow["steps"]) - 1)]
     if step["kind"] != "scan":
-        abort(400)
-    found = flows.find_code(engine, step, request.args.get("code"))
+        raise HTTPException(400)
+    found = flows.find_code(engine, step, request.query_params.get("code"))
     if found is None:
-        return jsonify(error=f"Nothing has the code “{request.args.get('code', '')}”"), 404
-    return jsonify(id=found.id, title=engine.title(found))
+        return json_response({"error": f"Nothing has the code “{request.query_params.get('code', '')}”"}, 404)
+    return json_response({"id": found.id, "title": engine.title(found)})
 
 
 def _print_target(engine, flow, step, record):
@@ -187,7 +187,7 @@ def _print_target(engine, flow, step, record):
     return spec["table"], (engine.related(record, spec["table"], spec["via"]) if spec.get("via") else [])
 
 
-def _print_step(engine, flow, step, record):
+def _print_step(request, engine, flow, step, record):
     """Send a print step's labels or document to the printer; a message for the person either way."""
     from .. import printing
     from ..documents import build, labels
@@ -197,13 +197,13 @@ def _print_step(engine, flow, step, record):
         if _is_label(engine, table, step["document"]):
             doc = next((d for d in engine.tables[table].get("documents", []) if d["key"] == step["document"]), None)
             link = lambda r: url_for("app.record", wid=engine.ws.id, table=table, rid=r.id, _external=True)  # noqa: E731
-            flash(printing.print_labels(engine.ws, labels.for_records(engine, rows, doc, link), (doc or {}).get("size")), "success")
+            flash(request, printing.print_labels(engine.ws, labels.for_records(engine, rows, doc, link), (doc or {}).get("size")), "success")
         else:
             for r in rows:
                 data, _ = build(engine, r, step["document"])
-                flash(printing.print_pdf(engine.ws, pdf_.render(data)), "success")
+                flash(request, printing.print_pdf(engine.ws, pdf_.render(data)), "success")
     except printing.PrintProblem as exc:
-        flash(str(exc), "error")
+        flash(request, str(exc), "error")
 
 
 def _role(engine, flow, step, record):
@@ -216,23 +216,21 @@ def printer_chosen(ws, role):
     return printing.chosen(ws, role) is not None
 
 
-@bp.route("/flows/run/<int:run_id>/print/<int:n>", methods=["POST"])
-@login_required
-def flow_print(wid, run_id, n):
-    ws, engine = ctx(wid, "editor")
-    run, flow = _run(engine, run_id)
+@router.api_route("/flows/run/{run_id:int}/print/{n:int}", methods=["POST"], name="app.flow_print", dependencies=[Depends(signed_in)])
+def flow_print(request: Request, wid: int, run_id: int, n: int):
+    ws, engine = ctx(wid, "editor", request)
+    run, flow = _run(request, engine, run_id)
     record = engine.get(run.result_id) if run.result_id else None
     if run.status != "done" or record is None or not 0 <= n < len(flow["steps"]) or flow["steps"][n]["kind"] != "print":
-        abort(404)
-    _print_step(engine, flow, flow["steps"][n], record)
+        raise HTTPException(404)
+    _print_step(request, engine, flow, flow["steps"][n], record)
     return redirect(url_for("app.flow_done", wid=wid, run_id=run.id))
 
 
-@bp.route("/flows/run/<int:run_id>/done")
-@login_required
-def flow_done(wid, run_id):
-    ws, engine = ctx(wid)
-    run, flow = _run(engine, run_id)
+@router.api_route("/flows/run/{run_id:int}/done", methods=["GET"], name="app.flow_done", dependencies=[Depends(signed_in)])
+def flow_done(request: Request, wid: int, run_id: int):
+    ws, engine = ctx(wid, "viewer", request)
+    run, flow = _run(request, engine, run_id)
     if run.status != "done":
         return redirect(url_for("app.flow_run", wid=wid, run_id=run.id))
     record = engine.get(run.result_id) if run.result_id else None
@@ -255,7 +253,7 @@ def flow_done(wid, run_id):
                 prints.append({"label": step["label"], "lines": [x.id for x in lines], "table": spec["table"], "doc": step["document"]})
     from ..models import Run
     rule = db.session.get(Run, run.run_id) if run.run_id else None
-    return render_template("app/flow_done.html", ws=ws, e=engine, flow=flow, run=run, record=record, prints=prints, rule=rule)
+    return render(request, "app/flow_done.html", ws=ws, e=engine, flow=flow, run=run, record=record, prints=prints, rule=rule)
 
 
 def _is_label(engine, table, key):

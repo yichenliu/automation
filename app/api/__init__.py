@@ -159,10 +159,16 @@ def front(platform):
     # (with the v1 API and MCP)
     from ..web import http
     from ..web import auth, account, workspaces  # one module a line: docs/WEB.md
+    from ..web import erp_records
+    from ..web import erp_flows
+    from ..web import erp_learn
     http.install(api, platform, [
         auth.router,
         account.router,
         workspaces.router,
+        erp_records.router,
+        erp_flows.router,
+        erp_learn.router,
     ])
     api.state.platform = platform
     return api

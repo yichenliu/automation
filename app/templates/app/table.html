@@ -47,7 +47,7 @@
 </div>
 </form>
 {% if pages > 1 %}<div class="row mt-2"><span class="faint small grow">Page {{ page }} of {{ pages }} · {{ total }} in all</span>
-  {% if page > 1 %}<a class="btn sm" href="{{ url_for('app.table', wid=ws.id, table=t.key, **dict(args, page=page - 1, sort=request.args.get('sort'), dir=request.args.get('dir'))) }}">{{ icon('chevron-left') }}Previous</a>{% endif %}
-  {% if page < pages %}<a class="btn sm" href="{{ url_for('app.table', wid=ws.id, table=t.key, **dict(args, page=page + 1, sort=request.args.get('sort'), dir=request.args.get('dir'))) }}">Next{{ icon('chevron-right') }}</a>{% endif %}</div>{% endif %}
+  {% if page > 1 %}<a class="btn sm" href="{{ url_for('app.table', wid=ws.id, table=t.key, **dict(args, page=page - 1, sort=request.query_params.get('sort'), dir=request.query_params.get('dir'))) }}">{{ icon('chevron-left') }}Previous</a>{% endif %}
+  {% if page < pages %}<a class="btn sm" href="{{ url_for('app.table', wid=ws.id, table=t.key, **dict(args, page=page + 1, sort=request.query_params.get('sort'), dir=request.query_params.get('dir'))) }}">Next{{ icon('chevron-right') }}</a>{% endif %}</div>{% endif %}
 
 {% endblock %}

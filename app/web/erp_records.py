@@ -7,16 +7,23 @@ import itertools
 import re
 from datetime import date, datetime, timedelta
 
+from fastapi import APIRouter, Depends, HTTPException, Request
+from starlette.responses import Response
+
 from ..blueprint import expr, schema
 from ..blueprint.expr import to_number
 from ..engine import automations
+from ..core.context import current_app
 from ..engine.records import Conflict, FieldErrors
 from ..extensions import db
 from ..models import Approval, Comment, File, Membership, Record, RecordChange, Run, User, utcnow  # noqa: F401
 from ..storage import FileRejected, path_of, save
 from .filters import MORE_AFTER, blank_in, status_words
-from .erp import bp, confirm_step_up, ctx, my_approvals
-from ..webkit import Response, abort, current_app, current_user, flash, g, jsonify, login_required, redirect, render_template, request, send_file, url_for
+from .erp import confirm_step_up, ctx, my_approvals
+from .http import (Form, PageRoute, check_csrf, current_request, current_user, flash, form_of, json_of, json_response, redirect, render,
+                   send_file, signed_in, template_global, url_for)
+
+router = APIRouter(prefix="/w/{wid:int}/app", route_class=PageRoute, dependencies=[Depends(check_csrf)])
 
 PAGE_SIZE = 50
 INLINE = {"text", "number", "money", "percent", "date", "select", "checkbox", "email", "phone", "duration", "rating", "user", "barcode"}
@@ -28,22 +35,22 @@ def _table(engine, key, action="view"):
     it and want to."""
     t = engine.tables.get(key)
     if t is None:
-        abort(404)
+        raise HTTPException(404)
     if not engine.can(t):  # there, but kept from them: never "moved or deleted", which reads as lost work
         teams = {tm["key"]: tm["name"] for tm in schema.teams(engine.bp)}
         kept = [teams.get(k, k) for k in (t.get("access") or {}).get("teams") or []]
-        abort(403, description=f"{t['label']} {'are' if t['label'].endswith('s') else 'is'} kept to "
-                               + (" and ".join(kept) + "; ask the person who runs your app to add you to "
-                                  + ("it" if len(kept) == 1 else "the one you need") if kept else "the people who run your app") + ".")
+        raise HTTPException(403, f"{t['label']} {'are' if t['label'].endswith('s') else 'is'} kept to "
+                                 + (" and ".join(kept) + "; ask the person who runs your app to add you to "
+                                    + ("it" if len(kept) == 1 else "the one you need") if kept else "the people who run your app") + ".")
     if action == "edit" and not engine.can(t, "edit"):
-        abort(403)
+        raise HTTPException(403)
     return engine.visible(t)
 
 
 SAFE_INLINE = {"image/png", "image/jpeg", "image/gif", "image/webp", "application/pdf"}
 
 
-def may_open_file(engine, f):
+def may_open_file(engine, f, request=None):
     """A record's files are as private as the record (and a file field kept to a role, to that role). A file on no
     record: documents given to the AI are for everyone; mail and OneDrive files for editors up; anything else (an
     import, an upload being read) for whoever put it there and the admins."""
@@ -57,10 +64,10 @@ def may_open_file(engine, f):
         return True
     if f.source in ("email", "onedrive"):
         return engine._at_least("editor")
-    return engine._at_least("admin") or (f.uploaded_by_id is not None and f.uploaded_by_id == current_user.id)
+    return engine._at_least("admin") or (f.uploaded_by_id is not None and f.uploaded_by_id == current_user(request or current_request()).id)
 
 
-def send_stored(f, download=False):
+def send_stored(f, download=False, request=None):
     """A kept file, served so it can't run script on this site: only images and PDFs open in the browser; anything
     else downloads, and nothing is served as a page."""
     import hashlib
@@ -72,10 +79,11 @@ def send_stored(f, download=False):
                 digest.update(chunk)
         if digest.hexdigest() != f.sha256:
             current_app.logger.error("The file %s (id %s) doesn't match its fingerprint", f.name, f.id)
-            abort(409, description=f"“{f.name}” has changed since it was stored, so it isn't shown. Tell an admin.")
+            raise HTTPException(409, f"“{f.name}” has changed since it was stored, so it isn't shown. Tell an admin.")
     mime = mimetypes.guess_type(f.name)[0] or "application/octet-stream"
     inline = mime in SAFE_INLINE and not download
-    response = send_file(path_of(f), mimetype=mime if inline else "application/octet-stream", as_attachment=not inline, download_name=f.name)
+    response = send_file(request or current_request(), path_of(f), mimetype=mime if inline else "application/octet-stream", as_attachment=not inline,
+                         download_name=f.name)
     if mime != "application/pdf":
         response.headers["Content-Security-Policy"] = "default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; sandbox"
     return response
@@ -84,25 +92,26 @@ def send_stored(f, download=False):
 def _record(engine, t, rid):
     r = engine.get(rid, t["key"])
     if r is None or not engine.allowed(r):  # not theirs: as if it weren't there (whether it is isn't theirs to know)
-        abort(404)
+        raise HTTPException(404)
     return r
 
 
-def _ran(engine):
+def _ran(engine, request=None):
     """Tell the person what their change set off."""
+    request = request or current_request()
     for run in engine.started:
         run = db.session.get(Run, run.id)
         if run.status == "done":
             what = "; ".join(s.get("result", "") for s in run.steps or [] if s.get("result") and not s.get("skipped") and not s.get("quiet"))
-            flash(f"⚡ Then, automatically ({run.name}): {what}" if what else f"⚡ Then, automatically: {run.name}", "auto")
+            flash(request, f"⚡ Then, automatically ({run.name}): {what}" if what else f"⚡ Then, automatically: {run.name}", "auto")
         elif run.status in ("queued", "waiting_ai"):
-            flash(f"⚡ Then the AI started “{run.name}”: it finishes in a moment, in the background.", "auto")
+            flash(request, f"⚡ Then the AI started “{run.name}”: it finishes in a moment, in the background.", "auto")
         elif run.status == "waiting_approval":
             people = Approval.query.filter_by(run_id=run.id, status="pending").all()
-            flash(f"⚡ Then: it's waiting for {automations._named(engine, people) if people else 'an answer'}"
-                  + (" to approve it." if people and people[0].kind == "approval" else "."), "auto")
+            flash(request, f"⚡ Then: it's waiting for {automations._named(engine, people) if people else 'an answer'}"
+                           + (" to approve it." if people and people[0].kind == "approval" else "."), "auto")
         elif run.status == "failed":
-            flash(f"⚡ “{run.name}” couldn't finish: {run.error}", "error")
+            flash(request, f"⚡ “{run.name}” couldn't finish: {run.error}", "error")
 
 
 def columns(t, view):
@@ -123,10 +132,10 @@ def children(engine, t):
     return out
 
 
-def _filters_from_args(t, view):
+def _filters_from_args(request, t, view):
     filters, quick = list(view.get("filters") or []), {}
     for f in t["fields"]:
-        wanted = request.args.get(f"f_{f['key']}")
+        wanted = request.query_params.get(f"f_{f['key']}")
         if wanted not in (None, ""):
             quick[f["key"]] = wanted
             if wanted == "__none__":
@@ -138,26 +147,25 @@ def _filters_from_args(t, view):
     return filters, quick
 
 
-@bp.route("/t/<table>")
-@login_required
-def table(wid, table):
-    ws, engine = ctx(wid)
+@router.api_route("/t/{table}", methods=["GET"], name="app.table")
+def table(request: Request, wid: int, table: str, user=Depends(signed_in)):
+    ws, engine = ctx(wid, "viewer", request)
     t = _table(engine, table)
     if t.get("embedded"):
-        abort(404)
+        raise HTTPException(404)
     views = t.get("views") or [{"key": "all", "label": "All", "type": "list"}]
     if all(v.get("filters") for v in views):  # every tab shows only some: one shows them all, so nothing looks missing
         views = views + [{"key": "_all", "label": "All", "type": "list"}]
-    view = next((v for v in views if v["key"] == request.args.get("view")), views[0])
-    filters, quick = _filters_from_args(t, view)
+    view = next((v for v in views if v["key"] == request.query_params.get("view")), views[0])
+    filters, quick = _filters_from_args(request, t, view)
     sort = view.get("sort")
-    if request.args.get("sort") and schema.field(t, request.args["sort"]) or request.args.get("sort") in ("created_at", "updated_at"):
-        sort = {"field": request.args["sort"], "dir": "desc" if request.args.get("dir") == "desc" else "asc"}
-    q = request.args.get("q", "")
+    if request.query_params.get("sort") and schema.field(t, request.query_params["sort"]) or request.query_params.get("sort") in ("created_at", "updated_at"):
+        sort = {"field": request.query_params["sort"], "dir": "desc" if request.query_params.get("dir") == "desc" else "asc"}
+    q = request.query_params.get("q", "")
     kind = view["type"]
     listing = kind not in ("board", "calendar", "gallery", "timeline", "map", "tree", "inbox", "sheet")
-    group_field = schema.field(t, request.args.get("group") or view.get("group_by") or "") if listing else None
-    page = max(int(request.args.get("page", 1)) if str(request.args.get("page", "1")).isdigit() else 1, 1)
+    group_field = schema.field(t, request.query_params.get("group") or view.get("group_by") or "") if listing else None
+    page = max(int(request.query_params.get("page", 1)) if str(request.query_params.get("page", "1")).isdigit() else 1, 1)
     first = PAGE_SIZE if listing else {"gallery": 200, "inbox": 300, "sheet": 500}.get(kind)
     if first and group_field is None:  # a page of a list: only what's shown is read (engine.page), the count from SQL
         offset = (page - 1) * PAGE_SIZE if listing else 0
@@ -178,9 +186,9 @@ def table(wid, table):
         else:
             choices[f["key"]] = [(engine.title(r), engine.title(r)) for r in engine.page(f["table"], limit=300)[0]]
     from ..models import SavedView
-    mine = SavedView.query.filter_by(workspace_id=ws.id, user_id=current_user.id, table=t["key"]).order_by(SavedView.id).all()
+    mine = SavedView.query.filter_by(workspace_id=ws.id, user_id=user.id, table=t["key"]).order_by(SavedView.id).all()
     common = dict(ws=ws, e=engine, t=t, views=views, view=view, total=total, quick=quick, q=q, filterable=filterable, mine=mine,
-                  here_query=request.query_string.decode()[:1000],
+                  here_query=request.url.query[:1000],
                   choices=choices, args={"view": view["key"], "q": q or None, **{f"f_{k}": v for k, v in quick.items()}})
     if kind == "board":
         group = schema.field(t, view["group_by"])
@@ -191,29 +199,29 @@ def table(wid, table):
         if not lanes[-1]["rows"]:
             lanes.pop()
         card_fields = [f for f in columns(t, None) if f["key"] not in (group["key"], t.get("title_field"))][:3]
-        return render_template("app/board.html", lanes=lanes, group=group, card_fields=card_fields, **common)
+        return render(request, "app/board.html", lanes=lanes, group=group, card_fields=card_fields, **common)
     if kind == "calendar":
-        return render_template("app/calendar.html", **common, **_calendar(engine, t, view, rows), feed=feed_url(engine, t, view))
+        return render(request, "app/calendar.html", **common, **_calendar(request, engine, t, view, rows), feed=feed_url(request, engine, t, view))
     if kind == "gallery":
         image = schema.field(t, view.get("image_field") or "") or next((f for f in t["fields"] if f["type"] == "image"), None)
         card_fields = [f for f in columns(t, view) if f["key"] != t.get("title_field") and f["type"] not in schema.FILES][:4]
-        return render_template("app/gallery.html", rows=rows, image=image, card_fields=card_fields, **common)
+        return render(request, "app/gallery.html", rows=rows, image=image, card_fields=card_fields, **common)
     if kind == "timeline":
-        return render_template("app/timeline.html", **common, **_timeline(engine, t, view, rows))
+        return render(request, "app/timeline.html", **common, **_timeline(engine, t, view, rows))
     if kind == "map":
-        return render_template("app/map.html", **common, **_map(engine, t, view, rows))
+        return render(request, "app/map.html", **common, **_map(engine, t, view, rows))
     if kind == "tree":
-        return render_template("app/tree.html", **common, **_tree(engine, t, view, rows))
+        return render(request, "app/tree.html", **common, **_tree(engine, t, view, rows))
     if kind == "inbox":  # the list beside the open record, worked through one after another
         shown = rows
-        wanted = request.args.get("open", "")
+        wanted = request.query_params.get("open", "")
         opened = next((r for r in shown if str(r.id) == wanted), shown[0] if shown else None)
         line = [f for f in columns(t, view) if f["key"] != t.get("title_field") and f["type"] not in schema.FILES][:2]
         stage = schema.field(t, (t.get("workflow") or {}).get("field") or "")
-        return render_template("app/inbox.html", rows=shown, opened=opened, line=line, stage=stage, more=max(total - 300, 0), **common)
+        return render(request, "app/inbox.html", rows=shown, opened=opened, line=line, stage=stage, more=max(total - 300, 0), **common)
     if kind == "sheet":
         cols = [f for f in columns(t, view) if f["type"] not in schema.FILES]
-        return render_template("app/sheet.html", rows=rows, columns=cols, editable=SHEET, more=max(total - 500, 0),
+        return render(request, "app/sheet.html", rows=rows, columns=cols, editable=SHEET, more=max(total - 500, 0),
                                options=_options(engine, t), **common)
     shown = rows
     cols = columns(t, view)
@@ -232,7 +240,7 @@ def table(wid, table):
                    "totals": {f["key"]: engine.aggregate(by[label], "sum", f["key"]) for f in cols if engine.summable(f)}}
                   for label in order if label in by]
         shown, page = rows, 1
-    return render_template("app/table.html", rows=shown, columns=cols, sort=sort, page=page, totals=totals, groups=groups,
+    return render(request, "app/table.html", rows=shown, columns=cols, sort=sort, page=page, totals=totals, groups=groups,
                            group_field=group_field, groupable=[f for f in t["fields"] if f["type"] in ("select", "link", "user", "checkbox", "date", "multi_select", "tags")],
                            tints={r.id: engine.colours(t, r) for r in shown} if t.get("colors") else {},
                            pages=max(1, -(-total // PAGE_SIZE)), inline=INLINE, **common)
@@ -276,10 +284,10 @@ def _tree(engine, t, view, rows):
     return {"roots": roots, "tree_columns": cols}
 
 
-def _calendar(engine, t, view, rows):
+def _calendar(request, engine, t, view, rows):
     today = engine.today
     try:
-        month = date.fromisoformat((request.args.get("month") or today.strftime("%Y-%m")) + "-01")
+        month = date.fromisoformat((request.query_params.get("month") or today.strftime("%Y-%m")) + "-01")
     except ValueError:
         month = today.replace(day=1)
     first = month - timedelta(days=month.weekday())
@@ -306,9 +314,9 @@ def _calendar(engine, t, view, rows):
     undated = sum(1 for r in rows if engine.value(r, view["date_field"]) in (None, ""))
     out = {"weeks": weeks, "month": month, "prev": prev.strftime("%Y-%m"), "next": nxt.strftime("%Y-%m"), "today": today,
            "colour_field": colour_field, "undated": undated, "mode": "month"}
-    if (request.args.get("mode") or view.get("mode")) == "week":  # a week, each day's records in time order: bookings, shifts, visits
+    if (request.query_params.get("mode") or view.get("mode")) == "week":  # a week, each day's records in time order: bookings, shifts, visits
         try:
-            anchor = date.fromisoformat(request.args.get("week") or today.isoformat())
+            anchor = date.fromisoformat(request.query_params.get("week") or today.isoformat())
         except ValueError:
             anchor = today
         start = anchor - timedelta(days=anchor.weekday())
@@ -383,14 +391,13 @@ def _timeline(engine, t, view, rows):
             "colour_field": colour_field, "undated": sum(1 for r in rows if expr.to_date(engine.value(r, view["start_field"])) is None)}
 
 
-@bp.route("/t/<table>/export.xlsx")
-@login_required
-def export_xlsx(wid, table):
+@router.api_route("/t/{table}/export.xlsx", methods=["GET"], name="app.export_xlsx", dependencies=[Depends(signed_in)])
+def export_xlsx(request: Request, wid: int, table: str):
     """The table as an Excel workbook: numbers, money and dates as real values, so formulas and pivots work on them."""
     from openpyxl import Workbook
     from openpyxl.styles import Font
     from .. import audit
-    ws, engine = ctx(wid)
+    ws, engine = ctx(wid, "viewer", request)
     t = _table(engine, table)
     audit.log(ws.id, "exported", f"{t['label']} as Excel")
     book = Workbook()
@@ -400,7 +407,7 @@ def export_xlsx(wid, table):
     sheet.append(["id"] + [f["label"] for f in fields])
     for cell in sheet[1]:
         cell.font = Font(bold=True)
-    for r in engine.query(t["key"], *_filters_from_args(t, {})[:1]):
+    for r in engine.query(t["key"], *_filters_from_args(request, t, {})[:1]):
         row = [r.id]
         for f in fields:
             v = engine.value(r, f["key"])
@@ -428,42 +435,41 @@ def export_xlsx(wid, table):
     out = io.BytesIO()
     book.save(out)
     out.seek(0)
-    return send_file(out, mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", as_attachment=True,
-                     download_name=f"{t['key']}-{engine.today.isoformat()}.xlsx")
+    return send_file(request, out, mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", as_attachment=True,
+                              download_name=f"{t['key']}-{engine.today.isoformat()}.xlsx")
 
 
-@bp.route("/t/<table>/deleted")
-@login_required
-def deleted(wid, table):
+@router.api_route("/t/{table}/deleted", methods=["GET"], name="app.deleted", dependencies=[Depends(signed_in)])
+def deleted(request: Request, wid: int, table: str):
     """The table's recycle bin: deleted records, each one click from coming back."""
-    ws, engine = ctx(wid, "editor")
+    ws, engine = ctx(wid, "editor", request)
     t = _table(engine, table, "edit")
     rows = Record.query.filter(Record.workspace_id == ws.id, Record.table == t["key"], Record.deleted_at.isnot(None)) \
         .order_by(Record.deleted_at.desc()).limit(300).all()
     rows = [r for r in rows if engine.allowed(r)]
-    return render_template("app/deleted.html", ws=ws, e=engine, t=t, rows=rows)
+    return render(request, "app/deleted.html", ws=ws, e=engine, t=t, rows=rows)
 
 
-@bp.route("/t/<table>/calendar.ics")
-def calendar_feed(wid, table):
+@router.api_route("/t/{table}/calendar.ics", methods=["GET"], name="app.calendar_feed")
+def calendar_feed(request: Request, wid: int, table: str):
     """A calendar feed to subscribe to from Outlook, Google or Apple Calendar: the view's records on their dates. The
     address carries a signed token (made for one person), so it works without signing in and stops if they leave."""
     from itsdangerous import BadSignature, URLSafeSerializer
     from ..models import Workspace
     try:
-        data = URLSafeSerializer(current_app.config["SECRET_KEY"], salt="calendar").loads(request.args.get("token", ""))
+        data = URLSafeSerializer(current_app.config["SECRET_KEY"], salt="calendar").loads(request.query_params.get("token", ""))
     except BadSignature:
-        abort(404)
+        raise HTTPException(404)
     ws = db.session.get(Workspace, wid)
     member = Membership.query.filter_by(workspace_id=wid, user_id=data.get("user")).first() if ws else None
     if member is None or member.role == "portal" or data.get("table") != table:
-        abort(404)
+        raise HTTPException(404)
     from ..engine.records import Engine
     engine = Engine(ws, by="calendar feed", member=member)
     t = engine.tables.get(table)
     view = next((v for v in (t or {}).get("views", []) if v["key"] == data.get("view") and v["type"] in ("calendar", "timeline")), None)
     if t is None or view is None or not engine.can(t):
-        abort(404)
+        raise HTTPException(404)
     start_key, end_key = view.get("date_field") or view.get("start_field"), view.get("end_field")
     lines = ["BEGIN:VCALENDAR", "VERSION:2.0", f"PRODID:-//{current_app.config['PLATFORM_NAME']}//EN", f"X-WR-CALNAME:{t['label']}"]
     stamp = utcnow().strftime("%Y%m%dT%H%M%SZ")
@@ -483,20 +489,20 @@ def calendar_feed(wid, table):
             lines += [f"DTSTART;VALUE=DATE:{start:%Y%m%d}", f"DTEND;VALUE=DATE:{last + timedelta(days=1):%Y%m%d}"]
         lines.append("END:VEVENT")
     lines.append("END:VCALENDAR")
-    return Response("\r\n".join(lines) + "\r\n", mimetype="text/calendar", headers={"Content-Disposition": f"inline; filename={table}.ics"})
+    return Response("\r\n".join(lines) + "\r\n", media_type="text/calendar", headers={"Content-Disposition": f"inline; filename={table}.ics"})
 
 
-def feed_url(engine, t, view):
+def feed_url(request, engine, t, view):
     from itsdangerous import URLSafeSerializer
-    token = URLSafeSerializer(current_app.config["SECRET_KEY"], salt="calendar").dumps({"user": current_user.id, "table": t["key"], "view": view["key"]})
+    token = URLSafeSerializer(current_app.config["SECRET_KEY"], salt="calendar").dumps({"user": current_user(request).id, "table": t["key"],
+                                                                                         "view": view["key"]})
     return f"{current_app.config['BASE_URL']}{url_for('app.calendar_feed', wid=engine.ws.id, table=t['key'], token=token)}"
 
 
-@bp.route("/t/<table>/export.csv")
-@login_required
-def export(wid, table):
+@router.api_route("/t/{table}/export.csv", methods=["GET"], name="app.export", dependencies=[Depends(signed_in)])
+def export(request: Request, wid: int, table: str):
     from .. import audit
-    ws, engine = ctx(wid)
+    ws, engine = ctx(wid, "viewer", request)
     t = _table(engine, table)
     audit.log(ws.id, "exported", f"{t['label']} as CSV")
     out = io.StringIO()
@@ -506,7 +512,7 @@ def export(wid, table):
     for r in engine.visible_rows(t["key"]):
         writer.writerow([r.id] + [engine.display(f, engine.value(r, f["key"])).replace("—", "") for f in fields]
                         + [r.created_at.strftime("%Y-%m-%d %H:%M"), (r.updated_at or r.created_at).strftime("%Y-%m-%d %H:%M")])
-    return Response("﻿" + out.getvalue(), mimetype="text/csv",
+    return Response("﻿" + out.getvalue(), media_type="text/csv",
                     headers={"Content-Disposition": f"attachment; filename={t['key']}-{engine.today.isoformat()}.csv"})
 
 
@@ -546,15 +552,14 @@ def visible(engine, record, f):
     return engine.shown(engine.tables[record.table], f, record) if record is not None else not (f.get("show_if") or f.get("hide_if"))
 
 
-@bp.app_template_global()
+@template_global
 def field_visible(engine, record, f):
     return visible(engine, record, f)
 
 
-@bp.route("/t/<table>/<int:rid>")
-@login_required
-def record(wid, table, rid):
-    ws, engine = ctx(wid)
+@router.api_route("/t/{table}/{rid:int}", methods=["GET"], name="app.record")
+def record(request: Request, wid: int, table: str, rid: int, user=Depends(signed_in)):
+    ws, engine = ctx(wid, "viewer", request)
     t = _table(engine, table)
     r = _record(engine, t, rid)
     if t.get("embedded"):
@@ -563,10 +568,10 @@ def record(wid, table, rid):
         if parent is not None:
             return redirect(url_for("app.record", wid=wid, table=parent.table, rid=parent.id))
     if audited(engine, t):  # who opened it is kept (bids, bank details)
-        seen = RecordChange.query.filter(RecordChange.record_id == r.id, RecordChange.kind == "viewed", RecordChange.by_id == current_user.id,
+        seen = RecordChange.query.filter(RecordChange.record_id == r.id, RecordChange.kind == "viewed", RecordChange.by_id == user.id,
                                          RecordChange.created_at >= utcnow() - timedelta(minutes=10)).first()
         if seen is None:
-            db.session.add(RecordChange(workspace_id=ws.id, record_id=r.id, kind="viewed", by=current_user.display, by_id=current_user.id))
+            db.session.add(RecordChange(workspace_id=ws.id, record_id=r.id, kind="viewed", by=user.display, by_id=user.id))
             db.session.commit()
     history = RecordChange.query.filter_by(record_id=r.id).order_by(RecordChange.id.desc()).limit(60).all()
     shown = {f["key"] for f in t["fields"]} | {"_files", "_shown"}
@@ -582,7 +587,7 @@ def record(wid, table, rid):
             if step.get("ai"):
                 found = schema.step_at(a["actions"], step["at"]) if a and step.get("at") else None
                 ai_work.append({"run": run, "step": step, "title": automations.ai_title(engine, a, found) if found else step["action"].split(" — ")[0]})
-    member = Membership.query.filter_by(workspace_id=ws.id, user_id=current_user.id).first()
+    member = Membership.query.filter_by(workspace_id=ws.id, user_id=user.id).first()
     # its buttons: one for another stage isn't shown (as a stage's moves aren't); one waiting for something else is shown,
     # greyed, with what it waits for, so nobody wonders where it went
     flow_field = (t.get("workflow") or {}).get("field")
@@ -620,7 +625,7 @@ def record(wid, table, rid):
         lines.append({**child, "rows": rows, "totals": {f["key"]: engine.aggregate(rows, "sum", f["key"]) for f in child["fields"] if engine.summable(f)}})
     locked = engine.locked(r)
     from ..models import Follow
-    following = Follow.query.filter_by(user_id=current_user.id, record_id=r.id).first() is not None
+    following = Follow.query.filter_by(user_id=user.id, record_id=r.id).first() is not None
     neighbours = engine.neighbours(t["key"], r)  # the one before and after it, from SQL
     live = [p for p in schema.portals(engine.bp) if p.get("enabled", True)]
     own = next((p for p in live if p["table"] == t["key"]), None)  # a client: who of theirs is in the client portal
@@ -635,7 +640,7 @@ def record(wid, table, rid):
     others = [a for a in approvals if a.id not in ({x.id for x in my_approvals(ws, member)} if member else set())]
     waiting_text = (f"Waiting for {automations._named(engine, others)} to "
                     + {"task": "do their part", "review": "check the AI's work", "change": "approve a change"}.get(others[0].kind, "approve it") + ".") if others else ""
-    return render_template("app/record.html", ws=ws, e=engine, t=t, r=r, sections=_sections(t), related=_related(engine, t, r),
+    return render(request, "app/record.html", ws=ws, e=engine, t=t, r=r, sections=_sections(t), related=_related(engine, t, r),
                            sealed=sealed, hidden=hidden, waiting_text=waiting_text, to_finish=to_finish, journey=journey(engine, t, r), stepped=engine.stepped_up,
                            teams={tm["key"]: tm["name"] for tm in schema.teams(engine.bp)},
                            lines=lines, history=history, runs=runs, buttons=buttons, approvals=approvals, comments=comments,
@@ -701,19 +706,18 @@ def journey(engine, t, r):
     return steps
 
 
-@bp.route("/t/<table>/suggest/<key>", methods=["POST"])
-@login_required
-def suggest(wid, table, key):
+@router.api_route("/t/{table}/suggest/{key}", methods=["POST"], name="app.suggest", dependencies=[Depends(signed_in)])
+def suggest(request: Request, wid: int, table: str, key: str, form: Form = Depends(form_of)):
     """The AI's suggestion for one field while a person fills in the form (the request's description from what they
     typed, its category): nothing is saved; they keep it, change it or ignore it."""
     from .. import ai, intelligence
-    ws, engine = ctx(wid, "editor")
+    ws, engine = ctx(wid, "editor", request)
     t = _table(engine, table, "edit")
     f = schema.field(t, key)
     if f is None or not f.get("ai") or not engine.sees(f):
-        abort(404)
+        raise HTTPException(404)
     data = {}
-    for k, v in _form_values(t, engine).items():
+    for k, v in _form_values(form, t, engine).items():
         field = schema.field(t, k)
         if field is None or field["type"] not in schema.STORED or field.get("sensitive") or k == key:
             continue
@@ -721,36 +725,35 @@ def suggest(wid, table, key):
             data[k] = engine.coerce(field, v)
         except ValueError:
             continue
-    rid = request.form.get("_record", type=int)
+    rid = form.get("_record", type=int)
     base = engine.get(rid, t["key"]) if rid else None
     draft = Record(workspace_id=ws.id, table=t["key"], data={**((base.data or {}) if base is not None else {}), **data})
     draft.id = base.id if base is not None else None
     try:
         answer = intelligence.propose_field(engine, draft, f, use_knowledge=f["ai"].get("use_knowledge"))
     except ai.AIUnavailable:
-        return jsonify(ok=False, error="The AI isn't reachable right now; fill it in yourself, or try again in a minute.")
+        return json_response({"ok": False, "error": "The AI isn't reachable right now; fill it in yourself, or try again in a minute."})
     except Exception as exc:  # noqa: BLE001 - a suggestion that fails leaves the form as it was
         current_app.logger.warning("A suggestion for %s failed: %s", key, exc)
-        return jsonify(ok=False, error="The AI couldn't suggest anything this time.")
+        return json_response({"ok": False, "error": "The AI couldn't suggest anything this time."})
     value = answer.get("value")
     if value in (None, "", []):
-        return jsonify(ok=False, error=answer.get("why") or "The AI had nothing to suggest from what's filled in so far.")
-    return jsonify(ok=True, value=value, shown=engine.display(f, value), why=answer.get("why"), sure=answer.get("sure"))
+        return json_response({"ok": False, "error": answer.get("why") or "The AI had nothing to suggest from what's filled in so far."})
+    return json_response({"ok": True, "value": value, "shown": engine.display(f, value), "why": answer.get("why"), "sure": answer.get("sure")})
 
 
-@bp.route("/t/<table>/compare", methods=["GET", "POST"])
-@login_required
-def compare(wid, table):
+@router.api_route("/t/{table}/compare", methods=["GET", "POST"], name="app.compare", dependencies=[Depends(signed_in)])
+def compare(request: Request, wid: int, table: str, form: Form = Depends(form_of)):
     """Records side by side (bids for a tender, quotes, a contract's versions): each field across them, what differs
     marked, the lowest and highest numbers, and their lines lined up by item with each one's total."""
-    ws, engine = ctx(wid)
+    ws, engine = ctx(wid, "viewer", request)
     t = _table(engine, table)
     if request.method == "POST":
-        return redirect(url_for("app.compare", wid=wid, table=t["key"], ids=request.form.getlist("ids")))
-    ids = [int(x) for x in request.args.getlist("ids") if str(x).isdigit()][:8]
+        return redirect(url_for("app.compare", wid=wid, table=t["key"], ids=form.getlist("ids")))
+    ids = [int(x) for x in request.query_params.getlist("ids") if str(x).isdigit()][:8]
     rows = [r for r in (engine.get(x, t["key"]) for x in ids) if r is not None and engine.allowed(r)]
     if len(rows) < 2:
-        flash(f"Choose two or more {schema.lc(t['label'])} to compare.", "info")
+        flash(request, f"Choose two or more {schema.lc(t['label'])} to compare.", "info")
         return redirect(url_for("app.table", wid=wid, table=t["key"]))
     vt = engine.visible(t)
     fields = []
@@ -796,27 +799,26 @@ def compare(wid, table):
     if len(set(heads)) < len(heads):  # bids named after their tender: told apart by the first field that differs (the supplier)
         apart = next((x for x in fields if x["f"]["type"] in ("link", "text", "autonumber", "select") and len(set(x["shown"])) == len(rows)), None)
         heads = apart["shown"] if apart else [f"{h} #{r.id}" for h, r in zip(heads, rows)]
-    return render_template("app/compare.html", ws=ws, e=engine, t=t, rows=rows, fields=fields, lines=lines, heads=heads,
-                           only_differences=request.args.get("differences") == "1")
+    return render(request, "app/compare.html", ws=ws, e=engine, t=t, rows=rows, fields=fields, lines=lines, heads=heads,
+                           only_differences=request.query_params.get("differences") == "1")
 
 
-@bp.route("/t/<table>/<int:rid>/reveal/<key>", methods=["POST"])
-@login_required
-def reveal(wid, table, rid, key):
+@router.api_route("/t/{table}/{rid:int}/reveal/{key}", methods=["POST"], name="app.reveal")
+def reveal(request: Request, wid: int, table: str, rid: int, key: str, user=Depends(signed_in)):
     """A sensitive field's real value (a bank account), for people who may change the record; kept in its history."""
     from ..engine.records import reveal as real
-    ws, engine = ctx(wid, "editor")
+    ws, engine = ctx(wid, "editor", request)
     t = _table(engine, table, "edit")
     r = _record(engine, t, rid)
     f = schema.field(t, key)
     if f is None or not f.get("sensitive") or not engine.sees(f) or engine.sealed_from_me(r):
-        abort(404)
-    db.session.add(RecordChange(workspace_id=ws.id, record_id=r.id, kind="viewed", by=current_user.display, by_id=current_user.id,
+        raise HTTPException(404)
+    db.session.add(RecordChange(workspace_id=ws.id, record_id=r.id, kind="viewed", by=user.display, by_id=user.id,
                                 changes={"_shown": [None, f["label"]]}))
     db.session.commit()
     from .. import audit
     audit.log(ws.id, "revealed", f"{f['label']} of {t['singular'].lower()} “{engine.title(r)}”")
-    return jsonify(value=real((r.data or {}).get(key)) or "")
+    return json_response({"value": real((r.data or {}).get(key)) or ""})
 
 
 def _form_fields(t):
@@ -848,30 +850,32 @@ def _stage_locked(engine, t):
     return bool(t.get("workflow") and schema.stages(t) and engine.role not in (None, "owner"))
 
 
-def _form_values(t, engine=None):
+def _form_values(form, t, engine=None):
     data = {}
     skip = {t["workflow"]["field"]} if engine is not None and t.get("workflow") and schema.stages(t) else set()
     for f in _form_fields(t):
         if f["type"] in schema.FILES or f.get("readonly") or f["key"] in skip:
             continue
         if f["type"] == "checkbox":
-            data[f["key"]] = bool(request.form.get(f["key"]))
+            data[f["key"]] = bool(form.get(f["key"]))
         elif f["type"] == "multi_select" or (f["type"] in ("link", "user") and f.get("multiple")):
-            data[f["key"]] = [v for v in request.form.getlist(f["key"]) if v]
-        elif f["type"] == "percent" and request.form.get(f["key"], "").strip() and not request.form[f["key"]].strip().endswith("%"):
-            data[f["key"]] = request.form[f["key"]].strip() + "%"
+            data[f["key"]] = [v for v in form.getlist(f["key"]) if v]
+        elif f["type"] == "percent" and form.get(f["key"], "").strip() and not form[f["key"]].strip().endswith("%"):
+            data[f["key"]] = form[f["key"]].strip() + "%"
         else:
-            data[f["key"]] = request.form.get(f["key"])
+            data[f["key"]] = form.get(f["key"])
     return data
 
 
-def _posted_lines(child):
-    """Line items from the form: lines-<table>-<n>-<field>, with -id for existing ones and -remove to delete."""
+def _posted_lines(child, form=None):
+    """Line items from the form: lines-<table>-<n>-<field>, with -id for existing ones and -remove to delete. The form
+    is the one posted to the page being served unless it's given."""
+    form = _posted_form() if form is None else form
     prefix = f"lines-{child['table']['key']}-"
-    numbers = sorted({int(m.group(1)) for k in request.form for m in [re.match(re.escape(prefix) + r"(\d+)-", k)] if m})
+    numbers = sorted({int(m.group(1)) for k in form for m in [re.match(re.escape(prefix) + r"(\d+)-", k)] if m})
     rows = []
     for n in numbers:
-        get = lambda name: request.form.get(f"{prefix}{n}-{name}")  # noqa: E731
+        get = lambda name: form.get(f"{prefix}{n}-{name}")  # noqa: E731
         values = {}
         for f in child["fields"]:
             if f["type"] in schema.CALCULATED:
@@ -885,12 +889,22 @@ def _posted_lines(child):
     return rows
 
 
-def _save_lines(engine, t, parent):
+def _posted_form():
+    """The form posted to the page being served: a native page's (form_of), or (transition) the one an old page was
+    sent, for portal.py's lines while app/webkit still serves it."""
+    form = getattr(current_request().state, "_form", None)
+    if form is None:  # transition: a page app/webkit still serves
+        from ..webkit import request as old
+        form = old.form
+    return form
+
+
+def _save_lines(engine, t, parent, form):
     """Create, change and remove the parent's line items as the form says. Returns {table: {row index: errors}}."""
     problems = {}
     for child in children(engine, t):
         key, via = child["table"]["key"], child["via"]["key"]
-        for i, row in enumerate(_posted_lines(child)):
+        for i, row in enumerate(_posted_lines(child, form)):
             existing = engine.get(row["id"], key) if row["id"] else None
             if existing is not None and str((existing.data or {}).get(via)) != str(parent.id):
                 continue  # a line of another record: never touched from this one's form
@@ -906,27 +920,28 @@ def _save_lines(engine, t, parent):
     return problems
 
 
-def _save_files(ws, t, record_id):
+def _save_files(request, form, ws, t, record_id):
     import base64
+    user = current_user(request)
     for f in t["fields"]:
         if f["type"] == "signature":  # drawn in the browser: a PNG as a data URL
-            drawn = request.form.get(f["key"]) or ""
+            drawn = form.get(f["key"]) or ""
             if drawn.startswith("data:image/png;base64,") and len(drawn) < 3_000_000:
                 for old in File.query.filter_by(record_id=record_id, field=f["key"], deleted_at=None):
                     old.deleted_at = utcnow()
                 save(ws.id, base64.b64decode(drawn.split(",", 1)[1]), f"{f['label']}.png", record_id=record_id, field=f["key"],
-                     by=current_user.display, mime="image/png")
+                     by=user.display, mime="image/png")
             continue
         if f["type"] not in schema.FILES:
             continue
-        uploads = [u for u in request.files.getlist(f["key"]) if u and u.filename]
+        uploads = [u for u in form.files.getlist(f["key"]) if u and u.filename]
         if f["type"] == "image" and uploads:
             for old in File.query.filter_by(record_id=record_id, field=f["key"], deleted_at=None):
                 old.deleted_at = utcnow()
             uploads = uploads[:1]
         for upload in uploads[:20]:
-            save(ws.id, upload, upload.filename, record_id=record_id, field=f["key"], by=current_user.display)
-    for fid in request.form.getlist("attach_file"):
+            save(ws.id, upload, upload.filename, record_id=record_id, field=f["key"], by=user.display)
+    for fid in form.getlist("attach_file"):
         file = db.session.get(File, int(fid)) if str(fid).isdigit() else None
         if file is not None and file.workspace_id == ws.id and file.record_id is None:
             target = next((f["key"] for f in t["fields"] if f["type"] == "file"), "")
@@ -950,7 +965,10 @@ def _waiting(t, sections, kids, values, errors, stage_key, new):
     return {f["key"] for f in asked[max(MORE_AFTER - lines, 4):] if not f.get("required") and blank_in(f, values or {}, errors or {})}
 
 
-def _render_form(ws, engine, t, r, values, errors, line_rows=None, status=200, **extra):
+def _render_form(ws, engine, t, r, values, errors, line_rows=None, status=200, request=None, **extra):
+    """The add/edit form: (the page, its status). The page carries its status already; the request is the one being
+    served unless it's given."""
+    request = request or current_request()
     back = extra.get("back") or ""
     extra["back"] = back if back.startswith("/") and not back.startswith("//") else None  # only ever back into this site
     kids = children(engine, t)
@@ -977,33 +995,34 @@ def _render_form(ws, engine, t, r, values, errors, line_rows=None, status=200, *
     if hidden:  # a problem with something the form doesn't show (the stage, a rule on two fields): said at the top
         errors = {**{k: v for k, v in errors.items() if k not in hidden}, "_": "; ".join(([errors["_"]] if errors.get("_") else []) + list(hidden.values()))}
     sections = _sections(t)
-    return render_template("app/form.html", ws=ws, e=engine, t=t, r=r, values=values, errors=errors, sections=sections, stage_lock=stage_lock,
-                           first_move=first_move, waiting=_waiting(t, sections, kids, values, errors, stage_lock and r is None and stage_lock["key"], r is None),
-                           options=_options(engine, t, [c["table"] for c in kids]), children=kids, line_rows=line_rows,
-                           members=engine.members(), locked=engine.locked(r) if r is not None else None, **extra), status
+    page = render(request, "app/form.html", status_code=status, ws=ws, e=engine, t=t, r=r, values=values, errors=errors, sections=sections,
+                  stage_lock=stage_lock, first_move=first_move,
+                  waiting=_waiting(t, sections, kids, values, errors, stage_lock and r is None and stage_lock["key"], r is None),
+                  options=_options(engine, t, [c["table"] for c in kids]), children=kids, line_rows=line_rows,
+                  members=engine.members(), locked=engine.locked(r) if r is not None else None, **extra)
+    return page, status
 
 
-@bp.route("/t/<table>/new", methods=["GET", "POST"])
-@login_required
-def new(wid, table):
-    ws, engine = ctx(wid, "editor")
+@router.api_route("/t/{table}/new", methods=["GET", "POST"], name="app.new", dependencies=[Depends(signed_in)])
+def new(request: Request, wid: int, table: str, form: Form = Depends(form_of)):
+    ws, engine = ctx(wid, "editor", request)
     t = _table(engine, table, "edit")
     if request.method == "POST":
         try:
             with engine.atomic():  # the record and its lines are saved together, once its rules hold
-                r = engine.create(t["key"], _form_values(t, engine), automations=False)
-                line_problems = _save_lines(engine, t, r)
+                r = engine.create(t["key"], _form_values(form, t, engine), automations=False)
+                line_problems = _save_lines(engine, t, r, form)
         except FieldErrors as exc:
-            posted = {c["table"]["key"]: [{"id": x["id"], "values": x["values"]} for x in _posted_lines(c)] for c in children(engine, t)}
-            return _render_form(ws, engine, t, None, request.form, exc.errors, posted, 400, back=request.form.get("back"),
-                                attach=request.form.getlist("attach_file"))
+            posted = {c["table"]["key"]: [{"id": x["id"], "values": x["values"]} for x in _posted_lines(c, form)] for c in children(engine, t)}
+            return _render_form(ws, engine, t, None, form, exc.errors, posted, 400, request, back=form.get("back"),
+                                attach=form.getlist("attach_file"))[0]
         try:
-            _save_files(ws, t, r.id)
+            _save_files(request, form, ws, t, r.id)
         except FileRejected as exc:
-            flash(str(exc), "error")
+            flash(request, str(exc), "error")
         engine.reset()
         automations.on_change(engine, engine.get(r.id), None)
-        then = request.form.get("then", type=int)
+        then = form.get("then", type=int)
         moved = None
         flow = t.get("workflow")
         now = (engine.get(r.id).data or {}).get(flow["field"]) if flow else None
@@ -1015,7 +1034,7 @@ def new(wid, table):
                 if t.get("workflow") else None
             if then is None:
                 problem = next((p_ for _, _, p_ in engine.moves(engine.get(r.id)) if p_), "nothing it can move on to yet")
-                flash(f"Saved as {engine.get(r.id).data.get(t['workflow']['field'])}, but not sent on yet: {problem[:1].lower() + problem[1:].rstrip('.')}.", "error")
+                flash(request, f"Saved as {engine.get(r.id).data.get(t['workflow']['field'])}, but not sent on yet: {problem[:1].lower() + problem[1:].rstrip('.')}.", "error")
                 moved = False
         if then is not None:  # "Submit for approval" straight from the form
             try:
@@ -1024,127 +1043,122 @@ def new(wid, table):
             except FieldErrors as exc:
                 stage = engine.get(r.id).data.get(t["workflow"]["field"])
                 reason = "; ".join(exc.errors.values())
-                flash(f"Saved as {stage}, but not sent on yet: {reason[:1].lower() + reason[1:].rstrip('.')}.", "error")
+                flash(request, f"Saved as {stage}, but not sent on yet: {reason[:1].lower() + reason[1:].rstrip('.')}.", "error")
                 moved = False
         if moved is not False:
-            flash(f"Done: {schema.lc(t['singular'])} “{engine.title(engine.get(r.id))}” is {'now ' + moved if moved else 'saved'}.", "success")
+            flash(request, f"Done: {schema.lc(t['singular'])} “{engine.title(engine.get(r.id))}” is {'now ' + moved if moved else 'saved'}.", "success")
         for table_, rows in line_problems.items():
-            flash(f"Some {schema.lc(engine.tables[table_]['label'])} weren't saved: " + "; ".join(rows.values()), "error")
-        _ran(engine)
-        back = request.form.get("back")
-        if request.form.get("another"):
+            flash(request, f"Some {schema.lc(engine.tables[table_]['label'])} weren't saved: " + "; ".join(rows.values()), "error")
+        _ran(engine, request)
+        back = form.get("back")
+        if form.get("another"):
             return redirect(url_for("app.new", wid=wid, table=t["key"]))
         saved = engine.get(r.id)
         if saved is None or not engine.allowed(saved):  # saved, but not theirs to open: never "We can't find this page"
-            flash(f"Your role can't open this {schema.lc(t['singular'])} now it's saved; whoever looks after {schema.lc(t['label'])} can.", "info")
+            flash(request, f"Your role can't open this {schema.lc(t['singular'])} now it's saved; whoever looks after {schema.lc(t['label'])} can.", "info")
             if not engine.can(t, "view"):
                 return redirect(url_for("app.home", wid=wid))
             return redirect(url_for("app.table", wid=wid, table=t["key"]))
         return redirect(back if back and back.startswith("/") and not back.startswith("//") else url_for("app.record", wid=wid, table=t["key"], rid=r.id))
-    values = {k[2:]: v for k, v in request.args.items() if k.startswith("f_")}
+    values = {k[2:]: v for k, v in request.query_params.items() if k.startswith("f_")}
     for f in _form_fields(t):
         if f["key"] not in values and f.get("default") not in (None, ""):
             default = f["default"]
             values[f["key"]] = engine.today.isoformat() if f["type"] == "date" and str(default).lower() in ("today", "{{today()}}", "now") else default
-    return _render_form(ws, engine, t, None, values, {}, back=request.args.get("back"))[0]
+    return _render_form(ws, engine, t, None, values, {}, request=request, back=request.query_params.get("back"))[0]
 
 
-@bp.route("/t/<table>/quick", methods=["POST"])
-@login_required
-def quick_add(wid, table):
+@router.api_route("/t/{table}/quick", methods=["POST"], name="app.quick_add", dependencies=[Depends(signed_in)])
+def quick_add(request: Request, wid: int, table: str, form: Form = Depends(form_of), data=Depends(json_of)):
     """Add a record from a few values: the spreadsheet view's new row (JSON) or a form on a dashboard (a form post that
     comes back to the page)."""
-    ws, engine = ctx(wid, "editor")
+    ws, engine = ctx(wid, "editor", request)
     t = _table(engine, table, "edit")
-    data = request.get_json(silent=True)
-    values = data if isinstance(data, dict) else {f["key"]: (request.form.getlist(f["key"]) if f["type"] == "multi_select" or f.get("multiple")
-                                                             else request.form.get(f["key"]) if f["type"] != "checkbox" else bool(request.form.get(f["key"])))
-                                                  for f in _form_fields(t) if f["key"] in request.form or f["type"] == "checkbox" and f"has_{f['key']}" in request.form}
+    values = data if isinstance(data, dict) else {f["key"]: (form.getlist(f["key"]) if f["type"] == "multi_select" or f.get("multiple")
+                                                             else form.get(f["key"]) if f["type"] != "checkbox" else bool(form.get(f["key"])))
+                                                  for f in _form_fields(t) if f["key"] in form or f["type"] == "checkbox" and f"has_{f['key']}" in form}
     values = {k: v for k, v in values.items() if schema.field(t, k)}
-    back = request.form.get("back") if data is None else None
+    back = form.get("back") if data is None else None
     try:
         record = engine.create(t["key"], values)
     except FieldErrors as exc:
         if data is not None:
-            return jsonify(ok=False, errors=exc.errors, error="; ".join(exc.errors.values())), 400
-        flash(f"{t['singular']} not added: " + "; ".join(exc.errors.values()), "error")
+            return json_response({"ok": False, "errors": exc.errors, "error": "; ".join(exc.errors.values())}, 400)
+        flash(request, f"{t['singular']} not added: " + "; ".join(exc.errors.values()), "error")
         return redirect(back if back and back.startswith("/") and not back.startswith("//") else url_for("app.table", wid=wid, table=table))
     if data is not None:
         engine.reset()
         r = engine.get(record.id)
-        return jsonify(ok=True, id=record.id, url=url_for("app.record", wid=wid, table=table, rid=record.id),
-                       shown={f["key"]: engine.display(f, engine.value(r, f["key"]), r) for f in t["fields"]})
-    _ran(engine)
-    flash(f"Added {schema.lc(t['singular'])} “{engine.title(engine.get(record.id))}”.", "success")
+        return json_response({"ok": True, "id": record.id, "url": url_for("app.record", wid=wid, table=table, rid=record.id),
+                              "shown": {f["key"]: engine.display(f, engine.value(r, f["key"]), r) for f in t["fields"]}})
+    _ran(engine, request)
+    flash(request, f"Added {schema.lc(t['singular'])} “{engine.title(engine.get(record.id))}”.", "success")
     return redirect(back if back and back.startswith("/") and not back.startswith("//") else url_for("app.record", wid=wid, table=table, rid=record.id))
 
 
-@bp.route("/t/<table>/<int:rid>/edit", methods=["GET", "POST"])
-@login_required
-def edit(wid, table, rid):
-    ws, engine = ctx(wid, "editor")
+@router.api_route("/t/{table}/{rid:int}/edit", methods=["GET", "POST"], name="app.edit", dependencies=[Depends(signed_in)])
+def edit(request: Request, wid: int, table: str, rid: int, form: Form = Depends(form_of)):
+    ws, engine = ctx(wid, "editor", request)
     t = _table(engine, table, "edit")
     r = _record(engine, t, rid)
     if request.method == "POST":
         try:
             with engine.atomic():  # refused whole if someone else saved it since the form was opened, or a rule fails
-                diff = engine.update(r, _form_values(t, engine), expected_version=request.form.get("_version"))
-                line_problems = _save_lines(engine, t, r)
+                diff = engine.update(r, _form_values(form, t, engine), expected_version=form.get("_version"))
+                line_problems = _save_lines(engine, t, r, form)
         except FieldErrors as exc:
-            posted = {c["table"]["key"]: [{"id": x["id"], "values": x["values"]} for x in _posted_lines(c)] for c in children(engine, t)}
+            posted = {c["table"]["key"]: [{"id": x["id"], "values": x["values"]} for x in _posted_lines(c, form)] for c in children(engine, t)}
             r = _record(engine, t, rid)
             errors = exc.errors
             if isinstance(exc, Conflict):
                 errors = {"_": "Someone else saved this " + t["singular"].lower() + " while you were editing. Your changes are below: "
                                "check them against theirs (open it in another tab), then save again to keep yours."}
-            return _render_form(ws, engine, t, r, request.form, errors, posted, 409 if isinstance(exc, Conflict) else 400)
+            return _render_form(ws, engine, t, r, form, errors, posted, 409 if isinstance(exc, Conflict) else 400, request)[0]
         try:
-            _save_files(ws, t, r.id)
+            _save_files(request, form, ws, t, r.id)
         except FileRejected as exc:
-            flash(str(exc), "error")
+            flash(request, str(exc), "error")
         held = engine.held
         engine.reset()
-        flash(f"Saved {schema.lc(t['singular'])} “{engine.title(engine.get(r.id))}”." if diff or not line_problems else "Saved.", "success")
+        flash(request, f"Saved {schema.lc(t['singular'])} “{engine.title(engine.get(r.id))}”." if diff or not line_problems else "Saved.", "success")
         if held:
-            flash(f"{', '.join(held)}: your change waits for someone else's approval before it counts.", "info")
+            flash(request, f"{', '.join(held)}: your change waits for someone else's approval before it counts.", "info")
         for table_, rows in line_problems.items():
-            flash(f"Some {schema.lc(engine.tables[table_]['label'])} weren't saved: " + "; ".join(rows.values()), "error")
-        _ran(engine)
+            flash(request, f"Some {schema.lc(engine.tables[table_]['label'])} weren't saved: " + "; ".join(rows.values()), "error")
+        _ran(engine, request)
         return redirect(url_for("app.record", wid=wid, table=t["key"], rid=r.id))
-    return _render_form(ws, engine, t, r, dict(r.data or {}), {})[0]
+    return _render_form(ws, engine, t, r, dict(r.data or {}), {}, request=request)[0]
 
 
-@bp.route("/t/<table>/<int:rid>/set", methods=["POST"])
-@login_required
-def set_value(wid, table, rid):
+@router.api_route("/t/{table}/{rid:int}/set", methods=["POST"], name="app.set_value", dependencies=[Depends(signed_in)])
+def set_value(request: Request, wid: int, table: str, rid: int, form: Form = Depends(form_of), data=Depends(json_of)):
     """One field, from a board drag or an edit in place."""
-    ws, engine = ctx(wid, "editor")
+    ws, engine = ctx(wid, "editor", request)
     t = _table(engine, table, "edit")
     r = _record(engine, t, rid)
-    data = request.get_json(silent=True) or request.form
+    data = data or form
     f = schema.field(t, data.get("field"))
     if f is None or f["type"] not in schema.STORED or f["type"] == "autonumber":
-        abort(400)
+        raise HTTPException(400)
     try:
         engine.update(r, {f["key"]: data.get("value")})
     except FieldErrors as exc:
-        return jsonify(ok=False, error="; ".join(exc.errors.values())), 400
+        return json_response({"ok": False, "error": "; ".join(exc.errors.values())}, 400)
     r = engine.get(r.id)
     messages = [f"{', '.join(engine.held)}: your change waits for someone else's approval before it counts"] if engine.held else []
     for run in engine.started:
         run = db.session.get(Run, run.id)
         messages.append(f"⚡ {run.name}: " + ("; ".join(s.get("result", "") for s in run.steps or [] if s.get("result")) or status_words(run.status)))
-    return jsonify(ok=True, shown=engine.display(f, engine.value(r, f["key"])), ran=messages)
+    return json_response({"ok": True, "shown": engine.display(f, engine.value(r, f["key"])), "ran": messages})
 
 
-@bp.route("/t/<table>/bulk", methods=["POST"])
-@login_required
-def bulk(wid, table):
-    ws, engine = ctx(wid, "editor")
+@router.api_route("/t/{table}/bulk", methods=["POST"], name="app.bulk", dependencies=[Depends(signed_in)])
+def bulk(request: Request, wid: int, table: str, form: Form = Depends(form_of)):
+    ws, engine = ctx(wid, "editor", request)
     t = _table(engine, table, "edit")
-    ids = [int(i) for i in request.form.getlist("ids") if i.isdigit()]
+    ids = [int(i) for i in form.getlist("ids") if i.isdigit()]
     rows = [r for r in (engine.get(i, t["key"]) for i in ids) if r is not None and engine.allowed(r)]
-    action = request.form.get("action")
+    action = form.get("action")
     if action == "delete":
         done, kept = 0, []
         for r in rows:
@@ -1155,19 +1169,19 @@ def bulk(wid, table):
                 kept.append(engine.title(r))
         from .. import audit
         audit.log(ws.id, "deleted", f"{done} {schema.lc(t['label']) if done != 1 else schema.lc(t['singular'])} at once")
-        flash(f"Deleted {done} {schema.lc(t['label']) if done != 1 else schema.lc(t['singular'])}."
-              + (f" Locked, so not deleted: {', '.join(kept[:5])}{'…' if len(kept) > 5 else ''}" if kept else ""), "success" if not kept else "error")
+        flash(request, f"Deleted {done} {schema.lc(t['label']) if done != 1 else schema.lc(t['singular'])}."
+                       + (f" Locked, so not deleted: {', '.join(kept[:5])}{'…' if len(kept) > 5 else ''}" if kept else ""), "success" if not kept else "error")
     elif action and (action == "labels" or action.startswith("labels:")):  # a label for each one selected, ready to print
-        return _labels_pdf(engine, t, rows, action[7:] or None, request.form.get("size"))
+        return _labels_pdf(request, engine, t, rows, action[7:] or None, form.get("size"))
     elif action and (action == "print_labels" or action.startswith("print_labels:")):  # …or straight to the label printer
-        _send_labels(engine, t, rows, action[13:] or None)
+        _send_labels(request, engine, t, rows, action[13:] or None)
     elif action and action.startswith("pdf:"):  # one PDF per selected record, in a zip (mail merge, month-end statements)
         import zipfile
         from ..documents import build
         from ..documents import pdf as pdf_
         key = action[4:]
         if not any(d["key"] == key for d in t.get("documents", [])):
-            abort(404)
+            raise HTTPException(404)
         out = io.BytesIO()
         with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
             for r in rows[:500]:
@@ -1175,207 +1189,198 @@ def bulk(wid, table):
                 name = f"{doc['label']} {data.get('number') or engine.title(r)}.pdf".replace("/", "-")
                 z.writestr(name, pdf_.render(data))
         out.seek(0)
-        return send_file(out, mimetype="application/zip", as_attachment=True, download_name=f"{t['key']}-{key}-{engine.today.isoformat()}.zip")
+        return send_file(request, out, mimetype="application/zip", as_attachment=True, download_name=f"{t['key']}-{key}-{engine.today.isoformat()}.zip")
     elif action == "set":
-        f = schema.field(t, request.form.get("field"))
+        f = schema.field(t, form.get("field"))
         if f is None or f["type"] not in schema.STORED:
-            abort(400)
+            raise HTTPException(400)
         done, failed = 0, []
         for r in rows:
             try:
-                engine.update(r, {f["key"]: request.form.get("value")})
+                engine.update(r, {f["key"]: form.get("value")})
                 done += 1
             except FieldErrors as exc:
                 failed.append(f"{engine.title(r)}: {'; '.join(exc.errors.values())}")
-        flash(f"Set {f['label']} on {done} {schema.lc(t['label']) if done != 1 else schema.lc(t['singular'])}." + (f" Not changed: {'; '.join(failed[:3])}" if failed else ""),
-              "success" if not failed else "error")
-        _ran(engine)
-    return redirect(request.referrer or url_for("app.table", wid=wid, table=t["key"]))
+        flash(request, f"Set {f['label']} on {done} {schema.lc(t['label']) if done != 1 else schema.lc(t['singular'])}." + (f" Not changed: {'; '.join(failed[:3])}" if failed else ""),
+                       "success" if not failed else "error")
+        _ran(engine, request)
+    return redirect(request.headers.get("referer") or url_for("app.table", wid=wid, table=t["key"]))
 
 
-@bp.route("/t/<table>/<int:rid>/delete", methods=["POST"])
-@login_required
-def delete(wid, table, rid):
-    ws, engine = ctx(wid, "editor")
+@router.api_route("/t/{table}/{rid:int}/delete", methods=["POST"], name="app.delete", dependencies=[Depends(signed_in)])
+def delete(request: Request, wid: int, table: str, rid: int):
+    ws, engine = ctx(wid, "editor", request)
     t = _table(engine, table, "edit")
     r = _record(engine, t, rid)
     name = engine.title(r)
     try:
         engine.delete(r)
     except FieldErrors as exc:
-        flash("; ".join(exc.errors.values()), "error")
+        flash(request, "; ".join(exc.errors.values()), "error")
         return redirect(url_for("app.record", wid=wid, table=t["key"], rid=r.id))
-    flash(f"Deleted {schema.lc(t['singular'])} “{name}”.|{url_for('app.restore', wid=wid, table=t['key'], rid=rid)}", "undo")
+    flash(request, f"Deleted {schema.lc(t['singular'])} “{name}”.|{url_for('app.restore', wid=wid, table=t['key'], rid=rid)}", "undo")
     return redirect(url_for("app.table", wid=wid, table=t["key"]))
 
 
-@bp.route("/t/<table>/<int:rid>/restore", methods=["POST"])
-@login_required
-def restore(wid, table, rid):
-    ws, engine = ctx(wid, "editor")
+@router.api_route("/t/{table}/{rid:int}/restore", methods=["POST"], name="app.restore", dependencies=[Depends(signed_in)])
+def restore(request: Request, wid: int, table: str, rid: int):
+    ws, engine = ctx(wid, "editor", request)
     _table(engine, table, "edit")
     r = db.session.get(Record, rid)
     if r is None or r.workspace_id != ws.id or r.table != table or not engine.allowed(r):
-        abort(404)
+        raise HTTPException(404)
     engine.restore(r)
-    flash(f"Brought back “{engine.title(r)}”.", "success")
+    flash(request, f"Brought back “{engine.title(r)}”.", "success")
     return redirect(url_for("app.record", wid=wid, table=table, rid=rid))
 
 
-@bp.route("/t/<table>/<int:rid>/press/<key>", methods=["POST"])
-@login_required
-def press(wid, table, rid, key):
-    ws, engine = ctx(wid, "editor")
+@router.api_route("/t/{table}/{rid:int}/press/{key}", methods=["POST"], name="app.press")
+def press(request: Request, wid: int, table: str, rid: int, key: str, user=Depends(signed_in)):
+    ws, engine = ctx(wid, "editor", request)
     t = _table(engine, table, "edit")
     r = _record(engine, t, rid)
     automation = next((a for a in engine.bp.get("automations", []) if a["key"] == key and a["trigger"]["type"] == "button"), None)
     if automation is None or not automation.get("enabled", True):
-        abort(404)
+        raise HTTPException(404)
     try:
-        automations.press(engine, automation, r, current_user.display)
+        automations.press(engine, automation, r, user.display)
     except FieldErrors as exc:  # it isn't ready to be pressed yet (the page was open from before): said why
-        flash("; ".join(exc.errors.values()), "error")
+        flash(request, "; ".join(exc.errors.values()), "error")
         return redirect(url_for("app.record", wid=wid, table=t["key"], rid=r.id))
-    _ran(engine)
+    _ran(engine, request)
     return redirect(url_for("app.record", wid=wid, table=t["key"], rid=r.id))
 
 
-@bp.route("/t/<table>/<int:rid>/move/<int:index>", methods=["POST"])
-@login_required
-def move(wid, table, rid, index):
+@router.api_route("/t/{table}/{rid:int}/move/{index:int}", methods=["POST"], name="app.move")
+def move(request: Request, wid: int, table: str, rid: int, index: int, user=Depends(signed_in), form: Form = Depends(form_of)):
     """A workflow button on the record: Submit, Approve, Mark paid."""
-    ws, engine = ctx(wid, "editor")
+    ws, engine = ctx(wid, "editor", request)
     t = _table(engine, table, "edit")
     r = _record(engine, t, rid)
     flow = (t.get("workflow") or {}).get("transitions") or []
-    if 0 <= index < len(flow) and flow[index].get("step_up") and request.form.get("step_up_code") and not confirm_step_up(request.form.get("step_up_code")):
-        flash("That code (or password) wasn't right.", "error")
+    if 0 <= index < len(flow) and flow[index].get("step_up") and form.get("step_up_code") and not confirm_step_up(form.get("step_up_code"), request):
+        flash(request, "That code (or password) wasn't right.", "error")
         return redirect(url_for("app.record", wid=wid, table=t["key"], rid=r.id))
-    filled = {k: request.form[f"fill_{k}"] for k in (flow[index].get("requires") or [] if 0 <= index < len(flow) else [])
-              if request.form.get(f"fill_{k}", "").strip()}  # what the button asked for beside it
+    filled = {k: form[f"fill_{k}"] for k in (flow[index].get("requires") or [] if 0 <= index < len(flow) else [])
+              if form.get(f"fill_{k}", "").strip()}  # what the button asked for beside it
     try:
         if filled:
             engine.update(r, filled)
             r = engine.get(r.id)
-        engine.move(r, index, by=current_user.display)
+        engine.move(r, index, by=user.display)
     except FieldErrors as exc:
-        flash("; ".join(exc.errors.values()), "error")
+        flash(request, "; ".join(exc.errors.values()), "error")
         return redirect(url_for("app.record", wid=wid, table=t["key"], rid=r.id))
     except Conflict:
-        flash("Someone else changed this record just now. Here's the latest; try again.", "error")
+        flash(request, "Someone else changed this record just now. Here's the latest; try again.", "error")
         return redirect(url_for("app.record", wid=wid, table=t["key"], rid=r.id))
-    flash(f"Done: this {schema.lc(t['singular'])} is now {engine.get(r.id).data.get(t['workflow']['field'])}.", "success")
-    _ran(engine)
+    flash(request, f"Done: this {schema.lc(t['singular'])} is now {engine.get(r.id).data.get(t['workflow']['field'])}.", "success")
+    _ran(engine, request)
     return redirect(url_for("app.record", wid=wid, table=t["key"], rid=r.id))
 
 
-@bp.route("/t/<table>/<int:rid>/stage", methods=["POST"])
-@login_required
-def set_stage(wid, table, rid):
+@router.api_route("/t/{table}/{rid:int}/stage", methods=["POST"], name="app.set_stage", dependencies=[Depends(signed_in)])
+def set_stage(request: Request, wid: int, table: str, rid: int, form: Form = Depends(form_of)):
     """The owner putting a record in another stage by hand (fixing a mistake); everyone else uses its buttons."""
-    ws, engine = ctx(wid, "owner")
+    ws, engine = ctx(wid, "owner", request)
     t = _table(engine, table, "edit")
     r = _record(engine, t, rid)
-    stage = request.form.get("stage")
+    stage = form.get("stage")
     if not t.get("workflow") or stage not in schema.stages(t):
-        abort(400)
+        raise HTTPException(400)
     try:
         engine.update(r, {t["workflow"]["field"]: stage})
     except FieldErrors as exc:
-        flash("; ".join(exc.errors.values()), "error")
+        flash(request, "; ".join(exc.errors.values()), "error")
     else:
-        flash(f"Done: this {schema.lc(t['singular'])} is now {stage}.", "success")
-        _ran(engine)
+        flash(request, f"Done: this {schema.lc(t['singular'])} is now {stage}.", "success")
+        _ran(engine, request)
     return redirect(url_for("app.record", wid=wid, table=t["key"], rid=r.id))
 
 
-@bp.route("/t/<table>/<int:rid>/document/<key>", methods=["POST"])
-@login_required
-def document(wid, table, rid, key):
+@router.api_route("/t/{table}/{rid:int}/document/{key}", methods=["POST"], name="app.document")
+def document(request: Request, wid: int, table: str, rid: int, key: str, user=Depends(signed_in)):
     from ..documents import produce
-    ws, engine = ctx(wid, "editor")
+    ws, engine = ctx(wid, "editor", request)
     t = _table(engine, table, "edit")
     r = _record(engine, t, rid)
     doc = next((d for d in t.get("documents", []) if d["key"] == key), None)
     if doc is not None and doc.get("only_if") and not engine.matches(r, doc["only_if"]):
-        flash(f"{doc['label']} isn't ready yet: only when {automations.describe_condition(engine, doc['only_if'][0], t['key']).lower()}.", "error")
+        flash(request, f"{doc['label']} isn't ready yet: only when {automations.describe_condition(engine, doc['only_if'][0], t['key']).lower()}.", "error")
         return redirect(url_for("app.record", wid=wid, table=t["key"], rid=r.id))
     if doc is not None and doc.get("format") == "text":  # a file in another system's layout: made now, downloaded, not kept
         from ..documents import text_file
         if any(f.get("sensitive") and not engine.sees(f) for f in t["fields"]):
-            abort(403)
+            raise HTTPException(403)
         try:
             name, content, sha, _ = text_file(engine, r, key)
         except expr.ExprError as exc:
-            flash(f"{doc['label']} couldn't be made: its layout has a mistake ({exc}). Ask the builder to fix it.", "error")
+            flash(request, f"{doc['label']} couldn't be made: its layout has a mistake ({exc}). Ask the builder to fix it.", "error")
             return redirect(url_for("app.record", wid=wid, table=t["key"], rid=r.id))
-        db.session.add(RecordChange(workspace_id=ws.id, record_id=r.id, kind="updated", by=current_user.display, by_id=current_user.id,
+        db.session.add(RecordChange(workspace_id=ws.id, record_id=r.id, kind="updated", by=user.display, by_id=user.id,
                                     changes={"_files": [None, f"Made {name} (fingerprint {sha[:12]})"]}))
         db.session.commit()
-        response = Response(content, mimetype="application/octet-stream")
+        response = Response(content, media_type="application/octet-stream")
         response.headers["Content-Disposition"] = f'attachment; filename="{name}"'
         response.headers["X-Content-SHA256"] = sha
         return response
     try:
-        file = produce(engine, r, key, by=current_user.display)
+        file = produce(engine, r, key, by=user.display)
     except ValueError as exc:
-        flash(str(exc), "error")
+        flash(request, str(exc), "error")
         return redirect(url_for("app.record", wid=wid, table=t["key"], rid=r.id))
-    flash(f"Produced {file.name}.", "success")
+    flash(request, f"Produced {file.name}.", "success")
     return redirect(url_for("app.file", wid=wid, fid=file.id))
 
 
-@bp.route("/t/<table>/<int:rid>/label")
-@login_required
-def label(wid, table, rid):
+@router.api_route("/t/{table}/{rid:int}/label", methods=["GET"], name="app.label", dependencies=[Depends(signed_in)])
+def label(request: Request, wid: int, table: str, rid: int):
     """The record's label as a PDF to print: its own design ("doc"), or the plain one every list has."""
-    ws, engine = ctx(wid)
+    ws, engine = ctx(wid, "viewer", request)
     t = _table(engine, table)
     r = _record(engine, t, rid)
-    return _labels_pdf(engine, t, [r], request.args.get("doc") or None, request.args.get("size"))
+    return _labels_pdf(request, engine, t, [r], request.query_params.get("doc") or None, request.query_params.get("size"))
 
 
-@bp.route("/t/<table>/<int:rid>/label/print", methods=["POST"])
-@login_required
-def label_print(wid, table, rid):
+@router.api_route("/t/{table}/{rid:int}/label/print", methods=["POST"], name="app.label_print", dependencies=[Depends(signed_in)])
+def label_print(request: Request, wid: int, table: str, rid: int, form: Form = Depends(form_of)):
     """The record's label (or its "doc" label) straight to the label printer."""
-    ws, engine = ctx(wid)
+    ws, engine = ctx(wid, "viewer", request)
     t = _table(engine, table)
     r = _record(engine, t, rid)
-    _send_labels(engine, t, [r], request.form.get("doc") or None)
-    return redirect(request.referrer or url_for("app.record", wid=wid, table=t["key"], rid=r.id))
+    _send_labels(request, engine, t, [r], form.get("doc") or None)
+    return redirect(request.headers.get("referer") or url_for("app.record", wid=wid, table=t["key"], rid=r.id))
 
 
-def _send_labels(engine, t, rows, key):
+def _send_labels(request, engine, t, rows, key):
     from .. import printing
     from ..documents import labels
     doc = next((d for d in t.get("documents", []) if d["key"] == key and d.get("format") == "label"), None)
     if key and doc is None:
-        abort(404)
+        raise HTTPException(404)
     link = lambda r: url_for("app.record", wid=engine.ws.id, table=t["key"], rid=r.id, _external=True)  # noqa: E731
     try:
-        flash(printing.print_labels(engine.ws, labels.for_records(engine, rows, doc, link), (doc or {}).get("size")), "success")
+        flash(request, printing.print_labels(engine.ws, labels.for_records(engine, rows, doc, link), (doc or {}).get("size")), "success")
     except printing.PrintProblem as exc:
-        flash(str(exc), "error")
+        flash(request, str(exc), "error")
 
 
-@bp.route("/t/<table>/<int:rid>/document/<key>/print", methods=["POST"])
-@login_required
-def document_print(wid, table, rid, key):
+@router.api_route("/t/{table}/{rid:int}/document/{key}/print", methods=["POST"], name="app.document_print", dependencies=[Depends(signed_in)])
+def document_print(request: Request, wid: int, table: str, rid: int, key: str):
     """A record's PDF document straight to the documents printer."""
     from .. import printing
     from ..documents import build
     from ..documents import pdf as pdf_
-    ws, engine = ctx(wid, "editor")
+    ws, engine = ctx(wid, "editor", request)
     t = _table(engine, table, "edit")
     r = _record(engine, t, rid)
     if not any(d["key"] == key and d.get("format") not in ("text", "label") for d in t.get("documents", [])):
-        abort(404)
+        raise HTTPException(404)
     data, _ = build(engine, r, key)
     try:
-        flash(printing.print_pdf(ws, pdf_.render(data)), "success")
+        flash(request, printing.print_pdf(ws, pdf_.render(data)), "success")
     except printing.PrintProblem as exc:
-        flash(str(exc), "error")
+        flash(request, str(exc), "error")
     return redirect(url_for("app.record", wid=wid, table=t["key"], rid=r.id))
 
 
@@ -1384,29 +1389,28 @@ def _flows_here(engine, r):
     return flows.for_record(engine, r) if engine.bp.get("flows") else []
 
 
-def _labels_pdf(engine, t, rows, key, size):
-    from ..webkit import session
+def _labels_pdf(request, engine, t, rows, key, size):
     from ..documents import labels
+    session = request.state.session
     doc = next((d for d in t.get("documents", []) if d["key"] == key and d.get("format") == "label"), None)
     if key and doc is None:
-        abort(404)
+        raise HTTPException(404)
     size = labels.size_of(size or (doc or {}).get("size") or session.get("label_size"))
     session["label_size"] = size  # the printer they have: chosen once
     link = lambda r: url_for("app.record", wid=engine.ws.id, table=t["key"], rid=r.id, _external=True)  # noqa: E731
     content = labels.render(labels.for_records(engine, rows, doc, link), size)
     name = f"{(doc or {}).get('label') or t['singular']} label{'s' if len(rows) != 1 else ''}.pdf"
-    response = Response(content, mimetype="application/pdf")
+    response = Response(content, media_type="application/pdf")
     response.headers["Content-Disposition"] = f'inline; filename="{name}"'  # opens to print, rather than downloading
     return response
 
 
-@bp.route("/scan")
-@login_required
-def scan(wid):
+@router.api_route("/scan", methods=["GET"], name="app.scan", dependencies=[Depends(signed_in)])
+def scan(request: Request, wid: int):
     """What a scanned code is: one of this app's own labels (its QR code is the record's address), a barcode a record
     has, or a record's number or name. Straight to it; to the search otherwise."""
-    ws, engine = ctx(wid)
-    code = (request.args.get("code") or "").strip()
+    ws, engine = ctx(wid, "viewer", request)
+    code = (request.query_params.get("code") or "").strip()
     if not code:
         return redirect(url_for("app.home", wid=wid))
     own = re.search(rf"/w/{wid}/app/t/(\w+)/(\d+)\b", code)
@@ -1415,137 +1419,130 @@ def scan(wid):
     found = engine.by_code(code)
     if found is not None:
         return redirect(url_for("app.record", wid=wid, table=found.table, rid=found.id))
-    flash(f"Nothing has the code “{code}”, so here's everything that mentions it.", "info")
+    flash(request, f"Nothing has the code “{code}”, so here's everything that mentions it.", "info")
     return redirect(url_for("app.search", wid=wid, q=code))
 
 
-@bp.route("/t/<table>/<int:rid>/files", methods=["POST"])
-@login_required
-def upload(wid, table, rid):
-    ws, engine = ctx(wid, "editor")
+@router.api_route("/t/{table}/{rid:int}/files", methods=["POST"], name="app.upload")
+def upload(request: Request, wid: int, table: str, rid: int, user=Depends(signed_in), form: Form = Depends(form_of)):
+    ws, engine = ctx(wid, "editor", request)
     t = _table(engine, table, "edit")
     r = _record(engine, t, rid)
-    field = request.form.get("field", "")
+    field = form.get("field", "")
     if field and (schema.field(t, field) or {}).get("type") not in schema.FILES:
-        abort(400)
+        raise HTTPException(400)
     reason = engine.locked(r)
     if reason and field not in (t.get("lock_except") or []):  # a signed contract's files stay as they were signed
-        flash(reason, "error")
+        flash(request, reason, "error")
         return redirect(url_for("app.record", wid=wid, table=t["key"], rid=r.id))
     added = 0
-    for up in request.files.getlist("files")[:20]:
+    for up in form.files.getlist("files")[:20]:
         if up and up.filename:
             try:
-                save(ws.id, up, up.filename, record_id=r.id, field=field, by=current_user.display)
+                save(ws.id, up, up.filename, record_id=r.id, field=field, by=user.display)
                 added += 1
             except FileRejected as exc:
-                flash(str(exc), "error")
+                flash(request, str(exc), "error")
     if added:
-        db.session.add(RecordChange(workspace_id=ws.id, record_id=r.id, kind="updated", by=current_user.display,
+        db.session.add(RecordChange(workspace_id=ws.id, record_id=r.id, kind="updated", by=user.display,
                                     changes={"_files": [None, f"added {added} file{'s' if added != 1 else ''}"]}))
         db.session.commit()
     return redirect(url_for("app.record", wid=wid, table=t["key"], rid=r.id))
 
 
-@bp.route("/files/<int:fid>")
-@login_required
-def file(wid, fid):
-    ws, engine = ctx(wid)
+@router.api_route("/files/{fid:int}", methods=["GET"], name="app.file", dependencies=[Depends(signed_in)])
+def file(request: Request, wid: int, fid: int):
+    ws, engine = ctx(wid, "viewer", request)
     f = db.session.get(File, fid)
     if f is None or f.workspace_id != ws.id or f.deleted_at is not None:
-        abort(404)
-    if not may_open_file(engine, f):
-        abort(404)
-    return send_stored(f, download=request.args.get("download") == "1")
+        raise HTTPException(404)
+    if not may_open_file(engine, f, request):
+        raise HTTPException(404)
+    return send_stored(f, download=request.query_params.get("download") == "1", request=request)
 
 
-@bp.route("/files/<int:fid>/delete", methods=["POST"])
-@login_required
-def delete_file(wid, fid):
-    ws, engine = ctx(wid, "editor")
+@router.api_route("/files/{fid:int}/delete", methods=["POST"], name="app.delete_file")
+def delete_file(request: Request, wid: int, fid: int, user=Depends(signed_in)):
+    ws, engine = ctx(wid, "editor", request)
     f = db.session.get(File, fid)
-    if f is None or f.workspace_id != ws.id or not may_open_file(engine, f):
-        abort(404)
+    if f is None or f.workspace_id != ws.id or not may_open_file(engine, f, request):
+        raise HTTPException(404)
     owner = engine.get(f.record_id) if f.record_id else None
     if owner is not None:
         if not engine.can(owner.table, "edit") or engine.locked(owner):
-            abort(403)
-    elif not (g.member.can("admin") or f.uploaded_by_id == current_user.id):
-        abort(403)
+            raise HTTPException(403)
+    elif not (request.state.member.can("admin") or f.uploaded_by_id == user.id):
+        raise HTTPException(403)
     f.deleted_at = utcnow()
     db.session.commit()
-    flash(f"Removed {f.name}.", "success")
-    return redirect(request.referrer or url_for("app.home", wid=wid))
+    flash(request, f"Removed {f.name}.", "success")
+    return redirect(request.headers.get("referer") or url_for("app.home", wid=wid))
 
 
-@bp.route("/t/<table>/<int:rid>/comments", methods=["POST"])
-@login_required
-def comment(wid, table, rid):
-    ws, engine = ctx(wid)
+@router.api_route("/t/{table}/{rid:int}/comments", methods=["POST"], name="app.comment")
+def comment(request: Request, wid: int, table: str, rid: int, user=Depends(signed_in), form: Form = Depends(form_of)):
+    ws, engine = ctx(wid, "viewer", request)
     t = _table(engine, table)
     r = _record(engine, t, rid)
-    text = (request.form.get("text") or "").strip()[:5000]
+    text = (form.get("text") or "").strip()[:5000]
     if text:
-        db.session.add(Comment(workspace_id=ws.id, record_id=r.id, user_id=current_user.id, text=text, shared=bool(request.form.get("shared"))))
+        db.session.add(Comment(workspace_id=ws.id, record_id=r.id, user_id=user.id, text=text, shared=bool(form.get("shared"))))
         db.session.commit()
         from ..models import Notification
         members = {name.lower(): uid for uid, name in engine.members().items()}
         lowered = text.lower()
         for name, uid in members.items():
-            if uid != current_user.id and f"@{name}" in lowered:
+            if uid != user.id and f"@{name}" in lowered:
                 db.session.add(Notification(workspace_id=ws.id, user_id=uid, kind="mention", link=f"table:{t['key']}:record:{r.id}",
-                                            text=f"{current_user.display} mentioned you on {t['singular']} “{engine.title(r)}”: {text[:200]}"))
+                                            text=f"{user.display} mentioned you on {t['singular']} “{engine.title(r)}”: {text[:200]}"))
         db.session.commit()
     return redirect(url_for("app.record", wid=wid, table=t["key"], rid=r.id) + "#comments")
 
 
-@bp.route("/t/<table>/my-views", methods=["POST"])
-@login_required
-def save_view(wid, table):
+@router.api_route("/t/{table}/my-views", methods=["POST"], name="app.save_view")
+def save_view(request: Request, wid: int, table: str, user=Depends(signed_in), form: Form = Depends(form_of)):
     """Keep the current filters, search, sorting and grouping as one of this person's own views (or forget one)."""
     from urllib.parse import parse_qsl, urlencode
     from ..models import SavedView
-    ws, engine = ctx(wid)
+    ws, engine = ctx(wid, "viewer", request)
     t = _table(engine, table)
-    if request.form.get("forget"):
-        gone = db.session.get(SavedView, int(request.form["forget"])) if request.form["forget"].isdigit() else None
-        if gone is None or gone.user_id != current_user.id or gone.workspace_id != ws.id:
-            abort(404)
+    if form.get("forget"):
+        gone = db.session.get(SavedView, int(form["forget"])) if form["forget"].isdigit() else None
+        if gone is None or gone.user_id != user.id or gone.workspace_id != ws.id:
+            raise HTTPException(404)
         db.session.delete(gone)
         db.session.commit()
         return redirect(url_for("app.table", wid=wid, table=table))
-    label = (request.form.get("label") or "").strip()[:80] or "My view"
-    query = urlencode([(k, v) for k, v in parse_qsl(request.form.get("query") or "") if k not in ("page", "my")])
-    saved = SavedView(workspace_id=ws.id, user_id=current_user.id, table=t["key"], label=label, params=query)
+    label = (form.get("label") or "").strip()[:80] or "My view"
+    query = urlencode([(k, v) for k, v in parse_qsl(form.get("query") or "") if k not in ("page", "my")])
+    saved = SavedView(workspace_id=ws.id, user_id=user.id, table=t["key"], label=label, params=query)
     db.session.add(saved)
     db.session.commit()
-    flash(f"Saved “{label}” as one of your views.", "success")
+    flash(request, f"Saved “{label}” as one of your views.", "success")
     return redirect(url_for("app.table", wid=wid, table=table) + f"?{query}&my={saved.id}".replace("?&", "?"))
 
 
-@bp.route("/t/<table>/<int:rid>/follow", methods=["POST"])
-@login_required
-def follow(wid, table, rid):
+@router.api_route("/t/{table}/{rid:int}/follow", methods=["POST"], name="app.follow")
+def follow(request: Request, wid: int, table: str, rid: int, user=Depends(signed_in)):
     from ..models import Follow
-    ws, engine = ctx(wid)
+    ws, engine = ctx(wid, "viewer", request)
     t = _table(engine, table)
     r = _record(engine, t, rid)
-    existing = Follow.query.filter_by(user_id=current_user.id, record_id=r.id).first()
+    existing = Follow.query.filter_by(user_id=user.id, record_id=r.id).first()
     if existing:
         db.session.delete(existing)
-        flash(f"You've stopped following “{engine.title(r)}”.", "success")
+        flash(request, f"You've stopped following “{engine.title(r)}”.", "success")
     else:
-        db.session.add(Follow(workspace_id=ws.id, user_id=current_user.id, record_id=r.id))
-        flash(f"Following “{engine.title(r)}”: you'll be told when someone changes it.", "success")
+        db.session.add(Follow(workspace_id=ws.id, user_id=user.id, record_id=r.id))
+        flash(request, f"Following “{engine.title(r)}”: you'll be told when someone changes it.", "success")
     db.session.commit()
     return redirect(url_for("app.record", wid=wid, table=table, rid=rid))
 
 
-@bp.route("/t/<table>/<int:rid>/duplicate", methods=["POST"])
-@login_required
-def duplicate(wid, table, rid):
+@router.api_route("/t/{table}/{rid:int}/duplicate", methods=["POST"], name="app.duplicate", dependencies=[Depends(signed_in)])
+def duplicate(request: Request, wid: int, table: str, rid: int):
     """A copy of a record and its lines (not its number, unique values or files), opened for editing."""
-    ws, engine = ctx(wid, "editor")
+    ws, engine = ctx(wid, "editor", request)
     t = _table(engine, table, "edit")
     r = _record(engine, t, rid)
     full = engine.tables[t["key"]]
@@ -1564,29 +1561,28 @@ def duplicate(wid, table, rid):
                             and (schema.field(engine.tables[key], k) or {}).get("type") in schema.STORED - {"autonumber"}}
                     engine.create(key, {**data, via: copy.id}, automations=False, ai=False)
     except FieldErrors as exc:
-        flash("Couldn't copy it: " + "; ".join(exc.errors.values()), "error")
+        flash(request, "Couldn't copy it: " + "; ".join(exc.errors.values()), "error")
         return redirect(url_for("app.record", wid=wid, table=table, rid=rid))
-    flash("Copied. This is the copy: change what's different and save.", "success")
+    flash(request, "Copied. This is the copy: change what's different and save.", "success")
     return redirect(url_for("app.edit", wid=wid, table=table, rid=copy.id))
 
 
-@bp.route("/t/<table>/<int:rid>/portal-invite", methods=["POST"])
-@login_required
-def portal_invite(wid, table, rid):
+@router.api_route("/t/{table}/{rid:int}/portal-invite", methods=["POST"], name="app.portal_invite")
+def portal_invite(request: Request, wid: int, table: str, rid: int, user=Depends(signed_in)):
     """Invite the person a record is (a customer, a supplier) to the portal: their account sees only their records."""
     import secrets
     from ..models import Invite
-    ws, engine = ctx(wid, "admin")
+    ws, engine = ctx(wid, "admin", request)
     t = _table(engine, table)
     r = _record(engine, t, rid)
     portal = schema.portal_of(engine.bp, t["key"])
     if portal is None:
-        abort(404)
+        raise HTTPException(404)
     email = str(engine.value(r, portal["email_field"]) or "").strip().lower()
     if "@" not in email:
-        flash(f"Give {engine.title(r)} an email address first; that's how they sign in.", "error")
+        flash(request, f"Give {engine.title(r)} an email address first; that's how they sign in.", "error")
         return redirect(url_for("app.record", wid=wid, table=table, rid=rid))
-    invite = Invite(workspace_id=ws.id, email=email, role="portal", contact_id=r.id, token=secrets.token_urlsafe(24), invited_by=current_user.id)
+    invite = Invite(workspace_id=ws.id, email=email, role="portal", contact_id=r.id, token=secrets.token_urlsafe(24), invited_by=user.id)
     db.session.add(invite)
     db.session.commit()
     link = f"{current_app.config['BASE_URL']}/invite/{invite.token}"
@@ -1599,16 +1595,15 @@ def portal_invite(wid, table, rid):
             sent = True
     except Exception as exc:  # the link still works; it just has to be sent by hand
         current_app.logger.warning("Couldn't email the portal invitation: %s", exc)
-    flash(f"Invitation for {email} made" + (" and emailed." if sent else f". Send them this link: {link}"), "success")
+    flash(request, f"Invitation for {email} made" + (" and emailed." if sent else f". Send them this link: {link}"), "success")
     return redirect(url_for("app.record", wid=wid, table=table, rid=rid))
 
 
-@bp.route("/people")
-@login_required
-def people(wid):
+@router.api_route("/people", methods=["GET"], name="app.people", dependencies=[Depends(signed_in)])
+def people(request: Request, wid: int):
     """Members for @mentions and person pickers (JSON)."""
-    ws, engine = ctx(wid)
-    return jsonify([{"id": uid, "name": name} for uid, name in engine.members().items()])
+    ws, engine = ctx(wid, "viewer", request)
+    return json_response([{"id": uid, "name": name} for uid, name in engine.members().items()])
 
 
 def user_name(uid):
