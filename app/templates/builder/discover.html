@@ -14,7 +14,7 @@
       <p class="muted mt-1">Sign in with the Microsoft account you run the business from.{% if ms.status == 'needs sign-in' %} The last sign-in expired.{% endif %}</p>
       <form method="post" action="{{ url_for('connect.start', wid=ws.id) }}" class="mt-3"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <input type="hidden" name="next" value="{{ url_for('builder.discover', wid=ws.id) }}"><button class="btn primary">{{ icon('cloud') }}Sign in with Microsoft</button></form></div>
-  {% elif not job or job.status == 'failed' and request.args.get('again') or job.status == 'done' and job.result.get('built') and request.args.get('again') %}
+  {% elif not job or job.status == 'failed' and request.query_params.get('again') or job.status == 'done' and job.result.get('built') and request.query_params.get('again') %}
     <div class="card card-body center">{{ icon('sparkles', 'big') }}<h2 class="mt-2">Ready to read {{ ms.account }}</h2>
       {% if job and job.status == 'failed' %}<p class="notice bad mt-2">{{ icon('triangle-alert') }}<span>Last time: {{ job.error }}</span></p>{% endif %}
       <form method="post" action="{{ url_for('builder.discover_start', wid=ws.id) }}" class="mt-3"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">

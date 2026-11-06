@@ -88,19 +88,8 @@ def create_app(overrides=None):
     # front: app/api; docs/WEB.md says how a module moves from here to there)
     from .web import filters
     from .web import erp  # noqa: F401 (with erp_ai, erp_flows, erp_learn, erp_pages, erp_records, erp_studio on its bp)
-    from .web import mcp  # noqa: F401 (adds to api.bp)
-    from .web import api, builder, connect, connect_apps, forms, portal, settings
     for blueprint in (
-        builder.bp,
         erp.bp,
-        settings.bp,
-        forms.bp,
-        connect.bp,
-        connect_apps.bp,
-        api.bp,
-        api.hooks,
-        portal.bp,
-        portal.join,
     ):
         app.register_blueprint(blueprint)
     filters.register(app)

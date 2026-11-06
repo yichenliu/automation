@@ -18,19 +18,21 @@ import hmac
 import secrets
 from types import SimpleNamespace
 
+from fastapi import APIRouter, Depends, Request
+from starlette.responses import Response
+
 from ..blueprint import schema
 from ..blueprint.expr import to_number
 from ..engine import automations
 from ..engine.records import Conflict, Engine, FieldErrors, RecordProxy
-from ..extensions import csrf, db
+from ..extensions import db
 from ..models import ApiKey, Run, Workspace, utcnow
 from ..security import Throttle, client_ip
-from ..webkit import Blueprint, abort, jsonify, request
+from .http import Answer, Form, PageRoute, body_of, form_of, json_of, json_response
 
-bp = Blueprint("api", __name__, url_prefix="/api/v1")
-hooks = Blueprint("hooks", __name__)
-csrf.exempt(bp)
-csrf.exempt(hooks)
+# other systems call these with a key (or, a webhook, a secret address), never from a page's form: no CSRF token
+router = APIRouter(prefix="/api/v1", route_class=PageRoute)  # with the MCP and OpenAPI addresses mcp.py adds
+hooks = APIRouter(route_class=PageRoute)
 calls = Throttle(1200, 60)  # per key
 hook_calls = Throttle(300, 60)  # per address
 MAX_LIMIT = 500
@@ -50,40 +52,43 @@ def make_key(workspace, name, role, by):
 
 
 def _error(status, message, **extra):
-    response = jsonify(error=message, **extra)
-    response.status_code = status
-    return response
+    return json_response({"error": message, **extra}, status)
 
 
-def _key():
+def _key(request):
     header = request.headers.get("Authorization", "")
     plain = header[7:].strip() if header.lower().startswith("bearer ") else request.headers.get("X-Api-Key", "").strip()
     parts = plain.split("_")
     if len(parts) < 3 or parts[0] != "keel":
-        abort(_error(401, "Send your API key as: Authorization: Bearer keel_..."))
+        raise Answer(_error(401, "Send your API key as: Authorization: Bearer keel_..."))
     key = ApiKey.query.filter_by(prefix=parts[1], revoked_at=None).first()
     if key is None or not hmac.compare_digest(key.hash, hashlib.sha256(plain.encode()).hexdigest()):
-        abort(_error(401, "That API key isn't valid (it may have been revoked)."))
+        raise Answer(_error(401, "That API key isn't valid (it may have been revoked)."))
     if not calls.allow(key.id):
-        abort(_error(429, "Too many requests; slow down and try again in a minute."))
+        raise Answer(_error(429, "Too many requests; slow down and try again in a minute."))
     if key.last_used_at is None or (utcnow() - key.last_used_at).total_seconds() > 60:
         key.last_used_at = utcnow()
         db.session.commit()
     return key
 
 
-def _engine():
-    key = _key()
+def _engine(request):
+    key = _key(request)
     ws = db.session.get(Workspace, key.workspace_id)
     return Engine(ws, by=f"API key “{key.name}”", member=SimpleNamespace(role=key.role, user_id=None)), key
+
+
+def _args(request):
+    """The query's values by name, each name's first value (as they were always read)."""
+    return {k: request.query_params.getlist(k)[0] for k in request.query_params.keys()}
 
 
 def _table(engine, key, action="view"):
     t = engine.tables.get(key)
     if t is None or not engine.can(t) or t.get("embedded") and action != "lines":
-        abort(_error(404, f"There's no table “{key}” (GET /api/v1/tables lists them)."))
+        raise Answer(_error(404, f"There's no table “{key}” (GET /api/v1/tables lists them)."))
     if action == "edit" and not engine.can(t, "edit"):
-        abort(_error(403, f"This key can't change {schema.lc(t['label'])}."))
+        raise Answer(_error(403, f"This key can't change {schema.lc(t['label'])}."))
     return engine.visible(t)
 
 
@@ -117,21 +122,21 @@ def _out(engine, t, record, lines=False):
 def _record(engine, t, rid):
     r = engine.get(rid, t["key"])
     if r is None or not engine.allowed(r):
-        abort(_error(404, f"There's no {schema.lc(t['singular'])} {rid}."))
+        raise Answer(_error(404, f"There's no {schema.lc(t['singular'])} {rid}."))
     return r
 
 
-def _body():
-    data = request.get_json(silent=True)
+def _body(data):
+    """The JSON object sent (`data`, from json_of), or the API's 400 when it isn't one."""
     if not isinstance(data, dict):
-        abort(_error(400, "Send a JSON object of field values, e.g. {\"name\": \"Acme\", \"status\": \"Active\"}."))
+        raise Answer(_error(400, "Send a JSON object of field values, e.g. {\"name\": \"Acme\", \"status\": \"Active\"}."))
     return data
 
 
 def _values(t, data):
     unknown = [k for k in data if k != "lines" and not schema.field(t, k)]
     if unknown:
-        abort(_error(400, f"{t['label']} has no field {', '.join(unknown)}.", fields=[f["key"] for f in t["fields"]]))
+        raise Answer(_error(400, f"{t['label']} has no field {', '.join(unknown)}.", fields=[f["key"] for f in t["fields"]]))
     return {k: v for k, v in data.items() if k != "lines"}
 
 
@@ -142,24 +147,25 @@ def _failed(exc):
 
 # --- routes --------------------------------------------------------------------------------------------------------------
 
-@bp.route("/tables")
-def tables():
-    engine, _ = _engine()
+@router.api_route("/tables", methods=["GET"], name="api.tables")
+def tables(request: Request):
+    engine, _ = _engine(request)
     out = []
     for t in engine.visible_blueprint().get("tables", []):
         fields = [{k: f[k] for k in ("key", "label", "type", "options", "table", "required") if k in f} for f in t["fields"]]
         out.append({"key": t["key"], "label": t["label"], "singular": t["singular"], "lines_of": None if not t.get("embedded") else
                     next((f["table"] for f in t["fields"] if f["type"] == "link"), None), "fields": fields,
                     "editable": engine.can(t, "edit")})
-    return jsonify(tables=out)
+    return json_response({"tables": out})
 
 
-@bp.route("/tables/<table>/records")
-def list_records(table):
-    engine, _ = _engine()
+@router.api_route("/tables/{table}/records", methods=["GET"], name="api.list_records")
+def list_records(request: Request, table: str):
+    engine, _ = _engine(request)
     t = _table(engine, table)
+    args = _args(request)
     filters = []
-    for name, value in request.args.items():
+    for name, value in args.items():
         if name in ("q", "sort", "limit", "offset"):
             continue
         f = schema.field(t, name)
@@ -167,29 +173,29 @@ def list_records(table):
             return _error(400, f"{t['label']} has no field “{name}” to filter by.")
         filters.append({"field": name, "op": "equals", "value": value})
     sort = None
-    if request.args.get("sort"):
-        key = request.args["sort"].lstrip("-")
+    if args.get("sort"):
+        key = args["sort"].lstrip("-")
         if not schema.field(t, key) and key not in ("created_at", "updated_at"):
             return _error(400, f"{t['label']} has no field “{key}” to sort by.")
-        sort = {"field": key, "dir": "desc" if request.args["sort"].startswith("-") else "asc"}
-    limit = int(min(max(to_number(request.args.get("limit")) or 50, 1), MAX_LIMIT))
-    offset = int(max(to_number(request.args.get("offset")) or 0, 0))
-    rows, total = engine.page(t["key"], filters, q=request.args.get("q"), sort=sort, offset=offset, limit=limit)  # only this page read
-    return jsonify(total=total, limit=limit, offset=offset, records=[_out(engine, t, r) for r in rows])
+        sort = {"field": key, "dir": "desc" if args["sort"].startswith("-") else "asc"}
+    limit = int(min(max(to_number(args.get("limit")) or 50, 1), MAX_LIMIT))
+    offset = int(max(to_number(args.get("offset")) or 0, 0))
+    rows, total = engine.page(t["key"], filters, q=args.get("q"), sort=sort, offset=offset, limit=limit)  # only this page read
+    return json_response({"total": total, "limit": limit, "offset": offset, "records": [_out(engine, t, r) for r in rows]})
 
 
-@bp.route("/tables/<table>/records/<int:rid>")
-def get_record(table, rid):
-    engine, _ = _engine()
+@router.api_route("/tables/{table}/records/{rid:int}", methods=["GET"], name="api.get_record")
+def get_record(request: Request, table: str, rid: int):
+    engine, _ = _engine(request)
     t = _table(engine, table)
-    return jsonify(_out(engine, t, _record(engine, t, rid), lines=True))
+    return json_response(_out(engine, t, _record(engine, t, rid), lines=True))
 
 
-@bp.route("/tables/<table>/records", methods=["POST"])
-def create_record(table):
-    engine, _ = _engine()
+@router.api_route("/tables/{table}/records", methods=["POST"], name="api.create_record")
+def create_record(request: Request, table: str, sent=Depends(json_of)):
+    engine, _ = _engine(request)
     t = _table(engine, table, "edit")
-    data = _body()
+    data = _body(sent)
     values = _values(t, data)
     try:
         with engine.atomic():
@@ -207,39 +213,40 @@ def create_record(table):
     except FieldErrors as exc:
         return _failed(exc)
     engine.reset()
-    return jsonify(_out(engine, t, engine.get(record.id), lines=True)), 201
+    return json_response(_out(engine, t, engine.get(record.id), lines=True), 201)
 
 
-@bp.route("/tables/<table>/records/<int:rid>", methods=["PATCH", "PUT"])
-def update_record(table, rid):
-    engine, _ = _engine()
+@router.api_route("/tables/{table}/records/{rid:int}", methods=["PATCH", "PUT"], name="api.update_record")
+def update_record(request: Request, table: str, rid: int, sent=Depends(json_of)):
+    engine, _ = _engine(request)
     t = _table(engine, table, "edit")
     record = _record(engine, t, rid)
     expected = request.headers.get("If-Match", "").strip('" ') or None
     try:
-        engine.update(record, _values(t, _body()), expected_version=expected)
+        engine.update(record, _values(t, _body(sent)), expected_version=expected)
     except FieldErrors as exc:
         return _failed(exc)
     engine.reset()
-    return jsonify(_out(engine, t, engine.get(rid), lines=True))
+    return json_response(_out(engine, t, engine.get(rid), lines=True))
 
 
-@bp.route("/tables/<table>/records/<int:rid>", methods=["DELETE"])
-def delete_record(table, rid):
-    engine, _ = _engine()
+@router.api_route("/tables/{table}/records/{rid:int}", methods=["DELETE"], name="api.delete_record")
+def delete_record(request: Request, table: str, rid: int):
+    engine, _ = _engine(request)
     t = _table(engine, table, "edit")
     try:
         engine.delete(_record(engine, t, rid))
     except FieldErrors as exc:
         return _failed(exc)
-    return "", 204
+    return Response(status_code=204)
 
 
-@hooks.route("/hooks/<int:wid>/<key>/<token>", methods=["POST"])
-def hook(wid, key, token):
+@hooks.api_route("/hooks/{wid:int}/{key}/{token}", methods=["POST"], name="hooks.hook")
+def hook(request: Request, wid: int, key: str, token: str, sent=Depends(json_of), form: Form = Depends(form_of),
+         body: bytes = Depends(body_of)):
     """Another system calling an automation's webhook address with JSON (or a form): the automation runs with what was
     sent as {{payload}}."""
-    if not hook_calls.allow(f"{wid}:{key}:{client_ip()}"):
+    if not hook_calls.allow(f"{wid}:{key}:{client_ip(request)}"):
         return _error(429, "Too many calls; try again in a minute.")
     ws = db.session.get(Workspace, wid)
     automation = next((a for a in (ws.blueprint or {}).get("automations", []) if a["key"] == key), None) if ws else None
@@ -248,11 +255,11 @@ def hook(wid, key, token):
         return _error(404, "There's no webhook at this address.")
     if not automation.get("enabled", True):
         return _error(409, "This automation is turned off.")
-    payload = request.get_json(silent=True)
+    payload = sent
     if payload is None:
-        payload = request.form.to_dict() or {"body": request.get_data(as_text=True)[:20000]}
+        payload = form.to_dict() or {"body": body.decode("utf-8", "replace")[:20000]}
     engine = Engine(ws, by="webhook")
     run = automations.start_from(engine, automation, "payload", payload if isinstance(payload, dict) else {"items": payload},
-                                 f"Webhook call from {client_ip()}")
+                                 f"Webhook call from {client_ip(request)}")
     run = db.session.get(Run, run.id)
-    return jsonify(run=run.id, status=run.status, steps=[s.get("result") for s in run.steps or []]), 202
+    return json_response({"run": run.id, "status": run.status, "steps": [s.get("result") for s in run.steps or []]}, 202)

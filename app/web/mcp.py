@@ -11,11 +11,15 @@ An assistant is added with the app's address and an API key from Settings › AP
 """
 import json
 
+from fastapi import Depends, Request
+from starlette.responses import Response
+
 from ..blueprint import schema
+from ..core.context import current_app
 from ..engine.records import FieldErrors
 from . import api
-from .api import bp
-from ..webkit import current_app, jsonify, request
+from .api import router
+from .http import json_of, json_response
 
 PROTOCOLS = ("2025-06-18", "2025-03-26", "2024-11-05")
 TOOLS = [
@@ -41,17 +45,16 @@ TOOLS = [
 ]
 
 
-@bp.route("/mcp", methods=["POST", "GET", "DELETE"])
-def mcp():
+@router.api_route("/mcp", methods=["POST", "GET", "DELETE"], name="api.mcp")
+def mcp(request: Request, message=Depends(json_of)):
     if request.method != "POST":  # no server-sent stream: every answer comes back on its request
-        return "", 405, {"Allow": "POST"}
-    engine, key = api._engine()
-    message = request.get_json(silent=True)
+        return Response(status_code=405, headers={"Allow": "POST"})
+    engine, key = api._engine(request)
     if isinstance(message, list):
         answers = [a for a in (_answer(engine, m) for m in message) if a is not None]
-        return (jsonify(answers), 200) if answers else ("", 202)
+        return json_response(answers) if answers else Response(status_code=202)
     answer = _answer(engine, message)
-    return (jsonify(answer), 200) if answer is not None else ("", 202)
+    return json_response(answer) if answer is not None else Response(status_code=202)
 
 
 def _answer(engine, message):
@@ -191,10 +194,10 @@ JSON_TYPES = {"number": "number", "money": "number", "percent": "number", "durat
               "location": "object", "file": "array", "image": "array", "signature": "array"}
 
 
-@bp.route("/openapi.json")
-def openapi():
+@router.api_route("/openapi.json", methods=["GET"], name="api.openapi")
+def openapi(request: Request):
     """This app's API in OpenAPI 3.1: each table this key sees, with its fields as types, for code generators and BI tools."""
-    engine, key = api._engine()
+    engine, key = api._engine(request)
     schemas, paths = {}, {"/tables": {"get": {"summary": "The tables and fields this key may see", "responses": {"200": {"description": "OK"}}}}}
     for t in engine.visible_blueprint().get("tables", []):
         props = {}
@@ -240,7 +243,7 @@ def openapi():
                           "responses": {"200": {"description": "Changed"}, "409": {"description": "Changed by someone else since"}}},
                 "delete": {"summary": f"Delete a {schema.lc(t['singular'])} (to the recycle bin)", "responses": {"204": {"description": "Deleted"}}}}
                if engine.can(t, "edit") else {})}
-    return jsonify({"openapi": "3.1.0", "info": {"title": f"{engine.bp.get('name') or engine.ws.name} API", "version": str(engine.ws.version or 1)},
-                    "servers": [{"url": f"{current_app.config['BASE_URL']}/api/v1"}],
-                    "components": {"securitySchemes": {"key": {"type": "http", "scheme": "bearer"}}, "schemas": schemas},
-                    "security": [{"key": []}], "paths": paths})
+    return json_response({"openapi": "3.1.0", "info": {"title": f"{engine.bp.get('name') or engine.ws.name} API", "version": str(engine.ws.version or 1)},
+                          "servers": [{"url": f"{current_app.config['BASE_URL']}/api/v1"}],
+                          "components": {"securitySchemes": {"key": {"type": "http", "scheme": "bearer"}}, "schemas": schemas},
+                          "security": [{"key": []}], "paths": paths})

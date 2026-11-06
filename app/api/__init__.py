@@ -162,6 +162,14 @@ def front(platform):
     from ..web import erp_records
     from ..web import erp_flows
     from ..web import erp_learn
+    from ..web import settings
+    from ..web import builder
+    from ..web import forms
+    from ..web import connect
+    from ..web import connect_apps
+    from ..web import api as v1
+    from ..web import mcp  # noqa: F401 (adds /api/v1/mcp and /api/v1/openapi.json to api.router)
+    from ..web import portal
     http.install(api, platform, [
         auth.router,
         account.router,
@@ -169,6 +177,16 @@ def front(platform):
         erp_records.router,
         erp_flows.router,
         erp_learn.router,
+        settings.router,
+        builder.router,
+        forms.router,
+        connect.router,
+        connect_apps.router,
+        connect_apps.stripe,
+        v1.router,
+        v1.hooks,
+        portal.router,
+        portal.join,
     ])
     api.state.platform = platform
     return api
