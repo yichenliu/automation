@@ -414,7 +414,7 @@ def test_ollama_still_answers_as_it_did_and_says_what_it_cost(app, fake, monkeyp
 
 
 def test_what_a_call_is_for_comes_from_where_its_asked(app, owner):
-    from app.webkit import g
+    from app.web.testing import a_request
     _, ws = owner
     assert ai._who() == ("assistant", "interactive", None)
     assert ai._who("fast", "build", 9) == ("fast", "build", 9)
@@ -425,11 +425,9 @@ def test_what_a_call_is_for_comes_from_where_its_asked(app, owner):
         ai.building.reset(steady)
     with ai.asking(priority="background", workspace_id=ws.id):
         assert ai._who() == ("assistant", "background", ws.id)
-    g.ws = ws  # a person's request in a workspace
-    try:
+    with a_request() as request:  # a person's request in a workspace
+        request.state.ws = ws
         assert ai._who() == ("assistant", "interactive", ws.id)
-    finally:
-        g.pop("ws")
     seen = {}
 
     def job():

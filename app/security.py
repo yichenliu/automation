@@ -5,7 +5,6 @@ import hashlib
 import json
 import time
 from collections import defaultdict, deque
-from functools import wraps
 
 from cryptography.fernet import Fernet, InvalidToken
 from fastapi import HTTPException
@@ -107,20 +106,10 @@ def _signed_out_if_idle(request, ws):
     session["active_at"] = now
 
 
-def role_required(role):
-    def decorator(view):
-        @wraps(view)
-        def wrapped(*args, **kwargs):
-            workspace(kwargs["wid"], role)
-            return view(*args, **kwargs)
-        return wrapped
-    return decorator
-
-
 def member_of(role="viewer"):
-    """A dependency for a native page under /w/{wid:int}/...: the workspace, if the signed-in person may open it with at
-    least `role` (as workspace(wid, role); request.state.ws and .member are set). Someone not signed in is sent to sign
-    in first (signed_in), as @login_required did before the view looked the workspace up.
+    """A dependency for a page under /w/{wid:int}/...: the workspace, if the signed-in person may open it with at least
+    `role` (as workspace(wid, role); request.state.ws and .member are set). Someone not signed in is sent to sign in
+    first (signed_in), before the workspace is looked up.
 
         def settings_page(request: Request, wid: int, ws=Depends(member_of("admin"))): ..."""
     from fastapi import Depends, Request

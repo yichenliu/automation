@@ -357,8 +357,7 @@ def test_invoices_once_a_journey_revisions_and_the_bank_file(app, owner, client)
     with pytest.raises(FieldErrors, match="already has this supplier and invoice number"):
         boss.create("invoices", {"supplier": acme.id, "invoice_number": "inv-1", "amount": 400})
     from app.web.erp_records import journey as path
-    with app.test_request_context():
-        journey = {s["label"]: s["done"] for s in path(boss, boss.tables["requests"], boss.get(request.id))}
+    journey = {s["label"]: s["done"] for s in path(boss, boss.tables["requests"], boss.get(request.id))}  # its links need no request
     assert journey == {"Submitted": True, "Approved": True, "Ordered": True, "Paid": False}
     # a revision: the order and its lines copied, linked back, the old one superseded
     automations.press(boss, ws.blueprint["automations"][2], boss.get(po.id), "Ethan")

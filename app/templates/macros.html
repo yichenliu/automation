@@ -1,5 +1,5 @@
 {% macro flashes() %}
-{% with messages = get_flashed_messages(with_categories=true) %}{% if messages %}
+{% with messages = flashed(with_categories=true) %}{% if messages %}
 <div class="flashes" role="status">{% for kind, text in messages %}
   {% if kind == 'undo' %}{% set parts = text.split('|') %}
   <div class="flash success">{{ icon('circle-check') }}<span class="grow">{{ parts[0] }}</span><form method="post" action="{{ parts[1] }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn sm">{{ icon('undo-2') }}Undo</button></form></div>

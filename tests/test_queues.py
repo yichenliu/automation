@@ -43,13 +43,11 @@ def test_a_teams_queue_most_pressing_first_taken_put_off_and_done_through_its_fl
     assert "/flows/run/" in go.headers["Location"]
     db.session.refresh(tasks[b.id])
     assert tasks[b.id].taken_by_id == wes.id
-    from app.webkit import g
-    from app.webkit import login_user
     from app.web import erp
-    with app.test_request_context():
-        login_user(pia)
-        g.engine = _as(ws, pia)
-        assert tasks[b.id] not in erp.my_approvals(ws, g.engine.member)  # Wes took it: not in Pia's queue
+    from app.web.testing import a_request
+    with a_request(user=pia) as request:
+        request.state.engine = _as(ws, pia)
+        assert tasks[b.id] not in erp.my_approvals(ws, request.state.engine.member)  # Wes took it: not in Pia's queue
     client.post(go.headers["Location"], data={"go": "next", "found": "42"})
     db.session.refresh(tasks[b.id])
     assert tasks[b.id].status == "done" and Engine(ws).get(b.id).data["found"] == 42  # doing the flow did the task

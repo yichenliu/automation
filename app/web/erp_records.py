@@ -867,10 +867,8 @@ def _form_values(form, t, engine=None):
     return data
 
 
-def _posted_lines(child, form=None):
-    """Line items from the form: lines-<table>-<n>-<field>, with -id for existing ones and -remove to delete. The form
-    is the one posted to the page being served unless it's given."""
-    form = _posted_form() if form is None else form
+def _posted_lines(child, form):
+    """Line items from the form: lines-<table>-<n>-<field>, with -id for existing ones and -remove to delete."""
     prefix = f"lines-{child['table']['key']}-"
     numbers = sorted({int(m.group(1)) for k in form for m in [re.match(re.escape(prefix) + r"(\d+)-", k)] if m})
     rows = []
@@ -887,16 +885,6 @@ def _posted_lines(child, form=None):
         rows.append({"id": get("id"), "remove": bool(get("remove")), "values": values,
                      "empty": all(v in (None, "", False) for v in values.values())})
     return rows
-
-
-def _posted_form():
-    """The form posted to the page being served: a native page's (form_of), or (transition) the one an old page was
-    sent, for portal.py's lines while app/webkit still serves it."""
-    form = getattr(current_request().state, "_form", None)
-    if form is None:  # transition: a page app/webkit still serves
-        from ..webkit import request as old
-        form = old.form
-    return form
 
 
 def _save_lines(engine, t, parent, form):

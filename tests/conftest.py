@@ -26,23 +26,8 @@ def app(tmp_path, database_url):
                       "SQLALCHEMY_ENGINE_OPTIONS": {"pool_size": 5, "max_overflow": 10},
                       "DEFAULT_TIMEZONE": "Australia/Perth", "MICROSOFT_CLIENT_ID": "", "MICROSOFT_CLIENT_SECRET": "",
                       "BASE_URL": "http://localhost:5050", "OLLAMA_EMBED_MODEL": ""})
-    from app.webkit import g
-
-    @app.before_request
-    def fresh_request():
-        # Tests keep one app context open (to query the database); real requests each get their own, so clear what a
-        # request leaves behind (the signed-in person, the workspace) as a real one would start without it.
-        for key in ("_login_user", "ws", "member", "engine"):
-            g.pop(key, None)
-
-    @app.teardown_request
-    def done_request(exc=None):
-        # and the test carries on as no request: its own reads aren't one workspace's (row-level security)
-        for key in ("ws", "member", "engine"):
-            g.pop(key, None)
-        from app.core import tenancy
-        tenancy.forget(db.session)
-
+    # The test keeps the app's context open (to query the database). Each request from app.test_client() shares its
+    # database session, with a request.state of its own, and leaves the session no workspace's (app/web/http.py).
     from app import security
     security.sign_ins.hits.clear()
     security.form_posts.hits.clear()

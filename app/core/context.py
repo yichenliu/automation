@@ -1,10 +1,10 @@
 """The platform app the code runs in, with no web framework: `current_app` is the app of the context entered with
 `entered(app)` (its config, its logger), however the code got there: a page, the API, a worker's job, a try-out copy.
 
-The app itself (app.webkit.App) enters this when its context is pushed (`app.app_context()`), along with its settings
-and its database (core.settings, core.database), so code that asks for "the app" gets the same one the rest of the
-context runs against. Most of the core asks for what it needs instead (settings(), db); this is for the few places
-that need the app itself, e.g. to open its context again in another thread.
+The platform (app/platform.py) enters this in its context (`app.app_context()`, and each page's request), along with
+its settings and its database (core.settings, core.database), so code that asks for "the app" gets the same one the
+rest of the context runs against. Most of the core asks for what it needs instead (settings(), db); this is for the few
+places that need the app itself, e.g. to open its context again in another thread.
 """
 import contextlib
 import contextvars

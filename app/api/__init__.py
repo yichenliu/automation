@@ -1,5 +1,5 @@
-"""The FastAPI front (Keel v2, D9): the platform as an ASGI app, serving many connections without holding a thread for
-each one that's waiting on the model.
+"""The FastAPI front (Keel v2, D9): the platform as an ASGI app (`app.asgi`), serving many connections without holding a
+thread for each one that's waiting on the model.
 
     /api/v2/language              GET   what can be written in the Keel language
     /api/v2/app                   GET   the app, in the language's terms, and its version
@@ -8,8 +8,8 @@ each one that's waiting on the model.
     /api/v2/app/test              POST  every check the app has, acted out now
     /api/v2/app/undo              POST  {version}: back to an earlier version
     /api/v2/builder/{id}/events   GET   a builder turn's progress as it happens (server-sent events)
-    the pages written natively    sign-in, your account, your apps (app/web/auth.py, account.py, workspaces.py: docs/WEB.md)
-    everything else               the other pages, the v1 API and MCP: the old web kit's (app.webkit), mounted behind
+    the pages                     every screen, the v1 API (/api/v1), MCP, webhooks and /static: the page routers of app/web
+                                  (app/web/http.py, docs/WEB.md)
 
 Each call is checked against an API key (Authorization: Bearer keel_…). Changing the app needs an admin's key. The
 tools are the same ones the builder and MCP use (app/lang/tools.py).
@@ -31,7 +31,7 @@ class Caller(BaseModel):
 
 
 def create(app=None):
-    """The ASGI app: the platform app (made here if not given), which serves this API in front of its pages."""
+    """The platform (made here if not given): an ASGI app, handing each call to its FastAPI app (`app.asgi`)."""
     if app is None:
         from .. import create_app
         app = create_app()
@@ -39,7 +39,7 @@ def create(app=None):
 
 
 def front(platform):
-    """The FastAPI app with the v2 routes, and the platform's pages (its own ASGI serving) mounted under it."""
+    """The FastAPI app: the v2 routes, then the platform's pages (app/web)."""
     from ..lang import tools
 
     api = FastAPI(title=platform.config.get("PLATFORM_NAME") or "Keel", version="2",
@@ -155,10 +155,9 @@ def front(platform):
 
         return StreamingResponse(stream(), media_type="text/event-stream")
 
-    # the pages: those written natively (app/web/http.py) first, then, behind them, those the old web kit still serves
-    # (with the v1 API and MCP)
+    # the pages (app/web/http.py; docs/WEB.md): one module a line, each router a line below
     from ..web import http
-    from ..web import auth, account, workspaces  # one module a line: docs/WEB.md
+    from ..web import auth, account, workspaces
     from ..web import erp_records
     from ..web import erp_flows
     from ..web import erp_learn
@@ -173,6 +172,7 @@ def front(platform):
     from ..web import api as v1
     from ..web import mcp  # noqa: F401 (adds /api/v1/mcp and /api/v1/openapi.json to api.router)
     from ..web import portal
+    from ..web import static
     http.install(api, platform, [
         auth.router,
         account.router,
@@ -193,6 +193,7 @@ def front(platform):
         v1.hooks,
         portal.router,
         portal.join,
+        static.router,
     ])
     api.state.platform = platform
     return api

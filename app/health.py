@@ -16,8 +16,8 @@ _seen = deque(maxlen=KEPT)  # (when, screen, status, milliseconds)
 
 
 def record(rule, status, began):
-    """A request served: its screen (the address pattern, "/w/<int:wid>/app/t/<table>"), its status, and when it began
-    (time.perf_counter()). Files (/static) aren't screens."""
+    """A request served: its screen (its page's address pattern, "/w/{wid:int}/app/t/{table}"), its status, and when it
+    began (time.perf_counter()). Files (/static) aren't screens."""
     if began is not None and rule and not rule.startswith("/static"):
         _seen.append((time.time(), rule, status, (time.perf_counter() - began) * 1000))
 
@@ -28,12 +28,12 @@ WORDS = {"t": "a list", "app": "", "studio": "App map", "data": "What each list 
 
 
 def screen_name(rule):
-    """A screen as people know it, from its address pattern: "/w/<int:wid>/app/t/<table>/<int:rid>" is "a list › one of them"."""
-    parts = [x for x in str(rule).split("/") if x and x not in ("w", "<int:wid>")]
+    """A screen as people know it, from its address pattern: "/w/{wid:int}/app/t/{table}/{rid:int}" is "a list › one of them"."""
+    parts = [x for x in str(rule).split("/") if x and x not in ("w", "{wid:int}")]
     words = []
     for x in parts:
-        if x.startswith("<"):
-            words.append("one of them" if "int" in x and words else "")
+        if x.startswith("{"):
+            words.append("one of them" if ":int}" in x and words else "")
         else:
             words.append(WORDS.get(x, x.replace("_", " ").replace("-", " ").capitalize()))
     named = " › ".join(w for w in words if w)

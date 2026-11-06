@@ -1,10 +1,10 @@
-"""The ERP itself: every screen is drawn from the workspace's blueprint. The routes live in erp_records (tables and
-records), erp_pages (dashboards, automations, approvals, history) and erp_ai (the assistant, reading documents, imports);
-this module holds what they share.
+"""The ERP itself: every screen is drawn from the workspace's blueprint. Its pages live in erp_records (tables and
+records), erp_flows (step by step), erp_learn (checks and suggestions), erp_pages (dashboards, automations, approvals,
+history), erp_studio (the App map) and erp_ai (the assistant, reading documents, imports), each a router under
+/w/{wid}/app with names "app.<function>"; this module holds what they share.
 
-Its helpers are written for the native pages (app/web/http.py, docs/WEB.md): what the page has looked up is on
-request.state (ws, member, engine), and the person is current_user(request). The pages the old web kit still serves
-use them too (their `g` is the same request.state), with the request found by current_request()."""
+What a page has looked up is on request.state (ws, member, engine), and the person is current_user(request); the
+template globals and the menu find the request being served with current_request()."""
 from sqlalchemy import or_
 
 from ..blueprint import schema
@@ -12,10 +12,7 @@ from ..engine.records import Engine
 from ..extensions import db
 from ..models import Approval, Notification
 from ..security import step_up, stepped_up, workspace
-from ..webkit import Blueprint
 from .http import context_processor, current_request, current_user, template_global, url_for
-
-bp = Blueprint("app", __name__, url_prefix="/w/<int:wid>/app")
 
 
 def ctx(wid, role="viewer", request=None):
@@ -199,5 +196,3 @@ def source_url(ws, link):
         return url_for("app.file", wid=ws.id, fid=int(link.split(":", 1)[1]))
     return target_url(ws, link)
 
-
-from . import erp_ai, erp_flows, erp_learn, erp_pages, erp_records, erp_studio  # noqa: E402,F401 (they add their routes to bp)

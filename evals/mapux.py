@@ -8,6 +8,7 @@ request, a view that doesn't open), code on screen, a list that isn't on the map
 code name, a rule they can't find from the map, a page that scrolls sideways on a phone. Ideas: text too small to read,
 text cut off, a view with a lot to read.
 """
+import socket
 import threading
 
 from app.builder import trial as trials
@@ -40,7 +41,6 @@ READ = r"""() => {
 def review(workspace, theirs):
     """The App map of this app looked at as the owner would, desktop and phone. Returns findings."""
     from playwright.sync_api import sync_playwright
-    from app.webkit.serving import make_server
     out = []
     with trials.copy_of(workspace) as trial:
         trials.walk(trial, screens=False)  # a record in each list, as people would have
@@ -49,10 +49,10 @@ def review(workspace, theirs):
         db.session.commit()
         email, wid = owner.email, trial.ws_id
         engine = trial.engine()
-        server = make_server("127.0.0.1", 0, trial.app, threaded=True)  # stops cleanly when it's done
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        server, listening = _server(trial.app)  # the copy, on a free port of this computer, until it's done
+        thread = threading.Thread(target=server.run, kwargs={"sockets": [listening]}, daemon=True)
         thread.start()
-        base = f"http://127.0.0.1:{server.server_port}"
+        base = f"http://127.0.0.1:{listening.getsockname()[1]}"
         try:
             with sync_playwright() as p:
                 browser = p.chromium.launch()
@@ -64,9 +64,18 @@ def review(workspace, theirs):
         except Exception as exc:  # noqa: BLE001 - the eyes failing is said, never the run
             out.append(ux._finding("idea", "not looked at", "the owner", "App map", f"the App map couldn't be looked at: {type(exc).__name__}: {str(exc)[:120]}"))
         finally:
-            server.shutdown()
+            server.should_exit = True
             thread.join(timeout=5)
     return ux._unique(out)
+
+
+def _server(app):
+    """uvicorn serving the app's FastAPI app, as the platform itself is served, on a free port: (server, its socket)."""
+    import uvicorn
+    listening = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listening.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listening.bind(("127.0.0.1", 0))
+    return uvicorn.Server(uvicorn.Config(app.asgi, log_level="warning", access_log=False, lifespan="off", proxy_headers=False)), listening
 
 
 def looked(findings):

@@ -24,8 +24,8 @@ def utcnow():
 
 
 class SignsIn:
-    """What a stored person needs to be signed in (app.webkit.login): an id, and being active (everyone is, here).
-    Two of them are the same person when their ids are."""
+    """What a stored person needs to be signed in (app/web/http.py: current_user, login_user): an id, and being active
+    (everyone is, here). Two of them are the same person when their ids are."""
 
     __hash__ = object.__hash__
 

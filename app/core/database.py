@@ -1,16 +1,15 @@
 """The platform's database access, on plain SQLAlchemy 2: no web framework needed (Keel v2, D9).
 
-It offers what the code has always used: `db.Model` (with `Model.query`), `db.session`, `db.engine`, `db.Column` and
-the other SQLAlchemy names, and `db.create_all()`. So models and queries stay as they are while the web framework
-underneath them is changed.
+It offers what the code uses: `db.Model` (with `Model.query`), `db.session`, `db.engine`, `db.Column` and the other
+SQLAlchemy names, and `db.create_all()`.
 
 Which database a session talks to belongs to the context the code runs in:
 - the live app's PostgreSQL;
 - a simulator copy's in-memory SQLite, inside it;
 - a worker's job.
-`using(engine)` enters a context; the platform app's own context (`app.app_context()`) enters its engine this way. Each
-context has its own session, removed when the context ends, so a simulator copy opened inside a request never shares
-the request's session.
+`using(engine)` enters a context; the platform's own context (`app.app_context()`, and each page's request) enters its
+engine this way. Each context has its own session, removed when the context ends, so a simulator copy opened inside a
+request never shares the request's session.
 """
 import contextlib
 import contextvars
@@ -25,7 +24,7 @@ _scopes = itertools.count(1)
 
 
 def _snake(name):
-    """Flask-SQLAlchemy's table names, kept: ApiKey → api_key, RecordChange → record_change."""
+    """A model's table name: ApiKey → api_key, RecordChange → record_change (the names the database has always had)."""
     return re.sub(r"((?<=[a-z0-9])[A-Z]|(?!^)[A-Z](?=[a-z]))", r"_\1", name).lower().lstrip("_")
 
 

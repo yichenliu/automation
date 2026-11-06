@@ -11,7 +11,7 @@ from ..blueprint.schema import lc
 from ..models import utcnow
 from ..core.context import current_app
 from ..storage import human_size
-from .http import current_request
+from .http import context_processor, current_request
 
 PILL_COLOURS = ["slate", "blue", "amber", "green", "violet", "red", "teal", "pink"]
 SPECIAL = {"done": "green", "paid": "green", "complete": "green", "completed": "green", "won": "green", "active": "blue",
@@ -199,6 +199,7 @@ def _combined_from(t):
 
 
 def register(app):
+    """The filters and globals every template can use, put into the platform's Jinja environment (create_app)."""
     app.jinja_env.tests["blank_in"] = blank_in
     app.jinja_env.filters.update(lc=lc, ago=ago, markdown=render_markdown, size=human_size, when=when, status_words=status_words, rule_words=rule_words,
                                  json=lambda v: escape(json.dumps(v, default=str)))  # for data-* attributes: quotes escaped, decoded by the browser
@@ -206,6 +207,8 @@ def register(app):
     app.jinja_env.globals.update(pill=pill, icon=icon, now=datetime.now, about_field=about_field, ask_facts=ask_facts, MORE_AFTER=MORE_AFTER,
                                  LABEL_SIZES={k: v[0] for k, v in LABEL_SIZES.items()}, printer_for=_printer_for, combined_from=_combined_from)
 
-    @app.context_processor
-    def platform():
-        return {"platform_name": current_app.config["PLATFORM_NAME"], "member": _here("member"), "ws": _here("ws")}
+
+@context_processor
+def platform():
+    """What every page's template knows: the platform's name, and the workspace and membership the page looked up."""
+    return {"platform_name": current_app.config["PLATFORM_NAME"], "member": _here("member"), "ws": _here("ws")}

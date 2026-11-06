@@ -1,5 +1,5 @@
 """The platform's pages on FastAPI and Starlette, with nothing in between (Keel v2, D9): what a page module needs that
-FastAPI doesn't already give. docs/WEB.md says how a module is written with it, and how an old one is converted.
+FastAPI doesn't already give. docs/WEB.md says how a page is written with it.
 
     router = APIRouter(route_class=PageRoute, dependencies=[Depends(check_csrf)])
 
@@ -13,7 +13,8 @@ FastAPI doesn't already give. docs/WEB.md says how a module is written with it, 
 Every route of a page router is a PageRoute: each request is served in the platform's context (its app, settings,
 a database session of its own, who is acting), with the browser's session in `request.state.session`, and finished as
 every page is: the session and "keep me signed in" cookies written, the security headers, its time kept for
-Settings › Health, an error shown as its page (JSON under /api/), and its database session given back.
+Settings › Health, an error shown as its page (JSON under /api/), and its database session given back. Its query is
+read as the pages always have: a name sent twice gives its first value (PageRequest).
 
     the request       current_request(), form_of, json_of, body_of (dependencies), full_path(request)
     the session       request.state.session: the signed cookie the platform has always used
@@ -24,12 +25,7 @@ Settings › Health, an error shown as its page (JSON under /api/), and its data
     answers           render, redirect, json_response, send_file; raise Redirect(url), Answer(response) or
                       fastapi.HTTPException(code) (its page; JSON under /api/)
     templates         @template_global, @context_processor
-
-While the old web kit (app/webkit) still serves the pages not converted yet, the two share one session cookie, one
-sign-in, one CSRF token and one queue of messages, and each finds the other's addresses (url_for). The old layer's
-requests are seen here as native ones too (current_request()), so the helpers both use (app/security.py, the
-template globals) are written once, natively. The few lines that make that so are marked "transition"; they go with
-app/webkit.
+    wiring            install(api, platform, routers): the page routers into the FastAPI front (app/api)
 """
 import contextlib
 import contextvars
@@ -58,10 +54,11 @@ from fastapi.routing import APIRoute
 from itsdangerous import BadData, BadSignature, SignatureExpired, URLSafeTimedSerializer
 from markupsafe import Markup, escape
 from starlette.concurrency import run_in_threadpool
-from starlette.convertors import IntegerConvertor, PathConvertor
+from starlette.convertors import IntegerConvertor
+from starlette.datastructures import QueryParams
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.responses import FileResponse, HTMLResponse, Response
-from starlette.routing import Match, Mount
+from starlette.routing import Match
 
 from ..core import actor, context as core_context
 from ..core.settings import settings, using as using_settings
@@ -79,6 +76,37 @@ def current_request():
     return _request.get()
 
 
+@contextlib.contextmanager
+def answering(request):
+    """current_request() is `request` while the block runs (serving does it for each page)."""
+    token = _request.set(request)
+    try:
+        yield request
+    finally:
+        _request.reset(token)
+
+
+class FirstValues(QueryParams):
+    """A query's values by name, read as the platform's pages always have: a name sent twice (`?sort=a&sort=b`) is its
+    first value to `.get`, `[...]`, `dict()` and `.items()`; `.getlist` gives them all."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._dict = {}
+        for key, value in self._list:
+            self._dict.setdefault(key, value)
+
+
+class PageRequest(Request):
+    """A page's request (what a PageRoute's view is given): Starlette's, with its query as FirstValues."""
+
+    @property
+    def query_params(self):
+        if not hasattr(self, "_first_values"):
+            self._first_values = FirstValues(self.scope["query_string"])
+        return self._first_values
+
+
 def full_path(request):
     """`/w/1/app/t/orders?page=2`: where the request went, with its query (`?` alone when it has none, as it always was)."""
     return f"{request.url.path}?{request.url.query}"
@@ -86,7 +114,9 @@ def full_path(request):
 
 # --- the session: a small dict in a signed cookie ----------------------------------------------------------------------
 
+SESSION_COOKIE = "session"
 SESSION_SALT = "cookie-session"
+SESSION_LIFETIME = timedelta(days=31)  # a session cookie older than this isn't believed
 
 
 class _JSON:
@@ -131,8 +161,6 @@ class Session(dict):
         super().__init__(initial or {})
         self.modified = False
         self.accessed = False
-        self.new = initial is None
-        self.permanent = bool(self.get("_permanent"))
 
     def _changed(self):
         self.modified = True
@@ -188,22 +216,13 @@ def _session_signer(config):
                                   signer_kwargs={"key_derivation": "hmac", "digest_method": hashlib.sha1})
 
 
-def session_lifetime(config):
-    value = config.get("PERMANENT_SESSION_LIFETIME") or timedelta(days=31)
-    return value if isinstance(value, timedelta) else timedelta(seconds=int(value))
-
-
-def session_cookie_name(config):
-    return config.get("SESSION_COOKIE_NAME") or "session"
-
-
 def load_session(config, value):
     """The session in a cookie's value (an empty one if it's missing, tampered with or too old)."""
     signer = _session_signer(config)
     if signer is None or not value:
         return Session()
     try:
-        return Session(signer.loads(value, max_age=int(session_lifetime(config).total_seconds())))
+        return Session(signer.loads(value, max_age=int(SESSION_LIFETIME.total_seconds())))
     except (BadSignature, ValueError, TypeError):
         return Session()
 
@@ -213,28 +232,22 @@ def dump_session(config, session):
 
 
 def save_session(config, session, response):
-    """The cookie written on the response when the session changed (or, kept for a while, on every response); taken
-    away when it was emptied. `response` is a Starlette response (or, until it goes, the old layer's)."""
-    name = session_cookie_name(config)
-    domain = config.get("SESSION_COOKIE_DOMAIN") or None
-    path = config.get("SESSION_COOKIE_PATH") or config.get("APPLICATION_ROOT") or "/"
-    secure = bool(config.get("SESSION_COOKIE_SECURE"))
-    httponly = bool(config.get("SESSION_COOKIE_HTTPONLY", True))
+    """The cookie written on the response when the session changed (it lasts while the browser is open); taken away
+    when it was emptied."""
+    secure, httponly = bool(config.get("SESSION_COOKIE_SECURE")), bool(config.get("SESSION_COOKIE_HTTPONLY", True))
     samesite = config.get("SESSION_COOKIE_SAMESITE")
     if session.accessed:
         _vary(response, "Cookie")
     if not session:
         if session.modified:
-            response.delete_cookie(name, domain=domain, path=path, secure=secure, samesite=samesite, httponly=httponly)
+            response.delete_cookie(SESSION_COOKIE, secure=secure, samesite=samesite, httponly=httponly)
             _vary(response, "Cookie")
         return
-    if not (session.modified or (session.permanent and config.get("SESSION_REFRESH_EACH_REQUEST", True))):
+    if not session.modified:
         return
     if _session_signer(config) is None:
         raise RuntimeError("The session can't be kept without a SECRET_KEY")
-    expires = datetime.now(timezone.utc) + session_lifetime(config) if session.permanent else None
-    response.set_cookie(name, dump_session(config, session), expires=expires, httponly=httponly, domain=domain, path=path,
-                        secure=secure, samesite=samesite)
+    response.set_cookie(SESSION_COOKIE, dump_session(config, session), httponly=httponly, secure=secure, samesite=samesite)
     _vary(response, "Cookie")
 
 
@@ -270,7 +283,7 @@ class Redirect(Exception):
 
 
 class Answer(Exception):
-    """Stop here and answer with this response (the old `abort(response)`): `raise Answer(json_response({...}, 404))`."""
+    """Stop here and answer with this response: `raise Answer(json_response({...}, 404))`, from a helper or a dependency."""
 
     def __init__(self, response):
         super().__init__(response.status_code)
@@ -340,9 +353,8 @@ def _load_user(request):
     if user_id is not None:
         user = _user(user_id)
     if user is None:
-        name = config.get("REMEMBER_COOKIE_NAME", REMEMBER_COOKIE)
-        if name in request.cookies and session.get("_remember") != "clear":
-            user_id = remembered(config, request.cookies[name])
+        if REMEMBER_COOKIE in request.cookies and session.get("_remember") != "clear":
+            user_id = remembered(config, request.cookies[REMEMBER_COOKIE])
             if user_id is not None:
                 session["_user_id"] = user_id
                 session["_fresh"] = False
@@ -353,7 +365,7 @@ def _load_user(request):
 def signed_in(request: Request):
     """A dependency: the signed-in person. Anyone else is sent to the sign-in page, and comes back here after."""
     user = current_user(request)
-    if user.is_authenticated or request.method == "OPTIONS" or settings().get("LOGIN_DISABLED"):
+    if user.is_authenticated:
         return user
     raise SignInRequired(_login_url(url_for("auth.login"), str(request.url)))
 
@@ -368,18 +380,17 @@ def _login_url(base, current):
     return urlunsplit(parts._replace(query=urlencode(query, doseq=True)))
 
 
-def login_user(request, user, remember=False, duration=None, force=False, fresh=True):
-    """Sign this person in for the rest of the session (and, with `remember`, the browser keeps them signed in)."""
-    if not force and not user.is_active:
+def login_user(request, user, remember=False):
+    """Sign this person in for the rest of the session (and, with `remember`, the browser keeps them signed in for a
+    year)."""
+    if not user.is_active:
         return False
     session = request.state.session
     session["_user_id"] = user.get_id()
-    session["_fresh"] = fresh
+    session["_fresh"] = True
     session["_id"] = _identifier(request)
     if remember:
         session["_remember"] = "set"
-        if duration is not None:
-            session["_remember_seconds"] = int(duration.total_seconds())
     request.state._login_user = user
     return True
 
@@ -389,59 +400,46 @@ def logout_user(request):
     for key in ("_user_id", "_fresh", "_id"):
         if key in session:
             session.pop(key)
-    if settings().get("REMEMBER_COOKIE_NAME", REMEMBER_COOKIE) in request.cookies:
+    if REMEMBER_COOKIE in request.cookies:
         session["_remember"] = "clear"
-        if "_remember_seconds" in session:
-            session.pop("_remember_seconds")
     request.state._login_user = AnonymousUser()
     return True
 
 
 def _remember_cookie(config, session, response):
     """The "keep me signed in" cookie, set or taken away as signing in or out asked."""
-    if "_remember" not in session and config.get("REMEMBER_COOKIE_REFRESH_EACH_REQUEST"):
-        if "_user_id" in session:
-            session["_remember"] = "set"
-    if "_remember" not in session:
+    if "_remember" not in session:  # (asking `in` doesn't count as reading the session: no Vary: Cookie for it)
         return
-    operation = session.pop("_remember", None)
-    name = config.get("REMEMBER_COOKIE_NAME", REMEMBER_COOKIE)
-    domain = config.get("REMEMBER_COOKIE_DOMAIN")
-    path = config.get("REMEMBER_COOKIE_PATH", "/")
+    operation = session.pop("_remember")
     if operation == "set" and "_user_id" in session:
-        duration = (timedelta(seconds=session["_remember_seconds"]) if "_remember_seconds" in session
-                    else config.get("REMEMBER_COOKIE_DURATION", REMEMBER_FOR))
-        if isinstance(duration, int):
-            duration = timedelta(seconds=duration)
-        response.set_cookie(name, remember_value(config, session["_user_id"]), expires=datetime.now(timezone.utc) + duration,
-                            domain=domain, path=path, secure=config.get("REMEMBER_COOKIE_SECURE", False),
-                            httponly=config.get("REMEMBER_COOKIE_HTTPONLY", True), samesite=config.get("REMEMBER_COOKIE_SAMESITE"))
+        response.set_cookie(REMEMBER_COOKIE, remember_value(config, session["_user_id"]), expires=datetime.now(timezone.utc) + REMEMBER_FOR,
+                            secure=bool(config.get("REMEMBER_COOKIE_SECURE")), httponly=bool(config.get("REMEMBER_COOKIE_HTTPONLY", True)),
+                            samesite=None)
     elif operation == "clear":
-        response.delete_cookie(name, domain=domain, path=path, samesite=None)
+        response.delete_cookie(REMEMBER_COOKIE, samesite=None)
 
 
 # --- CSRF: the token every form posts back ------------------------------------------------------------------------------
 
+CSRF_FIELD = "csrf_token"  # the form's field, and the session's secret it's signed from
 CSRF_SALT = "wtf-csrf-token"
+CSRF_HEADERS = ("X-CSRFToken", "X-CSRF-Token")  # where a script sends it instead
 UNSAFE_METHODS = ("POST", "PUT", "PATCH", "DELETE")
+
+
+def _csrf_signer():
+    return URLSafeTimedSerializer(settings().get("SECRET_KEY"), salt=CSRF_SALT)
 
 
 def csrf_token(request):
     """This session's token, for a form's hidden `csrf_token` field (made the first time it's asked for)."""
-    config = settings()
-    field = config.get("WTF_CSRF_FIELD_NAME", "csrf_token")
-    token = getattr(request.state, field, None)
+    token = getattr(request.state, CSRF_FIELD, None)
     if token is None:
         session = request.state.session
-        signer = URLSafeTimedSerializer(config.get("WTF_CSRF_SECRET_KEY") or config.get("SECRET_KEY"), salt=CSRF_SALT)
-        if field not in session:
-            session[field] = hashlib.sha1(os.urandom(64)).hexdigest()
-        try:
-            token = signer.dumps(session[field])
-        except TypeError:
-            session[field] = hashlib.sha1(os.urandom(64)).hexdigest()
-            token = signer.dumps(session[field])
-        setattr(request.state, field, token)
+        if not isinstance(session.get(CSRF_FIELD), str):
+            session[CSRF_FIELD] = hashlib.sha1(os.urandom(64)).hexdigest()
+        token = _csrf_signer().dumps(session[CSRF_FIELD])
+        setattr(request.state, CSRF_FIELD, token)
     return token
 
 
@@ -450,20 +448,14 @@ async def check_csrf(request: Request):
     session's token (the `csrf_token` field, or an X-CSRFToken header) is refused with a 400. A router called by other
     systems (the API, webhooks, a public form) simply doesn't use it. WTF_CSRF_ENABLED=False turns it off (the tests)."""
     config = settings()
-    if not config.get("WTF_CSRF_ENABLED", True) or not config.get("WTF_CSRF_CHECK_DEFAULT", True):
+    if not config.get("WTF_CSRF_ENABLED", True) or request.method not in UNSAFE_METHODS:
         return
-    if request.method not in set(config.get("WTF_CSRF_METHODS") or UNSAFE_METHODS):
-        return
-    field = config.get("WTF_CSRF_FIELD_NAME", "csrf_token")
-    form = await form_of(request)
-    token = form.get(field) or next((form[k] for k in form if k.endswith(field) and form[k]), None)  # "<prefix>-csrf_token"
-    for header in config.get("WTF_CSRF_HEADERS", ["X-CSRFToken", "X-CSRF-Token"]):
-        token = token or request.headers.get(header)
-    problem = _csrf_problem(config, request.state.session, field, token)
+    token = (await form_of(request)).get(CSRF_FIELD) or next(filter(None, map(request.headers.get, CSRF_HEADERS)), None)
+    problem = _csrf_problem(config, request.state.session, token)
     if problem:
         _log.info(problem)
         raise HTTPException(400, problem)
-    if request.url.scheme in ("https", "wss") and config.get("WTF_CSRF_SSL_STRICT", True):
+    if request.url.scheme in ("https", "wss"):  # over HTTPS, the form must come from this site's own page
         referrer = request.headers.get("Referer")
         if not referrer:
             raise HTTPException(400, "The referrer header is missing.")
@@ -471,22 +463,20 @@ async def check_csrf(request: Request):
         there = urlparse(referrer)
         if (there.scheme, there.hostname, there.port) != (here.scheme, here.hostname, here.port):
             raise HTTPException(400, "The referrer does not match the host.")
-    request.state.csrf_valid = True
 
 
-def _csrf_problem(config, session, field, token):
+def _csrf_problem(config, session, token):
     if not token:
         return "The CSRF token is missing."
-    if field not in session:
+    if CSRF_FIELD not in session:
         return "The CSRF session token is missing."
-    signer = URLSafeTimedSerializer(config.get("WTF_CSRF_SECRET_KEY") or config.get("SECRET_KEY"), salt=CSRF_SALT)
     try:
-        sent = signer.loads(token, max_age=config.get("WTF_CSRF_TIME_LIMIT", 3600))
+        sent = _csrf_signer().loads(token, max_age=config.get("WTF_CSRF_TIME_LIMIT", 3600))
     except SignatureExpired:
         return "The CSRF token has expired."
     except BadData:
         return "The CSRF token is invalid."
-    if not hmac.compare_digest(session[field], sent):
+    if not hmac.compare_digest(session[CSRF_FIELD], sent):
         return "The CSRF tokens do not match."
     return None
 
@@ -526,14 +516,14 @@ class BuildError(LookupError):
         self.endpoint, self.values = endpoint, values
 
 
-def url_for(endpoint, *, _anchor=None, _external=False, _method=None, **values):
+def url_for(endpoint, *, _anchor=None, _external=False, **values):
     """The address of a page by its name: `url_for("app.record", wid=1, table="orders", rid=7)`. Values the address
-    doesn't name go in its query string; `_external` puts BASE_URL in front; `_anchor` adds `#...`. A page not converted
-    yet is found in the old layer's addresses (transition)."""
+    doesn't name go in its query string; `_external` puts BASE_URL in front; `_anchor` adds `#...`. It needs the
+    platform's context, not a request: a script or a job makes links too."""
     platform = core_context.app()
     if platform is None:
         raise RuntimeError("Working outside the platform's context: run inside app.app_context()")
-    path = path_for(platform, endpoint, values, _method)
+    path = path_for(platform, endpoint, values)
     if _external:
         path = f"{platform.config['BASE_URL'].rstrip('/')}{path}"
     if _anchor is not None:
@@ -541,15 +531,12 @@ def url_for(endpoint, *, _anchor=None, _external=False, _method=None, **values):
     return path
 
 
-def path_for(platform, endpoint, values, method=None):
-    """The path (and query) of a page by its name, native first, then the old layer's (transition)."""
+def path_for(platform, endpoint, values):
+    """The path (and query) of a page by its name; of the routes with that name, the one whose path values are given
+    (the most of them)."""
     routes = (platform.extensions.get("pages") or {}).get(endpoint)
-    if routes:
-        return _build(endpoint, routes, values)
-    return platform.url_map.build(endpoint, values, method=method)  # transition: the pages app/webkit still serves
-
-
-def _build(endpoint, routes, values):
+    if not routes:
+        raise BuildError(endpoint, values, "no page has that name")
     given = {k: v for k, v in values.items() if v is not None}
     for route in sorted(routes, key=lambda r: -len(r.param_convertors)):
         names = set(route.param_convertors)
@@ -599,11 +586,10 @@ def render(request, name, /, status_code=200, **context):
     platform = core_context.app()
     template = platform.jinja_env.get_or_select_template(name)
     values = {}
-    for processor in platform.template_context_processors:  # the modules' own (the workspace, its menu, the platform's name)
+    for processor in _context_processors:  # the modules' own (the workspace, its menu, the platform's name)
         values.update(processor())
-    values.update(request=request, session=request.state.session, g=request.state, current_user=current_user(request),
-                  config=platform.config, csrf_token=functools.partial(csrf_token, request),
-                  get_flashed_messages=functools.partial(flashed, request), url_for=url_for)
+    values.update(request=request, session=request.state.session, current_user=current_user(request), config=platform.config,
+                  csrf_token=functools.partial(csrf_token, request), flashed=functools.partial(flashed, request), url_for=url_for)
     values.update(context)
     return HTMLResponse(template.render(values), status_code=status_code)
 
@@ -641,7 +627,7 @@ def dumps(obj, **kwargs):
 
 
 def json_response(data, status_code=200, headers=None):
-    """`jsonify` as it was: the data as compact JSON, with a closing newline."""
+    """The data as JSON (compact, sorted keys, with a closing newline): a page's or the API's answer."""
     return Response(dumps(data, separators=(",", ":")) + "\n", status_code=status_code, media_type="application/json", headers=headers)
 
 
@@ -1024,8 +1010,8 @@ def _answer(request, exc):
 
 class PageRoute(APIRoute):
     """A page's route: `APIRouter(route_class=PageRoute)`. Its requests are served in the platform's context, with the
-    session, and finished the way every page is (see the module's notes). A GET page answers HEAD too; pages aren't
-    part of the API's schema."""
+    session, and finished the way every page is (see the module's notes); the view is given a PageRequest. A GET page
+    answers HEAD too; pages aren't part of the API's schema."""
 
     def __init__(self, path, endpoint, *, methods=None, include_in_schema=False, **kwargs):
         methods = {m.upper() for m in (methods or ["GET"])}
@@ -1035,10 +1021,11 @@ class PageRoute(APIRoute):
 
     def get_route_handler(self):
         handler = super().get_route_handler()
-        rule = _rule_text(self.path_format, self.param_convertors)
+        rule = self.path  # the screen, as Settings › Health groups requests: /w/{wid:int}/app/t/{table}
 
         async def serve(request: Request):
             began = time.perf_counter()
+            request = PageRequest(request.scope, request.receive)
             async with serving(request):
                 try:
                     response = await handler(request)
@@ -1050,19 +1037,11 @@ class PageRoute(APIRoute):
         return serve
 
 
-def _rule_text(path_format, convertors):
-    """`/w/{wid}/app` as Settings › Health groups screens: `/w/<int:wid>/app`."""
-    for name, convertor in convertors.items():
-        kind = "int:" if isinstance(convertor, IntegerConvertor) else "path:" if isinstance(convertor, PathConvertor) else ""
-        path_format = path_format.replace("{" + name + "}", f"<{kind}{name}>")
-    return path_format
-
-
 @contextlib.asynccontextmanager
 async def serving(request):
-    """The platform's context for one request, as the old layer's AppContext.push entered it: the app, its settings,
-    its database (a session of the request's own, given back at the end), who is acting, the request itself, and the
-    session read from its cookie.
+    """The platform's context for one request, as app.app_context() enters it: the app, its settings, its database (a
+    session of the request's own, given back at the end), and who is acting (the request's person, address and
+    workspace); with the request itself as current_request(), and its session read from its cookie.
 
     A request made from a test or a try-out (app.test_client()) carries the caller's context; it's entered first, and
     when the caller is in this app's context already the request shares its database session (so what the request
@@ -1080,9 +1059,9 @@ async def serving(request):
         if not shared and database is not None and platform.engine is not None:
             stack.enter_context(database.using(platform.engine))
         stack.enter_context(actor.reading(functools.partial(_who, request)))
-        stack.callback(_request.reset, _request.set(request))
+        stack.enter_context(answering(request))
         if getattr(request.state, "session", None) is None:
-            request.state.session = load_session(platform.config, request.cookies.get(session_cookie_name(platform.config)))
+            request.state.session = load_session(platform.config, request.cookies.get(SESSION_COOKIE))
         try:
             yield
         finally:
@@ -1141,25 +1120,23 @@ def _mimetype(response):
 # --- wiring the pages into the FastAPI front ----------------------------------------------------------------------------
 
 def install(api, platform, routers):
-    """The page routers, served by the FastAPI front `api` ahead of the old layer's pages: their names for url_for,
-    their errors as pages (JSON under /api/), and the template globals that need the request (the CSRF token, the
-    messages waiting) read from whichever request is being served."""
-    pages, ordered = {}, []
+    """The page routers, served by the FastAPI front `api`: their names for url_for, their errors as pages (JSON under
+    /api/), an address a page has with a closing slash sent on to it, and the template globals that need the request
+    (the CSRF token, the messages waiting) read from the request being served."""
+    pages = platform.extensions.setdefault("pages", {})  # by name, for url_for
+    ordered = platform.extensions.setdefault("page_routes", [])  # in the order they're tried
     for router in routers:
         api.include_router(router)
         for route in router.routes:
             if isinstance(route, PageRoute):
                 pages.setdefault(route.name, []).append(route)
                 ordered.append(route)
-    platform.extensions["pages"] = pages  # by name, for url_for
-    platform.extensions["page_routes"] = ordered  # in the order they're tried
+    api.router.redirect_slashes = False  # a page's closing slash is _http_error's (a 308, with the security headers)
     api.add_exception_handler(StarletteHTTPException, _http_error)
     api.add_exception_handler(Redirect, _redirect_error)
     api.add_exception_handler(Answer, _answer_error)
-    platform.jinja_env.globals.update(url_for=url_for, csrf_token=_csrf_here, get_flashed_messages=_flashed_here, full_path=full_path,
+    platform.jinja_env.globals.update(url_for=url_for, csrf_token=_csrf_here, flashed=_flashed_here, full_path=full_path,
                                       **_template_globals)
-    platform.template_context_processors.extend(p for p in _context_processors if p not in platform.template_context_processors)
-    api.router.routes.append(OldPages(platform, ordered))
 
 
 def _csrf_here():
@@ -1171,15 +1148,28 @@ def _flashed_here(with_categories=False, category_filter=()):
 
 
 async def _http_error(request, exc):
-    """An HTTP error raised outside a page's own handling (a page asked with a method it doesn't take): JSON under
-    /api/, as FastAPI gives it; the page for it everywhere else."""
-    if request.url.path.startswith("/api/"):
+    """An HTTP error raised outside a page's own handling: no page at the address (but one at it with a closing slash:
+    sent on there, with its query), or a page asked with a method it doesn't take. JSON under /api/, as FastAPI gives
+    it; the page for it everywhere else."""
+    path = request.url.path
+    if exc.status_code == 404 and path != "/" and not path.endswith("/") and _a_page_at(request, path + "/"):
+        query = request.url.query
+        return _headed(redirect(request.scope.get("root_path", "") + path + "/" + (f"?{query}" if query else ""), 308), path)
+    if path.startswith("/api/"):
         from fastapi.exception_handlers import http_exception_handler
         return await http_exception_handler(request, exc)
     if error_words(exc.status_code) is None:
-        return _headed(plain_error(exc.status_code, said(exc), exc.headers), request.url.path)
-    async with serving(request):
-        return _headed(await run_in_threadpool(error_page, request, exc.status_code, said(exc), exc.headers), request.url.path)
+        return _headed(plain_error(exc.status_code, said(exc), exc.headers), path)
+    async with serving(request):  # the platform's page for it, finished as a page is (its cookies, its headers)
+        response = await run_in_threadpool(error_page, request, exc.status_code, said(exc), exc.headers)
+        await run_in_threadpool(_finish, request, response, None, None)
+        return response
+
+
+def _a_page_at(request, path):
+    probe = {k: v for k, v in request.scope.items() if k != "fastapi"}
+    probe["path"] = path
+    return any(route.matches(probe)[0] != Match.NONE for route in request.app.state.platform.extensions["page_routes"])
 
 
 async def _redirect_error(request, exc):
@@ -1190,59 +1180,9 @@ async def _answer_error(request, exc):
     return exc.response
 
 
-class OldPages(Mount):
-    """The pages the old layer (app/webkit) still serves, mounted behind the native ones (transition). Where the old
-    layer has nothing at an address but a native page does, asked with a method the page doesn't take, it steps aside
-    (so it's the native page's 405, not a 404); and an address a native page has with a closing slash is sent on to it
-    (a 308), as the old layer always did."""
-
-    def __init__(self, platform, pages):
-        super().__init__("/", app=platform.serve)
-        self.platform, self.pages = platform, pages
-
-    def matches(self, scope):
-        if scope["type"] == "http" and not self._old_layer_has(scope["path"], scope["method"]):
-            probe = {k: v for k, v in scope.items() if k != "fastapi"}
-            if any(route.matches(probe)[0] == Match.PARTIAL for route in self.pages):
-                return Match.NONE, {}
-            path = scope["path"]
-            if path != "/" and not path.endswith("/"):
-                slashed = {**probe, "path": path + "/"}
-                if any(route.matches(slashed)[0] != Match.NONE for route in self.pages):
-                    return Match.FULL, {"keel.add_slash": True}
-        return super().matches(scope)
-
-    def _old_layer_has(self, path, method):
-        from ..webkit.exceptions import NotFound
-        try:
-            self.platform.url_map.match(path, method)
-        except NotFound:
-            return False
-        except Exception:  # noqa: BLE001 - its own 405, or its own closing slash: the old layer answers
-            return True
-        return True
-
-    async def handle(self, scope, receive, send):
-        if scope.pop("keel.add_slash", False):
-            query = scope.get("query_string", b"").decode("latin-1")
-            response = _headed(redirect(scope.get("root_path", "") + scope["path"] + "/" + (f"?{query}" if query else ""), 308), scope["path"])
-            await response(scope, receive, send)
-            return
-        await super().handle(scope, receive, send)
-
-
 def _headed(response, path):
     """The security headers every response carries (app/security.py), where they aren't set yet."""
     from .. import security
     for key, value in security.page_headers(path, _mimetype(response)):
         response.headers.setdefault(key, value)
     return response
-
-
-def seen_natively(scope, state, session):
-    """The old layer's request as a native one (transition: app/webkit's RequestContext sets it as current_request()),
-    so the helpers both layers use are written once: its state is the old layer's `g`, its session the same session."""
-    request = Request({**scope, "state": state})
-    state.pop("_flashes", None)  # a test's `g` outlives its requests: each request takes its own messages
-    request.state.session = session
-    return request

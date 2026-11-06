@@ -17,5 +17,5 @@ if __name__ == "__main__":
     print(f"{app.config['PLATFORM_NAME']} is running: open {app.config['BASE_URL']}"
           + ("" if app.config["WORKER"] else " (its background work is done by the worker: python -m app.worker)"), flush=True)
     # proxy_headers off: a request's address is the connection's, and X-Forwarded-For is believed only with TRUST_PROXY=1
-    uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning", access_log=False, timeout_keep_alive=120, proxy_headers=False,
+    uvicorn.run(app.asgi, host="127.0.0.1", port=port, log_level="warning", access_log=False, timeout_keep_alive=120, proxy_headers=False,
                 server_header=False, headers=[("Server", app.config["PLATFORM_NAME"])])

@@ -20,8 +20,8 @@ Only 1 was the model's own judgment.
 ```
             owner · App map · outside agents (MCP / REST)
                               │
-   app/api      FastAPI (ASGI) front: typed tools, REST v2, MCP, streaming; the pages (app/web/http.py native, the
-                rest still app/webkit, mounted behind)
+   app/api      FastAPI (ASGI) front: typed tools, REST v2, MCP, streaming; the pages (app/web: FastAPI routers,
+                with app/web/http.py)
                               │
    app/builder  understand → needs and checks → data → behaviour → compile → simulate → repair by search → hand over
                               │                              ▲
@@ -96,23 +96,25 @@ Only 1 was the model's own judgment.
 - Priorities: an owner chatting comes before background work.
 - Fairness between customers, a concurrency cap, and deadlines.
 
-**D9. FastAPI replaces Flask entirely.**
-- v2 has no Flask. The core (engine, builder, language, simulator, runtime) depends on no web framework:
-  - plain SQLAlchemy 2 sessions instead of Flask-SQLAlchemy's `Model.query`;
-  - a settings object instead of `current_app.config`;
-  - context variables instead of `flask.g`.
-- FastAPI (ASGI, uvicorn) is a thin layer over that core:
-  - pages (the same Jinja templates, through Starlette);
-  - sign-in sessions and CSRF protection;
-  - REST v2, MCP and streaming.
-- The pages are written with the platform's own small web kit on Starlette (`app/webkit`): the few things the views
-  used from Flask (Blueprint, request, session, g, url_for, flash, render_template, sign-in, CSRF), under the same
-  names and with the same behaviour, so each view kept its code. Each request runs in a worker thread in the
-  platform's context (settings, its own database session, who is acting). The kit is mounted inside the FastAPI front,
-  so one ASGI app serves everything. Flask, Flask-Login, Flask-WTF and Flask-SQLAlchemy are gone.
-- The kit is being retired for native FastAPI routes (`app/web/http.py`: `PageRoute`, the session, sign-in, CSRF,
-  messages, url_for, render; docs/WEB.md). Converted pages sit in front of the kit's mount and share its session
-  cookie, sign-in, CSRF token, messages and addresses, so modules move one at a time with nobody signed out.
+**D9. FastAPI and Starlette, used directly.**
+- The core (engine, builder, language, simulator, runtime) depends on no web framework: plain SQLAlchemy 2 sessions
+  (`app/core/database.py`), a settings mapping (`core.settings`), and context variables for the app and who is acting
+  (`core.context`, `core.actor`). The platform object (`app/platform.py`, made by `create_app()`) holds the config, the
+  database engine, the log and the Jinja environment, and opens that context for workers, scripts and tests
+  (`app.app_context()`).
+- One FastAPI app (`app.asgi`, built by `app/api`'s `front()`; uvicorn serves it) is the whole web: REST v2, streaming,
+  and every page, the v1 API, MCP, webhooks and /static as FastAPI routers in `app/web`. There is no web kit or
+  framework-shaped layer between them and the views.
+- `app/web/http.py` adds only what pages need beyond FastAPI and Starlette, written once:
+  - `PageRoute`, every page router's route class: each request served in the platform's context (its settings, a
+    database session of its own, who is acting), with its session read from the signed cookie, and finished the same
+    way (the cookies, the security headers, the time for Settings › Health, an error as its page, JSON under /api/);
+  - the session, signing in (`signed_in`, `login_user`), CSRF (`check_csrf`), messages (`flash`), forms and uploads
+    (`form_of`), addresses by name (`url_for`, in a script too), and answers (`render`, `redirect`, `json_response`,
+    `send_file`, `raise Redirect(...)`);
+  - `install()`, which puts the routers into the FastAPI app.
+  docs/WEB.md is the guide to writing a page with it. Tests and try-outs make requests with `app.test_client()`
+  (`app/web/testing.py`, on Starlette's TestClient).
 - One typed tool layer (describe, explain, what-if, apply, test, undo) serves the builder, the in-app assistant, MCP
   and REST v2.
 
@@ -182,10 +184,9 @@ inside it and builds there, not for a chat feature on the side.
   analyst all write rules in Keel. A feature's rule rewritten by someone becomes theirs, and the feature leaves it be.
 - **explain** (a tool for the AI and outside agents): why a record is where it is, and why a check comes out as it
   does.
-- **The web layer is invisible to the AI.** FastAPI on Starlette serves the screens, REST and MCP. The tool schemas come
-  from the same Pydantic models as the language. The Flask-shaped kit (app/webkit, 2,950 lines under 165 routes) only
-  exists so the old views kept their code. It's retired a route at a time, as a screen is changed anyway; a rewrite in
-  one go would change nothing for owners or the AI, and would put every screen at risk.
+- **The web layer is invisible to the AI.** FastAPI on Starlette serves the screens, REST and MCP directly (D9): each
+  page is a FastAPI route, with `app/web/http.py` adding only the session, sign-in, CSRF, messages and addresses. The
+  tool schemas come from the same Pydantic models as the language.
 
 **D10. Tenancy and cells.**
 - Row-level security as a second lock behind the code's workspace filters.
@@ -207,8 +208,8 @@ inside it and builds there, not for a chat feature on the side.
 | 8 | AI gateway | done |
 | 9a | Core free of Flask (database, settings, who is acting) | done |
 | 9b | FastAPI: typed tools, MCP and REST v2, streaming | done |
-| 9c | The pages on a Starlette web kit, and Flask removed | done |
-| 9d | The pages on native FastAPI routes, and the web kit deleted (docs/WEB.md) | phase 1 done: the foundation (app/web/http.py), sign-in, your account, your apps; phase 2 (15 modules, 151 routes) next |
+| 9c | The pages on a Starlette web kit, and Flask removed | done (the kit itself deleted in 9d) |
+| 9d | The pages on native FastAPI routes, and the web kit deleted (docs/WEB.md) | done: every page a FastAPI route (app/web/http.py); app/webkit deleted, the platform object is app/platform.py |
 | 10 | Tenancy: row-level security, per-workspace vector search, object storage; cells | done |
 | 11 | Evals on the finished platform | next: v2 is complete |
 | 12 | The first builder deleted | done (dc3a1ce) |

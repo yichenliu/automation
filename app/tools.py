@@ -19,8 +19,7 @@ def main(argv):
         if user is None:
             print(f"There's no account for {argv[1]}.")
             return 1
-        with app.test_request_context():
-            print(reset_link(user))
+        print(reset_link(user))  # a link needs the platform's context, not a request
     return 0
 
 
