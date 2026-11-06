@@ -351,7 +351,7 @@ class Planner:
             return False
         if f["type"] == "user" and value.strip().lower() in ("me", "{{me}}", "current_user", "{{user}}"):
             return False
-        if "{{" in value:
+        if "{{" in value or schema.worked_out(value):
             return True
         if re.search(r"[-+*/]", value) and re.fullmatch(r"[\w\s.+\-*/()]+", value):
             names = re.findall(r"[A-Za-z_]\w*", value)

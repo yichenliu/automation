@@ -84,6 +84,9 @@ def catalog(kinds=KINDS, examples=True):
                 line += f" e.g. {json.dumps(cls.__keel_example__, ensure_ascii=False)}"
             lines.append(line)
         blocks.append("\n".join(lines))
+    if "field" in kinds or "step" in kinds:  # formulas are written in fields, conditions and steps
+        from ..blueprint import expr
+        blocks.append(expr.reference())
     return "\n\n".join(blocks)
 
 

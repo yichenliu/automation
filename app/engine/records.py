@@ -285,6 +285,8 @@ def _pushed(engine, t, part, ctx):
             return None
         if isinstance(value, RecordProxy):
             value = value.record.id
+        if isinstance(value, timedelta):  # a length of time on its own (minutes > 2h): worked out here
+            return None
         if mine.id == "id":
             return ("without", value) if isinstance(op, expr.ast.NotEq) and isinstance(value, int) else None
         f = schema.field(t, mine.id)
@@ -1361,6 +1363,7 @@ class Engine:
         """A condition's value, with {{ }} filled in from the record. "me" on a person field is whoever is looking."""
         if f is not None and f["type"] == "user" and isinstance(value, str) and value.strip().lower() in ("me", "{{me}}", "current_user", "{{user}}"):
             return self.user_id or 0  # the platform itself is nobody's "me"
+        value = schema.worked_out(value) or value  # "now() - 48h" without braces, as a design saved before it was read so
         if isinstance(value, str) and "{{" in value:
             try:
                 return expr.render(value, RecordContext(self, record))

@@ -17,6 +17,13 @@ whole list (bookings), counted, added up or tested one by one, with what each mu
 
 Inside count/sum/any/all/…, a name is the field of the record being looked at; `this` is the record the formula is
 about (its own fields are read too when the one looked at has no field of that name).
+
+Lengths of time are written as people write them, and added to or taken from dates and times, or compared:
+
+    returned_at > due_back_at + 2h     confirmed_at < now() - 48 hours     ends_at - starts_at > 30m
+    hours_since(sent_at) > 48          starts_on + 2w
+
+A plain number with a date is days (due_date + 14), as in a spreadsheet.
 """
 import ast
 import keyword
@@ -98,8 +105,55 @@ def to_number(value):
 
 
 def _num(v):
+    if isinstance(v, timedelta):
+        raise ExprError("a length of time (2h, 3 days) goes with a date or a time, not a plain number: hours_between(a, b) "
+                        "gives the hours from one to another as a number")
     n = to_number(v)
     return 0 if n is None else n
+
+
+class Days(int):
+    """Days from one date to another, a whole number as a date take a date has always been (checkout - checkin is the
+    nights), that keeps the exact time between them too, for a comparison with a length of time
+    (returned_at - due_back_at > 2h)."""
+    span = None
+
+
+def _days_apart(a, b):
+    out = Days((to_date(a) - to_date(b)).days)
+    out.span = to_datetime(a) - to_datetime(b)
+    return out
+
+
+UNITS = {"h": "hours", "hr": "hours", "hrs": "hours", "hour": "hours", "hours": "hours", "m": "minutes", "min": "minutes",
+         "mins": "minutes", "minute": "minutes", "minutes": "minutes", "d": "days", "day": "days", "days": "days",
+         "w": "weeks", "wk": "weeks", "wks": "weeks", "week": "weeks", "weeks": "weeks"}
+# 48h, 30m, 2d, 1w right after the number; 48 hours, 2 hrs, 3 days with or without a space
+DURATION = re.compile(r"(?<![\w.])(\d+(?:\.\d+)?)(?:([hmdw])|\s*(hours?|hrs?|minutes?|mins?|days?|weeks?|wks?))(?![\w(])", re.I)
+
+
+def _durations(text):
+    """2h, 48 hours, 30m, 3 days, 1w read as hours(2), minutes(30)…, outside quotes."""
+    return "".join(part if i % 2 else DURATION.sub(lambda m: f"{UNITS[(m.group(2) or m.group(3)).lower()]}({m.group(1)})", part)
+                   for i, part in enumerate(_QUOTED.split(text)))
+
+
+def _length(unit):
+    def make(n=1):
+        n = to_number(n)
+        return None if n is None else timedelta(**{unit: n})
+    return make
+
+
+def _span(v):
+    """A value as a length of time, to compare with one: a length as it is, days apart as their exact time, a number
+    as days."""
+    if v is None or isinstance(v, timedelta):
+        return v
+    if isinstance(v, Days) and v.span is not None:
+        return v.span
+    n = to_number(v)
+    return None if n is None else timedelta(days=n)
 
 
 class Context:
@@ -341,6 +395,10 @@ FUNCTIONS = {
     "add_months": _add_months,
     "hours_between": _hours_between,
     "add_hours": _add_hours,
+    "hours": _length("hours"),
+    "minutes": _length("minutes"),
+    "days": _length("days"),
+    "weeks": _length("weeks"),
     "weekday": lambda d: to_date(d).isoweekday() if to_date(d) else None,
     "day": lambda d: to_date(d).day if to_date(d) else None,
     "datetime": to_datetime,
@@ -369,8 +427,69 @@ ALIASES = {"if": "iif", "datediff": "days_between", "dateadd": "add_days", "edat
 # what looks at several records: count(client.invoices where status = "Unpaid"), sum(job.payments, amount)
 QUERIES = {"count", "sum", "sumif", "avg", "avgif", "min", "max", "any", "all", "none", "where", "first", "last"}
 TODAY_FUNCTIONS = {"days_since", "days_until"}  # days from a date to today, and from today to a date
+NOW_FUNCTIONS = {"hours_since", "hours_until"}  # hours from a time to now, and from now to a time
 RECORD_FUNCTIONS = ("convert", "workday", "add_workdays", "workdays_between", "networkdays")  # a record's context gives these
-KNOWN = set(FUNCTIONS) | set(ALIASES) | {"iif", "today", "now"} | set(RECORD_FUNCTIONS) | QUERIES | TODAY_FUNCTIONS
+KNOWN = set(FUNCTIONS) | set(ALIASES) | {"iif", "today", "now"} | set(RECORD_FUNCTIONS) | QUERIES | TODAY_FUNCTIONS | NOW_FUNCTIONS
+
+# Every function, as the AI is told it (the catalog's FORMULAS): tests/test_queries.py fails for one with no words here.
+SAID = {
+    "today": "today() the date today; now() the date and time now",
+    "now": None,
+    "days_since": "days_since(sent_on) days from a date to today; days_until(starts_on) days from today to it",
+    "days_until": None,
+    "hours_since": "hours_since(sent_at) hours from a time to now; hours_until(starts_at) hours from now to it",
+    "hours_until": None,
+    "days_between": "days_between(a, b) days from date a to date b (b - a)",
+    "hours_between": "hours_between(a, b) hours from a to b, two dates and times, or two times of day (22:00 to 06:00 is 8)",
+    "add_days": "add_days(d, n) n days on from d (d + n says the same)",
+    "add_months": "add_months(d, n) the same day n months on",
+    "add_hours": "add_hours(t, n) n hours on from t (t + nh says the same)",
+    "hours": "hours(n), minutes(n), days(n), weeks(n) a length of time from a number or a field (starts_at + hours(duration))",
+    "minutes": None, "days": None, "weeks": None,
+    "workday": "workday(d, n) the date n working days on, weekends and the business's holidays skipped (add_workdays the same)",
+    "add_workdays": None,
+    "workdays_between": "workdays_between(a, b) working days from a to b (networkdays the same)",
+    "networkdays": None,
+    "end_of_month": "end_of_month(d) the month's last day; end_of_month(d, 1) next month's",
+    "date": "date(\"2026-11-05\") or date(2026, 11, 5) a date; datetime(\"2026-11-05 14:30\") a date and time",
+    "datetime": None,
+    "weekday": "weekday(d) 1 (Monday) to 7 (Sunday); day(d), month(d), year(d) its parts",
+    "day": None, "month": None, "year": None,
+    "format_date": "format_date(d, \"%d/%m/%Y\") a date written a set way",
+    "overlaps": "overlaps(starts, ends, this.starts, this.ends) whether two spans of dates or times overlap",
+    "iif": "if(cond, a, b) (iif the same) a when cond holds, otherwise b",
+    "round": "round(x, 2); ceil(x); floor(x); abs(x)",
+    "ceil": None, "floor": None, "abs": None,
+    "coalesce": "coalesce(a, b, …) the first one that isn't empty",
+    "is_empty": "is_empty(x) whether x has nothing in it",
+    "concat": "concat(a, b, …) text joined (a + b says the same); upper(s), lower(s), text(x), number(s), len(s)",
+    "upper": None, "lower": None, "text": None, "number": None, "len": None,
+    "convert": "convert(total, \"USD\") into the business's own currency at its exchange rates (or convert(x, \"USD\", \"EUR\"))",
+    "count": "count(client.invoices where status = \"Unpaid\") how many; any(…), all(…), none(…) whether some, each or none of them hold",
+    "any": None, "all": None, "none": None,
+    "sum": "sum(job.payments, amount) added up; avg(…), min(…), max(…) the same way (min/max of plain values too: max(a, b))",
+    "avg": None, "min": None, "max": None,
+    "where": "where(…), first(…), last(…) the records that hold, the first or last of them (first(client.jobs where …).finished_on)",
+    "first": None, "last": None,
+    "sumif": "sumif(items, cond, value), avgif(…) a spreadsheet's SUMIF / AVERAGEIF",
+    "avgif": None,
+    "pad": "pad(s, n), lpad(s, n, \"0\"), digits(s), cents(x) for files in another system's layout (a bank's payment file)",
+    "lpad": None, "digits": None, "cents": None,
+}
+
+
+def reference():
+    """The formula language in a few lines, for the AI (the catalog's FORMULAS)."""
+    lines = ["FORMULAS (a formula field, a condition written as text, a value a step works out):",
+             "- a record's fields by key (quantity * unit_price), a linked record's through dots (customer.discount), "
+             "the records linking to it by their list (client.invoices), a whole list by its key (bookings); "
+             "inside count/sum/any/…, names are the looked-at record's fields and this.x the formula's own record",
+             "- and, or, not; == != < > <= >=; text in quotes; x in [\"A\", \"B\"]; if(cond, a, b)",
+             "- a plain number with a date is days (due_date + 14; returned_on - due_on is days). Lengths of time: 2h, "
+             "48 hours, 30m, 3 days, 2w, on a date or a time or compared (returned_at > due_back_at + 2h; "
+             "confirmed_at < now() - 48h; ends_at - starts_at > 30m)"]
+    lines += [f"- {said}" for said in SAID.values() if said]
+    return "\n".join(lines)
 
 
 def normalise(source):
@@ -390,7 +509,7 @@ def normalise(source):
     text = text.replace("<>", "!=").replace("&&", " and ").replace("||", " or ")
     text = re.sub(r"(?<![<>!=])=(?!=)", "==", text)
     text = re.sub(r"\s&\s", " + ", text)  # "a & b" joins text in spreadsheets
-    return _wheres(text)
+    return _wheres(_durations(text))
 
 
 WHERE = re.compile(r"\bwhere\b(?!\s*\()", re.I)
@@ -526,7 +645,10 @@ def unknown_calls(source):
 
 
 def evaluate(source, context):
-    return _eval(parse(source).body, context)
+    out = _eval(parse(source).body, context)
+    if isinstance(out, timedelta):  # a length of time worked out on its own: in days, as a date take a date is
+        return round(out.total_seconds() / 86400, 4)
+    return out
 
 
 def _attr(value, name):
@@ -542,7 +664,40 @@ def _attr(value, name):
     raise ExprError(f"“.{name}” only works on a linked record")
 
 
+def _with_length(op, a, b):
+    """Arithmetic with a length of time (2h, 3 days): on a date or a time, with another length, or by a number."""
+    a, b = (to_datetime(x) if isinstance(x, str) and to_datetime(x) else x for x in (a, b))  # "2026-11-03 08:00" as written
+    if a is None or b is None:
+        return None
+    add, sub = isinstance(op, ast.Add), isinstance(op, ast.Sub)
+    if isinstance(a, timedelta) and isinstance(b, timedelta):
+        if add or sub:
+            return a + b if add else a - b
+        if isinstance(op, ast.Div):
+            return None if not b else a / b
+    elif isinstance(a, date) or isinstance(b, date):
+        when, length = (a, b) if isinstance(a, date) else (b, a)
+        if sub and when is b:
+            raise ExprError("a length of time can't take a date away: write the date first (due_date - 3 days)")
+        if add or sub:
+            length = length if add else -length
+            if not isinstance(when, datetime) and length % timedelta(days=1):
+                when = datetime(when.year, when.month, when.day)  # hours on a day: from its start
+            return when + length
+    elif isinstance(op, (ast.Mult, ast.Div)):
+        length, n = (a, b) if isinstance(a, timedelta) else (b, a)
+        if isinstance(op, ast.Div) and length is b:
+            raise ExprError("a number can't be divided by a length of time")
+        n = to_number(n)
+        if n is None:
+            return None
+        return length * n if isinstance(op, ast.Mult) else (None if n == 0 else length / n)
+    raise ExprError("a length of time (2h, 3 days) is added to or taken from a date or a time, or another length")
+
+
 def _arith(op, a, b):
+    if isinstance(a, timedelta) or isinstance(b, timedelta):
+        return _with_length(op, a, b)
     if isinstance(op, ast.Add):
         if isinstance(a, date) and not isinstance(b, date):
             return a + timedelta(days=_num(b))
@@ -553,7 +708,7 @@ def _arith(op, a, b):
         return _num(a) + _num(b)
     if isinstance(op, ast.Sub):
         if isinstance(a, date) and isinstance(b, date):
-            return (to_date(a) - to_date(b)).days
+            return _days_apart(a, b)
         if isinstance(a, date):
             return a - timedelta(days=_num(b))
         return _num(a) - _num(b)
@@ -571,6 +726,8 @@ def _arith(op, a, b):
 
 
 def _comparable(a, b):
+    if isinstance(a, timedelta) or isinstance(b, timedelta):
+        return _span(a), _span(b)
     if isinstance(a, datetime) or isinstance(b, datetime):
         return to_datetime(a), to_datetime(b)
     if isinstance(a, date) or isinstance(b, date):
@@ -670,6 +827,14 @@ def _eval(node, ctx):
             if d is None:
                 return None
             return (ctx.today - d).days if name == "days_since" else (d - ctx.today).days
+        if name in NOW_FUNCTIONS:  # hours_since(sent_at) > 48: how many hours ago; hours_until(starts_at): to go
+            if len(node.args) != 1:
+                raise ExprError(f"{node.func.id}() takes one date and time")
+            d = to_datetime(_eval(node.args[0], ctx))
+            if d is None:
+                return None
+            hours = (ctx.now - d).total_seconds() / 3600
+            return round(hours if name == "hours_since" else -hours, 4)
         if name in QUERIES and node.args:
             first = _eval(node.args[0], ctx)
             if _record_like(first) and name not in ("count", "sum", "min", "max", "avg") or (_record_like(first) and len(node.args) > 1):

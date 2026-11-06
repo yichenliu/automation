@@ -142,6 +142,14 @@ rule stopped on a must-have it couldn't know (10 apps); stages nothing could rea
   `last` and `where`; `this` is the formula's own record; `overlaps()`, `days_since()`, `days_until()`. It's what the
   model already writes (SQL, spreadsheets). Names inside a count(...) are checked against the counted list, and words
   compared with a choice must be one of its choices.
+- **Lengths of time are written as people write them.** `returned_at > due_back_at + 2h`, `confirmed_at < now() - 48
+  hours`, `hours_since(sent_at) > 48`; a plain number with a date stays days, as in a spreadsheet. Round 38 had two
+  builders write `+ 2` and `- 48h` for hours with no way to say it. A condition's value written as a formula without
+  braces (`"now() - 48h"`) is worked out, not compared as text.
+- **The AI is told every function.** The catalog's FORMULAS block comes from `expr.SAID`, and a test fails for a
+  function it doesn't name, as it does for a piece of the language without a docstring. The design checks catch the two
+  time mistakes a formula can't refuse: a date set from `today()` at every save (it moves each time), and a rule its
+  own name says is about hours that counts days.
 - **Conditions are formulas too.** Anywhere a condition goes (only_if, blocked_if, a gate's needs, a total's only),
   text is a formula that must hold; `{field, op, value}` stays as the App map's point-and-click form.
 - **What must not happen is a rule every save keeps.** A gate is table rules (with `holds` for what must hold), kept

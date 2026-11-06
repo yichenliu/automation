@@ -12,7 +12,7 @@ import itertools
 import re
 from types import SimpleNamespace
 
-from ..blueprint import schema
+from ..blueprint import expr, schema
 from ..engine.records import automations_words
 
 CASES = 400  # combinations of values tried for one stage's moves
@@ -22,11 +22,88 @@ def run(engine):
     return (choices(engine) + impossible(engine) + unreachable(engine) + gaps(engine) + asked_on_no(engine) + left_to_others(engine)
             + out_of_reach(engine) + needs_rates(engine) + left_unfilled(engine) + made_only_sometimes(engine) + ai_doing_sums(engine)
             + approval_without_stages(engine) + skips_approvals(engine) + runs_while_true(engine) + wrong_kind(engine)
-            + nobody_may_answer(engine) + nobody_asked(engine) + never_late(engine) + two_statuses(engine))
+            + nobody_may_answer(engine) + nobody_asked(engine) + never_late(engine) + two_statuses(engine) + restamped(engine)
+            + days_for_hours(engine))
 
 
 STAGE_WORDS = re.compile(r"^(status|stage|state)$", re.I)
 ONCE = ("create_record", "create_for_each", "copy_record", "request_approval", "task", "send_email", "send_sms", "webhook")
+
+
+STAMP = re.compile(r"\b(today|now)\s*\(", re.I)
+BARE_STAMP = re.compile(r"\{\{\s*(today|now)\s*\(\s*\)\s*\}\}")
+
+
+def restamped(engine):
+    """A rule run at every save (on a change, none of its conditions saying what changed) that sets a date from today:
+    the date moves on each time the record is saved. A due date of today() + 7 comes out a week from the last change,
+    never from when the invoice was sent; a "paid on" of today() while it's Paid, the day it was last touched. A plain
+    today() with no condition at all is a "last changed" date, and meant."""
+    out = []
+    for a in engine.bp.get("automations", []):
+        trig = a["trigger"]
+        t = engine.tables.get(trig.get("table") or "")
+        if trig["type"] not in ("record_updated", "record_created_or_updated") or t is None:
+            continue
+        said, found = list(schema.condition_leaves(a.get("conditions"))), {}
+        for act in schema.steps_of(a["actions"]):
+            if act.get("type") != "update_record" or act.get("target"):
+                continue
+            conds = said + list(schema.condition_leaves(act.get("only_if")))
+            formulas = list(schema.formulas(a.get("conditions"))) + list(schema.formulas(act.get("only_if")))
+            if any(str(c.get("op", "")).startswith("changed") for c in conds):
+                continue
+            for key, v in (act.get("values") or {}).items():
+                if schema.field(t, key) is None or not isinstance(v, str) or not STAMP.search(v):
+                    continue
+                if any(c.get("field") == key for c in conds) or any(re.search(rf"\b{re.escape(key)}\b", x) for x in formulas):
+                    continue  # only while it's empty, or otherwise minded of what it is
+                bare = BARE_STAMP.fullmatch(v.strip())
+                if not (bare and not conds and not formulas):
+                    found.setdefault(key, []).append((v, bool(bare)))
+        one = schema.lc(t["singular"])
+        for key, sets in found.items():
+            f = schema.field(t, key)
+            out.append(_issue("check" if all(bare for _, bare in sets) else "fix",
+                              f"Rule {a['key']} runs at every save of {_a(one)} (none of its conditions says what changed) and sets "
+                              f"{key} to {sets[0][0]}: so {f['label']} moves on each time one is saved, and never stays at when it "
+                              f"was set. Set it when the {one} is added (\"on\": \"added\"), when what it dates happens (on "
+                              f"\"reaches\" a stage, or a field \"changed_to\" a value), or only while {key} is empty",
+                              f"“{a['name']}” moves {f['label']} on every time {_a(one)} is saved", t["key"]))
+    return out
+
+
+HOURS_SAID = re.compile(r"\b(\d+|an?|one|two|three|four|six|twelve|24|48|72)[\s-]+(hours?|hrs?|minutes?|mins?)\b", re.I)
+PLAIN_OFFSET = re.compile(r"(\b[a-z_][\w.]*|\bnow\(\s*\))\s*[+-]\s*(\d+(?:\.\d+)?)(?![\w.(])", re.I)
+
+
+def days_for_hours(engine):
+    """A rule its own name says is about hours ("over two hours late") whose formula adds a plain number to a date and
+    time: a plain number with a date is days, so returned_at > due_back_at + 2 is two days late, not two hours."""
+    out = []
+    for a in engine.bp.get("automations", []):
+        t = engine.tables.get(a["trigger"].get("table") or "")
+        if t is None or not HOURS_SAID.search(a.get("name") or ""):
+            continue
+        said = list(schema.formulas(a.get("conditions")))
+        for act in schema.steps_of(a["actions"]):
+            said += list(schema.formulas(act.get("only_if")))
+            said += [v for v in (act.get("values") or {}).values() if isinstance(v, str)]
+        for text in filter(None, said):
+            if any(i["text"].startswith(f"Rule {a['key']} ") for i in out):
+                break  # once a rule
+            for m in PLAIN_OFFSET.finditer(expr.normalise(text)):
+                name = m.group(1)
+                f = schema.field(t, name) if "(" not in name else {"type": "datetime"}
+                if f is None or f["type"] not in ("datetime", "created_time", "modified_time"):
+                    continue
+                n = m.group(2)
+                out.append(_issue("fix", f"Rule {a['key']} (“{a['name']}”) says hours, but its formula {text.strip('{} ')} adds {n} to "
+                                         f"{name}, a date and time, which is {n} days on: for hours write {name} + {n}h "
+                                         f"(lengths of time: 2h, 30m, 48 hours, 3 days)",
+                                  f"“{a['name']}” counts {n} days where it means {n} hours", t["key"]))
+                break
+    return out
 
 
 def two_statuses(engine):

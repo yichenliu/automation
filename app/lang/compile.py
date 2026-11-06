@@ -429,6 +429,10 @@ def ir_condition(d, t, c, where):
     value = c.value
     if c.op in NEEDS_VALUE and value in (None, ""):
         raise Problem(f"{where}: “{c.op}” needs a value to compare {c.field} with")
+    if schema.worked_out(value):  # "value": "now() - 48h": compared with what it works out to, {{now() - 48h}}
+        value = schema.worked_out(value)
+        _check_formula(d, t, value[2:-2], where)
+        return {"field": ".".join(keys), "op": c.op, "value": value}
     kind = d.kind(f)
     if c.op in DATE_OPS and kind != "date":
         raise Problem(f"{where}: “{c.op}” is for dates, and {c.field} isn't one ({f.get('type')})")

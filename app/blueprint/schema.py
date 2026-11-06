@@ -688,6 +688,18 @@ SYSTEM_TIMES = {"created_time": "created_at", "modified_time": "updated_at", "up
                 "modified_at": "updated_at"}
 
 
+# a value worked out when the condition is tested, written without braces ("value": "now() - 48h"): it means
+# {{now() - 48h}}, compared as any worked-out value is (a date field equal to a day, a time before a moment)
+WORKED_OUT = re.compile(r"\b(today|now|days_since|days_until|hours_since|hours_until|add_days|add_hours)\s*\(", re.I)
+
+
+def worked_out(value):
+    """{{now() - 48h}} for a condition's value of now() - 48h, or None for a value as it is (or one in braces already)."""
+    if isinstance(value, str) and "{{" not in value and WORKED_OUT.search(value):
+        return "{{" + value.strip().removeprefix("=").strip() + "}}"
+    return None
+
+
 def normalize_condition(raw):
     """{"field", "op", "value"}, or a group: {"any": [conditions]} holds when one of them does (urgent or overdue),
     {"all": [conditions]} when every one does (inside an "any": over $5,000 and not yet approved)."""
@@ -723,7 +735,7 @@ def normalize_condition(raw):
             raise SchemaError(f"the condition on “{field}” ({op}) needs a value")
         if op == "one_of":
             value = _options(value) if not isinstance(value, list) else [str(v) for v in value]
-        condition["value"] = value
+        condition["value"] = worked_out(value) or value
     return condition
 
 
