@@ -317,7 +317,7 @@ def test_the_app_map_changes_an_app_in_the_keel_language(app, client, owner):
     assert said(studio.data_patches(bp, {"do": "update_field", "table": "orders", "key": "total", "type": "number", "help": "With GST",
                                          "signs": "normal"}, nothing)) == ["change_field", "set_field", "design_op"]
     assert said(studio.data_patches(bp, {"do": "update_field", "table": "orders", "key": "notes", "ai": "Note anything fragile"}, nothing)) == ["set_field"]  # the AI filling it in: said in Keel too
-    assert said(studio.stage_patches(bp, {"do": "add_stage", "table": "orders", "name": "Checked", "after": "New"}, nothing)) == ["set_field", "add_move", "add_move"]
+    assert said(studio.stage_patches(bp, {"do": "add_stage", "table": "orders", "name": "Checked", "after": "New"}, nothing)) == ["add_stage"]  # Keel's own, which keeps what features add to the moves
     assert said(studio.stage_patches(bp, {"do": "update_move", "table": "orders", "i": 0, "from": ["New"], "to": "Packed", "label": "Box it"},
                                      nothing)) == ["change_move"]
     assert said(studio.stage_patches(bp, {"do": "set_start", "table": "orders", "name": "Packed"}, nothing)) == ["order_stages"]

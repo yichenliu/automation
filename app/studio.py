@@ -42,10 +42,13 @@ def _name(text, what="name", most=80):
 
 
 def _fresh_key(taken, label, fallback="field"):
+    """A key not taken yet, that stays itself when it's made a key again (keys are cut at 48 letters: a long name's _2
+    must fit inside them, or it's cut off again and names the one already there)."""
     base = slug(label) or fallback
     key, n = base, 2
     while key in taken or key in schema.RESERVED:
-        key, n = f"{base}_{n}", n + 1
+        suffix = f"_{n}"
+        key, n = f"{base[:48 - len(suffix)].rstrip('_')}{suffix}", n + 1
     return key
 
 
@@ -860,7 +863,10 @@ def stage_patches(bp, change, filled):
         return [p for op in made for p in _said_in_keel(bp, op)]
     if do == "remove_stages":
         return [{"do": "remove_stages", "list": t["key"]}]
-    if do == "add_stage":  # put in its place, a way into it from the stage before and on from it to the next
+    if do == "add_stage" and change.get("after") in (schema.field(t, flow["field"]) or {}).get("options", []):
+        # in its place, after the one named: Keel's own add_stage, which keeps the moves features add (an approval's)
+        return [{"do": "add_stage", "list": t["key"], "stage": _name(change.get("name"), "name for the stage", 60), "after": change["after"]}]
+    if do == "add_stage":  # at the end: a way into it from the stage before
         options, moves = made[0]["changes"]["options"], made[1]["workflow"]["transitions"][len(flow["transitions"]):]
         return [{"do": "set_field", "list": t["key"], "field": flow["field"], "settings": {"options": options}}] + \
             [{"do": "add_move", "list": t["key"], "move": _move_said(mv)} for mv in moves]

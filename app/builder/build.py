@@ -93,6 +93,9 @@ needs one.
   a choice; add_validation refuses adding or saving a record that breaks it (a job whose quote isn't approved:
   quote.status == 'Approved'); a button's only_if holds the button back until it's met (no specs sent until the design
   is approved).
+- A need about seeing or keeping records ("lists…", "shows who owes", "keeps customer details") is met by the lists and
+  fields themselves: put its number in "already", or add a view of a list (add_view: filtered, grouped by customer, a
+  board by stage, a calendar), never a page.
 - A rule about other records is one formula: the records linking to this one (client.invoices, job.payments) or a
   whole list (bookings), with count, sum, any, all, none, min, max and where. "No booking while the client owes over
   30 days": add_validation check count(client.invoices where status = "Unpaid" and days_since(due_date) > 30) == 0.
@@ -895,7 +898,8 @@ def _need_states(turn, needs, run):
     states = []
     for i, n in enumerate(needs, start=1):
         if i in turn.tried and i not in turn.made:
-            states.append((n, "unmade"))
+            # keeping or showing records is what the lists do: what was refused for it was extra (a page), not the need
+            states.append((n, "ok" if KEEPS_RECORDS.match(n.does.strip()) and (turn.bp.get("tables") or []) else "unmade"))
             continue
         results = dict(zip([id(x) for x in (run or {}).get("examples", [])], (run or {}).get("results", [])))
         mine = [x for x in (run or {}).get("examples", []) if x.get("need") == n.does

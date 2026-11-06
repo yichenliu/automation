@@ -159,7 +159,8 @@ def test_stages_are_changed_where_they_are_even_a_plain_status_and_one_put_betwe
     jobs = next(t for t in ws.blueprint["tables"] if t["key"] == "jobs")
     assert next(f for f in jobs["fields"] if f["key"] == "status")["options"] == ["Booked", "Waiting on parts", "Done", "Signed off"]
     moves = {(tuple(m["from"]), m["to"]) for m in jobs["workflow"]["transitions"]}
-    assert (("Booked",), "Waiting on parts") in moves and (("Waiting on parts",), "Done") in moves
+    assert (("Booked",), "Waiting on parts") in moves  # reached from the stage before it,
+    assert any("Waiting on parts" in frm and to == "Done" for frm, to in moves)  # and on from it to the next
     plain = {"id": "stages:invoices", "change": {"field": "status", "table": "invoices"}}
     assert client.post(url, json={**plain, "change": {**plain["change"], "do": "add_stage", "name": "Chased", "after": "Sent"}}).get_json()["ok"]
     assert client.post(url, json={**plain, "change": {**plain["change"], "do": "rename_stage", "old": "Draft", "new": "Being written"}}).get_json()["ok"]
@@ -289,3 +290,48 @@ def test_change_notes_say_what_changed_in_words(app, owner):
     mail = ops.apply(ws.blueprint, [{"op": "add_automation", "automation": {"key": "m", "name": "Mail", "trigger": {"type": "record_created", "table": "jobs"},
                                                                             "actions": [{"type": "send_email", "to": "{{record.customer.name}}", "subject": "Hi", "body": "Hi"}]}}])
     assert any("emails its customer's name" in c for c in mail.changes) and not any("{{" in c for c in mail.changes)
+
+
+def test_a_rule_made_on_the_map_keeps_its_stage_and_a_long_named_one_pressed_twice_is_said_once(app, client, owner):
+    """“When a vaccination reaches Overdue, tell the owner”: the stage it waits for is its condition (never left behind on the
+    way into the Keel language), so the stage can't be taken away unseen; and its long name's second press is refused,
+    never quietly written over the first (keys are cut at 48 letters, and _2 must fit inside them)."""
+    from app.extensions import db
+    _, ws = owner
+    _built(ws, TRADE)
+    login(client)
+    url = f"/w/{ws.id}/app/studio/workflows/change"
+    rule = {"id": "", "change": {"do": "add_rule", "name": "When an invoice reaches Paid, tell the owner and the bookkeeper straight away",
+                                 "trigger": {"type": "record_updated", "table": "invoices", "field": "status", "to": "Paid"},
+                                 "step": {"type": "notify", "to": "owner", "message": "{{record}} is paid"}}}
+    first = client.post(url, json=rule)
+    assert first.status_code == 200, first.get_json()
+    again = client.post(url, json=rule)
+    assert again.status_code == 400 and "already" in again.get_json()["error"]
+    db.session.refresh(ws)
+    made = [a for a in ws.blueprint["automations"] if a["name"] == rule["change"]["name"]]
+    assert len(made) == 1 and {"field": "status", "op": "changed_to", "value": "Paid"} in made[0]["conditions"]
+
+
+def test_a_stage_put_after_another_on_the_map_keeps_what_a_feature_adds_to_the_moves(app, client, owner):
+    """Quotes wait for the owner's OK (a feature on the moves into Sent): “On hold” after Draft is put in its
+    place, reached and leading on, and the approval stays."""
+    from app import lang
+    from app.extensions import db
+    _, ws = owner
+    _built(ws, TRADE)
+    out = lang.apply(ws.blueprint, [{"do": "approval", "list": "quotes", "stage": "Sent", "by": "owner"}])
+    assert not out.problems, out.problems
+    ws.blueprint = out.blueprint
+    db.session.commit()
+    login(client)
+    done = client.post(f"/w/{ws.id}/app/studio/workflows/change", json={"id": "stages:quotes", "change": {
+        "do": "add_stage", "table": "quotes", "field": "status", "name": "On hold", "after": "Draft"}})
+    assert done.status_code == 200, done.get_json()
+    db.session.refresh(ws)
+    quotes = next(t for t in ws.blueprint["tables"] if t["key"] == "quotes")
+    names = next(f for f in quotes["fields"] if f["key"] == "status")["options"]
+    assert names.index("On hold") == names.index("Draft") + 1
+    moves = quotes["workflow"]["transitions"]
+    assert any(mv["to"] == "On hold" for mv in moves) and any("On hold" in (mv.get("from") or []) for mv in moves)
+    assert any(e["do"] == "approval" for e in ws.blueprint["features"]) and any(mv.get("who") for mv in moves if mv["to"] == "Sent")

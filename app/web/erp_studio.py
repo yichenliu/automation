@@ -67,9 +67,10 @@ def _in_keel(design, op):
         return [op]
     kind = op.get("op")
     if kind in ("add_automation", "update_automation") and isinstance(op.get("automation"), dict):
-        try:
-            return [{"do": "add_rule", "rule": back.rule_in_keel(design or {}, op["automation"])}]
-        except back.Unsaid:
+        from ..blueprint import schema
+        try:  # as the design keeps it first: a trigger's "changes to Done" is its condition, never left behind
+            return [{"do": "add_rule", "rule": back.rule_in_keel(design or {}, schema.normalize_automation(op["automation"]))}]
+        except (back.Unsaid, schema.SchemaError):
             return [op]
     if kind == "remove_automation" and op.get("key"):
         return [{"do": "remove_rule", "rule": op["key"]}]

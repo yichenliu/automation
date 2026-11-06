@@ -110,3 +110,20 @@ def test_how_a_features_field_looks_is_anyones_and_stays_when_the_feature_is_mad
 def test_taking_away_the_only_way_to_a_stage_says_so_rather_than_coming_back():
     out = lang.apply(everything(), [{"do": "remove_move", "list": "quotes", "button": "Accepted"}])
     assert out.problems and "only way to Accepted" in out.problems[0]
+
+
+def test_a_new_lists_field_shown_by_a_formula_or_a_group_is_made_not_a_crash():
+    out = lang.apply(everything(), [{"do": "add_list", "key": "animals", "label": "Animals", "singular": "Animal", "fields": [
+        {"type": "text", "key": "tag", "label": "Tag"}, {"type": "yes_no", "key": "sick", "label": "Sick"},
+        {"type": "text", "key": "treatment", "label": "Treatment", "show_if": ["sick == True"]},
+        {"type": "text", "key": "vet", "label": "Vet", "show_if": [{"any": [{"field": "sick", "op": "equals", "value": True}, "tag != ''"]}]}]}])
+    assert not out.problems, out.problems
+    fields = {f["key"]: f for f in schema.table(out.blueprint, "animals")["fields"]}
+    assert fields["treatment"]["show_if"] == [{"formula": "sick == True"}] and "any" in fields["vet"]["show_if"][0]
+
+
+def test_a_rule_on_a_schedule_that_checks_records_is_told_to_name_its_list():
+    out = lang.apply(everything(), [{"do": "add_rule", "rule": {"key": "due", "name": "Due soon", "when": {"on": "every", "period": "day"},
+                                                                "only_if": [{"field": "due_date", "op": "within_next_days", "value": 7}],
+                                                                "steps": [{"do": "notify", "who": "owner", "message": "Due soon"}]}}])
+    assert out.problems and "give its when the list" in out.problems[0]

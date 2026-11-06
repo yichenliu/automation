@@ -126,10 +126,20 @@ def ir_field(d, t, f, where):
         conditions = getattr(f, attr, None)
         if conditions:
             if not t.get("fields"):  # a list being made: its own fields aren't there to check against yet, kept as written
-                out[attr] = [{"field": c.field, "op": c.op, **({"value": c.value} if c.value is not None else {})} for c in conditions]
+                out[attr] = [_as_written(c) for c in conditions]
             else:
                 out[attr] = ir_conditions(d, t, conditions, f"{where} › {attr}")
     return out
+
+
+def _as_written(c):
+    """A condition as it's written (a formula, a group, or a field's test), for a list whose fields aren't made yet."""
+    if isinstance(c, str):
+        return {"formula": c.strip()}
+    if c.any is not None or c.all is not None:
+        word = "any" if c.any is not None else "all"
+        return {word: [_as_written(x) for x in (c.any if c.any is not None else c.all)]}
+    return {"field": c.field, "op": c.op, **({"value": c.value} if c.value is not None else {})}
 
 
 def _ir_field(d, t, f, where):
@@ -877,8 +887,16 @@ def _not_by(d, t, names, where):
     return out
 
 
+def _needs_its_list(when, where):
+    """A rule on a schedule that's about records (only_if, or steps that change one) names its list."""
+    raise Problem(f"{where} › when: a rule on a schedule that checks or changes records runs for each record of a list: give its "
+                  f"when the list ({{\"on\": \"every\", \"list\": …, \"period\": \"{when.period}\"}})")
+
+
 def ir_rule(d, rule, where, feature=None):
     t, trigger, conditions = ir_when(d, rule.when, where)
+    if t is None and isinstance(rule.when, m.Every) and (rule.only_if or any(isinstance(s, NO_RECORD) for s in rule.steps)):
+        _needs_its_list(rule.when, where)
     if t is None and rule.only_if:
         raise Problem(f"{where} › only_if: a rule started by an email or a file has no record to check yet: narrow it with the "
                       f"trigger's own from_contains / subject_contains instead")
@@ -1218,6 +1236,18 @@ SETTINGS = {"label", "help", "required", "unique", "default", "placeholder", "op
             "after", "yes_label", "no_label", "many", "ai"}
 
 
+def _choices_kept(d, t, f, options, where):
+    """A choice taken away that a rule waits for, checks or sets is refused, naming the rule: taking it away would quietly
+    stop the rule (whoever takes it away: the App map, the builder, an outside agent)."""
+    from .. import studio
+    kept = {str(o).strip().lower() for o in options}
+    for gone in [o for o in f.get("options") or [] if str(o).strip().lower() not in kept]:
+        try:
+            studio._not_used(d.bp, t, f, gone, "stage" if f["key"] == (t.get("workflow") or {}).get("field") else "choice")
+        except design_ops.SchemaError as exc:
+            raise Problem(f"{where}: {exc}") from None
+
+
 def _stages_of(d, t, where):
     flow = t.get("workflow")
     if not flow:
@@ -1323,6 +1353,8 @@ def translate(d, p, where):
         if wrong:
             raise Problem(f"{where}: “{wrong[0]}” isn't a setting a field has (settings: {', '.join(sorted(SETTINGS - {'access', 'many'}))})")
         change = {{"visible_to": "access", "many": "multiple"}.get(k, k): v for k, v in p.settings.items()}
+        if isinstance(change.get("options"), list):
+            _choices_kept(d, t, f, change["options"], where)
         if isinstance(change.get("access"), list):
             try:
                 change["access"] = [d.who(t, w) for w in change["access"]]
@@ -1432,6 +1464,8 @@ def translate(d, p, where):
         if old is None:
             raise Problem(f"{where}: {t['label']} has no field “{p.field.key}” (its fields: {', '.join(d.field_names(t))}); add_field adds one")
         new = ir_field(d, t, p.field, where)
+        if isinstance(new.get("options"), list):
+            _choices_kept(d, t, old, new["options"], where)
         if new.get("type") != old.get("type"):  # its records' values must fit the new kind: checked as the App map checks it
             _studio(studio.data_ops, d, {"do": "update_field", "table": t["key"], "key": old["key"], "type": new.get("type")}, where)
         return [{"op": "update_field", "table": t["key"], "key": old["key"], "changes": {**new, "key": old["key"]}}]
@@ -1611,6 +1645,9 @@ def translate(d, p, where):
             kept = [c for c in old.get("conditions", []) if c.get("op") not in ("changed", "changed_to")]
             new["trigger"], new["conditions"] = trigger, conds + kept
         if p.only_if is not None:
+            if t is None and old["trigger"].get("type") == "schedule":
+                raise Problem(f"{where}: this rule runs on a schedule about no list, so it has nothing to check: send its when "
+                              f"again with the list ({{\"on\": \"every\", \"list\": …}}) and the only_if with it")
             if t is None:
                 raise Problem(f"{where}: this rule isn't about a list's records, so it has no only_if")
             whens = [c for c in new.get("conditions", []) if c.get("op") in ("changed", "changed_to")]

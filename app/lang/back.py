@@ -195,6 +195,12 @@ def when_in_keel(bp, a):
     """(the Keel “when”, the conditions left for only_if) for a design automation's trigger and conditions."""
     trig, conditions = a.get("trigger") or {}, list(a.get("conditions") or [])
     kind, table = trig.get("type"), trig.get("table")
+    if trig.get("field") and not any(c.get("op") in ("changed", "changed_to") for c in conditions if isinstance(c, dict)):
+        # a trigger as it's first written ("status changes to Done"), before the design makes it a condition
+        said = {"field": trig["field"], "op": "changed_to" if trig.get("to") not in (None, "") else "changed"}
+        if trig.get("to") not in (None, ""):
+            said["value"] = trig["to"]
+        conditions = [said] + conditions
     if kind == "email_received":
         out = {"on": "email"}
         for key in ("from_contains", "subject_contains"):
