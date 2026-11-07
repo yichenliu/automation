@@ -922,8 +922,12 @@ def _act(trial, engine, step, names, hold=False):
         names.setdefault("_given", {}).setdefault(record.id, set()).update(given)  # what the example says, never filled over
         return
     if do == "wait":  # days pass, one by one: the app's daily rules run each day, reminders fall due, things get overdue
-        days = int(to_number(step.get("days")) or 1)
-        for _ in range(max(days, 0)):
+        said = to_number(step.get("days"))
+        days = 1 if said is None else int(said)
+        if days <= 0:  # no time passes: today's scheduled rules run, as they will today
+            _days_rules(engine, names)
+            return
+        for _ in range(days):
             pass_time(engine, 1)
             names["_waited"] = names.get("_waited", 0) + 1
             _days_rules(engine, names)

@@ -499,10 +499,11 @@ class Over(Base):
                       "message": "A friendly reminder: invoice {{number}} is still unpaid."})
 class Chase(Feature):
     """If a record is still at a stage some days after it got there (or after a date field, since), remind someone:
-    tell in the app or email_to an email field. Once, unless every_days repeats it."""
+    tell in the app or email_to an email field. Once, unless every_days repeats it. A list with no stages: since alone,
+    some days after that date (a check-up six months after the last visit: since last_visit, days 182)."""
     do: Literal["chase"] = "chase"
     list: str
-    stage: str
+    stage: str | None = Field(None, description="the stage it's still at; left out on a list with no stages (then since)")
     days: int
     since: str | None = Field(None, description="a date field to count from; left out: the day it got to the stage")
     tell: str = "owner"
@@ -511,14 +512,22 @@ class Chase(Feature):
     every_days: int | None = None
 
     def default_key(self):
-        return f"chase_{self.list}_{self.stage}"
+        return f"chase_{self.list}_{self.stage or self.since}"
+
+    def _what(self, d, t, where):
+        """(stage field, stage) or (None, None) for a chase from a date alone."""
+        if self.stage:
+            return _stage(d, t, self.stage, where)
+        if not self.since:
+            raise Problem(f"{where}: say the stage it's still at (stage), or on a list with no stages the date to count from (since)")
+        return None, None
 
     def build(self, d, where):
         t = _t(d, self.list, where)
-        f, stage = _stage(d, t, self.stage, where)
+        f, stage = self._what(d, t, where)
         if self.days < 1 or (self.every_days is not None and self.every_days < 1):
             raise Problem(f"{where} › days: a chase counts whole days, 1 or more (it looks once a day); to tell someone "
-                          f"straight away when a record gets to {stage}, use stage_alert")
+                          f"straight away when a record gets to {stage or 'a stage'}, use stage_alert")
         made, key = Made(), self.feature_key()
         if self.since:
             sf = d.field(t, self.since)
@@ -532,16 +541,21 @@ class Chase(Feature):
                                "trigger": {"type": "record_created_or_updated", "table": t["key"]},
                                "conditions": [{"field": f["key"], "op": "changed_to", "value": stage}],
                                "actions": [{"type": "update_record", "values": {since: "{{today()}}", schema.slug(f"chased_{stage}"): None}}]})
-        last = schema.slug(f"chased_{stage}")
-        made.fields.append((t["key"], {"key": last, "label": f"Last reminded ({stage})", "type": "date"}))
-        conds = [{"field": f["key"], "op": "equals", "value": stage},
-                 {"field": since, "op": "more_than_days_ago", "value": max(self.days - 1, 0)}]
+        last = schema.slug(f"chased_{stage or since}")
+        made.fields.append((t["key"], {"key": last, "label": f"Last reminded ({stage or (schema.field(t, since) or {}).get('label') or since})",
+                                       "type": "date"}))
+        conds = ([{"field": f["key"], "op": "equals", "value": stage}] if stage else []) + \
+            [{"field": since, "op": "more_than_days_ago", "value": max(self.days - 1, 0)}]
         if self.every_days:
             conds.append({"any": [{"field": last, "op": "is_empty"}, {"field": last, "op": "more_than_days_ago", "value": max(self.every_days - 1, 0)}]})
-        else:
+        elif stage:
             conds.append({"field": last, "op": "is_empty"})
-        message = self.message or f"{_title(t)} has been {stage} for {self.days} days"
-        made.rules.append({"key": key, "name": f"Chase {t['label'].lower()} still {stage} after {self.days} days",
+        else:  # once for each date: reminded before that date came round, or never
+            conds.append({"any": [{"field": last, "op": "is_empty"}, {"formula": f"{last} < {since}"}]})
+        label = (schema.field(t, since) or {"label": since.replace("_", " ")})["label"].lower()
+        message = self.message or (f"{_title(t)} has been {stage} for {self.days} days" if stage else f"{_title(t)}: {self.days} days since {label}")
+        made.rules.append({"key": key, "name": f"Chase {t['label'].lower()} still {stage} after {self.days} days" if stage else
+                           f"Remind {self.days} days after {t['singular'].lower()}’s {label}",
                            "trigger": {"type": "schedule", "table": t["key"], "every": "day", "at": "08:00"}, "conditions": conds,
                            "actions": [_tell_step(d, t, self.tell, self.email_to, f"Reminder: {t['singular'].lower()} {_title(t)}", message, where),
                                        {"type": "update_record", "values": {last: "{{today()}}"}}]})
@@ -549,22 +563,28 @@ class Chase(Feature):
 
     def checks(self, d):
         t = d.list(self.list)
-        stage = d.choice(d.stage_field(t), self.stage)
+        stage = d.choice(d.stage_field(t), self.stage) if self.stage else None
         values = {}
         if self.since:
             values[d.field(t, self.since)["key"]] = "today"
-        steps = adding(d, t, "r1", values, through=_through(self.email_to)) + [{"do": "move", "record": "r1", "to": stage}]
-        out = [{"title": f"{_a(t['singular'].lower()).capitalize()} still {stage} after {self.days} days is chased",
+        moved = [{"do": "move", "record": "r1", "to": stage}] if stage else []
+        steps = adding(d, t, "r1", values, through=_through(self.email_to)) + moved
+        out = [{"title": f"{_a(t['singular'].lower()).capitalize()} still {stage} after {self.days} days is chased" if stage else
+                f"{_a(t['singular'].lower()).capitalize()} is reminded about {self.days} days on",
                 "steps": steps + [{"do": "wait", "days": self.days}, {"do": "run", "rule": self.feature_key()}],
                 "expect": [{"told": True, "record": "r1"}]}]
         if self.days >= 2:
-            out.append({"title": f"One {stage} for less than {self.days} days isn't chased yet",
-                        "steps": adding(d, t, "r2", dict(values), through=_through(self.email_to)) + [{"do": "move", "record": "r2", "to": stage}, {"do": "wait", "days": self.days - 1},
-                                                                    {"do": "run", "rule": self.feature_key()}],
+            out.append({"title": f"One {stage} for less than {self.days} days isn't chased yet" if stage else
+                        f"One less than {self.days} days on isn't reminded yet",
+                        "steps": adding(d, t, "r2", dict(values), through=_through(self.email_to))
+                        + ([{"do": "move", "record": "r2", "to": stage}] if stage else [])
+                        + [{"do": "wait", "days": self.days - 1}, {"do": "run", "rule": self.feature_key()}],
                         "expect": [{"told": False, "record": "r2"}]})
         return out
 
     def said(self, d):
+        if not self.stage:
+            return f"reminds {self.days} days after {self.list}' {self.since}"
         return f"chases {self.list} still {self.stage} after {self.days} days"
 
 
@@ -1374,8 +1394,14 @@ class Gate(Feature):
                     continue
             if nf is None:
                 raise Problem(f"{where} › needs: {name} isn't a field of {t['label']} (its fields: {', '.join(d.field_names(t))})")
-            if nf["type"] in schema.CALCULATED:
+            if nf["type"] in schema.CALCULATED and nf["type"] not in ("formula", "rollup", "lookup"):
                 raise Problem(f"{where} › needs: {nf['key']} is worked out, so nobody fills it in: name the fields people fill in")
+            if nf["type"] in ("formula", "rollup", "lookup"):  # worked out (invoice_paid): what it works out to must hold
+                yes = nf["type"] == "formula" and nf.get("format") == "checkbox"
+                only_if.append(Condition(field=nf["key"], op="equals", value=True) if yes else
+                               Condition(field=nf["key"], op="greater_than", value=0) if nf["type"] == "rollup" else
+                               Condition(field=nf["key"], op="not_empty"))
+                continue
             if nf.get("required") and nf["type"] != "checkbox":
                 raise Problem(f"{where} › needs: {nf['key']} must be filled in to add {_a(t['singular'].lower())} at all, so it's always "
                               f"done before {self.stage}: if it's filled in later, make it not required (change_field); otherwise "
@@ -1750,8 +1776,16 @@ def remove(out, key, where):
         keys = [e["key"] for e in out.blueprint.get("features", [])]
         raise Problem(f"{where}: there's no feature “{key}” (features: {', '.join(keys) or 'none'})")
     ir_ops = [{"op": "remove_automation", "key": a["key"]} for a in out.blueprint.get("automations", []) if a.get("feature") == key]
-    ir_ops += [{"op": "remove_field", "table": t["key"], "key": f["key"]} for t in out.blueprint.get("tables", [])
-               for f in t.get("fields", []) if f.get("feature") == key]
+    import json
+    others = json.dumps([a for a in out.blueprint.get("automations", []) if a.get("feature") != key])  # a rule it gave up, say
+    for t in out.blueprint.get("tables", []):
+        for f in t.get("fields", []):
+            if f.get("feature") != key:
+                continue
+            if re.search(rf"\b{re.escape(f['key'])}\b", others):  # still read by a rule now someone's own: it stays, theirs
+                f.pop("feature", None)
+            else:
+                ir_ops.append({"op": "remove_field", "table": t["key"], "key": f["key"]})
     undo = entry.get("undo") or {}
     relay = {}  # the others that add to these moves, laid over them again without this one
     for tk, transitions in (undo.get("workflow") or {}).items():

@@ -700,6 +700,56 @@ def worked_out(value):
     return None
 
 
+DATE_CALLS = {"today", "now", "add_days", "add_months", "add_hours", "workday", "add_workdays", "end_of_month", "date",
+              "datetime"}
+DATED_TYPES = ("date", "datetime", "created_time", "modified_time")
+
+
+def dated_formula(t, f):
+    """Whether a formula field works out a date (confirmed_at + 2h, add_days(sent_on, 14), today()) though it says it
+    shows a number (as a formula left at its default does): it's a date, to show, compare and count from."""
+    if not f or f.get("type") != "formula" or f.get("format") not in (None, "", "number"):
+        return False
+    dates = frozenset([x["key"] for x in (t or {}).get("fields", []) if x.get("type") in DATED_TYPES] + ["created_at", "updated_at"])
+    return _gives_date(str(f.get("expression") or ""), dates)
+
+
+_dated_cache = {}
+
+
+def _gives_date(source, dates):
+    if (source, dates) in _dated_cache:
+        return _dated_cache[(source, dates)]
+    try:
+        tree = expr.parse(source)
+    except expr.ExprError:
+        tree = None
+
+    def dated(n):
+        if isinstance(n, expr.ast.Name):
+            return n.id in dates
+        if isinstance(n, expr.ast.Call) and isinstance(n.func, expr.ast.Name):
+            name = expr.ALIASES.get(n.func.id.lower(), n.func.id.lower())
+            if name in DATE_CALLS:
+                return True
+            if name == "iif":
+                return any(dated(a) for a in n.args[1:3])
+            if name in ("min", "max", "coalesce"):
+                return bool(n.args) and all(dated(a) for a in n.args)
+            return False
+        if isinstance(n, expr.ast.BinOp) and isinstance(n.op, expr.ast.Add):
+            return dated(n.left) != dated(n.right)
+        if isinstance(n, expr.ast.BinOp) and isinstance(n.op, expr.ast.Sub):
+            return dated(n.left) and not dated(n.right)
+        if isinstance(n, expr.ast.IfExp):
+            return dated(n.body) or dated(n.orelse)
+        return False
+    out = bool(tree is not None and dated(tree.body))
+    if len(_dated_cache) < 10000:
+        _dated_cache[(source, dates)] = out
+    return out
+
+
 PLAIN_PATH = re.compile(r"^\s*[A-Za-z_][\w ]*(\.[A-Za-z_][\w ]*)*\s*$")
 FORMULA_SAID = {**{op: sym for op, sym in (("equals", "=="), ("not_equals", "!="), ("greater_than", ">"), ("less_than", "<"),
                                            ("at_least", ">="), ("at_most", "<="))}}
@@ -2617,7 +2667,7 @@ def _check_conditions(conditions, t, where, problems, tables):
             problems.append(f"{where}: the condition checks “{c['field']}”, which isn't a field of {t['label']}")
 
 
-CONTEXT = {"record", "created", "item", "email", "file", "payload", "today", "now", "approver", "reason"}  # names automation values can use besides fields ("approver": who said yes; "reason": what they wrote answering)
+CONTEXT = {"record", "created", "item", "email", "file", "payload", "today", "now", "approver", "reason", "owner"}  # names automation values can use besides fields ("approver": who said yes; "reason": what they wrote answering)
 
 
 _MORE_CONTEXT = contextvars.ContextVar("more_context", default=frozenset())  # {{flow.…}}, while a flow's "then" is checked
@@ -3162,7 +3212,7 @@ def _check_automation(a, tables, problems, documents, bp_pages=(), automations=N
         _check_conditions(a["conditions"], t, where, problems, tables)
     elif a["conditions"]:
         problems.append(f"{where} has conditions but no table to check them on")
-    context_fields = [f["key"] for f in t["fields"]] if t else []
+    context_fields = [f["key"] for f in t["fields"]] + [slug(t.get("singular") or "")] if t else []  # "client.name": the record
 
     def person(who, what):
         """Whether a step can be for `who`: a role, a team, the record's creator, its outside person, or people named on it."""

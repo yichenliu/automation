@@ -159,6 +159,11 @@ rule stopped on a must-have it couldn't know (10 apps); stages nothing could rea
 - **Make before break.** What a need's patches take away waits while what they make for it is refused, and goes only
   once that's made. A fix that took every rule away to start again, with its one new rule refused, left the dance
   studio's app with none.
+- **Round 40's, the same way.** A formula that works out a date (`confirmed_at + 2h`) is a date whatever it was left
+  showing, so features can count from it; `client.name` in a rule about clients is that client; `owner` is the
+  business's owner where a person goes; a gate can wait on a worked-out field coming out right; a validation is taken
+  away by a part of its check; a chase counts from a date on a list with no stages; `join()`. A feature taken away
+  leaves the fields a rule made from it (now someone's own) still reads. A try-out's wait of no days moves no dates.
 - **Conditions are formulas too.** Anywhere a condition goes (only_if, blocked_if, a gate's needs, a total's only),
   text is a formula that must hold; `{field, op, value}` stays as the App map's point-and-click form.
 - **What must not happen is a rule every save keeps.** A gate is table rules (with `holds` for what must hold), kept

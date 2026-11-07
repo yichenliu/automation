@@ -335,6 +335,10 @@ class RecordContext(expr.Context):
             many = self.engine.linking(self.record, name)  # this job's payments
             if many is not None:
                 return many
+            if t and name == schema.slug(t.get("singular") or ""):  # "client.name" in a rule about clients: that client
+                return RecordProxy(self.engine, self.record)
+        if name == "owner":  # the business's owner, as a person a field can hold ("approved_by": owner)
+            return getattr(self.engine.ws, "owner_id", None)
         whole = schema.list_named(self.engine.tables, name) if name not in ("today", "now") else None
         if whole is not None:  # a whole list: any(bookings where …), read only as far as it must be
             return Rows(self.engine, whole["key"])
@@ -1204,11 +1208,21 @@ class Engine:
             return f["type"] == "rollup" and f.get("aggregate") == "sum"
         return self.kind(f) in ("money", "duration") or (f["type"] in ("rollup", "formula") and self.kind(f) == "number")
 
+    def _dated(self, f):
+        """Whether a formula field works out a date though it says it shows a number (schema.dated_formula)."""
+        cache = self.__dict__.setdefault("_dated_formulas", {})
+        if id(f) not in cache:
+            t = next((t for t in self.tables.values() if any(g is f for g in t.get("fields", []))), None)
+            cache[id(f)] = schema.dated_formula(t, f)
+        return cache[id(f)]
+
     def kind(self, f):
         """How a field's values look: its type, a formula's format, or the type of what a rollup totals."""
         if f is None:
             return "text"
         if f["type"] == "formula":
+            if f.get("format") in (None, "", "number") and self._dated(f):
+                return "date"  # confirmed_at + 2h, left showing a number: a date
             return f.get("format") or "number"
         if f["type"] == "rollup":
             if f["aggregate"] == "count":

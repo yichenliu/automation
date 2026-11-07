@@ -201,6 +201,8 @@ def _ir_field(d, t, f, where):
     elif isinstance(f, m.Formula):
         _check_formula(d, t, f.formula, f"{where} › formula of {f.key}")
         out.update(type="formula", expression=f.formula, format={"yes_no": "checkbox"}.get(f.shows, f.shows))
+        if schema.dated_formula(t, out):  # a date worked out (confirmed_at + 2h) shows as one, whatever "shows" was left at
+            out["format"] = "date"
     elif isinstance(f, m.Total):
         source = _list(d, f.of, where)
         link = d.field(source, f.link)
@@ -352,12 +354,16 @@ def _check_formula(d, t, source, where, item=None, created=None):
                 except NameProblem as exc:
                     raise Problem(f"{where}: created.{rest}: {exc}") from None
             continue
-        if head in ("record", "this"):
+        if head in ("record", "this") or (t is not None and not scopes and head == schema.slug(t.get("singular") or "")
+                                          and d.field(t, head) is None):  # "client.name" in a rule about clients: the record
             if not rest:
                 continue
             path, scopes = rest, []
         elif head.lower() in CONTEXT_NAMES and head not in ("item", "it"):
-            continue
+            if head == "owner" and t is not None and d.field(t, "owner") is not None:
+                pass  # a field called owner: read as that field
+            else:
+                continue
         if t is None and not scopes:  # a rule started by an email or a file: there's no record yet, only what arrived
             raise Problem(f"{where}: “{path}” isn't something an email or file rule can read (it can read email.subject, "
                           f"email.body, email.sender, file.name, today())")
@@ -484,6 +490,8 @@ def ir_condition(d, t, c, where):
 def _literal(d, f, value, where):
     if value is None:
         return None
+    if f.get("type") == "user" and str(value).strip().lower() in ("owner", "the owner"):
+        return "{{owner}}"  # the business's owner: one person, so a person field can hold them
     kind = d.kind(f)
     if kind == "choice" and f.get("type") == "select":
         o = d.choice(f, value)
@@ -1604,6 +1612,9 @@ def translate(d, p, where):
         wanted = _same_check(p.check)
         mine = [r for r in t.get("rules") or [] if r.get("check") != "false"]
         gone = [r for r in mine if wanted in (_same_check(r.get("check")), _same_check(r.get("message")))]
+        if not gone and wanted:  # named by a part of its check or message: the one rule it's part of
+            part = [r for r in mine if wanted in _same_check(r.get("check")) or wanted in _same_check(r.get("message"))]
+            gone = part if len(part) == 1 else []
         if not gone:
             raise Problem(f"{where}: {t['label']} has no rule “{p.check}” (its rules: "
                           + ("; ".join(f"{r['check']} (“{r.get('message')}”)" for r in mine) or "none") + ")")

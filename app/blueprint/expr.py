@@ -405,6 +405,8 @@ FUNCTIONS = {
     "year": lambda d: to_date(d).year if to_date(d) else None,
     "month": lambda d: to_date(d).month if to_date(d) else None,
     "concat": lambda *a: "".join(_text(x) for x in a),
+    "join": lambda items, sep=", ": str(sep).join(_text(x) for x in (items if isinstance(items, (list, tuple)) else [items])
+                                                   if x not in (None, "")),
     "upper": lambda s: _text(s).upper(),
     "lower": lambda s: _text(s).lower(),
     "text": _text,
@@ -463,6 +465,7 @@ SAID = {
     "coalesce": "coalesce(a, b, …) the first one that isn't empty",
     "is_empty": "is_empty(x) whether x has nothing in it",
     "concat": "concat(a, b, …) text joined (a + b says the same); upper(s), lower(s), text(x), number(s), len(s)",
+    "join": "join(job.crew, \", \") the names of several, one text",
     "upper": None, "lower": None, "text": None, "number": None, "len": None,
     "convert": "convert(total, \"USD\") into the business's own currency at its exchange rates (or convert(x, \"USD\", \"EUR\"))",
     "count": "count(client.invoices where status = \"Unpaid\") how many; any(…), all(…), none(…) whether some, each or none of them hold",

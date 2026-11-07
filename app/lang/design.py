@@ -5,7 +5,7 @@ import difflib
 from ..blueprint import schema
 
 CONTEXT_NAMES = {"record", "this", "created", "item", "it", "today", "now", "approver", "reason", "email", "file", "payload", "true",
-                 "false", "none", "null"}
+                 "false", "none", "null", "owner"}
 TYPE_OF = {"yes_no": "checkbox", "choice": "select", "choices": "multi_select", "person": "user", "auto_number": "autonumber",
            "total": "rollup"}
 TYPE_BACK = {v: k for k, v in TYPE_OF.items()}
@@ -145,6 +145,8 @@ class Design:
         """What a field's values are: number, date, text, choice, link, yes_no…"""
         ftype = f.get("type")
         if ftype == "formula":
+            if schema.dated_formula(next((x for x in self.lists if any(g is f for g in x.get("fields", []))), None), f):
+                return "date"  # confirmed_at + 2h, left showing a number: a date
             return {"money": "number", "percent": "number", "checkbox": "yes_no"}.get(f.get("format"), f.get("format") or "number")
         if ftype == "rollup":
             return "number"

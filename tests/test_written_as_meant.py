@@ -103,3 +103,86 @@ def test_a_fix_that_would_replace_rules_keeps_them_until_the_replacement_is_made
     turn.apply([{"do": "remove_rule", "rule": "refund_alert"}, good], "behaviour", "1. Block access", owners={0: 1, 1: 1})
     keys = [a["key"] for a in turn.bp["automations"]]
     assert "block" in keys and "refund_alert" not in keys  # made: then what it replaces goes
+
+
+# --- round 40 ------------------------------------------------------------------------------------------------------
+
+def test_a_formula_that_works_out_a_date_is_a_date_whatever_it_was_left_showing():
+    """confirmed_at + 2h left at "shows": "number" (the concrete pumper): a date, so the overdue feature can count from
+    it and the stages can still change."""
+    bp = _apply(everything(), {"do": "add_field", "list": "jobs", "field": {"type": "datetime", "key": "confirmed_at", "label": "Confirmed at"}},
+                {"do": "add_field", "list": "jobs", "field": {"type": "formula", "key": "confirm_by", "label": "Confirm by", "formula": "confirmed_at + 2h"}})
+    assert schema.field(schema.table(bp, "jobs"), "confirm_by")["format"] == "date"
+    old = {"key": "due_by", "label": "Due by", "type": "formula", "expression": "confirmed_at + 2h", "format": "number"}  # saved before
+    schema.table(bp, "jobs")["fields"].append(old)
+    from app.lang.design import Design
+    assert Design(bp).kind(old) == "date"
+    assert lang.apply(bp, [{"do": "chase", "list": "jobs", "stage": schema.field(schema.table(bp, "jobs"), "status")["options"][0],
+                            "days": 1, "since": "due_by"}]).problems == []
+
+
+def test_a_rule_about_clients_reads_client_as_the_record_and_owner_as_the_owner():
+    bp = _apply(everything(), {"do": "add_field", "list": "jobs", "field": {"type": "person", "key": "approved_by", "label": "Approved by"}},
+                {"do": "add_rule", "rule": {"key": "hello", "name": "Say hello", "when": {"on": "added", "list": "customers"},
+                                            "steps": [{"do": "notify", "who": "owner", "message": "New: {{customer.name}}"}]}},
+                {"do": "add_rule", "rule": {"key": "ok", "name": "Mark approved", "when": {"on": "added", "list": "jobs"},
+                                            "steps": [{"do": "set", "values": [{"field": "approved_by", "to": "owner"}]}]}})
+    assert _rule(bp, "ok")["actions"][0]["values"]["approved_by"] == "{{owner}}"
+
+
+def test_the_singular_and_owner_work_out_in_the_engine(app, owner):
+    from app.engine.records import Engine, RecordContext
+    _, ws = owner
+    ws.blueprint = everything()
+    db.session.commit()
+    e = Engine(ws, by="Ethan")
+    c = e.create("customers", {"name": "Acme", "email": "a@example.com"})
+    ctx = RecordContext(e, e.get(c.id))
+    assert expr.evaluate("customer.name", ctx) == "Acme" and expr.evaluate("owner", ctx) == ws.owner_id
+
+
+def test_a_gate_waits_on_a_worked_out_field_coming_out_right():
+    bp = _apply(everything(), {"do": "add_field", "list": "jobs", "field": {"type": "formula", "key": "paid_up", "label": "Paid up",
+                                                                           "formula": "count(invoices where status != 'Paid') == 0", "shows": "yes_no"}})
+    stages = schema.field(schema.table(bp, "jobs"), "status")["options"]
+    out = lang.apply(bp, [{"do": "gate", "list": "jobs", "stage": stages[-1], "needs": ["paid_up"]}])
+    assert not out.problems, out.problems
+
+
+def test_a_feature_taken_away_leaves_the_fields_a_rule_made_from_it_still_reads():
+    bp = _apply(everything(), {"do": "chase", "list": "invoices", "stage": "Sent", "days": 14, "email_to": "customer.email",
+                               "message": "A friendly reminder: invoice {{number}} is still unpaid."})
+    made = next(a for a in bp["automations"] if a.get("feature") and not a["key"].endswith("_stamp"))
+    bp = _apply(bp, {"do": "change_rule", "rule": made["key"], "name": "Chase after ten days"})  # now the builder's own
+    bp = _apply(bp, {"do": "remove_feature", "feature": made["feature"]})
+    assert _rule(bp, made["key"])["name"] == "Chase after ten days"
+    assert schema.field(schema.table(bp, "invoices"), "chased_sent") is not None  # it reads it: kept
+
+
+def test_a_validation_is_taken_away_by_a_part_of_its_check():
+    bp = _apply(everything(), {"do": "add_validation", "list": "payments", "check": "amount <= invoice.total", "message": "Too much"})
+    bp = _apply(bp, {"do": "remove_validation", "list": "payments", "check": "invoice.total"})
+    assert not [r for r in schema.table(bp, "payments").get("rules") or [] if "invoice.total" in r.get("check", "")]
+
+
+def test_a_list_with_no_stages_is_reminded_some_days_after_a_date():
+    bp = _apply(everything(), {"do": "add_field", "list": "customers", "field": {"type": "date", "key": "last_visit", "label": "Last visit"}},
+                {"do": "chase", "list": "customers", "since": "last_visit", "days": 182, "message": "Time for a check-up"})
+    rule = next(a for a in bp["automations"] if a.get("feature"))
+    assert rule["trigger"]["table"] == "customers" and rule["conditions"][0] == {"field": "last_visit", "op": "more_than_days_ago", "value": 181}
+    assert "join(" in lang.catalog() and expr.evaluate("join(x, ' / ')", expr.Context({"x": ["a", None, "b"]})) == "a / b"
+
+
+def test_a_wait_of_no_days_runs_todays_rules_and_moves_no_dates(app, owner):
+    """{"do": "wait", "days": 0} was acted out as a day (0 or 1): the hearing clinic's check-up date came out a day
+    behind what the owner expected."""
+    from app.builder import trial
+    _, ws = owner
+    ws.blueprint = _apply(everything(), {"do": "add_field", "list": "customers", "field": {"type": "date", "key": "next_visit", "label": "Next visit"}})
+    db.session.commit()
+    example = {"title": "The next visit stays today", "steps": [
+        {"do": "add", "table": "customers", "as": "c1", "values": {"name": "Ann", "email": "a@example.com", "next_visit": "today"}},
+        {"do": "wait", "days": 0}], "expect": [{"record": "c1", "field": "next_visit", "equals": "today"}]}
+    with trial.copy_of(ws) as copy:
+        r = trial.play(copy, example)
+    assert r["ok"], r
