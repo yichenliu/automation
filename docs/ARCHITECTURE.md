@@ -150,6 +150,15 @@ rule stopped on a must-have it couldn't know (10 apps); stages nothing could rea
   function it doesn't name, as it does for a piece of the language without a docstring. The design checks catch the two
   time mistakes a formula can't refuse: a date set from `today()` at every save (it moves each time), and a rule its
   own name says is about hours that counts days.
+- **What the AI writes is read as it means it, where only one meaning is possible** (round 39: four of seven apps that
+  never came right were stuck on refusals the builder repeated through every fix). A formula in a condition's field
+  (`"field": "days_since(due_date)"`) is that formula; a patch sent inside a design_op is that patch; `cond ? a : b`
+  is `if(cond, a, b)`; a rule on a schedule that names no list is about the one list that has what it checks; a rule
+  or a feature taken away by the other's name goes; a stage added where it already is is nothing to do. A feature's
+  rule can be changed with change_rule, and is then the writer's own, as one written anew already was.
+- **Make before break.** What a need's patches take away waits while what they make for it is refused, and goes only
+  once that's made. A fix that took every rule away to start again, with its one new rule refused, left the dance
+  studio's app with none.
 - **Conditions are formulas too.** Anywhere a condition goes (only_if, blocked_if, a gate's needs, a total's only),
   text is a formula that must hold; `{field, op, value}` stays as the App map's point-and-click form.
 - **What must not happen is a rule every save keeps.** A gate is table rules (with `holds` for what must hold), kept

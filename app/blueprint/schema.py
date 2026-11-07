@@ -700,6 +700,35 @@ def worked_out(value):
     return None
 
 
+PLAIN_PATH = re.compile(r"^\s*[A-Za-z_][\w ]*(\.[A-Za-z_][\w ]*)*\s*$")
+FORMULA_SAID = {**{op: sym for op, sym in (("equals", "=="), ("not_equals", "!="), ("greater_than", ">"), ("less_than", "<"),
+                                           ("at_least", ">="), ("at_most", "<="))}}
+
+
+def as_formula(field, op, value):
+    """A condition whose "field" is worked out (days_since(due_date), any(payments where …)), said as the formula it
+    means: days_since(due_date) > 3. None when its field is a field (or the op has no formula to say it)."""
+    import json as _json
+    if not isinstance(field, str) or PLAIN_PATH.match(field) or not re.search(r"[()+\-*/<>=]", field):
+        return None
+    worked = f"({field.strip()})"
+    if op in ("is_empty", "not_empty"):
+        return f"{'' if op == 'is_empty' else 'not '}is_empty{worked}"
+    if isinstance(value, str) and WORKED_OUT.search(value):
+        said = f"({value.strip().removeprefix('{{').removesuffix('}}')})"
+    elif isinstance(value, (bool, int, float)) or value is None:
+        said = {True: "True", False: "False", None: "None"}.get(value, str(value)) if isinstance(value, bool) or value is None else str(value)
+    elif isinstance(value, list):
+        said = _json.dumps([str(v) for v in value], ensure_ascii=False)
+    else:
+        said = _json.dumps(str(value), ensure_ascii=False)
+    if op == "one_of":
+        return f"{worked} in {said if isinstance(value, list) else '[' + said + ']'}"
+    if op == "contains":
+        return f"{said} in {worked}"
+    return f"{worked} {FORMULA_SAID[op]} {said}" if op in FORMULA_SAID else None
+
+
 def normalize_condition(raw):
     """{"field", "op", "value"}, or a group: {"any": [conditions]} holds when one of them does (urgent or overdue),
     {"all": [conditions]} when every one does (inside an "any": over $5,000 and not yet approved)."""
@@ -727,6 +756,8 @@ def normalize_condition(raw):
     op = OP_ALIASES.get(op_raw, OP_ALIASES.get(slug(op_raw), slug(op_raw)))
     if op not in CONDITION_OPS:
         raise SchemaError(f"“{op_raw}” isn't a condition; use one of: {', '.join(CONDITION_OPS)}")
+    if as_formula(field, op, raw.get("value", raw.get("values", raw.get("to")))):  # "field": "days_since(due_date)"
+        return {"formula": as_formula(field, op, raw.get("value", raw.get("values", raw.get("to"))))}
     path = [SYSTEM_TIMES.get(slug(part), slug(part)) for part in str(field).split(".")[:2]]
     condition = {"field": ".".join(path), "op": op}  # customer.account_manager: through a link
     if op not in NO_VALUE:

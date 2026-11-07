@@ -93,6 +93,9 @@ needs one.
   a choice; add_validation refuses adding or saving a record that breaks it (a job whose quote isn't approved:
   quote.status == 'Approved'); a button's only_if holds the button back until it's met (no specs sent until the design
   is approved).
+- In an app in use, what it does already that this message isn't about stays as it is: take a rule or a feature away
+  only when the owner asks for it gone, or a patch here makes what replaces it; change one rule with change_rule
+  (a feature's rule too: it's then yours), rather than taking rules away to start again.
 - A need about seeing or keeping records ("lists…", "shows who owes", "keeps customer details") is met by the lists and
   fields themselves: put its number in "already", or add a view of a list (add_view: filtered, grouped by customer, a
   board by stage, a calendar), never a page.
@@ -403,10 +406,14 @@ class Turn:
         self.features.update(made["features"])
 
     def apply(self, patches, group, needs_text, owners=None):
-        """Apply patches; send the refused ones back to be corrected, twice at most. The outcome as finally saved."""
+        """Apply patches; send the refused ones back to be corrected, twice at most. The outcome as finally saved.
+        Make before break: what a need's patches take away (a rule, a feature, a field) waits while what they make for it
+        is refused, and is taken away only once that's made; so a fix that would replace what works never leaves the
+        app with neither."""
         owners = owners or {}
         patches = worded(patches, self.theirs())
         out = lang.apply(self.bp, patches)
+        patches, owners, out, held = self._held_back(patches, owners, out)
         self.log.append({"step": group, "patches": patches, "problems": out.problems})
         self.save(out)
         self.credit(patches, out, owners)
@@ -435,7 +442,37 @@ class Turn:
             self.log.append({"step": f"{group} corrected", "patches": sent, "problems": out.problems})
             self.save(out)
             self.credit(sent, out, owners)
+        if held and not out.problems:  # what replaces them is made: now they go
+            gone = lang.apply(self.bp, held)
+            self.log.append({"step": f"{group} taken away once replaced", "patches": held, "problems": gone.problems})
+            self.save(gone)
+        elif held:
+            self.note(f"Kept {len(held)} part{'s' if len(held) != 1 else ''} of the app that what replaces "
+                      f"{'them' if len(held) != 1 else 'it'} couldn't be made yet")
         return out
+
+    def _held_back(self, patches, owners, out):
+        """(patches, owners, outcome, held): the patches as applied, with the taking-away of any need whose making was
+        refused held back, when holding it back refuses nothing more."""
+        def making_refused(o, sent):
+            return [n for n in o.refused if 0 < n <= len(sent) and str(sent[n - 1].get("do", "")) not in REMOVING]
+        failing = {owners.get(n - 1, 0) for n in making_refused(out, patches)}
+        held = [i for i, p in enumerate(patches) if str(p.get("do", "")) in REMOVING and owners.get(i, 0) in failing
+                and i + 1 not in out.refused]
+        if not held:
+            return patches, owners, out, []
+        kept = [i for i in range(len(patches)) if i not in held]
+        sent = [patches[i] for i in kept]
+        again = lang.apply(self.bp, sent)
+        if len(making_refused(again, sent)) > len(making_refused(out, patches)):  # taking away came first for a reason
+            return patches, owners, out, []
+        self.note(f"Keeping {len(held)} part{'s' if len(held) != 1 else ''} of the app until what replaces "
+                  f"{'them' if len(held) != 1 else 'it'} is made")
+        return sent, {j: owners[i] for j, i in enumerate(kept) if i in owners}, again, [patches[i] for i in held]
+
+
+REMOVING = ("remove_rule", "remove_feature", "remove_validation", "remove_list", "remove_field", "remove_stage", "remove_stages",
+            "remove_move", "remove_step", "remove_view")
 
 
 def flatten(answer):
@@ -723,27 +760,30 @@ def _make_lists(turn, needs_text):
         return _ask(DATA.format(catalog=catalog("data")), f"{turn.about()}\n\nThe needs:\n{needs_text}\n\nThe app now:\n"
                     f"{lang.describe(turn.bp, with_rules=False)}{extra}", _answer_schema("data"), turn.progress, tries, kind="data")
     turn.note("Making the lists")
-    try:
-        data = ask()
-    except TOO_MUCH:
-        turn.note("That was too much in one go; making the lists a few at a time")
+    data = {}
+    for tries, extra in ((0, ""), (1, "\n\nName every list in \"lists\", but send at most four add_list patches in this answer (the first "
+                                     "four not made yet); the rest are asked for next."),
+                         (2, "\n\nThis time only name, in \"lists\", every list the needs require (the key each would have), and "
+                             "send no patches: they're made a few at a time next.")):
         try:
-            data = ask("\n\nName every list in \"lists\", but send at most four add_list patches in this answer (the first four "
-                       "not made yet); the rest are asked for next.", tries=1)
-        except TOO_MUCH:
-            data = {}
+            data = ask(extra, tries=tries)
+            break
+        except TOO_MUCH:  # too much to write at once: a few at a time, then the names alone
+            turn.note("That was too much in one go; making the lists a few at a time")
     if data.get("patches"):
         turn.apply(data["patches"], "data", needs_text)
     named = list(data.get("lists") or [])
-    for n in range(3):
+    size = 4
+    for n in range(8):
         missing = [name for name in named if Design(turn.bp).list(name) is None]
         if not missing:
             return
         turn.note(f"Making the list{'s' if len(missing) != 1 else ''} still to make: {', '.join(missing)}")
         try:
             more = ask(f"\n\nThese lists are named as needed but aren't made yet: {', '.join(missing)}. Send an add_list for at most "
-                       f"four of them now (only those).", tries=n + 1)
+                       f"{size} of them now (only those).", tries=min(n + 1, 2))
         except TOO_MUCH:
+            size = max(1, size // 2)  # still too much: fewer at a time
             continue
         if not more.get("patches"):
             return

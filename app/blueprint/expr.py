@@ -509,7 +509,62 @@ def normalise(source):
     text = text.replace("<>", "!=").replace("&&", " and ").replace("||", " or ")
     text = re.sub(r"(?<![<>!=])=(?!=)", "==", text)
     text = re.sub(r"\s&\s", " + ", text)  # "a & b" joins text in spreadsheets
-    return _wheres(_durations(text))
+    return _wheres(_durations(_ternaries(text)))
+
+
+def _ternaries(text):
+    """`cond ? a : b`, as many languages write it, read as iif(cond, a, b): back to the bracket or comma it starts
+    after, on to the bracket or comma it ends at; one inside another too."""
+    for _ in range(12):
+        quoted = [m.span() for m in _QUOTED.finditer(text)]
+
+        def outside(i):
+            return not any(a <= i < b for a, b in quoted)
+        at = next((i for i, ch in enumerate(text) if ch == "?" and outside(i)), None)
+        if at is None:
+            return text
+        depth, start = 0, 0
+        for i in range(at - 1, -1, -1):
+            if not outside(i):
+                continue
+            ch = text[i]
+            if ch in ")]":
+                depth += 1
+            elif ch in "([":
+                if depth == 0:
+                    start = i + 1
+                    break
+                depth -= 1
+            elif ch == "," and depth == 0:
+                start = i + 1
+                break
+        depth, pending, colon, end = 0, 0, None, len(text)
+        for i in range(at + 1, len(text)):
+            if not outside(i):
+                continue
+            ch = text[i]
+            if ch in "([":
+                depth += 1
+            elif ch in ")]":
+                if depth == 0:
+                    end = i
+                    break
+                depth -= 1
+            elif ch == "," and depth == 0:
+                end = i
+                break
+            elif depth == 0 and ch == "?":
+                pending += 1
+            elif depth == 0 and ch == ":" and colon is None:
+                if pending:
+                    pending -= 1
+                else:
+                    colon = i
+        if colon is None:
+            raise ExprError("a “?” needs its “:” (cond ? this : that)")
+        cond, yes, no = text[start:at].strip(), text[at + 1:colon].strip(), text[colon + 1:end].strip()
+        text = f"{text[:start]}{' ' if start and text[start - 1] == ',' else ''}iif({cond}, {yes}, {no}){text[end:]}"
+    return text
 
 
 WHERE = re.compile(r"\bwhere\b(?!\s*\()", re.I)

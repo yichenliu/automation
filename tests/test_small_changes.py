@@ -122,8 +122,15 @@ def test_a_new_lists_field_shown_by_a_formula_or_a_group_is_made_not_a_crash():
     assert fields["treatment"]["show_if"] == [{"formula": "sick == True"}] and "any" in fields["vet"]["show_if"][0]
 
 
-def test_a_rule_on_a_schedule_that_checks_records_is_told_to_name_its_list():
+def test_a_rule_on_a_schedule_names_its_list_or_checks_what_only_one_list_has():
+    """What it checks is on one list only (a due date only invoices have): it's about that list. A status many lists
+    have: it's told to name the list."""
     out = lang.apply(everything(), [{"do": "add_rule", "rule": {"key": "due", "name": "Due soon", "when": {"on": "every", "period": "day"},
                                                                 "only_if": [{"field": "due_date", "op": "within_next_days", "value": 7}],
                                                                 "steps": [{"do": "notify", "who": "owner", "message": "Due soon"}]}}])
+    assert not out.problems, out.problems
+    assert next(a for a in out.blueprint["automations"] if a["key"] == "due")["trigger"]["table"] == "invoices"
+    out = lang.apply(everything(), [{"do": "add_rule", "rule": {"key": "stuck", "name": "Stuck ones", "when": {"on": "every", "period": "day"},
+                                                                "only_if": [{"field": "status", "op": "is_empty"}],
+                                                                "steps": [{"do": "notify", "who": "owner", "message": "Stuck"}]}}])
     assert out.problems and "give its when the list" in out.problems[0]

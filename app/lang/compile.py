@@ -82,11 +82,28 @@ def _said(exc):
     return "; ".join(out)
 
 
+def _unwrapped(raw, adapter):
+    """A patch of the language sent inside a design_op ({"do": "design_op", "op": {"op": "add_view", …}}): the patch
+    itself, when that's what it is. Otherwise as sent (a design_op for what only it makes, or the hint at the patch)."""
+    if not (isinstance(raw, dict) and raw.get("do") == "design_op" and isinstance(raw.get("op"), dict)):
+        return raw
+    name = schema.slug(str(raw["op"].get("op") or ""))
+    if not name or name in ESCAPE:
+        return raw
+    inner = {"do": name, **{k: v for k, v in raw["op"].items() if k != "op"}}
+    try:
+        adapter.validate_python(inner)
+    except ValidationError:
+        return raw
+    return inner
+
+
 def parse(raw_patches, allowed=None):
     """The patches as models, and a problem for each one that isn't a patch of the language."""
     adapter = TypeAdapter(patch_type(allowed))
     parsed, problems = [], []
     for n, raw in enumerate(raw_patches or [], start=1):
+        raw = _unwrapped(raw, adapter)
         what = raw.get("do") if isinstance(raw, dict) else None
         try:
             parsed.append((n, adapter.validate_python(raw)))
@@ -422,6 +439,10 @@ def ir_condition(d, t, c, where):
     if not c.field or not c.op:
         raise Problem(f"{where}: a condition names a field and an op ({{\"field\": \"status\", \"op\": \"equals\", \"value\": \"Paid\"}}), "
                       f"or is a formula, or a group (any / all)")
+    said = schema.as_formula(c.field, c.op, c.value)
+    if said:  # "field": "days_since(due_date)", "op": "greater_than", "value": 3: the formula days_since(due_date) > 3
+        _check_formula(d, t, said, where)
+        return {"formula": said}
     try:
         f, _, keys = d.path(t, c.field)
     except NameProblem as exc:
@@ -897,7 +918,40 @@ def _needs_its_list(when, where):
                   f"when the list ({{\"on\": \"every\", \"list\": …, \"period\": \"{when.period}\"}})")
 
 
+def _names_of(conditions):
+    """The fields conditions read (the first part of a path; a formula's own names), groups included."""
+    out = set()
+    for c in conditions or []:
+        if isinstance(c, str):
+            try:
+                out |= expr.outer_names(c) - set(CONTEXT_NAMES) - {"this", "today", "now"}
+            except expr.ExprError:
+                pass
+        elif c.any is not None or c.all is not None:
+            out |= _names_of(c.any if c.any is not None else c.all)
+        elif c.field:
+            out.add(c.field.split(".")[0])
+    return out
+
+
+def _list_meant(d, conditions, steps=()):
+    """The one list a rule on a schedule that names none must be about: the only one with every field its conditions
+    read and its steps set on the record. None when no list, or more than one, could be it."""
+    names = _names_of(conditions)
+    for s in steps or []:
+        if isinstance(s, m.SetValues) and s.on in ("record", "", None):
+            names |= {v.field for v in s.values}
+    if not names:
+        return None
+    fits = [t for t in d.bp.get("tables", []) if all(schema.field(t, n) for n in names)]
+    return fits[0] if len(fits) == 1 else None
+
+
 def ir_rule(d, rule, where, feature=None):
+    if isinstance(rule.when, m.Every) and not rule.when.list and (rule.only_if or any(isinstance(s, NO_RECORD) for s in rule.steps)):
+        meant = _list_meant(d, rule.only_if, rule.steps)  # what it checks is on one list only: about that list
+        if meant is not None:
+            rule = rule.model_copy(update={"when": rule.when.model_copy(update={"list": meant["key"]})})
     t, trigger, conditions = ir_when(d, rule.when, where)
     if t is None and isinstance(rule.when, m.Every) and (rule.only_if or any(isinstance(s, NO_RECORD) for s in rule.steps)):
         _needs_its_list(rule.when, where)
@@ -1132,8 +1186,17 @@ def apply(bp, raw_patches, allowed=None):
                     ok = patterns.apply(out, p, here)
                     if ok:
                         out.features.append(p.feature_key())
+                elif isinstance(p, m.RemoveFeature) and not patterns._entry(out.blueprint, schema.slug(p.feature)) \
+                        and any(a["key"] == schema.slug(p.feature) for a in out.blueprint.get("automations", [])):
+                    ok = _apply_ops(out, [{"op": "remove_automation", "key": schema.slug(p.feature)}], here)  # a rule, not a feature
                 elif isinstance(p, m.RemoveFeature):
                     ok = patterns.remove(out, schema.slug(p.feature), here)
+                elif isinstance(p, m.RemoveRule) and not any(a["key"] == schema.slug(p.rule) or a.get("name", "").lower() == p.rule.lower()
+                                                             for a in out.blueprint.get("automations", [])) \
+                        and patterns._entry(out.blueprint, schema.slug(p.rule)):
+                    ok = patterns.remove(out, schema.slug(p.rule), here)  # a feature named as a rule
+                elif isinstance(p, m.RemoveRule) and feature_rule(out.blueprint, p.rule) and _only_rule(out.blueprint, feature_rule(out.blueprint, p.rule)):
+                    ok = patterns.remove(out, _only_rule(out.blueprint, feature_rule(out.blueprint, p.rule)), here)
                 else:
                     snapshot, said_before = copy.deepcopy(out.blueprint), len(out.changes)
                     ok = _apply_ops(out, translate(Design(out.blueprint), p, here), here)
@@ -1142,6 +1205,8 @@ def apply(bp, raw_patches, allowed=None):
                         del out.changes[said_before:]
                     if ok and isinstance(p, m.AddRule):  # a feature's rule written anew is the writer's own from now on
                         _given_up(out, snapshot, schema.slug(p.rule.key))
+                    elif ok and isinstance(p, (m.ChangeRule, m.RemoveRule)) and feature_rule(snapshot, p.rule):  # changed: the same
+                        _given_up(out, snapshot, feature_rule(snapshot, p.rule)["key"])
             except Problem as exc:
                 out.problems.append(str(exc))
                 ok = False
@@ -1174,6 +1239,28 @@ def _complete_stages(out):
         said = len(out.problems)
         if not _apply_ops(out, [{"op": "update_table", "table": t["key"], "workflow": flow}], f"the stages of {t['label']}"):
             del out.problems[said:]  # not the builder's to put right: left as it was
+
+
+def feature_rule(bp, name):
+    """The rule a feature made that a change_rule or remove_rule names: by its own key or name, or by its feature's key
+    when that feature makes one rule. None for a rule of nobody's feature."""
+    key = schema.slug(name)
+    rules = bp.get("automations", [])
+    rule = next((a for a in rules if a["key"] == key or a.get("name", "").lower() == str(name).lower()), None)
+    if rule is not None:
+        return rule if rule.get("feature") else None
+    made = [a for a in rules if a.get("feature") == key]
+    return made[0] if len(made) == 1 else None
+
+
+def _only_rule(bp, rule):
+    """The feature whose whole doing is its rules (a chase: its reminder and the date it keeps), not a list's moves, a
+    lock or a limit: taking its rule away takes the feature."""
+    entry = next((e for e in bp.get("features", []) if e["key"] == rule.get("feature")), None)
+    if entry is None:
+        return None
+    undo, made = entry.get("undo") or {}, entry.get("made") or {}
+    return None if undo.get("workflow") or undo.get("lock_if") or made.get("rules") or made.get("limit") else entry["key"]
 
 
 def _given_up(out, before, key):
@@ -1566,6 +1653,9 @@ def translate(d, p, where):
             raise Problem(f"{where}: “{p.after}” isn't a stage of {t['label']} (its stages: {', '.join(f.get('options') or [])})")
         new = p.stage.strip()
         if d.choice(f, new) is not None:
+            options = list(f.get("options") or [])
+            if options.index(d.choice(f, new)) == options.index(after) + 1:
+                return []  # there already, where it's asked for: nothing to do
             raise Problem(f"{where}: {t['label']} already has the stage “{new}”")
         options = list(f.get("options") or [])
         options.insert(options.index(after) + 1, new)
@@ -1629,18 +1719,16 @@ def translate(d, p, where):
         t = _list(d, p.list, where)
         return [{"op": "add_document", "table": t["key"], "document": {"key": schema.slug(p.key), "label": p.label, "title": p.title or p.label}}]
     if isinstance(p, (m.ChangeRule, m.RemoveRule)):
-        name = schema.slug(p.rule)
-        made = next((a for a in d.bp.get("automations", []) if a["key"] == name and a.get("feature")), None)
-        entry = next((e for e in d.bp.get("features", []) if e["key"] in (name, (made or {}).get("feature"))), None)
-        if entry is not None:
-            raise Problem(f"{where}: “{p.rule}” is made by the feature {entry['key']} ({entry['do']}): change the feature instead "
-                          f"(send it again with \"key\": \"{entry['key']}\" and what should be different), or remove_feature it")
+        made = feature_rule(d.bp, p.rule)
+        if made is not None and made["key"] != schema.slug(p.rule):  # named by its feature: that feature's one rule
+            p = p.model_copy(update={"rule": made["key"]})
     if isinstance(p, m.ChangeRule):
         old = next((a for a in d.bp.get("automations", []) if a["key"] == schema.slug(p.rule) or a["name"].lower() == p.rule.lower()), None)
         if old is None:
             keys = [a["key"] for a in d.bp.get("automations", [])]
             raise Problem(f"{where}: there's no rule “{p.rule}” (rules: {', '.join(keys) or 'none'})")
         new = copy.deepcopy(old)
+        new.pop("feature", None)  # a feature's rule changed is the writer's own (the feature gives it up)
         if p.name:
             new["name"] = p.name
         t = d.list(old["trigger"].get("table")) if old["trigger"].get("table") else None
@@ -1648,6 +1736,10 @@ def translate(d, p, where):
             t, trigger, conds = ir_when(d, p.when, where)
             kept = [c for c in old.get("conditions", []) if c.get("op") not in ("changed", "changed_to")]
             new["trigger"], new["conditions"] = trigger, conds + kept
+        if t is None and old["trigger"].get("type") == "schedule" and (p.only_if or p.steps):
+            meant = _list_meant(d, p.only_if or [], p.steps or [])  # what it now checks is on one list only: about that list
+            if meant is not None:
+                t, new["trigger"] = meant, {**new["trigger"], "table": meant["key"]}
         if p.only_if is not None:
             if t is None and old["trigger"].get("type") == "schedule":
                 raise Problem(f"{where}: this rule runs on a schedule about no list, so it has nothing to check: send its when "
