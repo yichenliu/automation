@@ -68,6 +68,9 @@ class Design:
             [p for p in str(path or "").split(".") if p]
         if not parts:
             raise NameProblem("a field is needed here")
+        if t is None:  # a rule about no list (on a schedule with no list, an email, a file): no record to read
+            raise NameProblem(f"“{path}” is a field, and this rule is about no list's records: give its when the list it's about, "
+                              f"or write an address (or {{{{email.sender}}}} for an email that came in)")
         here, keys = t, []
         for i, part in enumerate(parts):
             f = self.field(here, part)

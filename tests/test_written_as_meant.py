@@ -220,3 +220,29 @@ def test_the_day_a_record_got_to_a_stage_is_labelled_so_nobody_reads_it_as_still
 def test_the_behaviour_step_is_told_it_can_make_a_list_a_need_requires():
     from app.builder import build
     assert "add_list" in build.catalog("behaviour") and "add_list, first in that need's patches" in build.BEHAVIOUR
+
+
+# --- round 42 ------------------------------------------------------------------------------------------------------
+
+def test_a_date_worked_out_from_an_empty_date_is_left_alone_not_the_rule_stopped(app, owner):
+    """The used car dealer: “due back = sent to mechanic + 3” ran before the car was sent; empty and 3 made 3, and the
+    rule stopped on “3 isn't a date”, failing four of the app's own checks."""
+    from app.engine.records import Engine
+    _, ws = owner
+    ws.blueprint = _apply(everything(), {"do": "add_field", "list": "jobs", "field": {"type": "date", "key": "sent_on", "label": "Sent on"}},
+                          {"do": "add_field", "list": "jobs", "field": {"type": "date", "key": "due_back", "label": "Due back"}},
+                          {"do": "add_rule", "rule": {"key": "due", "name": "Set the due back date", "when": {"on": "added_or_changed", "list": "jobs"},
+                                                      "steps": [{"do": "set", "values": [{"field": "due_back", "formula": "sent_on + 3"}]}]}})
+    db.session.commit()
+    e = Engine(ws, by="Ethan")
+    c = e.create("customers", {"name": "Acme", "email": "a@example.com"})
+    job = e.create("jobs", {"title": "Brakes", "customer": c.id})
+    assert e.get(job.id).data.get("due_back") in (None, "")
+    e.update(e.get(job.id), {"sent_on": "2026-11-02"})
+    assert e.get(job.id).data["due_back"] == "2026-11-05"
+
+
+def test_a_field_named_in_a_rule_about_no_list_is_said_not_a_crash():
+    out = lang.apply(everything(), [{"do": "add_rule", "rule": {"key": "weekly", "name": "Weekly", "when": {"on": "every", "period": "week"},
+                                                                "steps": [{"do": "email", "to": "customer.email", "subject": "Hi", "body": "x"}]}}])
+    assert out.problems and "about no list" in out.problems[0]

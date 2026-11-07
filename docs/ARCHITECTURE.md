@@ -169,6 +169,8 @@ rule stopped on a must-have it couldn't know (10 apps); stages nothing could rea
   never dropped with a feature. The behaviour step is told it may make a list a need requires. A percentage written out
   of a hundred is kept as a fraction in the language too; a formula field repeating one the list has is refused (a model
   stuck repeating itself made fifteen). The day a record got to a stage reads “Unpaid since”, never “Unpaid on”.
+- **Round 42's.** A rule's date worked out from a date left empty (sent_on + 3 before it's sent) is left as it is, not
+  set to 3 and the rule stopped; a field named in a rule about no list is said, not a crash that failed the turn.
 - **Conditions are formulas too.** Anywhere a condition goes (only_if, blocked_if, a gate's needs, a total's only),
   text is a formula that must hold; `{field, op, value}` stays as the App map's point-and-click form.
 - **What must not happen is a rule every save keeps.** A gate is table rules (with `holds` for what must hold), kept

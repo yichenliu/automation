@@ -62,6 +62,18 @@ TRADES = [
     "hot water system plumber", "cold storage warehouse", "sports physiotherapy clinic",
     "ice cream maker supplying shops", "gutter cleaning service", "dog training school", "concrete pumping service",
     "flooring store with installers",
+    # and more (round 43 found 9 left)
+    "mobile phone repair kiosk", "landscape architect", "brewery taproom with events", "aerial photography studio",
+    "commercial cleaning of medical clinics", "piano and guitar music teacher", "septic tank pumping service",
+    "solar farm maintenance contractor", "mobile bookkeeping for farmers", "trailer hire",
+    "bridal alterations seamstress", "kitchen benchtop fabricator", "pool fencing installer",
+    "wedding venue on a vineyard", "cleaning products wholesaler", "small private school canteen",
+    "mobile car mechanic for fleets", "art gallery selling on commission", "outdoor adventure tour company",
+    "bicycle hire for tourists", "home renovation project manager", "commercial refrigeration repairer",
+    "packaging supplier to food makers", "aged care laundry service", "property styling for real estate",
+    "fishing tackle shop", "hospital equipment servicing", "dance costume maker", "commercial gym fit-out",
+    "vintage clothing reseller online", "pet food delivery round", "scaffold safety inspector",
+    "audiologist with mobile clinics", "event security for festivals", "school photography company",
 ]
 
 STYLES = ("plain", "plain", "vague")

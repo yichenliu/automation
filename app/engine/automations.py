@@ -364,8 +364,19 @@ def _lines(engine, source, parent):
     return out
 
 
-def _render_values(values, ctx):
-    return {k: _render(v, ctx) for k, v in values.items()}
+def _render_values(values, ctx, engine=None, table=None):
+    """A step's values worked out. One for a date that comes out a plain number was worked out from a date left empty
+    (sent_on + 3 before it's sent: empty and 3 make 3): not a date yet, so that field is left as it is, rather than the
+    rule stopping on “3 isn't a date”."""
+    out = {k: _render(v, ctx) for k, v in values.items()}
+    if engine is None or not table:
+        return out
+    for k, v in list(out.items()):
+        f = engine.field(table, k)
+        if f is not None and engine.kind(f) in ("date", "datetime") and not isinstance(v, bool) \
+                and (isinstance(v, (int, float)) or isinstance(v, str) and re.fullmatch(r"\s*-?\d+(?:\.\d+)?\s*", v)):
+            out.pop(k)
+    return out
 
 
 def find(engine, key):
@@ -1073,7 +1084,7 @@ def _do(engine, automation, action, record, run):
             target = _linked(engine, record, action["target"])
             if target is None:
                 return {"result": f"Nothing to update: {_target_words(engine, record.table, action['target'])} is empty"}
-        diff = engine.update(target, _render_values(action["values"], ctx), by=_by(automation), depth=depth)
+        diff = engine.update(target, _render_values(action["values"], ctx, engine, target.table), by=_by(automation), depth=depth)
         t = engine.tables[target.table]
         target = engine.get(target.id)
         if not diff:
@@ -1082,8 +1093,8 @@ def _do(engine, automation, action, record, run):
         changed = ", ".join(f"{engine.field(target.table, k)['label']} → {engine.display(engine.field(target.table, k), v[1])}" for k, v in diff.items())
         return {"result": f"Updated {t['singular']} “{engine.title(target)}”: {changed}", "link": _link(target.table, target.id)}
     if kind == "create_record":
-        values = {**copy_matching(engine, action["table"], record), **_render_values(action["values"], ctx)} if action.get("copy_matching") \
-            else _render_values(action["values"], ctx)
+        values = {**copy_matching(engine, action["table"], record), **_render_values(action["values"], ctx, engine, action["table"])} \
+            if action.get("copy_matching") else _render_values(action["values"], ctx, engine, action["table"])
         created = engine.create(action["table"], values, by=_by(automation), depth=depth, unfinished=True)
         left = list(getattr(engine, "left_unfilled", None) or [])
         _remember(run, created)
@@ -1110,7 +1121,7 @@ def _do(engine, automation, action, record, run):
                 item_ctx = _context(engine, run, record, item=linked)
                 if f["type"] == "user":
                     item_ctx.names["item"] = int(one)  # {{item}}: the person
-                values = _render_values(action["values"], item_ctx)
+                values = _render_values(action["values"], item_ctx, engine, action["table"])
                 if action.get("copy_matching"):
                     values = {**copy_matching(engine, action["table"], linked or record, also=[record]), **values}
                 made.append(engine.create(action["table"], values, by=_by(automation), depth=depth, automations=True, unfinished=True))
@@ -1125,7 +1136,7 @@ def _do(engine, automation, action, record, run):
         with engine.atomic():  # all of them or none
             for row in [r for r in _lines(engine, source, _parent(engine, record, source, run))
                         if not action.get("where") or engine.matches(r, action["where"])]:
-                values = _render_values(action["values"], _context(engine, run, record, item=row))
+                values = _render_values(action["values"], _context(engine, run, record, item=row), engine, action["table"])
                 if action.get("copy_matching"):
                     made_for = (_context(engine, run, record).names.get("created") or None)
                     values = {**copy_matching(engine, action["table"], row, also=[made_for.record if made_for else None, record]), **values}
@@ -1153,7 +1164,7 @@ def _do(engine, automation, action, record, run):
         changed = 0
         with engine.atomic():  # all of them or none
             for row in list(rows):
-                if engine.update(row, _render_values(action["values"], _context(engine, run, record, item=row)), by=_by(automation),
+                if engine.update(row, _render_values(action["values"], _context(engine, run, record, item=row), engine, row.table), by=_by(automation),
                                  depth=depth, automations=False):
                     changed += 1
         s = engine.tables[source["table"]]
@@ -1344,7 +1355,7 @@ def _copy(engine, automation, action, record, run, ctx, depth):
     flow = (t.get("workflow") or {}).get("field")
     values = {f["key"]: (record.data or {}).get(f["key"]) for f in t["fields"]
               if f["type"] in schema.STORED and f["type"] != "autonumber" and f["key"] != flow and not f.get("unique")}
-    values.update(_render_values(action["values"], ctx))
+    values.update(_render_values(action["values"], ctx, engine, record.table))
     if action.get("link_back"):
         values[action["link_back"]] = record.id
     lines = 0
