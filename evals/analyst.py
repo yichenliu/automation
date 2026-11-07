@@ -867,7 +867,7 @@ def main(argv=None):
         parser.error("--out is needed (or --regrade)")
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
-    chosen = [s for s in SCENARIOS if not args.only or s["key"] in args.only] if not (args.fresh and not args.only) else []
+    chosen = [s for s in SCENARIOS if not args.only or s["key"] in args.only] if not ((args.fresh or args.same_as) and not args.only) else []
     chosen += fresh.scenarios(args.fresh, args.seed, avoid=fresh.used(args.avoid))
     if args.same_as:
         chosen += same_as(args.same_as, args.only)
