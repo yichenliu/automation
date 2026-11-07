@@ -51,6 +51,17 @@ TRADES = [
     "school holiday camp operator", "charity op shop with volunteers", "ceramics studio running classes", "sign language interpreters",
     "food truck", "real estate sales agency", "conveyancing firm", "chimney sweep", "window cleaning company",
     "hydraulic hose repair van", "cattle vet practice", "pet boarding kennels", "removal of asbestos", "uniform embroidery shop",
+    # and more (round 40 found 10 left)
+    "mobile welding contractor", "kids' party entertainers", "speech pathology practice", "rubbish removal service",
+    "commercial beekeeper selling honey", "yoga retreat centre", "bookshop with a café",
+    "golf course pro shop and lessons", "plant hire for builders", "surf school", "used car dealer",
+    "aquarium and pet fish shop", "marquee and tent maker", "stonemason making headstones", "mobile massage therapists",
+    "boat builder", "taxidermist", "community radio station", "foreign exchange kiosk", "escape room venue",
+    "makeup artist for weddings", "steel roofing supplier", "blind and curtain installer", "home tutoring agency",
+    "motorbike repair shop", "farm stay accommodation", "electric vehicle charger installer",
+    "hot water system plumber", "cold storage warehouse", "sports physiotherapy clinic",
+    "ice cream maker supplying shops", "gutter cleaning service", "dog training school", "concrete pumping service",
+    "flooring store with installers",
 ]
 
 STYLES = ("plain", "plain", "vague")
