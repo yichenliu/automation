@@ -57,6 +57,18 @@ def _t(d, name, where, what="list"):
     return _list(d, name, f"{where} › {what}")
 
 
+DONE_WORDS = {"sent", "done", "paid", "sold", "won", "lost", "built", "held", "made", "taken", "given", "written", "booked", "set",
+              "shut", "cut", "put", "read", "left", "kept", "met", "brought", "bought", "caught", "taught", "seen", "drawn", "shown"}
+
+
+def stamp_label(stage):
+    """The label of the day a record got to a stage: “Sent on” for what was done to it, “Unpaid since” for how it is (so
+    nobody reads “Unpaid on” as “still unpaid as of”)."""
+    last = str(stage).strip().split()[-1].lower() if str(stage).strip() else ""
+    done = last.endswith("ed") or last in DONE_WORDS
+    return f"{stage} on" if done else f"{stage} since"
+
+
 def _stage(d, t, stage, where):
     f = d.stage_field(t)
     if f is None:
@@ -441,9 +453,11 @@ class ApprovalNeeded(Feature):
         flow["transitions"] = rebuilt
         made.ops.append({"op": "update_table", "table": t["key"], "workflow": flow})
         slug = schema.slug(stage)  # who let it through and when, filled in by the move itself (the engine's stamps)
-        if not any(d.kind(x) == "user" and x["key"].endswith("_by") for x in t["fields"]):
+        mine = self.feature_key()  # what it made itself last time is still its own to make, never someone else's to keep
+        if not any(d.kind(x) == "user" and x["key"].endswith("_by") and x.get("feature") != mine for x in t["fields"]):
             made.fields.append((t["key"], {"key": f"{slug}_by", "label": f"{stage} by", "type": "user"}))
-        if not any(d.kind(x) == "date" and x["key"] in (f"{slug}_on", f"{slug}_date", f"date_{slug}") for x in t["fields"]):
+        if not any(d.kind(x) == "date" and x["key"] in (f"{slug}_on", f"{slug}_date", f"date_{slug}") and x.get("feature") != mine
+                   for x in t["fields"]):
             made.fields.append((t["key"], {"key": f"{slug}_on", "label": f"{stage} on", "type": "date"}))
         if self.tell_approver:
             waits = sorted({s for mv in into for s in mv.get("from") or []})
@@ -536,7 +550,7 @@ class Chase(Feature):
             since = sf["key"]
         else:
             since = schema.slug(f"{stage}_on")
-            made.fields.append((t["key"], {"key": since, "label": f"{stage} on", "type": "date", "help": f"The day it got to {stage}."}))
+            made.fields.append((t["key"], {"key": since, "label": stamp_label(stage), "type": "date", "help": f"The day it got to {stage}."}))
             made.rules.append({"key": f"{key}_stamp", "name": f"Note the day {_a(t['singular'].lower())} gets to {stage}",
                                "trigger": {"type": "record_created_or_updated", "table": t["key"]},
                                "conditions": [{"field": f["key"], "op": "changed_to", "value": stage}],
@@ -623,7 +637,7 @@ class Overdue(Feature):
                               f"{', '.join(x['key'] for x in t['fields'] if d.kind(x) == 'date') or 'none'}); leave it out to count "
                               f"from the day it got to {froms[0] if froms else 'its stage'}")
         else:  # the day it got to the first of its stages, noted as it gets there
-            df = {"key": schema.slug(f"{froms[0]}_on"), "label": f"{froms[0]} on", "type": "date", "help": f"The day it got to {froms[0]}."}
+            df = {"key": schema.slug(f"{froms[0]}_on"), "label": stamp_label(froms[0]), "type": "date", "help": f"The day it got to {froms[0]}."}
             if d.field(t, df["key"]) is None or (d.field(t, df["key"]) or {}).get("feature") == self.feature_key():
                 made.fields.append((t["key"], df))
             made.rules.append({"key": f"{self.feature_key()}_stamp", "name": f"Note the day {_a(t['singular'].lower())} gets to {froms[0]}",
@@ -1641,10 +1655,14 @@ def apply(out, p, where, quiet=False):
     for a in out.blueprint.get("automations", []):  # what this feature made before and doesn't now
         if a.get("feature") == key and a["key"] not in wanted_rules:
             ir_ops.append({"op": "remove_automation", "key": a["key"]})
+    read = _read_elsewhere(out.blueprint, key)
     for t in out.blueprint.get("tables", []):
         for f in t.get("fields", []):
             if f.get("feature") == key and (t["key"], f["key"]) not in wanted_fields:
-                ir_ops.append({"op": "remove_field", "table": t["key"], "key": f["key"]})
+                if re.search(rf"\b{re.escape(f['key'])}\b", read):  # another feature or rule reads it: it stays, unowned
+                    f.pop("feature", None)
+                else:
+                    ir_ops.append({"op": "remove_field", "table": t["key"], "key": f["key"]})
     if not _apply_ops(out, ir_ops, where):
         return False
     entries = [e for e in out.blueprint.get("features", []) if e["key"] != key]
@@ -1770,14 +1788,23 @@ def _renamed(params, old, new):
     return new if isinstance(params, str) and params.strip().lower() == str(old).strip().lower() else params
 
 
+def _read_elsewhere(bp, key):
+    """What the design has that isn't this feature's own (its rules, formulas, rules every save keeps), as text to find a
+    field's key in: a field read there must stay when the feature lets it go."""
+    import json
+    rules = [a for a in bp.get("automations", []) if a.get("feature") != key]
+    fields = [f.get("expression") for t in bp.get("tables", []) for f in t.get("fields", []) if f.get("feature") != key and f.get("expression")]
+    kept = [t.get("rules") for t in bp.get("tables", [])]
+    return json.dumps([rules, fields, kept])
+
+
 def remove(out, key, where):
     entry = _entry(out.blueprint, key)
     if entry is None:
         keys = [e["key"] for e in out.blueprint.get("features", [])]
         raise Problem(f"{where}: there's no feature “{key}” (features: {', '.join(keys) or 'none'})")
     ir_ops = [{"op": "remove_automation", "key": a["key"]} for a in out.blueprint.get("automations", []) if a.get("feature") == key]
-    import json
-    others = json.dumps([a for a in out.blueprint.get("automations", []) if a.get("feature") != key])  # a rule it gave up, say
+    others = _read_elsewhere(out.blueprint, key)  # a rule it gave up, say, or another feature's
     for t in out.blueprint.get("tables", []):
         for f in t.get("fields", []):
             if f.get("feature") != key:

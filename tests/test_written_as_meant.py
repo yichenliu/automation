@@ -186,3 +186,37 @@ def test_a_wait_of_no_days_runs_todays_rules_and_moves_no_dates(app, owner):
     with trial.copy_of(ws) as copy:
         r = trial.play(copy, example)
     assert r["ok"], r
+
+
+# --- round 41 ------------------------------------------------------------------------------------------------------
+
+def test_two_features_on_one_stage_keep_each_others_fields_when_the_stages_change():
+    """The gutter cleaner: an approval into Done made “Done on”, a chase of Done read it; adding a stage made the
+    approval again, it took its own field for someone else's and dropped it, and every stage change after was refused."""
+    stages = schema.field(schema.table(everything(), "jobs"), "status")["options"]
+    bp = _apply(everything(), {"do": "approval", "list": "jobs", "stage": stages[-1], "by": "owner"},
+                {"do": "chase", "list": "jobs", "stage": stages[-1], "days": 7, "email_to": "customer.email"})
+    bp = _apply(bp, {"do": "add_stage", "list": "jobs", "stage": "On hold", "after": stages[0]})
+    assert schema.field(schema.table(bp, "jobs"), "done_on") is not None
+
+
+def test_a_percentage_written_out_of_a_hundred_is_kept_as_a_fraction_and_a_repeated_formula_is_refused():
+    bp = _apply(everything(), {"do": "add_field", "list": "jobs", "field": {"type": "number", "key": "have", "label": "Have"}},
+                {"do": "add_field", "list": "jobs", "field": {"type": "number", "key": "par", "label": "Par"}},
+                {"do": "add_field", "list": "jobs", "field": {"type": "formula", "key": "pct", "label": "Stock %",
+                                                              "formula": "if(par > 0, have / par * 100, 100)", "shows": "percent"}})
+    assert schema.field(schema.table(bp, "jobs"), "pct")["expression"] == "iif(par > 0, have / par, 1)"
+    again = lang.apply(bp, [{"do": "add_field", "list": "jobs", "field": {"type": "formula", "key": "pct_2", "label": "Stock % 2",
+                                                                          "formula": "iif(par > 0, have / par, 1)", "shows": "percent"}}])
+    assert again.problems and "works out exactly this already" in again.problems[0]
+
+
+def test_the_day_a_record_got_to_a_stage_is_labelled_so_nobody_reads_it_as_still():
+    from app.lang.patterns import stamp_label
+    assert [stamp_label(s) for s in ("Sent", "Unpaid", "Overdue", "Quoted", "In progress")] == \
+        ["Sent on", "Unpaid since", "Overdue since", "Quoted on", "In progress since"]
+
+
+def test_the_behaviour_step_is_told_it_can_make_a_list_a_need_requires():
+    from app.builder import build
+    assert "add_list" in build.catalog("behaviour") and "add_list, first in that need's patches" in build.BEHAVIOUR

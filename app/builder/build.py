@@ -87,7 +87,8 @@ BEHAVIOUR = BASE + """
 Now make what the app does by itself, need by need: a feature whenever one fits, a rule only for what none does. For
 each need, send the patches that make it happen in "work", or put its number in "already" if the app as it is (its
 lists, fields, features and rules) already does it. Every need is one or the other. Add a field only when a rule
-needs one.
+needs one, and a list (add_list, first in that need's patches) only when a need is about records the app has no list
+for yet (stock to reorder, invoices to chase).
 - What must be stopped ("can't", "prevent", "unless", "only once", "never more than", "not while") is refused by the
   app, whoever tries (the owner, staff, the app's own rules), not only told: a gate holds a record back from a stage or
   a choice; add_validation refuses adding or saving a record that breaks it (a job whose quote isn't approved:
@@ -218,7 +219,7 @@ def catalog(group):
         return registry.catalog(("field",)) + "\n\n" + _patch_lines(registry.items("patch", "data"))
     if group == "behaviour":
         return (registry.catalog(("feature", "when", "step")) + "\n\n"
-                + _patch_lines(registry.items("patch", "behaviour") + (m.AddField, m.ChangeField)) + "\n\n" + registry.catalog(("field",)))
+                + _patch_lines(registry.items("patch", "behaviour") + (m.AddList, m.AddField, m.ChangeField)) + "\n\n" + registry.catalog(("field",)))
     return registry.catalog()
 
 

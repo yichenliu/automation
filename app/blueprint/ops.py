@@ -1590,6 +1590,9 @@ def _as_fraction(expression):
         def visit_Call(self, node):
             before = self.taken
             self.generic_visit(node)
+            if self.taken > before and isinstance(node.func, ast.Name) and node.func.id.lower() in ("iif", "if"):
+                node.args = [ast.Constant(1) if i and isinstance(a, ast.Constant) and not isinstance(a.value, bool) and a.value == 100
+                             else a for i, a in enumerate(node.args)]  # the other way's 100 (per cent) is 1 too
             if self.taken > before and isinstance(node.func, ast.Name) and node.func.id.lower() == "round":
                 if len(node.args) == 1:
                     node.args.append(ast.Constant(2))

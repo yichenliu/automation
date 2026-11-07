@@ -164,6 +164,11 @@ rule stopped on a must-have it couldn't know (10 apps); stages nothing could rea
   business's owner where a person goes; a gate can wait on a worked-out field coming out right; a validation is taken
   away by a part of its check; a chase counts from a date on a list with no stages; `join()`. A feature taken away
   leaves the fields a rule made from it (now someone's own) still reads. A try-out's wait of no days moves no dates.
+- **Round 41's.** A feature made again keeps what it made itself (an approval took its own “Done on” for someone else's
+  and dropped it, and a chase reading it blocked every stage change after); a field another rule or feature reads is
+  never dropped with a feature. The behaviour step is told it may make a list a need requires. A percentage written out
+  of a hundred is kept as a fraction in the language too; a formula field repeating one the list has is refused (a model
+  stuck repeating itself made fifteen). The day a record got to a stage reads “Unpaid since”, never “Unpaid on”.
 - **Conditions are formulas too.** Anywhere a condition goes (only_if, blocked_if, a gate's needs, a total's only),
   text is a formula that must hold; `{field, op, value}` stays as the App map's point-and-click form.
 - **What must not happen is a rule every save keeps.** A gate is table rules (with `holds` for what must hold), kept

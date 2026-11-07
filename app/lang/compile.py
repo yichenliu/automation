@@ -200,7 +200,15 @@ def _ir_field(d, t, f, where):
         out.update(type="autonumber", prefix=f.prefix)
     elif isinstance(f, m.Formula):
         _check_formula(d, t, f.formula, f"{where} › formula of {f.key}")
-        out.update(type="formula", expression=f.formula, format={"yes_no": "checkbox"}.get(f.shows, f.shows))
+        written = schema.percents_fixed(t, f.formula)  # a percentage is kept as a fraction: discount_percent / 100 is it
+        if f.shows == "percent":
+            written = design_ops._as_fraction(written)  # have / par * 100 shown as a percentage: have / par
+        same = next((x for x in (t or {}).get("fields", []) if x.get("type") == "formula" and x["key"] != schema.slug(f.key)
+                     and re.sub(r"\s+", "", x.get("expression") or "") == re.sub(r"\s+", "", written)), None)
+        if same is not None:
+            raise Problem(f"{where}: {same['key']} works out exactly this already ({same.get('expression')}): use it, or say what's "
+                          f"different")
+        out.update(type="formula", expression=written, format={"yes_no": "checkbox"}.get(f.shows, f.shows))
         if schema.dated_formula(t, out):  # a date worked out (confirmed_at + 2h) shows as one, whatever "shows" was left at
             out["format"] = "date"
     elif isinstance(f, m.Total):
