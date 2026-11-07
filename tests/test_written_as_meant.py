@@ -246,3 +246,15 @@ def test_a_field_named_in_a_rule_about_no_list_is_said_not_a_crash():
     out = lang.apply(everything(), [{"do": "add_rule", "rule": {"key": "weekly", "name": "Weekly", "when": {"on": "every", "period": "week"},
                                                                 "steps": [{"do": "email", "to": "customer.email", "subject": "Hi", "body": "x"}]}}])
     assert out.problems and "about no list" in out.problems[0]
+
+
+def test_which_builder_steps_think_is_set_step_by_step(app):
+    from app.builder import build
+    app.config["AI_THINK_STEPS"], app.config["AI_THINK_BUILDER"] = "", False
+    assert not build.thinks("understand")
+    app.config["AI_THINK_STEPS"] = "understand, fix"
+    assert build.thinks("understand") and build.thinks("fix") and not build.thinks("behaviour")
+    app.config["AI_THINK_STEPS"] = "all"
+    assert build.thinks("behaviour") and build.thinks("owner_check")
+    app.config["AI_THINK_STEPS"], app.config["AI_THINK_BUILDER"] = "", True
+    assert build.thinks("data")

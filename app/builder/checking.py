@@ -113,7 +113,7 @@ def add(workspace, said, by=None):
     convo = _convo(workspace, engine, said)
     steady = ai.building.set(True)
     try:
-        content, _ = ai.chat(convo, schema=prompts.ONE_EXAMPLE_SCHEMA, think=settings().get("AI_THINK_BUILDER", False))
+        content, _ = ai.chat(convo, schema=prompts.ONE_EXAMPLE_SCHEMA, think=_thinks("owner_check"))
     finally:
         ai.building.reset(steady)
     found = [x for x in ai.parse_json(content).get("examples") or [] if isinstance(x, dict) and x.get("steps")][:1]
@@ -199,7 +199,7 @@ def _again(workspace, engine, convo, said, example, result):
         said=said[:1500], how=how, what=what[:3000], example=json.dumps({k: v for k, v in example.items() if k != "by"}, ensure_ascii=False)[:6000])}]
     steady = ai.building.set(True)
     try:
-        content, _ = ai.chat(ask, schema=prompts.CHECK_AGAIN_SCHEMA, think=settings().get("AI_THINK_BUILDER", False))
+        content, _ = ai.chat(ask, schema=prompts.CHECK_AGAIN_SCHEMA, think=_thinks("owner_check"))
         answer = ai.parse_json(content)
     except ai.AIError:
         return example, result
@@ -365,3 +365,8 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+def _thinks(kind):
+    from .build import thinks
+    return thinks(kind)

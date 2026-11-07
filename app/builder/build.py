@@ -233,6 +233,15 @@ def _patch_lines(classes):
 
 # --- asking ---------------------------------------------------------------------------------------------------------
 
+def thinks(kind):
+    """Whether this step of the builder thinks before it answers (AI_THINK_STEPS, or AI_THINK_BUILDER for all of them)."""
+    cfg = settings()
+    steps = {x.strip().lower() for x in str(cfg.get("AI_THINK_STEPS") or "").split(",") if x.strip()}
+    if not steps:
+        return bool(cfg.get("AI_THINK_BUILDER"))
+    return "all" in steps or (kind or "") in steps
+
+
 def _ask(system, user, schema_, progress=None, tries=0, kind=None):
     """One call to the model: the answer as a dict. Each `tries` asks a little differently (another seed, warmer). The
     call is kept tagged with its step and the language it was written in (training.py keeps the turns that came out
@@ -240,7 +249,7 @@ def _ask(system, user, schema_, progress=None, tries=0, kind=None):
     token = ai.again.set(tries)
     messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
     try:
-        content, _ = ai.chat(messages, schema=schema_, on_progress=progress, think=settings().get("AI_THINK_BUILDER"), purpose="builder")
+        content, _ = ai.chat(messages, schema=schema_, on_progress=progress, think=thinks(kind), purpose="builder")
     finally:
         ai.again.reset(token)
     calls = ai.recording.get()

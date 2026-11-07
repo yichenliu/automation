@@ -311,6 +311,21 @@ def _database(out, key):
     return database.fresh(Config.SQLALCHEMY_DATABASE_URI, f"eval_{run_id}_{re.sub(r'[^a-z0-9_]+', '_', key.lower())}")
 
 
+def same_as(folder, only=()):
+    """The businesses of an earlier run, as they were: the trade, the owner's first words (and what they really meant,
+    for a vague one), how they spoke, and the checks they wrote. Only what the builder answers differs."""
+    out = []
+    for line in (Path(folder) / "results.jsonl").open():
+        r = json.loads(line)
+        if not r.get("said") or (only and r["key"] not in only):
+            continue
+        trade = r["title"].removeprefix("Fresh: ")
+        out.append({"key": r["key"], "title": r["title"], "fresh": trade, "style": r.get("style", "plain"),
+                    "turns": [{"say": r["said"], "expect": {}}], "real": r.get("real") or r["said"], "said_again": True,
+                    "checks": [c["check"] for c in r.get("owner_checks") or [] if c.get("check")]})
+    return out
+
+
 def run(scenario, out):
     from app import create_app
     data = out / scenario["key"]
@@ -327,6 +342,11 @@ def run(scenario, out):
             result["said"], result["style"] = opener, scenario.get("style", "plain")
             if opener != real:
                 result["real"] = real
+        elif scenario.get("said_again"):  # an earlier run's owner, saying it again word for word
+            scenario = dict(scenario, turns=[dict(t) for t in scenario["turns"]])
+            result["said"], result["style"] = scenario["turns"][0]["say"], scenario.get("style", "plain")
+            if scenario.get("real") and scenario["real"] != result["said"]:
+                result["real"] = scenario["real"]
         from app.blueprint import schema
         from app.builder import chat
         from app.extensions import db
@@ -508,7 +528,8 @@ def owner_checks(ws, scenario, folder):
     from app.builder import checking, training
     out = []
     try:
-        said = fresh.checks(scenario["fresh"], "\n\n".join(t["say"] for t in scenario.get("turns") or []) or scenario["real"])  # what they told it
+        said = scenario["checks"] if scenario.get("checks") is not None else \
+            fresh.checks(scenario["fresh"], "\n\n".join(t["say"] for t in scenario.get("turns") or []) or scenario["real"])  # what they told it
     except Exception as exc:  # noqa: BLE001 - no checks: the turns stay unverified
         print(f"  owner checks couldn't be written: {exc}", flush=True)
         return out
@@ -835,6 +856,8 @@ def main(argv=None):
     parser.add_argument("--resolve", action="store_true", help="with --regrade: apply today's corrections to the saved designs first")
     parser.add_argument("--ask", action="store_true", help="with --regrade: ask the AI for the later changes again, with today's builder")
     parser.add_argument("--resume", action="store_true", help="skip what --out already has a result for (a run that stopped part way)")
+    parser.add_argument("--same-as", help="a run's folder: build its businesses again, each owner saying what they said there "
+                                          "and checking what they checked (an A/B on the same owners: one setting changed)")
     parser.add_argument("only", nargs="*")
     args = parser.parse_args(argv)
     if args.regrade:
@@ -846,6 +869,8 @@ def main(argv=None):
     out.mkdir(parents=True, exist_ok=True)
     chosen = [s for s in SCENARIOS if not args.only or s["key"] in args.only] if not (args.fresh and not args.only) else []
     chosen += fresh.scenarios(args.fresh, args.seed, avoid=fresh.used(args.avoid))
+    if args.same_as:
+        chosen += same_as(args.same_as, args.only)
     results = [json.loads(line) for line in (out / "results.jsonl").open()] if args.resume and (out / "results.jsonl").exists() else []
     done = {r["key"] for r in results}
     with (out / "results.jsonl").open("a") as log:

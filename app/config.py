@@ -81,6 +81,10 @@ class Config:
     S3_ACCESS_KEY = os.getenv("S3_ACCESS_KEY") or ""
     S3_SECRET_KEY = os.getenv("S3_SECRET_KEY") or ""
     AI_THINK_BUILDER = (os.getenv("AI_THINK_BUILDER") or os.getenv("AI_THINK") or "false").lower() == "true"
+    # Which of the builder's steps think first: "all", or some of understand (the owner's words into needs), data,
+    # behaviour, checks (worked examples), fix, repair, owner_check (an owner's check made an example). Left empty, all
+    # of them when AI_THINK_BUILDER is on, none when it's off.
+    AI_THINK_STEPS = os.getenv("AI_THINK_STEPS") or ""
     AI_THINK_TOKENS = int(os.getenv("AI_THINK_TOKENS") or 8000)
     AI_NUM_CTX = int(os.getenv("AI_NUM_CTX") or 0)  # 0: use the context size Ollama already has loaded
     AI_MAX_TOKENS = int(os.getenv("AI_MAX_TOKENS") or 12000)  # a cap, so a model stuck in a loop can't run forever
