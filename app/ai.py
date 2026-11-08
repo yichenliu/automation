@@ -475,13 +475,15 @@ def chat(messages, *, schema=None, think=None, on_progress=None, purpose=None, p
         raise AIUnavailable("the AI isn't asked while an app is being tried out")
     purpose, priority, workspace_id = _who(purpose, priority, workspace_id)
     _let_go()
+    began = time.monotonic()
     if _backend:
         content, thinking = _backend(messages, schema, on_progress)
     else:
         content, thinking = _ask(messages, schema, think, on_progress, purpose, priority, workspace_id)
     calls = recording.get()
-    if calls is not None:
-        calls.append({"messages": list(messages), "content": content})
+    if calls is not None:  # with how long it took and how much it thought: which steps thinking is worth its wait in
+        calls.append({"messages": list(messages), "content": content, "seconds": round(time.monotonic() - began, 1),
+                      "thought": len(thinking or "")})
     return content, thinking
 
 

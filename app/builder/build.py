@@ -19,6 +19,7 @@ import contextvars
 import copy
 import json
 import re
+import time
 from datetime import timedelta
 from typing import Annotated, Literal, Union
 
@@ -248,13 +249,14 @@ def _ask(system, user, schema_, progress=None, tries=0, kind=None):
     right, so the builder's own verified work is what it learns from)."""
     token = ai.again.set(tries)
     messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
-    think = thinks(kind)
+    think, began, lost = thinks(kind), time.monotonic(), None
     try:
         try:
             content, _ = ai.chat(messages, schema=schema_, on_progress=progress, think=think, purpose="builder")
         except (ai.Stuck, ai.CutOff):
             if not think:
                 raise
+            lost, think = round(time.monotonic() - began), False
             # thinking that went round in circles, or used up the room for the answer: answered straight away instead,
             # not asked again to think the same way (round 43: three such tries took the owner's turn 38 minutes)
             _log.info("The %s step's thinking ran away; answering without it", kind or "builder")
@@ -265,7 +267,7 @@ def _ask(system, user, schema_, progress=None, tries=0, kind=None):
     if calls is not None and kind:
         mine = next((c for c in reversed(calls) if c.get("messages") == messages and c.get("content") == content), None)
         if mine is not None:
-            mine.update(kind=f"v2_{kind}", language=registry.fingerprint())
+            mine.update(kind=f"v2_{kind}", language=registry.fingerprint(), think=think, **({"ran_away": lost} if lost else {}))
     answer = ai.parse_json(content) or {}
     if isinstance(answer, dict):
         answer["_content"] = content
