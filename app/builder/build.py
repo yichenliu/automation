@@ -248,8 +248,17 @@ def _ask(system, user, schema_, progress=None, tries=0, kind=None):
     right, so the builder's own verified work is what it learns from)."""
     token = ai.again.set(tries)
     messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
+    think = thinks(kind)
     try:
-        content, _ = ai.chat(messages, schema=schema_, on_progress=progress, think=thinks(kind), purpose="builder")
+        try:
+            content, _ = ai.chat(messages, schema=schema_, on_progress=progress, think=think, purpose="builder")
+        except (ai.Stuck, ai.CutOff):
+            if not think:
+                raise
+            # thinking that went round in circles, or used up the room for the answer: answered straight away instead,
+            # not asked again to think the same way (round 43: three such tries took the owner's turn 38 minutes)
+            _log.info("The %s step's thinking ran away; answering without it", kind or "builder")
+            content, _ = ai.chat(messages, schema=schema_, on_progress=progress, think=False, purpose="builder")
     finally:
         ai.again.reset(token)
     calls = ai.recording.get()
@@ -749,7 +758,7 @@ def _understand(turn, asked, open_items=()):
                                                   kind="understand"))
         except TOO_MUCH:
             turn.note("That came out too long; asking again more briefly")
-    raise ai.Stuck("The AI kept repeating itself working out what's needed")
+    raise ai.Stuck("I got stuck working out what you need. Press Try again, or say it again in fewer words.")
 FIX_ONLY = re.compile(r"^\W*(please\W+)?(fix|sort out|sort|correct|repair|mend)\b.{0,40}$|^\W*(yes|yeah|yep|ok|okay|sure|go ahead|do it|"
                       r"please)\W*(please|thanks|do it)?\W*$", re.I | re.S)
 
@@ -900,8 +909,10 @@ def _make_behaviour(turn, needs, needs_text, early=()):
     return sent, owners
 
 
-def _not_yet_said(wrong, issues, unmade):
-    """What isn't right yet, in plain words: what came out wrong when tried, then what couldn't be made at all."""
+def _not_yet_said(wrong, issues, unmade, again=False):
+    """What isn't right yet, in plain words: what came out wrong when tried, then what couldn't be made at all. `again`:
+    a later turn that changed nothing, so another go the same way won't help (round 43: three Fix presses, 25 minutes
+    each, nothing changed): it asks the owner to say what should happen instead of offering Fix again."""
     parts = []
     said = [f"“{r['title'].rstrip('.')}”" for r in wrong[:3]] + [i.rstrip(".") for i in issues[:max(0, 3 - len(wrong))]]
     more = len(wrong) + len(issues) - len(said)
@@ -910,6 +921,10 @@ def _not_yet_said(wrong, issues, unmade):
                      + "; ".join(said) + (f", and {more} more" if more > 0 else "") + ".")
     if unmade:
         parts.append(f"I couldn't make {'this' if len(unmade) == 1 else 'these'} yet: " + "; ".join(unmade) + ".")
+    if again:
+        return ("Not everything works yet. " + " ".join(parts) + " I tried to put this right but couldn't find a way that "
+                "works, so trying again the same way won't help. Tell me in your own words what should happen (who does what, "
+                "and what should stop it) and I'll build that.")
     return ("Not everything works yet. " + " ".join(parts) + " Press “Fix these” and I'll have another go, or tell me what "
             "should happen.")
 
@@ -998,7 +1013,7 @@ def _hand_over(turn, needs, run, reply="", first=None, rounds=0, custom=(), stop
         shown = [{"title": r["title"], "ok": r["ok"], "lines": [[ok, line] for ok, line in r["lines"]], "problem": r.get("plain") or r.get("problem") or "", "example": x}
                  for x, r in playable]
         state = dict(workspace.state or {})
-        state["examples"] = [x for x, r in playable if x.get("by") != "builder" or r["ok"] or x in custom][:checking.KEEP]
+        state["examples"] = [trial.dated(x) for x, r in playable if x.get("by") != "builder" or r["ok"] or x in custom][:checking.KEEP]
         workspace.state = state
         db.session.commit()
         checking.remember(workspace, run["walked"], [r for _, r in playable], "this change", [x for x, _ in playable], tell=False)
@@ -1008,7 +1023,7 @@ def _hand_over(turn, needs, run, reply="", first=None, rounds=0, custom=(), stop
     lines = [f"- {n.does.rstrip('.')}" + {"ok": "", "wrong": " (not right yet)", "unmade": " (not made yet)",
                                            "unchecked": " (made, but I couldn't try it out: check it yourself)"}[s] for n, s in states]
     if wrong or issues or unmade:
-        text = _not_yet_said(wrong, issues, unmade)
+        text = _not_yet_said(wrong, issues, unmade, again=bool(message.version_before) and not turn.changes)
     elif turn.changes:
         text = "Your app is ready to try." if not turn.message.version_before else "Done."
     else:

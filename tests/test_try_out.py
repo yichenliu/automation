@@ -1268,3 +1268,63 @@ def test_the_owners_checks_are_about_what_they_said_not_asides():
 
 
 
+
+
+def test_a_button_not_on_the_record_yet_is_refused_and_a_numbered_name_is_that_one_added(app, owner):
+    """Round 43's packaging supplier: “press Send, refused” on a Draft quote whose Send comes after Approve is stopped as it
+    stands (no Send button yet), not walked through Approve first; "cr1" is the first crew member the example added, not
+    the latest (the model often skips "as" and numbers its records in order)."""
+    _, ws = owner
+    _built(ws, [{"op": "create_table", "table": "crew", "label": "Crew", "fields": [
+        {"key": "name", "type": "text", "required": True}, {"key": "role", "type": "select", "options": ["Production", "Warehouse"]}]},
+        {"op": "create_table", "table": "customers", "label": "Customers", "fields": [{"key": "name", "type": "text", "required": True}]},
+        {"op": "create_table", "table": "jobs", "label": "Jobs", "fields": [
+            {"key": "title", "type": "text", "required": True}, {"key": "assigned_to", "type": "link", "table": "crew"},
+            {"key": "status", "type": "select", "options": ["Draft", "Approved", "Sent"]}],
+         "workflow": {"field": "status", "transitions": [
+             {"from": ["Draft"], "to": "Approved", "label": "Approve"}, {"from": ["Approved"], "to": "Sent", "label": "Send"}]}}])
+    gate = {"title": "Approved before it goes out", "steps": [
+        {"do": "add", "table": "jobs", "values": {"title": "Trays"}},
+        {"do": "press", "record": "j1", "button": "Send", "refused": True},
+        {"do": "press", "record": "j1", "button": "Approve"},
+        {"do": "press", "record": "j1", "button": "Send"}],
+        "expect": [{"record": "j1", "field": "status", "equals": "Sent"}]}
+    numbered = {"title": "Assigned to the first crew member", "steps": [
+        {"do": "add", "table": "customers", "values": {"name": "Green Foods"}},
+        {"do": "add", "table": "crew", "values": {"name": "Mike", "role": "Production"}},
+        {"do": "add", "table": "crew", "values": {"name": "Jane", "role": "Warehouse"}},
+        {"do": "add", "table": "jobs", "values": {"title": "Boxes"}},
+        {"do": "change", "record": "j1", "values": {"assigned_to": "cr1"}}],
+        "expect": [{"record": "cr1", "field": "role", "equals": "Production"}, {"record": "cr2", "field": "role", "equals": "Warehouse"},
+                   {"record": "j1", "field": "assigned_to", "equals": "cr1"}]}
+    _, (gated, named) = trial.try_out(ws, [gate, numbered], screens=False)
+    assert gated["ok"], gated
+    assert named["ok"], named
+    open_gate = {**gate, "title": "Sent straight from Draft", "steps": [
+        {"do": "add", "table": "jobs", "values": {"title": "Lids"}}, {"do": "press", "record": "j1", "button": "Approve", "refused": True}]}
+    _, (wrong,) = trial.try_out(ws, [open_gate], screens=False)
+    assert not wrong["ok"]  # a button that is there and not stopped still fails a "refused"
+
+
+def test_a_check_kept_from_an_earlier_day_reads_its_dates_on_the_day_it_was_written(app, owner):
+    """Round 43's bookshop: an owner's check written with its dates in full (sold on the 28th, chased on the 8th) failed
+    the next day with nothing wrong. A kept example is marked with the day it was written and its dates are read on
+    that day's calendar, moved on to today's; one written today, or one in "today+N", is read as before."""
+    from datetime import date, timedelta
+    _, ws = owner
+    _built(ws, [{"op": "create_table", "table": "sales", "label": "Sales", "fields": [
+        {"key": "title", "type": "text", "required": True}, {"key": "sold_on", "type": "date"}, {"key": "noted_on", "type": "date"},
+        {"key": "days_ago", "type": "formula", "format": "number", "expression": "today() - sold_on"}]},
+        {"op": "add_automation", "automation": {"key": "note", "name": "Note the day", "trigger": {"type": "record_created", "table": "sales"},
+                                                "conditions": [], "actions": [{"type": "update_record", "values": {"noted_on": "{{today()}}"}}]}}])
+    day = lambda n: (date.today() + timedelta(days=n)).isoformat()  # noqa: E731
+    written = day(-1)  # yesterday: then, "sold three days ago" was day(-4) and "noted today" was day(-1)
+    check = {"title": "Kept from yesterday", "written": written, "steps": [
+        {"do": "add", "table": "sales", "as": "s1", "values": {"title": "Novels", "sold_on": day(-4)}}],
+        "expect": [{"record": "s1", "field": "noted_on", "equals": written}, {"record": "s1", "field": "days_ago", "equals": 3},
+                   {"record": "s1", "field": "sold_on", "equals": day(-4)}]}
+    _, (kept,) = trial.try_out(ws, [check], screens=False)
+    assert kept["ok"], kept
+    _, (unmarked,) = trial.try_out(ws, [{k: v for k, v in check.items() if k != "written"}], screens=False)
+    assert not unmarked["ok"]  # read as written today, it's a day out: as before the mark
+    assert trial.dated({"title": "x"})["written"] == date.today().isoformat() and trial.dated(check)["written"] == written

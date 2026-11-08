@@ -258,3 +258,38 @@ def test_which_builder_steps_think_is_set_step_by_step(app):
     assert build.thinks("behaviour") and build.thinks("owner_check")
     app.config["AI_THINK_STEPS"], app.config["AI_THINK_BUILDER"] = "", True
     assert build.thinks("data")
+
+
+def test_thinking_that_runs_away_is_answered_without_it_not_tried_again_the_same_way(app, monkeypatch):
+    """Round 43 with thinking on: the understand step's thinking went round in circles three tries running, and the
+    owner waited 38 minutes for a failed turn. Thinking that runs away is answered straight away, without it."""
+    from app import ai
+    from app.builder import build
+    asked = []
+
+    def chat(messages, schema=None, on_progress=None, think=None, purpose=None, **_):
+        asked.append(think)
+        if think:
+            raise ai.Stuck("The AI got stuck thinking (it kept going over the same ground).")
+        return '{"ok": true}', ""
+    monkeypatch.setattr(ai, "chat", chat)
+    app.config["AI_THINK_STEPS"] = "all"
+    try:
+        assert build._ask("system", "user", {"type": "object"}, kind="understand")["ok"] is True
+        assert asked == [True, False]
+        app.config["AI_THINK_STEPS"], asked[:] = "", []
+        app.config["AI_THINK_BUILDER"] = False
+        monkeypatch.setattr(ai, "chat", lambda *a, **k: (_ for _ in ()).throw(ai.Stuck("repeating")))
+        with __import__("pytest").raises(ai.Stuck):  # not thinking: it ran away writing the answer, said so as before
+            build._ask("system", "user", {"type": "object"}, kind="understand")
+    finally:
+        app.config["AI_THINK_STEPS"] = ""
+
+
+def test_a_fix_that_changed_nothing_asks_what_should_happen_instead_of_offering_fix_again():
+    from app.builder import build
+    wrong = [{"title": "Approves quotes before they go out"}]
+    first = build._not_yet_said(wrong, [], [])
+    assert "Press “Fix these”" in first
+    again = build._not_yet_said(wrong, [], [], again=True)
+    assert "Fix these" not in again and "in your own words what should happen" in again and "Approves quotes" in again

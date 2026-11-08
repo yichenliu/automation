@@ -783,6 +783,13 @@ def _guess(engine, names, alias, table=None):
     fits = [(key, rid) for key, rid in reversed(added) if key == table] if table else \
         sorted([(key, rid) for key, rid in reversed(added) if head and like(key)],
                key=lambda x: bool(engine.tables.get(x[0], {}).get("embedded")))
+    counted = re.fullmatch(r"[a-z]+?_?(\d+)", alias.strip().lower())
+    if fits and counted:  # "cr2": the second crew member the example added, not the latest (of the table it's read as
+        # naming, as before: the latest added of those its letters fit, "d1" the delivery just added, not the driver)
+        n, best = int(counted.group(1)), table or fits[0][0]
+        mine = [rid for key, rid in added if key == best]
+        if 0 < n <= len(mine):
+            fits = [(best, mine[n - 1])]
     if not fits and head:  # one the app made itself (the job an accepted quote became)
         engine.reset()
         made = [(not engine.tables[key].get("embedded"), r.id, key) for key in engine.tables
@@ -865,8 +872,9 @@ def _values(engine, t, values, names):
             value = (date.today() + timedelta(days=n)).isoformat()
             if engine.kind(f) == "datetime":
                 value += " 10:00"
-        elif engine.kind(f) in ("date", "datetime") and names.get("_waited"):  # a date on the calendar, after days passed
-            value = _shifted(engine, f, value, -names["_waited"])
+        elif engine.kind(f) in ("date", "datetime") and (names.get("_waited") or names.get("_moved")):  # a date on the
+            # calendar, after days passed (and on the day the example was written, moved on to today's)
+            value = _shifted(engine, f, value, names.get("_moved", 0) - names.get("_waited", 0))
         elif f["type"] == "user":  # a record's name ("s1", the staff member Sam) means that person
             many = [engine.title(engine.get(names[v])) if isinstance(v, str) and isinstance(names.get(v), int) and engine.get(names[v])
                     else v for v in (value if isinstance(value, list) else [value])]
@@ -1002,6 +1010,13 @@ def _act(trial, engine, step, names, hold=False):
         move = next((m for m in (t.get("workflow") or {}).get("transitions") or [] if str(m.get("label") or "").strip().lower() == wanted),
                     None) if a is None and doc is None else None
         if move is not None:  # a stage's button (“Send delivery note”), pressed as the person would: the move it makes
+            shown = [m for _, m, _ in engine.moves(record) if str(m.get("label") or "").strip().lower() == wanted]
+            if step.get("refused") and not shown:  # not on the record at its stage: the person can't press it, so it's
+                # stopped as it stands (Send on a Draft quote, before its Approve), not taken along the stages between
+                at = (record.data or {}).get(t["workflow"]["field"])
+                now = [m.get("label") or m["to"] for _, m, _ in engine.moves(record)]
+                raise FieldErrors({"_": f"there's no “{step.get('button')}” button on a {schema.lc(t['singular'])} at {at}"
+                                        + (f" (its buttons now: {', '.join(now)})" if now else "")})
             _act(trial, engine, {**step, "do": "move", "to": move["to"]}, names, hold)
             return
         if a is None and doc is not None:  # its document's button (Make the invoice PDF), as the person would press it
@@ -1431,8 +1446,10 @@ def _expect(engine, c, names):
         if same:
             return False, f"{plain}, expected anything but that", said.replace("; expected", "; expected anything but")
         return True, plain.replace(" came out ", " is ").replace(", expected ", ", not "), said
+    written_out = False  # a date written out in full: on the calendar of the day the example was written
     if "equals" in c:
         c = {**c, "equals": _worked_out(c["equals"])}
+        written_out = isinstance(c["equals"], str) and not RELATIVE.match(c["equals"].strip())
         if isinstance(c["equals"], str) and RELATIVE.match(c["equals"].strip()):  # "today+3" on the example's own calendar
             n = int((RELATIVE.match(c["equals"].strip()).group(1) or "0").replace(" ", ""))
             c = {**c, "equals": (date.today() + timedelta(days=n + int(names.get("_waited") or 0))).isoformat()}
@@ -1454,6 +1471,8 @@ def _expect(engine, c, names):
         raise ExampleWrong(f"{t['key']} has no field “{key}” (fields: {', '.join(x['key'] for x in t['fields'])})")
     if engine.kind(f) in ("date", "datetime") and names.get("_waited"):
         actual = _shifted(engine, f, actual, names["_waited"])  # as the calendar shows it, the days waited later
+    if engine.kind(f) in ("date", "datetime") and written_out and names.get("_moved"):
+        wanted = _shifted(engine, f, wanted, names["_moved"])
     ok = _same(engine, f, actual, wanted, names)
     label = automations._path_label(engine, t["key"], path)
     shown = engine.display(f, actual) if actual not in (None, "", []) else "empty"
@@ -1626,11 +1645,28 @@ def walkthrough(workspace, example):
     return {**result, "went": went, "ran": ran}
 
 
+def dated(example):
+    """An example kept to be acted out again later, marked with the day it was written: a date it writes out in full
+    (sold on 2026-10-28, chased on 2026-11-08) is read on that day's calendar, moved on by the days since, so a check
+    kept for later stays true (round 43: an owner's check written the day before failed with nothing wrong)."""
+    if not isinstance(example, dict) or example.get("written"):
+        return example
+    return {**example, "written": date.today().isoformat()}
+
+
+def _moved(example):
+    """The days since the example was written (0 for one without the day, or written today)."""
+    try:
+        return max(0, (date.today() - date.fromisoformat(str(example.get("written") or ""))).days)
+    except ValueError:
+        return 0
+
+
 def play(trial, example):
     """Act out one example in this copy. Returns {"title", "ok", "lines": [(ok, plain)], "problem", "kind", "detail"}:
     kind "app" when the app refused a step, a rule stopped or something came out other than expected; "example" when the
     example itself names what isn't there."""
-    engine, names = trial.engine(), {}
+    engine, names = trial.engine(), {"_moved": _moved(example)}
     out = {"title": str(example.get("title") or "An example")[:160], "ok": False, "lines": [], "problem": None, "kind": None, "detail": []}
     token = automations.stand_in.set(_ai_answers(trial, engine, example, names))
     try:

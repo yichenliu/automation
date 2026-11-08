@@ -128,7 +128,7 @@ def add(workspace, said, by=None):
     if result["kind"] in ("example", "missing"):  # it names what isn't in the app: not kept, so it can't fail for ever
         return result
     state = dict(workspace.state or {})
-    state["examples"] = ([example] + [x for x in examples(workspace) if x.get("title") != example["title"]])[:KEEP]
+    state["examples"] = ([trial.dated(example)] + [x for x in examples(workspace) if x.get("title") != example["title"]])[:KEEP]
     workspace.state = state
     db.session.commit()
     check(workspace, "a check was added")
@@ -178,7 +178,8 @@ def refit(workspace, found):
         return []
     state = dict(workspace.state or {})
     gone = {m_["said"] for m_ in missing}
-    state["examples"] = [done.get(x.get("title"), x) for x in examples(workspace) if x.get("title") not in gone]
+    state["examples"] = [trial.dated(done[x["title"]]) if x.get("title") in done else x for x in examples(workspace)
+                         if x.get("title") not in gone]
     state["refused_checks"] = (missing + [x for x in state.get("refused_checks") or [] if x.get("said") not in gone])[:5]
     workspace.state = state
     db.session.commit()

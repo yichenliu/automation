@@ -515,7 +515,9 @@ def fixed_up(ws, owner, scenario, result):
         text = reply.text or ""
         out["asks"].append({"pressed": pressed, "said": said[:600], "seconds": round(time.time() - started), "status": reply.status,
                             "changes": len(reply.changes or []), "reply": text[:600], "still": still,
-                            "told_truly": not still or "Not everything works yet" in text or "couldn't" in text.lower() or "?" in text})
+                            "told_truly": not still or reply.status == "failed" or "Not everything works yet" in text  # a failed
+                            # turn shows the owner its error and a Try again button: honest, if no use (counted as failed)
+                            or "couldn't" in text.lower() or "?" in text})
         if not still:
             out["right_after"] = n
             break
@@ -687,7 +689,7 @@ def report(result):
                                                + (f" (CRASH {fx['crash']})" if fx.get("crash") else "")))
         for i, a in enumerate(asks, 1):
             lines.append(f"    ask {i}, pressed {a['pressed']}: " + (f"CRASH {a['crash']}" if a.get("crash") else
-                         f"[{a['status']}] {a['seconds']}s, {a['changes']} changes" + ("" if a["told_truly"] else ", SAID IT WAS DONE BUT ISN'T")
+                         f"[{a['status']}] {a['seconds']}s, {a['changes']} changes" + ("" if a["told_truly"] or a["status"] == "failed" else ", SAID IT WAS DONE BUT ISN'T")
                          + "".join(f"\n      still: {x[:200]}" for x in a["still"][:5]) + f"\n      reply: {a['reply'][:300]}"))
     for t in result["turns"]:
         examples = ((t.get("tried") or {}).get("examples") or [])
@@ -814,7 +816,8 @@ def totals(results):
                           f"{sum(1 for f in fx if f.get('right_after') == 0)}"
                           + "".join(f", after {n} ask{'s' if n > 1 else ''} {sum(1 for f in fx if f.get('right_after') == n)}" for n in range(1, ASKS + 1))
                           + f"; never {sum(1 for f in fx if f.get('right_after') is None)}); replies that said it was done when it wasn't: "
-                          f"{sum(1 for f in fx for a in f.get('asks') or [] if not a.get('told_truly', True))}\n" if fx else "")(
+                          f"{sum(1 for f in fx for a in f.get('asks') or [] if not a.get('told_truly', True) and a.get('status') != 'failed')}; "
+                          f"asks whose turn failed: {sum(1 for f in fx for a in f.get('asks') or [] if a.get('status') == 'failed')}\n" if fx else "")(
                 [r["fixing"] for r in results if r.get("fixing") is not None])
             + (f"  KEPT WORKING through later changes: {worked - broke}/{worked} stories that worked before a later change\n" if worked else "")
             + (lambda oc: f"  OWNER'S CHECKS: {sum(1 for c in oc if c['result'] == 'pass')} pass, {sum(1 for c in oc if c['result'] == 'fail')} "
