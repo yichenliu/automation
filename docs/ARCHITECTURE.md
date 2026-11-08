@@ -171,6 +171,15 @@ rule stopped on a must-have it couldn't know (10 apps); stages nothing could rea
   stuck repeating itself made fifteen). The day a record got to a stage reads “Unpaid since”, never “Unpaid on”.
 - **Round 42's.** A rule's date worked out from a date left empty (sent_on + 3 before it's sent) is left as it is, not
   set to 3 and the rule stopped; a field named in a rule about no list is said, not a crash that failed the turn.
+- **Round 43's, with the builder thinking.**
+  - **Pressing a button refused:** a "press, refused" step for a button the record doesn't show yet (Send on a Draft
+    quote, before its Approve) is refused as it stands. It isn't walked through the stages between.
+  - **Numbered names:** "cr2" is the second record the example added of that list, not the latest.
+  - **Dated checks:** a kept check is marked with the day it was written. Its dates written out in full are read on
+    that day's calendar, moved on to today's, so it stays true on later days.
+  - **Runaway thinking:** a step whose thinking runs away is answered without thinking, not asked again to think the
+    same way.
+  - **A fix that changes nothing:** it asks the owner what should happen, instead of offering Fix again.
 - **Conditions are formulas too.** Anywhere a condition goes (only_if, blocked_if, a gate's needs, a total's only),
   text is a formula that must hold; `{field, op, value}` stays as the App map's point-and-click form.
 - **What must not happen is a rule every save keeps.** A gate is table rules (with `holds` for what must hold), kept
