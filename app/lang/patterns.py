@@ -693,9 +693,16 @@ class Overdue(Feature):
             return out
         df = d.field(t, self.date_field)
         due = {df["key"]: "today+2"} if df["type"] in schema.STORED else {}
+        # a date worked out from others (due 14 days after it's issued) can't be written in: the example waits for it
+        wait = {"do": "wait", "days": 3 + self.days_after} if due else {"do": "wait", "record": "r1", "until": df["key"], "days": max(self.days_after, 1)}
         out = [{"title": f"{_a(t['singular'])} past its {df['label'].lower()} becomes {late}",
-                "steps": adding(d, t, "r1", due) + move + [{"do": "wait", "days": 3 + self.days_after}, {"do": "run", "rule": self.feature_key()}],
+                "steps": adding(d, t, "r1", due) + move + [wait, {"do": "run", "rule": self.feature_key()}],
                 "expect": [{"record": "r1", "field": f["key"], "equals": late}]}]
+        if not due:
+            out.append({"title": f"One on its {df['label'].lower()} stays {start}",
+                        "steps": adding(d, t, "r2") + [{**s, "record": "r2"} for s in move]
+                        + [{"do": "wait", "record": "r2", "until": df["key"], "days": max(self.days_after, 1) - 1}, {"do": "run", "rule": self.feature_key()}],
+                        "expect": [{"record": "r2", "field": f["key"], "equals": start}]})
         if due:
             move2 = [{**s, "record": "r2"} for s in move]
             out.append({"title": f"One not yet due stays {start}",
@@ -1033,6 +1040,115 @@ class NoOverlap(Feature):
         return f"no two {self.list} at overlapping times" + (f" per {', '.join(self.per)}" if self.per else "")
 
 
+@register("feature", {"do": "allocate", "list": "bookings", "field": "staff_member", "among": [{"field": "role", "op": "equals", "value": "Driver"}],
+                      "free_on": "date"})
+class AllocateFeature(Feature):
+    """The app picks who or what does each record, from a list (a driver for each job, two helpers, a room for each
+    booking, a cleaner for each clinic visit): fills the link field with how_many of the linked list's records that
+    match among, free that free_on day (not on another of this list's records that day, in any of its links to that
+    list), the one on the fewest so far first; when one is added, or when it gets to when_stage (Confirmed). What people
+    filled in themselves is left; too few free: the owner is told to pick. The link field is made if it isn't there
+    (pick_from: the list it picks from)."""
+    do: Literal["allocate"] = "allocate"
+    list: str
+    field: str
+    how_many: int = Field(1, ge=1, le=50)
+    among: list[Condition | str] = Field(default_factory=list, description="which may be picked (role equals Driver)")
+    free_on: str | None = Field(None, description="a date field of list: those on another record that day aren't free")
+    when_stage: str | None = Field(None, description="left out: when one is added")
+    pick_from: str | None = Field(None, description="the list to pick from, when the link field isn't there yet")
+    only_if: list[Condition | str] = Field(default_factory=list)
+
+    def default_key(self):
+        return f"allocate_{self.list}_{self.field}"
+
+    def _field(self, d, t, where):
+        f = d.field(t, self.field)
+        if f is not None:
+            if f["type"] != "link" or d.list(f.get("table")) is None:
+                raise Problem(f"{where} › field: {self.field} isn't a link field of {t['label']} (its links: "
+                              f"{', '.join(x['key'] for x in t['fields'] if x['type'] == 'link') or 'none'}): name one, or a new "
+                              f"field's key with pick_from, the list to pick from")
+            return f, None
+        if not self.pick_from:
+            raise Problem(f"{where} › field: {self.field} isn't a field of {t['label']}: give pick_from (the list to pick from) to "
+                          f"make it, or name its link field ({', '.join(x['key'] for x in t['fields'] if x['type'] == 'link') or 'none yet'})")
+        other = _t(d, self.pick_from, where, "pick_from")
+        f = {"key": schema.slug(self.field), "label": schema.label_of(schema.slug(self.field)), "type": "link", "table": other["key"]}
+        if self.how_many > 1:
+            f["multiple"] = True
+        return f, f
+
+    def build(self, d, where):
+        t = _t(d, self.list, where)
+        f, new = self._field(d, t, where)
+        other = d.list(f["table"])
+        made = Made()
+        if new:
+            made.fields.append((t["key"], new))
+        elif self.how_many > 1 and not f.get("multiple"):
+            made.fields.append((t["key"], {**f, "multiple": True}))  # two helpers: it holds several
+        action = {"type": "allocate", "field": f["key"], "count": self.how_many}
+        if self.among:
+            action["where"] = ir_conditions(d, other, self.among, f"{where} › among")
+        if self.free_on:
+            df = d.field(t, self.free_on)
+            if df is None or d.kind(df) != "date":
+                raise Problem(f"{where} › free_on: {self.free_on} isn't a date field of {t['label']} (its dates: "
+                              f"{', '.join(x['key'] for x in t['fields'] if d.kind(x) == 'date') or 'none'})")
+            action["free_on"] = df["key"]
+        conds = [{"field": f["key"], "op": "is_empty"}] + ir_conditions(d, t, self.only_if, f"{where} › only_if")
+        trigger = {"type": "record_created", "table": t["key"]}
+        when = f"each new {t['singular'].lower()}"
+        if self.when_stage:
+            stage = d.stage_field(t)
+            got = d.choice(stage, self.when_stage) if stage else None
+            if got is None:
+                raise Problem(f"{where} › when_stage: “{self.when_stage}” isn't a stage of {t['label']}"
+                              + (f" ({', '.join(stage.get('options') or [])})" if stage else ": it has no stages yet"))
+            trigger = {"type": "record_created_or_updated", "table": t["key"]}
+            conds.insert(0, {"field": stage["key"], "op": "changed_to", "value": got})
+            when = f"{_a(t['singular'].lower())} when it gets to {got}"
+        many = "" if self.how_many == 1 else f"{self.how_many} "
+        made.rules.append({"key": self.feature_key(), "name": f"Pick {many or 'the '}{f['label'].lower()} for {when}"[:80],
+                           "trigger": trigger, "conditions": conds, "actions": [action]})
+        return made
+
+    def checks(self, d):
+        t = d.list(self.list)
+        f = d.field(t, self.field) or {"key": schema.slug(self.field), "label": schema.label_of(schema.slug(self.field)),
+                                         "table": schema.slug(self.pick_from or "")}
+        other = d.list(f.get("table"))
+        if other is None or any(isinstance(c, str) or c.op not in ("equals", "one_of") for c in self.among):
+            return []  # which ones may be picked isn't something an example can make for sure: the builder's examples prove it
+        kind = {schema.slug(c.field): (c.value[0] if isinstance(c.value, list) else c.value) for c in self.among}
+        n, made = self.how_many, {}
+        steps = []
+        for i in range(1, 2 * n + 1):  # enough for two records, each picked its own
+            steps += adding(d, other, f"c{i}", dict(kind), made=made)
+        df = d.field(t, self.free_on) if self.free_on else None
+        day = {df["key"]: "today+5"} if df is not None and df["type"] in schema.STORED else {}
+        if df is not None and not day:
+            return []
+        stage = d.stage_field(t) if self.when_stage else None
+        to = d.choice(stage, self.when_stage) if stage else None
+        for alias in ("r1", "r2"):
+            steps += adding(d, t, alias, dict(day), made=made)
+            if to:
+                steps.append({"do": "move", "record": alias, "to": to})
+        first, then = [f"c{i}" for i in range(1, n + 1)], [f"c{i}" for i in range(n + 1, 2 * n + 1)]
+        one = (lambda xs: xs) if n > 1 else (lambda xs: xs[0])
+        what = f"{other['label'].lower()}" if n > 1 else f"{other['singular'].lower()}"
+        title = (f"Each {t['singular'].lower()}" + (f" that gets to {to}" if to else " added") + f" is given {'its own ' if day else 'in turn a '}"
+                 f"{what}" + (" free that day" if day else ""))
+        return [{"title": title, "steps": steps,
+                 "expect": [{"record": "r1", "field": f["key"], "equals": one(first)}, {"record": "r2", "field": f["key"], "equals": one(then)}]}]
+
+    def said(self, d):
+        return (f"picks {self.how_many} of {self.pick_from or 'the linked list'} for each {self.list.rstrip('s')}'s {self.field}"
+                + (f", free that {self.free_on}" if self.free_on else ""))
+
+
 @register("feature", {"do": "convert", "from_list": "quotes", "to_list": "jobs", "when_stage": "Accepted", "from_lines": "quote_lines", "to_lines": "job_lines"})
 class Convert(Feature):
     """Make a record of another list from a record, linked back, with the fields they share copied (and its lines
@@ -1197,7 +1313,7 @@ class ReminderBefore(Feature):
     do: Literal["reminder_before"] = "reminder_before"
     list: str
     date_field: str
-    days: int
+    days: int = Field(ge=0, description="how many days before the date; 0: on the day itself")
     tell: str = "owner"
     email_to: str | None = None
     message: str | None = None
@@ -1205,6 +1321,9 @@ class ReminderBefore(Feature):
 
     def default_key(self):
         return f"remind_{self.list}_{self.date_field}"
+
+    def _ahead(self, label):
+        return f"on the {label}" if not self.days else f"{self.days} day{'s' if self.days != 1 else ''} before the {label}"
 
     def build(self, d, where):
         t = _t(d, self.list, where)
@@ -1214,10 +1333,13 @@ class ReminderBefore(Feature):
         made = Made()
         flag = schema.slug(f"reminded_{df['key']}")
         made.fields.append((t["key"], {"key": flag, "label": f"Reminded ({df['label']})", "type": "date"}))
-        conds = [{"field": df["key"], "op": "within_next_days", "value": self.days}, {"field": df["key"], "op": "after_today"},
-                 {"field": flag, "op": "is_empty"}] + ir_conditions(d, t, self.only_if, f"{where} › only_if")
-        message = self.message or f"{_title(t)}: {df['label']} is in {self.days} day{'s' if self.days != 1 else ''}"
-        made.rules.append({"key": self.feature_key(), "name": f"Remind {self.days} day{'s' if self.days != 1 else ''} before {df['label'].lower()}",
+        # the days before it, not the day itself; 0 days before: the day itself
+        when = [{"field": df["key"], "op": "within_next_days", "value": self.days}, {"field": df["key"], "op": "after_today"}] \
+            if self.days else [{"field": df["key"], "op": "today"}]
+        conds = when + [{"field": flag, "op": "is_empty"}] + ir_conditions(d, t, self.only_if, f"{where} › only_if")
+        message = self.message or (f"{_title(t)}: {df['label']} is in {self.days} day{'s' if self.days != 1 else ''}" if self.days
+                                   else f"{_title(t)}: {df['label']} is today")
+        made.rules.append({"key": self.feature_key(), "name": f"Remind {self._ahead(df['label'].lower())}",
                            "trigger": {"type": "schedule", "table": t["key"], "every": "day", "at": "08:00"}, "conditions": conds,
                            "actions": [_tell_step(d, t, self.tell, self.email_to, f"Reminder: {t['singular']} {_title(t)}", message, where),
                                        {"type": "update_record", "values": {flag: "{{today()}}"}}]})
@@ -1226,10 +1348,13 @@ class ReminderBefore(Feature):
     def checks(self, d):
         t = d.list(self.list)
         df = d.field(t, self.date_field)
-        if df["type"] not in schema.STORED:
-            return []
         extra = {schema.slug(c.field): c.value for c in self.only_if if c.op == "equals"}
-        return [{"title": f"A reminder goes {self.days} day{'s' if self.days != 1 else ''} before the {df['label'].lower()}",
+        title = f"A reminder goes {self._ahead(df['label'].lower())}"
+        if df["type"] not in schema.STORED:  # worked out from others: the example waits for it to come round
+            return [{"title": title, "steps": adding(d, t, "r1", extra, through=_through(self.email_to))
+                     + [{"do": "wait", "record": "r1", "until": df["key"], "days": -self.days}, {"do": "run", "rule": self.feature_key()}],
+                     "expect": [{"told": True, "record": "r1"}]}]
+        return [{"title": title,
                  "steps": adding(d, t, "r1", {df["key"]: f"today+{self.days + 3}", **extra}, through=_through(self.email_to)) + [{"do": "wait", "days": 3}, {"do": "run", "rule": self.feature_key()}],
                  "expect": [{"told": True, "record": "r1"}]},
                 {"title": "No reminder while it's further off",
@@ -1237,7 +1362,7 @@ class ReminderBefore(Feature):
                  "expect": [{"told": False, "record": "r2"}]}]
 
     def said(self, d):
-        return f"reminds {self.email_to or self.tell} {self.days} days before each {self.list.rstrip('s')}'s {self.date_field}"
+        return f"reminds {self.email_to or self.tell} {self._ahead(self.date_field)} of each {self.list.rstrip('s')}"
 
 
 @register("feature", {"do": "recurring", "from_list": "members", "to_list": "invoices", "every": "month",

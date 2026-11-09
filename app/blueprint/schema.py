@@ -172,7 +172,7 @@ TRIGGER_ALIASES = {
     "file": "file_added", "new_file": "file_added", "file_uploaded": "file_added", "onedrive_file": "file_added", "on_file": "file_added",
 }
 EVERY = ["hour", "day", "week", "month"]
-ACTIONS = ["update_record", "create_record", "create_for_each", "update_each", "delete_record", "assign", "wait", "notify",
+ACTIONS = ["update_record", "create_record", "create_for_each", "update_each", "delete_record", "assign", "allocate", "wait", "notify",
            "send_email", "generate_document", "request_approval", "webhook", "ai_fill", "ai_extract", "ai_create_record",
            "branch", "task", "run_automation", "ai_check", "copy_record", "payment_link", "send_sms"]
 APPROVAL_MODES = ["any", "all"]  # one of the approvers decides, or every one of them must approve
@@ -201,7 +201,7 @@ ACTION_ALIASES = {
     "ai_intake": "ai_create_record", "intake": "ai_create_record",
     "delete": "delete_record", "remove_record": "delete_record", "remove": "delete_record", "archive": "delete_record",
     "update_all": "update_each", "update_lines": "update_each", "update_related": "update_each", "for_each_update": "update_each",
-    "round_robin": "assign", "assign_to": "assign", "allocate": "assign", "assign_user": "assign",
+    "round_robin": "assign", "assign_to": "assign", "assign_user": "assign",
     "delay": "wait", "pause": "wait", "sleep": "wait", "wait_until": "wait", "wait_for": "wait",
     "if": "branch", "if_else": "branch", "decision": "branch", "switch": "branch", "route": "branch", "split": "branch",
     "branches": "branch", "condition": "branch", "choose": "branch",
@@ -2014,6 +2014,20 @@ def normalize_action(raw):
         pool = slug(_first(raw, "from", "role", "among", "pool", default="editor"))
         action["from"] = {"admins": "admin", "editors": "editor", "everyone": "editor", "team": "editor"}.get(pool, pool)
         return action
+    if atype == "allocate":  # a driver for the job, a room for the booking: records of the list a link field leads to, picked
+        target = _first(raw, "field", "to_field", "into")
+        if not target:
+            raise SchemaError("allocate needs \"field\": the link field to fill with records picked from the list it links to")
+        action["field"] = slug(target)
+        count = to_number_safe(_first(raw, "count", "how_many", "number", default=1))
+        action["count"] = max(int(count or 1), 1)
+        where = _first(raw, "where", "among", "only_those")
+        if where:
+            action["where"] = [normalize_condition(c) for c in _list(where)]
+        free = _first(raw, "free_on", "free_that_day", "day")
+        if free:
+            action["free_on"] = slug(free)
+        return action
     if atype == "copy_record":  # a new revision of a contract or order, a renewal, a repeat order: the record and its lines
         values = _first(raw, "values", "set", "changes", "fields", default={})
         action["values"] = {slug(k): _one_expression(v) for k, v in (values.items() if isinstance(values, dict) else []) if k}
@@ -3242,7 +3256,8 @@ def _check_automation(a, tables, problems, documents, bp_pages=(), automations=N
                     _check_conditions(act["only_if"], t, where, problems, tables)
                 else:
                     problems.append(f"{where}: a step has conditions but there's no record to check them on")
-            if kind in ("update_record", "ai_fill", "ai_extract", "ai_check", "generate_document", "request_approval", "update_each", "assign", "branch") and not t \
+            if kind in ("update_record", "ai_fill", "ai_extract", "ai_check", "generate_document", "request_approval", "update_each", "assign",
+                        "allocate", "branch") and not t \
                     and not (kind in ("update_record", "generate_document") and act.get("target") == "created" and created_table):
                 problems.append(f"{where}: “{kind}” needs a record, but this automation isn't about one (add a table to the trigger)")
                 continue
@@ -3311,6 +3326,18 @@ def _check_automation(a, tables, problems, documents, bp_pages=(), automations=N
                     problems.append(f"{where} assigns “{act['field']}”, which must be a person field of {t['label']}")
                 if act.get("from") not in (*APPROVER_ROLES, "viewer") and act.get("from") not in _TEAM_KEYS.get():
                     problems.append(f"{where} assigns among “{act.get('from')}”: use editor, admin or a team")
+            elif kind == "allocate":
+                f = field(t, act["field"])
+                if (f or {}).get("type") != "link" or f.get("table") not in tables:
+                    links = [x["key"] for x in t["fields"] if x["type"] == "link"]
+                    problems.append(f"{where} allocates “{act['field']}”, which must be a link field of {t['label']} to the list it picks "
+                                    f"from" + (f" (its links: {', '.join(links)})" if links else ": add one first"))
+                else:
+                    if act.get("count", 1) > 1 and not f.get("multiple"):
+                        problems.append(f"{where} picks {act['count']} for {f['label']}, which holds one: pick 1, or let it hold several")
+                    _check_conditions(act.get("where"), tables[f["table"]], where, problems, tables)
+                if act.get("free_on") and engine_kind(field(t, act["free_on"])) not in DATES:
+                    problems.append(f"{where} picks those free on “{act['free_on']}”, which must be a date field of {t['label']}")
             elif kind == "wait":
                 if act.get("until") and (not t or engine_kind(field(t, act["until"])) not in DATES):
                     problems.append(f"{where} waits until “{act['until']}”, which must be a date field of the record")

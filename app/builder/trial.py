@@ -929,6 +929,9 @@ def _act(trial, engine, step, names, hold=False):
         names.setdefault("_added", []).append((t["key"], record.id))
         names.setdefault("_given", {}).setdefault(record.id, set()).update(given)  # what the example says, never filled over
         return
+    if do == "wait" and step.get("until"):  # until a record's date has gone by: one worked out (due 14 days after it's issued) can't be written in
+        _wait_until(engine, names, step)
+        return
     if do == "wait":  # days pass, one by one: the app's daily rules run each day, reminders fall due, things get overdue
         said = to_number(step.get("days"))
         days = 1 if said is None else int(said)
@@ -1000,7 +1003,7 @@ def _act(trial, engine, step, names, hold=False):
             # shown with "refused")
             _fill_asked(trial, engine, record, t, lambda m: m["to"].lower() == wanted, given, names["_given"])
             record = engine.get(record.id)
-        if not _press_move(engine, record, t, lambda m: m["to"].lower() == wanted):
+        if not _press_move(engine, record, t, lambda m: m["to"].lower() == wanted, attach=not step.get("refused")):
             _take_along(engine, record, t, step.get("to"), trial, last=not step.get("refused"), given=given, others=names["_given"])
     elif do == "press":
         wanted = str(step.get("button") or "").strip().lower()
@@ -1040,6 +1043,15 @@ def _act(trial, engine, step, names, hold=False):
                 theirs = [m for _, m, problem in engine.moves(record) if m.get("who") and not problem]
                 if theirs and _press_move(engine, record, t, lambda m: m in theirs):
                     return
+                # the approver's own move is there at this stage, but not for this person: the app stops them (“only I can
+                # sign off”, tried by a member of staff), it isn't an example asking for an OK nobody asks for
+                at = (record.data or {}).get(t["workflow"]["field"])
+                kept = [m for m in t["workflow"].get("transitions") or [] if m.get("who") and at in (m.get("from") or [at])
+                        and not schema.says_no(m["to"])]
+                if kept:
+                    who = " or ".join(dict.fromkeys(w for m in kept for w in m["who"]))
+                    raise FieldErrors({"_": f"only the {who} may {(kept[0].get('label') or 'move it to ' + kept[0]['to']).lower()} a "
+                                            f"{schema.lc(t['singular'])} at {at}"})
             asking = {a["key"] for a in engine.bp.get("automations", []) if a["trigger"].get("table") == t["key"]
                       and any(act["type"] == "request_approval" for act in schema.steps_of(a["actions"]))}
             if not asking:  # nothing ever asks: the example meant a move
@@ -1124,7 +1136,8 @@ def _take_along(engine, record, t, target, trial=None, last=True, given=(), othe
             if trial is not None and (last or way[0].lower() != str(target).lower()):
                 _fill_asked(trial, engine, record, t, lambda m: m["to"].lower() == way[0].lower(), given, others)
                 record = engine.get(record.id)
-            pressed = _press_move(engine, record, t, lambda m: m["to"].lower() == way[0].lower())
+            pressed = _press_move(engine, record, t, lambda m: m["to"].lower() == way[0].lower(),
+                                  attach=last or way[0].lower() != str(target).lower())
         except FieldErrors as exc:
             raise FieldErrors({"_": f"on its way from {began} to {target} (through {', '.join(way[:-1])}), it couldn't move from "
                                     f"{at} to {way[0]}: {'; '.join(exc.errors.values())}"}) from exc
@@ -1224,10 +1237,11 @@ def _meeting(trial, engine, record, t, conditions, given=(), others=None, linked
     return out
 
 
-def _press_move(engine, record, t, pick):
-    """Press the record's button for the first move `pick` likes, as its person would (a file it needs attached first).
-    False when there's no such button now; raises FieldErrors when the app says not yet."""
-    for m in t["workflow"]["transitions"]:  # a file the move needs is attached first, as the person would (examples can't)
+def _press_move(engine, record, t, pick, attach=True):
+    """Press the record's button for the first move `pick` likes, as its person would (a file it needs attached first,
+    unless not `attach`: a move meant to be refused is tried as it stands, its signature not yet given). False when
+    there's no such button now; raises FieldErrors when the app says not yet."""
+    for m in t["workflow"]["transitions"] if attach else []:  # a file the move needs is attached first, as the person would (examples can't)
         if pick(m):
             _attach(engine, record, t, m.get("requires") or [])
     engine.reset()
@@ -1384,6 +1398,33 @@ def _same(engine, f, actual, wanted, names):
     if isinstance(actual, list):
         return [str(x).lower() for x in actual] == [str(x).lower() for x in (wanted if isinstance(wanted, list) else [wanted])]
     return str(actual if actual is not None else "").strip().lower() == str(wanted).strip().lower()
+
+
+def _wait_until(engine, names, step):
+    """Days pass, one by one, until the record's date is `days` days gone (1 if it doesn't say: the day after; 0: the
+    day itself; -2: two days before it), the app's daily rules running each day as in any wait. For a date worked out
+    from others (due 14 days after it's issued), which an example can't write in, and which moves on as the dates it's
+    worked out from do."""
+    alias, key = step.get("record"), str(step["until"]).strip()
+    if "." in key and not alias:  # "q1.due_on"
+        alias, key = key.split(".", 1)
+    record = _record(engine, names, alias)
+    f, _ = engine._at_path(record, key)
+    if f is None or engine.kind(f) not in ("date", "datetime"):
+        raise ExampleWrong(f"a wait “until” names a date of the record: {key} isn't one of {record.table}'s dates")
+    said = to_number(step.get("days"))
+    gone = 1 if said is None else int(said)
+    for _ in range(732):
+        record = _record(engine, names, alias)
+        day = expr.to_date(engine._at_path(record, key)[1])
+        if day is None:
+            raise ExampleWrong(f"{alias or 'the record'}'s {key} is empty, so the day it goes by never comes: give it what it's worked out from")
+        if (engine.today - day).days >= gone:
+            return
+        pass_time(engine, 1)
+        names["_waited"] = names.get("_waited", 0) + 1
+        _days_rules(engine, names)
+    raise ExampleWrong(f"{alias or 'the record'}'s {key} doesn't go by within two years of waiting")
 
 
 def _shifted(engine, f, value, days):
@@ -2041,6 +2082,8 @@ def _step_words(step):
         return f"press {step.get('button')} on {step.get('record') or 'the one just added'}"
     if do == "run":
         return f"run {step.get('rule') or step.get('button')}"
+    if do == "wait" and step.get("until"):
+        return f"wait until {step.get('record') or 'its'} {step['until']} has gone by" + (f" {step['days']} days" if step.get("days") not in (None, 1) else "")
     if do == "wait":
         return f"wait {step.get('days')} days"
     return f"{do} {step.get('record') or 'the one just added'}"

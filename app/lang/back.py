@@ -157,6 +157,14 @@ def step_in_keel(bp, t, a):
                 out[key] = a[key]
     elif kind == "assign":
         out = {"do": "assign", "field": a.get("field"), "among": a.get("from") or "editor"}
+    elif kind == "allocate":
+        out = {"do": "allocate", "field": a.get("field")}
+        if int(a.get("count") or 1) != 1:
+            out["how_many"] = int(a["count"])
+        if a.get("where"):
+            out["among"] = conditions_in_keel(a["where"])
+        if a.get("free_on"):
+            out["free_on"] = a["free_on"]
     elif kind == "copy_record":
         out = {"do": "copy", "values": values_in_keel(a.get("values"))}
         if a.get("lines") is False:

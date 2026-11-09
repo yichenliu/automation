@@ -495,10 +495,25 @@ class AiCheck(Base):
 
 @register("step", {"do": "assign", "field": "assigned_to", "among": "editor"})
 class Assign(Base):
-    """Give the record to someone, taking turns among a role or a team (fills a person field)."""
+    """Give the record to someone, taking turns among a role or a team (fills a person field: people who log in; to pick
+    from a list's records, such as drivers, rooms or vans, allocate)."""
     do: Literal["assign"]
     field: str
     among: str = "editor"
+    only_if: list[Condition | str] = Field(default_factory=list)
+
+
+@register("step", {"do": "allocate", "field": "driver", "among": [{"field": "role", "op": "equals", "value": "Driver"}], "free_on": "scheduled_date"})
+class Allocate(Base):
+    """Fill a link field with records the app picks from the list it links to (a driver for the job, two helpers, a
+    room for the booking, a cleaner for the clinic): how_many of those that match among, not already on another of
+    this list's records the same free_on day (as a driver or a helper alike), the one on the fewest so far first. A
+    field already filled in is left as people put it; too few free: as many as there are, and the owner is told."""
+    do: Literal["allocate"]
+    field: str
+    how_many: int = Field(1, ge=1, le=50)
+    among: list[Condition | str] = Field(default_factory=list, description="which of the list's records may be picked (role equals Driver)")
+    free_on: str | None = Field(None, description="a date field of the record: those already on another record that day aren't free")
     only_if: list[Condition | str] = Field(default_factory=list)
 
 

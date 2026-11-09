@@ -131,6 +131,9 @@ def _step(s):
         return f"ai_check into {s.get('field')}: “{s.get('instructions')}”{review}"
     if kind == "assign":
         return f"assign {s.get('field')} among {s.get('from')}"
+    if kind == "allocate":
+        return (f"allocate {s.get('count') or 1} to {s.get('field')}" + (f" among {json.dumps(s.get('where'), ensure_ascii=False)}" if s.get("where") else "")
+                + (f" free on {s['free_on']}" if s.get("free_on") else ""))
     if kind == "update_each":
         src = s.get("source") or {}
         return f"update_each {src.get('table')} via {src.get('via')} {json.dumps(s.get('values'), ensure_ascii=False)}"

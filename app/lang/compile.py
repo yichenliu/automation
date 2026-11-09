@@ -612,7 +612,7 @@ def _target(d, t, on, where, made=None):
     return d.list(f["table"]), ".".join(keys)
 
 
-NO_RECORD = (m.SetValues, m.AddEach, m.MakeDocument, m.PaymentLink, m.Task, m.Approval, m.Wait, m.Assign, m.Copy, m.Delete, m.RunRule, m.AiFill,
+NO_RECORD = (m.SetValues, m.AddEach, m.MakeDocument, m.PaymentLink, m.Task, m.Approval, m.Wait, m.Assign, m.Allocate, m.Copy, m.Delete, m.RunRule, m.AiFill,
              m.AiCheck, m.UpdateEach)
 
 
@@ -776,6 +776,23 @@ def ir_step(d, t, s, where, made=None):
         if among not in schema.WHO_WORDS and among not in d.teams():
             raise Problem(f"{where} › among: “{among}” isn't a role (editor, admin) or a team ({', '.join(d.teams()) or 'none'})")
         out = {"type": "assign", "field": f["key"], "from": among}
+    elif isinstance(s, m.Allocate):
+        f = d.field(t, s.field)
+        if f is None or f["type"] != "link" or d.list(f.get("table")) is None:
+            links = [x["key"] for x in t["fields"] if x["type"] == "link"]
+            raise Problem(f"{where} › field: {s.field} isn't a link field of {t['label']} to the list it picks from"
+                          + (f" (its links: {', '.join(links)})" if links else ": add one first (a link to the list of drivers, rooms...)"))
+        if s.how_many > 1 and not f.get("multiple"):
+            raise Problem(f"{where} › how_many: {f['label']} holds one {d.list(f['table'])['singular'].lower()}: pick 1, or let it hold several (multiple)")
+        out = {"type": "allocate", "field": f["key"], "count": s.how_many}
+        if s.among:
+            out["where"] = ir_conditions(d, d.list(f["table"]), s.among, f"{where} › among")
+        if s.free_on:
+            df = d.field(t, s.free_on)
+            if df is None or d.kind(df) != "date":
+                dates = [x["key"] for x in t["fields"] if d.kind(x) == "date"]
+                raise Problem(f"{where} › free_on: {s.free_on} isn't a date field of {t['label']} (its dates: {', '.join(dates) or 'none'})")
+            out["free_on"] = df["key"]
     elif isinstance(s, m.UpdateEach):
         if t is None:
             raise Problem(f"{where}: update_each changes the records linked to the rule's record, and an email rule has none")

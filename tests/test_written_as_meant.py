@@ -293,3 +293,51 @@ def test_a_fix_that_changed_nothing_asks_what_should_happen_instead_of_offering_
     assert "Press “Fix these”" in first
     again = build._not_yet_said(wrong, [], [], again=True)
     assert "Fix these" not in again and "in your own words what should happen" in again and "Approves quotes" in again
+
+
+def test_a_step_that_thinks_far_past_what_it_needs_is_stopped_early(app):
+    """Round 44: the understand step ran away in 5 of 56 calls, about 12 minutes each before the length limit; when it
+    came out right it never thought more than 15,000 characters. Past its ceiling it's stopped there (and then answered
+    without thinking, as any runaway)."""
+    from app import ai
+    from app.builder import build
+    import hashlib
+
+    def fresh(n, salt):  # thinking that never repeats itself: only the ceiling stops it
+        return " ".join(hashlib.sha256(f"{salt}{i}".encode()).hexdigest()[:9] for i in range(n))
+    token = ai.think_limit.set(build.THINK_LIMITS["understand"])
+    try:
+        answer = ai._Answer(None, None, None, "http://model")
+        for k in range(15):  # 15,000 or so: within it
+            answer.think(fresh(100, f"a{k}"))
+        with __import__("pytest").raises(ai.Stuck, match="far longer than this step needs"):
+            for k in range(20):
+                answer.think(fresh(100, f"b{k}"))
+    finally:
+        ai.think_limit.reset(token)
+    unlimited = ai._Answer(None, None, None, "http://model")
+    for k in range(60):  # other steps: no ceiling but the length limit
+        unlimited.think(fresh(100, f"c{k}"))
+
+
+def test_the_candidate_fixes_made_at_once_are_kept_with_the_turns_calls(app, monkeypatch):
+    """The fix search asks for three candidates at once, each on its own thread: they're recorded with the turn (for
+    training, and how long each took). Before, each thread started from an empty context and none was kept."""
+    from app import ai
+    from app.builder import build
+
+    def chat(messages, schema=None, on_progress=None, think=None, purpose=None, **_):
+        kept = ai.recording.get()
+        content = '{"work": [], "n": %d}' % ai.again.get()
+        if kept is not None:
+            kept.append({"messages": list(messages), "content": content, "seconds": 1.0, "thought": 0})
+        return content, ""
+    monkeypatch.setattr(ai, "chat", chat)
+    calls = []
+    token = ai.recording.set(calls)
+    try:
+        answers = build._ask_many("system", "user", {"type": "object"}, 3)
+    finally:
+        ai.recording.reset(token)
+    assert len(answers) == 3 and sorted(a["n"] for a in answers) == [1, 2, 3]
+    assert [c.get("kind") for c in calls] == ["v2_fix"] * 3

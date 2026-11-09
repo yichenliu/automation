@@ -51,8 +51,12 @@ EVERYTHING = [
         {"type": "text", "key": "description", "label": "Description"}]},
     {"do": "add_list", "key": "orders", "label": "Orders", "singular": "Order", "fields": [{"type": "text", "key": "name", "label": "Name"}],
      "stages": {"stages": ["New", "In fitting", "Ready"]}},
+    {"do": "add_list", "key": "staff", "label": "Staff", "singular": "Staff member", "fields": [
+        {"type": "text", "key": "name", "label": "Name", "required": True},
+        {"type": "choice", "key": "role", "label": "Role", "options": ["Driver", "Helper"]}]},
     {"do": "add_list", "key": "bookings", "label": "Bookings", "singular": "Booking", "fields": [
-        {"type": "date", "key": "date", "label": "Date", "required": True}, {"type": "text", "key": "name", "label": "Name"}],
+        {"type": "date", "key": "date", "label": "Date", "required": True}, {"type": "text", "key": "name", "label": "Name"},
+        {"type": "link", "key": "staff_member", "label": "Staff member", "to": "staff"}],
      "stages": {"stages": ["Booked", "Done", "Cancelled"]}},
     {"do": "add_list", "key": "appointments", "label": "Appointments", "singular": "Appointment", "fields": [
         {"type": "date", "key": "starts_on", "label": "Starts on", "required": True},
@@ -488,6 +492,20 @@ def test_a_move_tried_by_staff_and_then_by_the_owner_means_staff_are_stopped(app
         "expect": [{"record": "q1", "field": "status", "equals": "Sent"}]}
     _, results = trial.try_out(ws, [example], screens=False)
     assert results[0]["ok"], results[0].get("problem")
+
+
+def test_only_i_can_sign_off_is_tried_by_staff_approving_and_being_stopped(app):
+    """“I'm the only one who can sign off on refunds”: the owner's own check has a member of staff approve it (stopped)
+    and then the owner (let through). The sign-off is the owner's move at that stage, so staff are stopped by the app:
+    before, the try-out said nothing asks for an OK and the check couldn't be tried (round 44, three times)."""
+    bp = lang.apply(everything(), [{"do": "approval", "list": "quotes", "stage": "Accepted", "by": "owner"}]).blueprint
+    ws = _workspace(app, bp)
+    example = {"title": "Only I accept quotes", "steps": [
+        {"do": "add", "table": "quotes", "as": "q1", "values": {"total": 100}}, {"do": "move", "record": "q1", "to": "Sent"},
+        {"do": "approve", "record": "q1", "by": "staff", "refused": True}, {"do": "approve", "record": "q1"}],
+        "expect": [{"record": "q1", "field": "status", "equals": "Accepted"}]}
+    _, results = trial.try_out(ws, [example], screens=False)
+    assert results[0]["ok"] and results[0]["kind"] != "example", (results[0]["kind"], results[0].get("problem"))
 
 
 def test_an_expected_date_can_be_today_on_the_examples_own_calendar(app):
@@ -1381,3 +1399,95 @@ def test_the_checks_written_first_are_shown_to_the_behaviour_step_with_recipes(a
     assert "How needs like these are made" in shown[0] and "days_since(due_date)" in shown[0]
     assert all(x["ok"] for x in a.checks["examples"]), a.checks["examples"]
     assert model.asked.count("checks") == 1  # written once, before: not again after
+
+
+def _billing(extra=()):
+    """Bills issued today and due 14 days on, worked out (not written in): round 44's vet clinic."""
+    return lang.apply(schema.empty("x"), [
+        {"do": "add_list", "key": "bills", "label": "Bills", "singular": "Bill", "fields": [
+            {"type": "text", "key": "reference", "label": "Reference"}, {"type": "date", "key": "issued_on", "label": "Issued on", "default": "today()"},
+            {"type": "formula", "key": "due_on", "label": "Due on", "formula": "issued_on + 14", "shows": "date"},
+            {"type": "date", "key": "pay_by", "label": "Pay by"}],
+         "stages": {"stages": ["Unpaid", "Paid"], "moves": [{"from": ["Unpaid"], "to": "Paid", "button": "Mark paid"}]}}, *extra])
+
+
+def test_overdue_on_a_date_worked_out_from_others_is_tried_by_waiting_for_it(app):
+    """Due 14 days after it's issued can't be written into an example: it waits until the date has gone by, and one on
+    the day itself isn't overdue yet. Before, it waited 3 days and expected an invoice due in 14 to be overdue, and
+    nothing the builder did could make that come out right."""
+    out = _billing([{"do": "overdue", "list": "bills", "date_field": "due_on", "from_stages": ["Unpaid"], "to_stage": "Overdue"}])
+    assert not out.problems, out.problems
+    examples = patterns.checks(out.blueprint)
+    assert any(s.get("until") == "due_on" for e in examples for s in e["steps"]), examples
+    _, results = trial.try_out(_workspace(app, out.blueprint), examples, screens=False)
+    assert len(results) == 2 and all(r["ok"] for r in results), [r.get("problem") for r in results]
+
+
+def test_a_reminder_on_the_day_itself_goes(app):
+    """“0 days before the due date” is the day itself: before, it asked for a date within 0 days that was also after
+    today, which never comes, so it never went (round 44's canteen)."""
+    out = _billing([{"do": "reminder_before", "list": "bills", "date_field": "pay_by", "days": 0}])
+    assert not out.problems, out.problems
+    rule = next(a for a in out.blueprint["automations"] if a.get("feature"))
+    assert {"field": "pay_by", "op": "today"} in rule["conditions"] and rule["name"] == "Remind on the pay by"
+    _, results = trial.try_out(_workspace(app, out.blueprint), patterns.checks(out.blueprint), screens=False)
+    assert len(results) == 2 and all(r["ok"] for r in results), [r.get("problem") for r in results]
+
+
+def test_a_reminder_before_a_worked_out_date_is_tried_too(app):
+    """A reminder 2 days before a date worked out from others: tried by waiting until it's 2 days off, not left untried."""
+    out = _billing([{"do": "reminder_before", "list": "bills", "date_field": "due_on", "days": 2}])
+    assert not out.problems, out.problems
+    examples = patterns.checks(out.blueprint)
+    assert examples and examples[0]["steps"][-2] == {"do": "wait", "record": "r1", "until": "due_on", "days": -2}
+    _, results = trial.try_out(_workspace(app, out.blueprint), examples, screens=False)
+    assert results and all(r["ok"] for r in results), [r.get("problem") for r in results]
+
+
+def test_the_app_picks_a_free_driver_and_two_helpers_for_each_job(app):
+    """Round 44's removalist: “once they confirm, we book the truck and assign one of my four drivers and two helpers”.
+    Each job made gets a driver and two helpers of the staff, none already on another job that day (a helper on one
+    isn't a driver on another), the least used first; too few free, the owner is told to pick."""
+    out = lang.apply(schema.empty("x"), [
+        {"do": "add_list", "key": "staff", "label": "Staff", "singular": "Staff member", "fields": [
+            {"type": "text", "key": "name", "label": "Name", "required": True},
+            {"type": "choice", "key": "role", "label": "Role", "options": ["Driver", "Helper"]}]},
+        {"do": "add_list", "key": "jobs", "label": "Jobs", "singular": "Job", "fields": [
+            {"type": "date", "key": "moving_on", "label": "Moving on", "required": True},
+            {"type": "link", "key": "driver", "label": "Driver", "to": "staff"}],
+         "stages": {"stages": ["Quoted", "Confirmed", "Done", "Cancelled"]}},
+        {"do": "allocate", "list": "jobs", "field": "driver", "among": [{"field": "role", "op": "equals", "value": "Driver"}],
+         "free_on": "moving_on", "when_stage": "Confirmed"},
+        {"do": "allocate", "list": "jobs", "field": "helpers", "pick_from": "staff", "how_many": 2,
+         "among": [{"field": "role", "op": "equals", "value": "Helper"}], "free_on": "moving_on", "when_stage": "Confirmed"}])
+    assert not out.problems, out.problems
+    bp = out.blueprint
+    assert schema.field(schema.table(bp, "jobs"), "helpers")["multiple"]
+    ws = _workspace(app, bp)
+    _, results = trial.try_out(ws, patterns.checks(bp), screens=False)
+    assert results and all(r["ok"] for r in results), [r.get("problem") for r in results]
+
+    e = Engine(ws)
+    people = {n: e.create("staff", {"name": n, "role": r}, ai=False).id
+              for n, r in [("Dan", "Driver"), ("Dee", "Driver"), ("Hal", "Helper"), ("Hu", "Helper"), ("Hy", "Helper")]}
+    day = (date.today() + timedelta(days=3)).isoformat()
+
+    def confirmed():
+        job = e.create("jobs", {"moving_on": day}, ai=False)
+        e.update(job, {"status": "Confirmed"})
+        e.reset()
+        return e.get(job.id).data
+
+    first, second = confirmed(), confirmed()
+    assert first["driver"] == people["Dan"] and sorted(first["helpers"]) == sorted([people["Hal"], people["Hu"]])
+    assert second["driver"] == people["Dee"] and second["helpers"] == [people["Hy"]]  # only one helper left free that day
+    told = [n.text for n in db.session.query(m_notification()).filter_by(workspace_id=ws.id).all()]
+    assert any("only 1 of the 2 wanted free for Helpers" in t for t in told), told
+    third = confirmed()
+    assert not third.get("driver") and any("nobody free for Driver" in t for t in
+                                           [n.text for n in db.session.query(m_notification()).filter_by(workspace_id=ws.id).all()])
+
+
+def m_notification():
+    from app.models import Notification
+    return Notification

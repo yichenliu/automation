@@ -1034,6 +1034,52 @@ def _recipients(engine, to, record):
     return engine.people_at(record, to) or [None]
 
 
+def _ids(value):
+    return [int(x) for x in (value if isinstance(value, list) else [value]) if str(x).strip().isdigit()]
+
+
+def _allocate(engine, automation, action, record, depth):
+    """Fill the record's link field with records of the list it links to (a driver for the job, two helpers, a room for
+    the booking): those that match `where`, not already on another of the list's records the same `free_on` day (in any
+    of its links to that list, as a helper or as the driver), and not on this one in another link; the one on the
+    fewest so far first, then the first added. A field already filled in is left as people put it. Too few free: as
+    many as there are, and the owner is told to pick the rest."""
+    t = engine.tables[record.table]
+    f = engine.field(record.table, action["field"])
+    if f is None or f.get("type") != "link":
+        raise ValueError(f"{action['field']} isn't a link field of {t['label']}")
+    if _ids((record.data or {}).get(f["key"])):
+        return {"result": f"{f['label']} already filled in: left as it is"}
+    target = f["table"]
+    links = [x["key"] for x in t["fields"] if x.get("type") == "link" and x.get("table") == target]
+    stage = (t.get("workflow") or {}).get("field")
+    day = expr.to_date(engine.value(record, action["free_on"], typed=True)) if action.get("free_on") else None
+    busy, load = set(), {}
+    for r in engine.rows(record.table):
+        if r.id == record.id or (stage and schema.says_no((r.data or {}).get(stage))):  # a cancelled job keeps nobody busy
+            continue
+        theirs = {i for k in links for i in _ids((r.data or {}).get(k))}
+        for i in theirs:
+            load[i] = load.get(i, 0) + 1
+        if day is not None and expr.to_date(engine.value(r, action["free_on"], typed=True)) == day:
+            busy |= theirs
+    mine = {i for k in links if k != f["key"] for i in _ids((record.data or {}).get(k))}
+    pool = [c for c in engine.rows(target) if engine.matches(c, action.get("where") or [])]
+    free = sorted((c for c in pool if c.id not in busy and c.id not in mine), key=lambda c: (load.get(c.id, 0), c.id))
+    wanted = max(int(action.get("count") or 1), 1)
+    chosen = free[:wanted]
+    if chosen:
+        ids = [c.id for c in chosen]
+        engine.update(record, {f["key"]: ids if f.get("multiple") else ids[0]}, by=_by(automation), depth=depth)
+    names = ", ".join(engine.title(c) for c in chosen)
+    if len(chosen) < wanted:
+        when = f" on {engine.display(engine.field(record.table, action['free_on']), day.isoformat())}" if day else ""
+        short = "nobody" if not chosen else f"only {len(chosen)} of the {wanted} wanted"
+        notify(engine, f"{engine.title(record)}: {short} free for {f['label']}{when}. Pick {'them' if wanted > 1 else 'one'} yourself.",
+               _link(record.table, record.id), "owner", record)
+    return {"result": f"{f['label']}: {names}" if chosen else f"Nobody free for {f['label']}", "link": _link(record.table, record.id)}
+
+
 def notify(engine, text, link=None, to="everyone", record=None, kind="info"):
     for user_id in _recipients(engine, to, record):
         db.session.add(Notification(workspace_id=engine.ws.id, user_id=user_id, kind=kind, text=str(text)[:2000], link=link))
@@ -1185,6 +1231,8 @@ def _do(engine, automation, action, record, run):
         chosen = min(pool, key=lambda uid: (counts[uid], pool.index(uid)))
         engine.update(record, {f["key"]: [chosen] if f.get("multiple") else chosen}, by=_by(automation), depth=depth)
         return {"result": f"Assigned {f['label']} to {engine.members().get(chosen, 'someone')}", "link": _link(record.table, record.id)}
+    if kind == "allocate":
+        return _allocate(engine, automation, action, record, depth)
     if kind == "notify":
         text = _render(action["message"], ctx)
         if record is not None:
@@ -2249,6 +2297,14 @@ def describe_action(engine, automation, action):
         return f"On each of {_whose(engine, table, action['source'])} {schema.lc(s['label'])}, set " + ", ".join(parts)
     if kind == "assign":
         return f"Give {(engine.field(table, action['field']) or {'label': action['field']})['label']} to the {action['from']} with the fewest"
+    if kind == "allocate":
+        f = engine.field(table, action["field"]) or {"label": action["field"]}
+        other = engine.tables.get(f.get("table")) or {"label": "its list"}
+        n = int(action.get("count") or 1)
+        among = automations_words(engine, action.get("where") or [], f.get("table")) if action.get("where") else ""
+        free = f", free that {(engine.field(table, action['free_on']) or {'label': action['free_on']})['label'].lower()}" if action.get("free_on") else ""
+        return (f"Fill {f['label']} with {'one' if n == 1 else n} of the {schema.lc(other['label'])}" + (f" where {among}" if among else "")
+                + f"{free}, the one with the fewest so far first")
     if kind == "update_record":
         target_table, prefix = table, "Set"
         if action.get("target") == "created":

@@ -199,6 +199,22 @@ rule stopped on a must-have it couldn't know (10 apps); stages nothing could rea
   - **Runaway thinking:** a step whose thinking runs away is answered without thinking, not asked again to think the
     same way.
   - **A fix that changes nothing:** it asks the owner what should happen, instead of offering Fix again.
+- **Round 44's, with the builder thinking.** Each of its four apps that never came right was the platform's fault, not
+  the builder's, so no ask could have put it right:
+  - **On the day itself:** a reminder 0 days before a date asked for one within 0 days that was also after today. It's
+    the day itself now.
+  - **A date the app works out** (due 14 days after it's issued) can't be written into an example. A wait can now be
+    `{"do": "wait", "record": q1, "until": due_on, "days": n}`, and the overdue and reminder features' own checks use it.
+    Before, the overdue check waited 3 days for an invoice due in 14.
+  - **A refused move is tried as it stands:** the try-out attached a signature the move needs before pressing it, even
+    for a move meant to be refused, so "not released until signed off" was signed off by the try-out itself.
+  - **allocate** (a step, and a feature): a link filled with records picked from a list, such as a driver and two
+    helpers from the staff, free that day, the least used first. `assign` only gives a record to people who log in.
+  - **"Only I can sign off", tried by staff,** is the app stopping them when the approver's move is there for the owner
+    only. Before, the try-out said nothing asks for an OK, and the owner's check couldn't be tried.
+  - **Thinking:** the understand step stops at 30,000 characters of thinking (it never needed 15,000 when right) and
+    answers without it. The fix search's candidates are recorded with the turn: each thread had started from an empty
+    context.
 - **Conditions are formulas too.** Anywhere a condition goes (only_if, blocked_if, a gate's needs, a total's only),
   text is a formula that must hold; `{field, op, value}` stays as the App map's point-and-click form.
 - **What must not happen is a rule every save keeps.** A gate is table rules (with `holds` for what must hold), kept
@@ -257,7 +273,7 @@ inside it and builds there, not for a chat feature on the side.
 |---|------|--------|
 | 1 | Simulation database: the engine runs on in-memory SQLite | done |
 | 2 | Keel language: models, patches, compiler (exact: `ops.apply(strict=True)`), the app as the builder reads it | done. It covers lists and fields (with conditions, who may see them, sensitive), stages, rules (record, button, schedule, email and file triggers; set, add, add each, update each, notify, email, document, task, approval, AI fill/extract/create/check, assign, copy, delete, run, webhook, payment link, wait), validations, views, documents, records, imports, teams and access, and a `design_op` escape for pages, forms, portals, flows, syncs and themes |
-| 3 | Features with their own checks; the registry; the guard test | done: 13 features |
+| 3 | Features with their own checks; the registry; the guard test | done: 15 features |
 | 4 | Checks: told, not-equals, arithmetic, relative dates, staff-then-approver moves | done |
 | 5 | Builder: needs → data → behaviour → checks → simulate → best of several fixes → need-by-need handover | done; every turn, discovery, the analyst's suggestions (its detectors' too) and the ready-made parts are written in the language. Left outside it, as design ops, until it can say them: a purchase order's approval never by whoever raised it and back to Draft when turned down (`modules.unsaid_for`), and how much a person checks an AI step change_step can't reach (`learning._checking`) |
 | 6 | Runtime: worker processes, SKIP LOCKED, scheduler leader, outbox, rule index | done |

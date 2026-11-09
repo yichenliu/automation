@@ -121,7 +121,9 @@ Steps:
   a record the app made itself is named through its links: "j1.invoices" (the invoice made for job j1), "i1.customer";
   {{"do": "press", "record": q1, "button": its label}}, {{"do": "approve", "record": q1}}.
 - Time passing: {{"do": "wait", "days": n}}: each day of it, the app's rules that run on a schedule run as they would
-  (reminders, chasing, marking overdue), so what's due by then has happened.
+  (reminders, chasing, marking overdue), so what's due by then has happened. A date the app works out itself (due 14
+  days after it's issued) can't be written in: {{"do": "wait", "record": q1, "until": that date's key, "days": n}}
+  waits until it's n days gone (left out: the day after; 0: the day itself; -2: two days before it).
 - "by": "staff" on a step someone other than the owner does; "refused": true on a step the app must stop.
 Expect:
 - {{"record": q1, "field": key, "equals": value}}: a number written as its arithmetic ("=2*100+50"), never your own sum;
@@ -234,6 +236,13 @@ def _patch_lines(classes):
 
 # --- asking ---------------------------------------------------------------------------------------------------------
 
+# How much a step may think (characters) before it's taken to have run away and is answered straight away instead: what
+# it needed when it came out right, with room to spare. Round 44: the understand step never thought more than 15,000
+# characters when it came out right, but ran away in 5 of 56 calls (mostly an owner's follow-up), each about 12 minutes
+# before the length limit stopped it. Steps not named here think up to AI_THINK_TOKENS.
+THINK_LIMITS = {"understand": 30000}
+
+
 def thinks(kind):
     """Whether this step of the builder thinks before it answers (AI_THINK_STEPS, or AI_THINK_BUILDER for all of them)."""
     cfg = settings()
@@ -250,6 +259,7 @@ def _ask(system, user, schema_, progress=None, tries=0, kind=None):
     token = ai.again.set(tries)
     messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
     think, began, lost = thinks(kind), time.monotonic(), None
+    ceiling = ai.think_limit.set(THINK_LIMITS.get(kind or ""))
     try:
         try:
             content, _ = ai.chat(messages, schema=schema_, on_progress=progress, think=think, purpose="builder")
@@ -263,6 +273,7 @@ def _ask(system, user, schema_, progress=None, tries=0, kind=None):
             content, _ = ai.chat(messages, schema=schema_, on_progress=progress, think=False, purpose="builder")
     finally:
         ai.again.reset(token)
+        ai.think_limit.reset(ceiling)
     calls = ai.recording.get()
     if calls is not None and kind:
         mine = next((c for c in reversed(calls) if c.get("messages") == messages and c.get("content") == content), None)
@@ -275,18 +286,20 @@ def _ask(system, user, schema_, progress=None, tries=0, kind=None):
 
 
 def _ask_many(system, user, schema_, n):
-    """n answers to the same question at once, each asked a little differently: for the search."""
+    """n answers to the same question at once, each asked a little differently: for the search. Each runs in a copy of
+    this turn's context, taken here (in the worker it'd be the worker's own, empty one): kept with the turn's other
+    calls (training, and how long each took), and counted as this workspace's turn at the model."""
     app = current_app._get_current_object()
 
-    def one(k):
+    def one(k, context):
         def run():
             with app.app_context():
                 return _ask(system, user, schema_, tries=k + 1, kind="fix")
-        return contextvars.copy_context().run(run)
+        return context.run(run)
 
     out = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=n) as pool:
-        for future in [pool.submit(one, k) for k in range(n)]:
+        for future in [pool.submit(one, k, contextvars.copy_context()) for k in range(n)]:
             try:
                 out.append(future.result())
             except ai.AIError as exc:

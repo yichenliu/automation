@@ -469,6 +469,10 @@ def fixed_up(ws, owner, scenario, result):
     owners = {x["title"] for x in checking.examples(ws) if checking.theirs(x)}
     failing = {x["title"] for x in (state.get("checks") or {}).get("examples") or [] if not x["ok"]}
     must = owners | failing  # never quietly gone: the owner's checks, and the builder's that didn't work
+    # a feature's own examples are remade from what it's set to: put right (counted from the day it's issued, not its
+    # due date), its title changes, and it's still tried as long as the feature still has examples on the Checks page
+    made_by = {x["title"]: x.get("by") for x in (state.get("checks") or {}).get("examples") or []
+               if str(x.get("by") or "").startswith("feature:")}
     out = {"right_after": None, "asks": []}
     key = scenario["key"].split("-")[0]
     for n in range(1, ASKS + 1):
@@ -503,7 +507,8 @@ def fixed_up(ws, owner, scenario, result):
         db.session.expire_all()
         ws = db.session.get(Workspace, ws.id)
         found = checking.not_right(ws)
-        shown = {x["title"] for x in (ws.state.get("checks") or {}).get("examples") or []}
+        now = (ws.state.get("checks") or {}).get("examples") or []
+        shown = {x["title"] for x in now} | {t for t, by in made_by.items() if any(x.get("by") == by for x in now)}
         still = ([f"fails: {x['title']}: {x['why']}" for x in found["failing"]] + [f"wrong: {i}" for i in found["issues"]]
                  + [f"doesn't do yet: {x['said']}" for x in found["missing"]] + [f"no longer tried: {t}" for t in sorted(must - shown)]
                  + [f"not made: {n['does']}" for n in (reply.checks or {}).get("needs") or [] if n.get("state") == "unmade"])
