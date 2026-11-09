@@ -330,6 +330,30 @@ def _list(provider, url, key):
     return [re.sub(r"^models/", "", i) for i in ids if i]
 
 
+def _plain(name):
+    """A model's name with what people type differently set aside: case, spaces, dots, underscores, slashes."""
+    return re.sub(r"[\s._/-]+", "-", str(name or "").strip().lower()).strip("-")
+
+
+def own_name(typed, ids):
+    """The provider's own name for a model typed another way ("claude-sonnet-5.5" or "Claude Sonnet 5.5" for
+    claude-sonnet-5-5, "GPT 5.2" for gpt-5.2): the one model it has that's the same once case, spaces and punctuation are
+    set aside; "" when none is (or more than one)."""
+    if typed in ids:
+        return typed
+    found = {i for i in ids if _plain(i) == _plain(typed)}
+    return found.pop() if len(found) == 1 else ""
+
+
+def near_names(typed, ids, n=3):
+    """The provider's models nearest what was typed, for "did you mean"."""
+    import difflib
+    plain = {}
+    for i in ids:
+        plain.setdefault(_plain(i), i)
+    return [plain[x] for x in difflib.get_close_matches(_plain(typed), list(plain), n=n, cutoff=0.6)]
+
+
 def best_model(name, ids):
     """The model to use when none is chosen: the first of the provider's preferred families it has, the highest version
     of that family (gpt-5.2 over gpt-5.1 over gpt-5; never a -mini or a dated snapshot)."""

@@ -117,3 +117,12 @@ def test_only_the_platform_admin_chooses(app, page, client, monkeypatch):
     assert client.post(url + "/models", data={"provider": "openai"}).status_code == 403
     monkeypatch.setitem(app.config, "PLATFORM_ADMINS", "Sam@example.com")
     assert "Choose where it runs" in client.get(url).text
+
+
+def test_a_model_written_another_way_is_saved_under_the_providers_own_name(app, page, client, monkeypatch):
+    url, ws = page
+    monkeypatch.setattr(providers, "_list", lambda p, address, key: ["claude-opus-5-5", "claude-sonnet-5-5"])
+    done = client.post(url, data={"do": "save", "builder_provider": "anthropic", "builder_model": "claude-sonnet-5.5",
+                                  "key_anthropic": "sk-ant-secret-1234"}, follow_redirects=True)
+    assert providers.stored()["use"]["builder"] == {"provider": "anthropic", "model": "claude-sonnet-5-5"}
+    assert "saved as that" in done.text

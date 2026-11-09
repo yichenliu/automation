@@ -60,6 +60,7 @@ def server(app, monkeypatch):
     _fresh()
     ai._learned.clear()
     providers._listed.clear()
+    ai._named.clear()
     yield fake
     fake.close()
     _fresh()
@@ -308,3 +309,41 @@ def test_a_recorded_call_says_which_model_wrote_it(app, server):
     finally:
         ai.recording.reset(token)
     assert calls[0]["provider"] == "anthropic" and calls[0]["model"] == "claude-opus-5-5"
+
+
+CLAUDES = ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"]
+
+
+def test_a_model_written_as_people_write_it_is_asked_by_the_providers_own_name(app, server, monkeypatch):
+    """Anthropic names its models with hyphens (claude-sonnet-5-5); an owner typed "claude-sonnet-5.5" and every call
+    was refused, "no model called 'claude-sonnet-5.5'". The provider's list says which it meant: asked again by that
+    name, which is remembered."""
+    def reply(h, body):
+        if body["model"] not in CLAUDES:
+            return refuse(h, f"model: {body['model']}", status=404, anthropic=True)
+        anthropic_stream(h, '{"greeting": "hello"}' if body.get("output_config", {}).get("format") else "hello")
+    server.reply = reply
+    monkeypatch.setattr(providers, "_list", lambda p, url, key: CLAUDES)
+    choose("anthropic", "claude-sonnet-5.5", server.url)
+    assert ai.chat([{"role": "user", "content": "hi"}])[0] == "hello"
+    assert [x["body"]["model"] for x in server.seen] == ["claude-sonnet-5.5", "claude-sonnet-5-5"]
+    assert ai.chat([{"role": "user", "content": "again"}])[0] == "hello"
+    assert [x["body"]["model"] for x in server.seen][2:] == ["claude-sonnet-5-5"]  # straight to it from then on
+    tried = ai.try_out(ai._route("assistant"))
+    assert tried["ok"] and tried["model"] == "claude-sonnet-5-5", tried
+
+
+def test_a_model_the_provider_hasnt_got_says_which_it_may_have_meant(app, server, monkeypatch):
+    server.reply = lambda h, body: refuse(h, f"model: {body['model']}", status=404, anthropic=True)
+    monkeypatch.setattr(providers, "_list", lambda p, url, key: CLAUDES)
+    choose("anthropic", "claude-sonet-5", server.url)
+    result = ai.try_out(ai._route("assistant"))
+    assert not result["ok"] and "no model called 'claude-sonet-5'" in result["said"], result
+    assert "did you mean claude-sonnet-5-5" in result["said"] and len(server.seen) == 1
+
+
+def test_names_written_another_way_are_the_providers_own_only_when_theres_one_such(app):
+    assert providers.own_name("Claude Sonnet 5.5", CLAUDES) == "claude-sonnet-5-5"
+    assert providers.own_name("GPT 5.2", ["gpt-5.2", "gpt-5.2-mini"]) == "gpt-5.2"
+    assert providers.own_name("gpt-5.2", ["gpt-5.2"]) == "gpt-5.2"
+    assert providers.own_name("claude-sonnet", CLAUDES) == ""  # which one? not guessed

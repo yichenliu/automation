@@ -383,6 +383,26 @@ def _ai_choice(form, saved):
     return {"use": use, "keys": keys, "urls": urls}, problems
 
 
+def _own_names(choice):
+    """A cloud model chosen as people write it ("claude-sonnet-5.5", "Claude Sonnet 5.5") saved under the provider's own
+    name for it (claude-sonnet-5-5), when the provider says what it has: the page then shows the name that works."""
+    from .. import ai_providers as providers
+    for slot, picked in (choice.get("use") or {}).items():
+        p = providers.CATALOG.get(picked.get("provider"))
+        if not (p and p.cloud and picked.get("model")):
+            continue
+        name, url, key, _ = providers.resolve(slot, choice)
+        try:
+            ids = providers.models(name, url, key, kind="embed" if slot == "embed" else "chat")
+        except Exception:  # noqa: BLE001 - it can't say what it has now: kept as typed (a call puts it right: ai._Named)
+            continue
+        own = providers.own_name(picked["model"], ids)
+        if own and own != picked["model"]:
+            flash_note = f"{p.name} calls {picked['model']} “{own}”: saved as that"
+            picked["model"] = own
+            yield flash_note
+
+
 def _ai_page(request, ws, *, choice=None, tried=None, typed=None, status=200):
     from .. import ai_providers as providers
     from .. import knowledge
@@ -436,6 +456,7 @@ def ai_settings(request: Request, wid: int, ws=Depends(member_of("admin")), form
             p = providers.CATALOG.get(route.provider)
             tried.append({**result, "label": label, "route": route, "where": p.name if p else route.provider, "quote": slot != "embed"})
         return _ai_page(request, ws, choice=choice, tried=tried, typed=typed)
+    renamed = list(_own_names(choice))
     before = {slot: providers.resolve(slot) for slot, _, _ in AI_SLOTS}
     providers.save(choice, by=current_user(request).email)
     after = {slot: providers.resolve(slot) for slot, _, _ in AI_SLOTS}
@@ -449,7 +470,8 @@ def ai_settings(request: Request, wid: int, ws=Depends(member_of("admin")), form
         for (other,) in db.session.query(Workspace.id).all():
             jobs.enqueue("knowledge_rebuild", workspace_id=other, dedupe=f"knowledge_rebuild:{other}")
         db.session.commit()
-    flash(request, "Saved. The AI uses this from now on, for every business on this platform.", "success")
+    flash(request, "Saved. The AI uses this from now on, for every business on this platform."
+          + "".join(f" {note}." for note in dict.fromkeys(renamed)), "success")
     return redirect(url_for("settings.ai_settings", wid=wid))
 
 

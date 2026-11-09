@@ -83,6 +83,18 @@ class CutOff(AIError):
     """The answer reached the length limit before it was finished (asked for too much at once)."""
 
 
+class _Named(AIError):
+    """The provider has the model asked for, under its own name ("claude-sonnet-5-5" for a typed "claude-sonnet-5.5"):
+    the call is sent again with that name, and the name is remembered (`_named`)."""
+
+    def __init__(self, model):
+        super().__init__(model)
+        self.model = model
+
+
+_named = {}  # (provider, address, the model's name as chosen) -> the provider's own name for it
+
+
 DOWN_FOR = 20  # after a failed connection, skip the model for this many seconds instead of waiting out timeouts again
 _down = {}
 _backend = None  # tests plug in a function here
@@ -536,7 +548,12 @@ def _ask(messages, schema, think, on_progress, purpose, priority, workspace_id, 
         try:
             began = time.monotonic()
             _skip_if_down(route.url)  # it went while this call waited
-            content, thinking = ask(route, messages, schema, _settings(think, purpose, priority), on_progress, deadline, usage)
+            try:
+                content, thinking = ask(route, messages, schema, _settings(think, purpose, priority), on_progress, deadline, usage)
+            except _Named as named:  # the model chosen as people write it: asked again by the provider's own name for it
+                _named[(route.provider, route.url, route.model)] = named.model
+                route = route._replace(model=named.model)
+                content, thinking = ask(route, messages, schema, _settings(think, purpose, priority), on_progress, deadline, usage)
             took = time.monotonic() - began
         finally:
             gate.done(workspace_id)
@@ -550,7 +567,7 @@ def _ask(messages, schema, think, on_progress, purpose, priority, workspace_id, 
 def _model(route, kind="chat"):
     """The route with its model: the one chosen, or else the provider's best for this key (providers.best_model)."""
     if route.model:
-        return route
+        return route._replace(model=_named.get((route.provider, route.url, route.model), route.model))
     p = _provider(route)
     try:
         found = providers.best_model(route.provider, providers.models(route.provider, route.url, route.key, kind=kind))
@@ -582,7 +599,7 @@ def try_out(route, *, embed_too=False, seconds=90):
         return {"ok": True, "said": str(said)[:200], "seconds": round(time.monotonic() - began, 1), "model": used.model}
     except (AIError, requests.RequestException, ValueError) as exc:
         return {"ok": False, "said": str(exc)[:400] or type(exc).__name__, "seconds": round(time.monotonic() - began, 1),
-                "model": route.model or (f"{p.name}'s best" if p else "")}
+                "model": _named.get((route.provider, route.url, route.model), route.model) or (f"{p.name}'s best" if p else "")}
 
 
 def _waiting_note(on_progress):
@@ -692,7 +709,16 @@ def _refused(response, route, what):
     if status in (502, 503, 504, 529):
         raise _unavailable(route.url, f"HTTP {status}")
     if status == 404 and p and p.cloud:
-        raise AIError(f"{who} has no model called {route.model!r} for this key (HTTP 404): choose another under Settings › AI")
+        try:
+            ids = providers.models(route.provider, route.url, route.key)
+        except Exception:  # noqa: BLE001 - it can't say what it has: said as it is
+            ids = []
+        own = providers.own_name(route.model, ids)
+        if own and own != route.model:
+            raise _Named(own)
+        near = providers.near_names(route.model, ids)
+        raise AIError(f"{who} has no model called {route.model!r} for this key (HTTP 404)"
+                      + (f": did you mean {' or '.join(near)}? Choose it under Settings › AI" if near else ": choose another under Settings › AI"))
     raise AIError(f"{who} refused {what} ({status}): {_said(response)[:300]}")
 
 

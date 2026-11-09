@@ -8,6 +8,15 @@ from app.models import Membership, User, Version, Workspace
 from app.blueprint import schema
 
 
+@pytest.fixture(autouse=True)
+def _no_cloud(monkeypatch):
+    """No test asks a real cloud provider what models it has: only the fake servers on this computer answer."""
+    from app import ai_providers as providers
+    real = providers._list
+    monkeypatch.setattr(providers, "_list", lambda p, url, key: real(p, url, key)
+                        if str(url).startswith(("http://127.0.0.1", "http://localhost")) else [])
+
+
 @pytest.fixture(scope="session")
 def database_url():
     """A throwaway PostgreSQL database for the whole run (beside the platform's own: ./start.sh setup), dropped after."""
