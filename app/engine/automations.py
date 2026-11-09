@@ -1176,6 +1176,23 @@ def _do(engine, automation, action, record, run):
         if not made:  # nothing to make them from: said, never “Created 0 lines”
             return {"result": f"No {schema.lc(t['label'])} were added: there was nothing in {f['label']} to add them for"}
         return {"result": f"Created {len(made)} {schema.lc(t['label']) if len(made) != 1 else schema.lc(t['singular'])}, one for each in {f['label']}"}
+    if kind == "create_for_each" and action["source"].get("all"):  # each customer whose delivery day is the new round's
+        source, made = action["source"], []
+        rule = RecordProxy(engine, record) if record is not None else None
+        names = {"record": rule, "this": rule} if rule is not None else None
+        with engine.atomic():  # all of them or none
+            for row in [r for r in engine.rows(source["table"]) if (record is None or r.id != record.id)
+                        and engine.matches(r, action.get("where") or [], about=record, names=names)]:
+                values = _render_values(action["values"], _context(engine, run, record, item=row), engine, action["table"])
+                if action.get("copy_matching"):
+                    values = {**copy_matching(engine, action["table"], row, also=[record]), **values}
+                made.append(engine.create(action["table"], values, by=_by(automation), depth=depth, automations=False, unfinished=True))
+                _to_finish(engine, automation, action["table"], made[-1])
+        t, s = engine.tables[action["table"]], engine.tables[source["table"]]
+        if not made:
+            return {"result": f"No {schema.lc(t['label'])} were added: no {schema.lc(s['singular'])} matched"}
+        return {"result": f"Created {len(made)} {schema.lc(t['label']) if len(made) != 1 else schema.lc(t['singular'])}, "
+                          f"one for each matching {schema.lc(s['singular'])}"}
     if kind == "create_for_each":
         source = action["source"]
         made = []
@@ -2328,6 +2345,10 @@ def describe_action(engine, automation, action):
             which = f" where {automations_words(engine, action['where'], f['table'])}" if action.get("where") and f.get("table") else ""
             of = (engine.tables.get(f.get("table")) or {}).get("label", "").lower()
             text = f"Add {_article(thing)} {thing.lower()} for each of its {schema.lc(f['label'])}" + (f" ({of})" if of and of not in f["label"].lower() else "") + which
+        elif kind == "create_for_each" and action["source"].get("all"):
+            s = engine.tables.get(action["source"]["table"]) or {"singular": action["source"]["table"]}
+            which = f" where {automations_words(engine, action['where'], action['source']['table'])}" if action.get("where") else ""
+            text = f"For each {schema.lc(s['singular'])}{which}, add {_article(thing)} {thing.lower()}"
         elif kind == "create_for_each":
             s = engine.tables.get(action["source"]["table"])
             which = f" where {automations_words(engine, action['where'], action['source']['table'])}" if action.get("where") else ""

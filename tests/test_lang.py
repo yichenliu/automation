@@ -1491,3 +1491,50 @@ def test_the_app_picks_a_free_driver_and_two_helpers_for_each_job(app):
 def m_notification():
     from app.models import Notification
     return Notification
+
+
+def test_a_delivery_is_added_for_each_customer_whose_day_and_driver_are_the_new_rounds(app):
+    """Round 45's pet food round: “set up a round for the week and it schedules a delivery for every customer whose day
+    and driver match”. The builder wrote for_each “customers where delivery_day == record.day and driver ==
+    record.driver” three asks running, and add_each only went through a field of the round, so it was refused."""
+    out = lang.apply(schema.empty("x"), [
+        {"do": "add_list", "key": "drivers", "label": "Drivers", "singular": "Driver", "fields": [
+            {"type": "text", "key": "name", "label": "Name", "required": True}]},
+        {"do": "add_list", "key": "customers", "label": "Customers", "singular": "Customer", "fields": [
+            {"type": "text", "key": "name", "label": "Name", "required": True},
+            {"type": "choice", "key": "delivery_day", "label": "Delivery day", "options": ["Monday", "Tuesday"]},
+            {"type": "link", "key": "driver", "label": "Driver", "to": "drivers"}]},
+        {"do": "add_list", "key": "rounds", "label": "Rounds", "singular": "Round", "fields": [
+            {"type": "choice", "key": "day", "label": "Day", "options": ["Monday", "Tuesday"]},
+            {"type": "link", "key": "driver", "label": "Driver", "to": "drivers"}]},
+        {"do": "add_list", "key": "deliveries", "label": "Deliveries", "singular": "Delivery", "fields": [
+            {"type": "link", "key": "round", "label": "Round", "to": "rounds"}, {"type": "link", "key": "customer", "label": "Customer", "to": "customers"}]},
+        {"do": "add_rule", "rule": {"key": "schedule", "name": "Schedule the round's deliveries", "when": {"on": "added", "list": "rounds"},
+                                    "steps": [{"do": "add_each", "list": "deliveries",
+                                               "for_each": "customers where delivery_day == record.day and driver == record.driver",
+                                               "values": [{"field": "round", "formula": "record"}, {"field": "customer", "formula": "item"}]}]}}])
+    assert not out.problems, out.problems
+    rule = next(a for a in out.blueprint["automations"] if a["key"] == "schedule")
+    assert rule["actions"][0]["source"] == {"table": "customers", "all": True}
+    from app.lang import back
+    assert back.rule_in_keel(out.blueprint, rule)["steps"][0]["for_each"] == "customers"  # read back the same way
+    ws = _workspace(app, out.blueprint)
+    e = Engine(ws)
+    ann, bo = e.create("drivers", {"name": "Ann"}, ai=False), e.create("drivers", {"name": "Bo"}, ai=False)
+    for name, day, driver in [("Alice", "Monday", ann), ("Bob", "Monday", ann), ("Carol", "Monday", bo), ("Dan", "Tuesday", ann)]:
+        e.create("customers", {"name": name, "delivery_day": day, "driver": driver.id}, ai=False)
+    r = e.create("rounds", {"day": "Monday", "driver": ann.id}, ai=False)
+    e.reset()
+    made = [x for x in e.rows("deliveries") if x.data.get("round") == r.id]
+    assert sorted(e.title(e.get(x.data["customer"])) for x in made) == ["Alice", "Bob"]
+    said = automations_said(e, rule)
+    assert "For each customer where" in said, said
+    bad = lang.apply(out.blueprint, [{"do": "add_rule", "rule": {"key": "s2", "name": "S2", "when": {"on": "added", "list": "rounds"},
+                                      "steps": [{"do": "add_each", "list": "deliveries", "for_each": "customers where weekday == record.day",
+                                                 "values": [{"field": "customer", "formula": "item"}]}]}}])
+    assert bad.problems and "weekday" in bad.problems[0]
+
+
+def automations_said(engine, rule):
+    from app.engine import automations
+    return automations.describe_action(engine, rule, rule["actions"][0])

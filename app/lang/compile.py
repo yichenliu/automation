@@ -612,6 +612,18 @@ def _target(d, t, on, where, made=None):
     return d.list(f["table"]), ".".join(keys)
 
 
+def _whole_list(d, t, said):
+    """(a list, the condition its records must meet) when an add_each's for_each names a whole list ("customers where
+    delivery_day == record.day") rather than a field of the rule's record; else None."""
+    m_ = re.match(r"^\s*([A-Za-z_][\w ]*?)\s*(?:\bwhere\b\s*(.+))?$", str(said or ""), re.S | re.I)
+    if not m_ or (t is not None and d.field(t, m_.group(1)) is not None and not m_.group(2)):
+        return None  # a field of the record: one for each chosen in it
+    each = d.list(m_.group(1).strip())
+    if each is None:
+        return None
+    return each, (m_.group(2) or "").strip() or None
+
+
 NO_RECORD = (m.SetValues, m.AddEach, m.MakeDocument, m.PaymentLink, m.Task, m.Approval, m.Wait, m.Assign, m.Allocate, m.Copy, m.Delete, m.RunRule, m.AiFill,
              m.AiCheck, m.UpdateEach)
 
@@ -630,6 +642,18 @@ def ir_step(d, t, s, where, made=None):
         target = _list(d, s.list, where)
         out = {"type": "create_record", "table": target["key"], "values": ir_values(d, t, target, s.values, where, created=made),
                "copy_matching": s.copy_same}
+    elif isinstance(s, m.AddEach) and s.for_each and _whole_list(d, t, s.for_each):  # each customer whose day is the round's
+        target = _list(d, s.list, where)
+        each, cond = _whole_list(d, t, s.for_each)
+        conditions = ([cond] if cond else []) + list(s.lines_where)
+        for i, c in enumerate(conditions, start=1):  # inside it, names are the list's fields and record.x the rule's record's
+            text = c if isinstance(c, str) else schema.as_formula(c.field, c.op, c.value) if c.field and c.op else None
+            if isinstance(text, str):
+                _check_formula(d, t, f"count({each['key']} where {text}) >= 0", f"{where} › for_each {i}")
+        out = {"type": "create_for_each", "table": target["key"], "source": {"table": each["key"], "all": True},
+               "values": ir_values(d, t, target, s.values, where, item=each, created=made), "copy_matching": s.copy_same}
+        rest = ir_conditions(d, each, [c for c in s.lines_where if not isinstance(c, str)], f"{where} › lines_where") if s.lines_where else []
+        out["where"] = ([{"formula": cond}] if cond else []) + [{"formula": c.strip()} for c in s.lines_where if isinstance(c, str)] + rest
     elif isinstance(s, m.AddEach) and s.for_each:  # one for each one chosen in a field (each invited supplier)
         target = _list(d, s.list, where)
         f = d.field(t, s.for_each)

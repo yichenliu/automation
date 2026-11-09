@@ -60,9 +60,9 @@ from ("said"). Only what they asked for. For an app made from
 nothing, when they've said little, add what a business like theirs needs at its core (a few needs, "suggested": true).
 For a change to an app in use, only what this message asks for.
 For a new app, when the owner has said almost nothing about how their business works (one line: "need a system for
-my shop"), don't guess: ask up to 4 short questions in "questions" and send no needs. Each has 2 to 5 short answers
+my shop"), don't guess: ask up to 3 short questions in "questions" and send no needs. Each has 2 to 5 short answers
 they can click, the usual ones for a business like theirs (and "None of these" where it fits), about what decides the
-app: what they keep track of, what needs their OK, what gets chased or reminded, who does what. Ask only once: when
+app most: what they keep track of, what needs their OK, what gets chased or reminded. Ask only once: when
 they've answered, build from what they said and choose sensibly for the rest.
 Otherwise ask a question ("question") only when nothing at all can be built without its answer; choose sensibly and build.
 "reply": one or two plain sentences to the owner about what you'll make (no jargon, no field names)."""
@@ -592,7 +592,8 @@ def _turn(turn):
         if listed:  # after "Not everything works yet": only what this message is about is taken on
             picked = [listed[i - 1] for i in dict.fromkeys(understood.about) if 0 < i <= len(listed)]
             mending = {**mending, "found": {k: [x for kind, x, _ in picked if kind == k] for k in ("failing", "issues", "missing")}} if picked else None
-        asking = [q for q in understood.questions if q.ask.strip() and len([c for c in q.choices if c.strip()]) >= 2][:4]
+        # three at most: four at once reads as a form to fill in (rounds 44 and 45, a beginner's eyes)
+        asking = [q for q in understood.questions if q.ask.strip() and len([c for c in q.choices if c.strip()]) >= 2][:3]
         if asking and not changing and not _asked_before(workspace, turn.message):  # a new app from almost nothing: asked, once
             turn.message.text = "A few quick questions, so I build what your business needs:\n" + "\n".join(
                 f"{i}. {q.ask.strip()} ({' / '.join(c.strip() for c in q.choices if c.strip())})" for i, q in enumerate(asking, start=1))

@@ -522,7 +522,7 @@ def _resolve(bp, changes, new=()):
                     if len(fits) == 1:
                         act["target"] = fits[0]
             source = act.get("source") if isinstance(act.get("source"), dict) else None
-            if source and source.get("table") and not source.get("of") and trigger_table and source["table"] in tables:
+            if source and source.get("table") and source.get("via") and not source.get("of") and trigger_table and source["table"] in tables:
                 via = schema.field(tables[source["table"]], source["via"])
                 if via and via["type"] == "link" and via["table"] != trigger_table["key"]:
                     # the work order's product's bill of materials: through the one link that reaches it
@@ -1386,7 +1386,8 @@ def _automation_said(bp, a):
             said.append(f"adds {_a(thing(x['table']))}")
         elif kind == "create_for_each":
             said.append(f"adds {(tables.get(x['table']) or {}).get('label', x['table'] or 'records').lower()} for each "
-                        + (label(x["source"]["field"]).lower() if x["source"].get("field") else "line"))
+                        + (label(x["source"]["field"]).lower() if x["source"].get("field") else
+                           (tables.get(x["source"]["table"]) or {}).get("singular", "one").lower() if x["source"].get("all") else "line"))
         elif kind == "copy_record":
             said.append("copies it with its lines" + (f", linked back by {label(x['link_back'])}" if x.get("link_back") else ""))
         elif kind == "update_record":

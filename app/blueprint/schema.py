@@ -2078,6 +2078,13 @@ def normalize_action(raw):
                         action["where"] = [normalize_condition(c) for c in _list(where)]
                     return action
                 source_table = _first(source, "table") or _first(raw, "source_table", "from_table")
+                if source_table and str(_first(source, "all", "every", default="")).lower() in ("true", "1", "yes"):
+                    # every record of a list that matches the rule's record (a delivery for each customer on the round's day)
+                    action["source"] = {"table": slug(source_table), "all": True}
+                    where = _first(raw, "where", "filters", "only_those")
+                    if where:
+                        action["where"] = [normalize_condition(c) for c in _list(where)]
+                    return action
                 via = _first(source, "via", "link", "link_field") or _first(raw, "source_via", "via")
                 if not source_table or not via:
                     raise SchemaError("create_for_each needs \"source\": {\"table\": the records to go through, \"via\": their link field to the triggering record}")
@@ -3302,7 +3309,8 @@ def _check_automation(a, tables, problems, documents, bp_pages=(), automations=N
                     if not source:
                         problems.append(f"{where} goes through “{act['source']['table']}”, which isn't a table")
                     else:
-                        _check_source(act["source"], source, t, where, problems, made, tables)
+                        if not act["source"].get("all"):
+                            _check_source(act["source"], source, t, where, problems, made, tables)
                         _check_conditions(act.get("where"), source, where, problems, tables)
                     item_fields = [f["key"] for f in source["fields"]] if source else []
                     _check_values(act["values"], target, where, problems, context_fields + item_fields)

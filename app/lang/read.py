@@ -105,6 +105,9 @@ def _step(s):
         return f"add {s.get('table')} {json.dumps(s.get('values'), ensure_ascii=False)}"
     if kind == "create_for_each":
         src = s.get("source") or {}
+        if src.get("all"):
+            return (f"add_each {s.get('table')} for each {src.get('table')} where {json.dumps(s.get('where'), ensure_ascii=False)} "
+                    f"{json.dumps(s.get('values'), ensure_ascii=False)}")
         return f"add_each {s.get('table')} for each {src.get('table')} via {src.get('via')} {json.dumps(s.get('values'), ensure_ascii=False)}"
     if kind == "notify":
         return f"notify {s.get('to')}: “{s.get('message')}”"

@@ -92,6 +92,12 @@ def step_in_keel(bp, t, a):
             if a.get("where"):
                 out["lines_where"] = conditions_in_keel(a["where"])
             return _with_only_if(out, a)
+        if source.get("all"):  # each record of a whole list that matches
+            out = {"do": "add_each", "list": a["table"], "for_each": source["table"], "values": values_in_keel(a.get("values")),
+                   "copy_same": bool(a.get("copy_matching"))}
+            if a.get("where"):
+                out["lines_where"] = conditions_in_keel(a["where"])
+            return _with_only_if(out, a)
         if not source.get("via"):
             raise Unsaid("one record for each of something with no link to say which")
         out = {"do": "add_each", "list": a["table"], "lines": source["table"], "link": source["via"],

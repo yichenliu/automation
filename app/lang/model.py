@@ -305,12 +305,15 @@ class AddEach(Base):
     """Add a record for each line of the rule's record (an invoice line for each job line): lines is the list of lines,
     link is their link field to the rule's record; values read the line as item.x and the record made before as
     created. Or for_each: one for each record or person chosen in a field (a quote request for each invited
-    supplier: item is that one)."""
+    supplier: item is that one), or for each record of a whole list that matches the rule's record ("customers where
+    delivery_day == record.day and driver == record.driver": a delivery for each customer on a new round; inside the
+    where, names are the list's fields and record.x the rule's record's)."""
     do: Literal["add_each"]
     list: str
     lines: str | None = None
     link: str | None = None
-    for_each: str | None = Field(None, description="instead of lines: one for each record or person chosen in this field of the rule's record (each invited supplier)")
+    for_each: str | None = Field(None, description="instead of lines: one for each record or person chosen in this field of the rule's record (each "
+                                 "invited supplier), or a list and which of its records (customers where delivery_day == record.day)")
     of: str | None = Field(None, description="the lines of the record this link of the rule's record leads to (a job's quote: of quote)")
     values: list[Value] = Field(default_factory=list)
     copy_same: bool = True

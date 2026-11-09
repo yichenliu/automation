@@ -1433,18 +1433,18 @@ class Engine:
             typed, wanted = typed.date(), to_date(wanted)
         return expr._compare(expr.ast.Eq(), typed, wanted)
 
-    def matches(self, record, conditions, old=None, about=None):
+    def matches(self, record, conditions, old=None, about=None, names=None):
         """Whether a record meets every condition. `old` (the values before a change) makes changed/changed_to work;
         `about` is the record {{record.x}} in the values means, when that isn't the one checked (a statement's lines).
         A group {"any": [...]} holds when one of its conditions does; {"all": [...]} when every one does."""
         for c in conditions or []:
             if "any" in c or "all" in c:
-                if not (any(self.matches(record, [x], old, about) for x in c["any"]) if "any" in c else self.matches(record, c["all"], old, about)):
+                if not (any(self.matches(record, [x], old, about, names) for x in c["any"]) if "any" in c else self.matches(record, c["all"], old, about, names)):
                     return False
                 continue
             if "formula" in c:  # count(client.invoices where …) == 0: a formula that must hold
                 try:
-                    if not to_bool(expr.evaluate(schema.percents_fixed(self.tables.get(record.table), c["formula"]), RecordContext(self, record))):
+                    if not to_bool(expr.evaluate(schema.percents_fixed(self.tables.get(record.table), c["formula"]), RecordContext(self, record, names))):
                         return False
                 except expr.ExprError as exc:
                     log.warning("The condition %r couldn't be worked out: %s", c["formula"], exc)
