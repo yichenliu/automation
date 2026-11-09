@@ -764,8 +764,15 @@ class _Answer:
 
     def broke(self, exc):
         """What a connection that broke while the answer streamed in means: the deadline, if it's passed (the read
-        timeout was cut to it), or else the server gone."""
-        return self.deadline.answering() if self.deadline.left() <= 0.05 else _unavailable(self.url, type(exc).__name__)
+        timeout was cut to it); the answer stalled, if the server stopped sending part way (it had answered, so it isn't
+        gone: a model held up writing what the server holds back, and every other call is asked as usual); or else the
+        server gone. Round 45: a stall read as the server gone skipped every call for 20 seconds, and ended the round."""
+        if self.deadline.left() <= 0.05:
+            return self.deadline.answering()
+        if isinstance(exc, requests.Timeout) or "timed out" in str(exc).lower():
+            return Stuck(f"The AI went quiet part way through its answer ({len(''.join(self.thinking)):,} characters of "
+                         f"thinking and {self.size:,} of answer so far).")
+        return _unavailable(self.url, type(exc).__name__)
 
     def finish(self):
         content, thinking = "".join(self.content), "".join(self.thinking)

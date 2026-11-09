@@ -450,3 +450,23 @@ def test_health_shows_what_the_ai_was_asked(app, fake, owner):
     assert parts["The AI"]["ok"] and parts["The AI"]["said"] == "big is answering on this computer"
     assert parts["Asking the AI"]["ok"] and parts["Asking the AI"]["said"].startswith("1 asked since the app started, 0 went wrong")
     assert "11 tokens read, 7 written" in parts["Asking the AI"]["said"]
+
+
+def test_an_answer_that_stalls_part_way_is_stuck_not_the_server_gone(app, fake, monkeypatch):
+    """Round 45: Ollama kept writing for 11 minutes but sent nothing for ten of them, the read timed out, and the
+    gateway took the server for gone: every call for the next 20 seconds failed at once, and the round ended. A server
+    that answered and then went quiet is a stalled answer (Stuck, which the builder answers again without thinking);
+    the next call is asked as usual."""
+    monkeypatch.setitem(app.config, "AI_READ_TIMEOUT", 1)
+
+    def reply(h, body):
+        if last(body) == "stall":
+            h.events([{"choices": [{"index": 0, "delta": {"role": "assistant"}}]},
+                      {"choices": [{"index": 0, "delta": {"content": "a start"}}]}], pause=2.5)
+        else:
+            h.stream("fine")
+    fake.reply = reply
+    with pytest.raises(ai.Stuck, match="went quiet part way"):
+        ai.chat([{"role": "user", "content": "stall"}])
+    assert not ai._down
+    assert ai.chat([{"role": "user", "content": "next"}])[0] == "fine"

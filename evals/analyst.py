@@ -326,6 +326,49 @@ def same_as(folder, only=()):
     return out
 
 
+OUTAGE_WAIT = 3600  # how long a round waits for the AI to come back before it gives up
+
+
+def _when_the_ai_answers():
+    """Wait until every model server the app uses answers (up to OUTAGE_WAIT): an app isn't tried while the AI is away."""
+    from app import ai
+    began = time.time()
+    while True:
+        try:
+            ai.check()
+            return
+        except ai.AIUnavailable as exc:
+            if time.time() - began > OUTAGE_WAIT:
+                raise
+            print(f"  (waiting for the AI to answer: {exc})", flush=True)
+            time.sleep(30)
+
+
+def _hit_an_outage(result):
+    """Whether the AI went away while this app was tried: what it said then is the outage's, not the builder's."""
+    said = json.dumps(result, ensure_ascii=False, default=str)
+    return "waiting_ai" in said or "isn't answering" in said
+
+
+def run_through_outages(scenario, out, tries=3):
+    """An app tried as `run` does, tried again from the start if the AI went away part way (an outage isn't a wrong app:
+    round 45's first app counted three changes as failed while the model server was being skipped)."""
+    from app import ai
+    for attempt in range(1, tries + 1):
+        try:
+            result = run(scenario, out)
+        except ai.AIUnavailable as exc:
+            if attempt == tries:
+                raise
+            print(f"  (the AI went away during {scenario['key']}: {exc}; trying it again from the start)", flush=True)
+            continue
+        if not _hit_an_outage(result) or attempt == tries:
+            if attempt > 1:
+                result["tried_again_after_outage"] = attempt - 1
+            return result
+        print(f"  (the AI went away during {scenario['key']}: trying it again from the start)", flush=True)
+
+
 def run(scenario, out):
     from app import create_app
     data = out / scenario["key"]
@@ -336,6 +379,7 @@ def run(scenario, out):
                       "TRAINING_LOG": bool(scenario.get("fresh"))})  # the fixed scenarios are the exam: never lessons
     result = {"key": scenario["key"], "title": scenario["title"], "turns": []}
     with app.app_context():
+        _when_the_ai_answers()
         if scenario.get("fresh") and not scenario["turns"]:
             opener, real = fresh.owner(scenario["fresh"], scenario.get("style", "plain"))
             scenario = dict(scenario, turns=[{"say": opener, "expect": {}}], real=real)
@@ -887,7 +931,7 @@ def main(argv=None):
                 scenario = dict(scenario, key=f"{scenario['key']}-{n}") if args.repeat > 1 else scenario
                 if scenario["key"] in done:
                     continue
-                result = run(scenario, out)
+                result = run_through_outages(scenario, out)
                 result["at"] = datetime.now().isoformat(timespec="seconds")
                 log.write(json.dumps(result, ensure_ascii=False, default=str) + "\n")
                 log.flush()
