@@ -36,7 +36,7 @@ def app(tmp_path, database_url):
                       "DEFAULT_TIMEZONE": "Australia/Perth", "MICROSOFT_CLIENT_ID": "", "MICROSOFT_CLIENT_SECRET": "",
                       "BASE_URL": "http://localhost:5050", "OLLAMA_EMBED_MODEL": "",
                       # how this computer's own .env has the AI think isn't what the tests are about
-                      "AI_THINK": False, "AI_THINK_BUILDER": False, "AI_THINK_STEPS": "", "AI_THINK_TOKENS": 8000,
+                      "AI_THINK": False, "AI_THINK_BUILDER": False, "AI_THINK_STEPS": "", "AI_THINK_TOKENS": 8000, "AI_THINK_TOKENS_CLOUD": 64000, "AI_EFFORT": "high",
                       "AI_DEADLINE": 900})
     # The test keeps the app's context open (to query the database). Each request from app.test_client() shares its
     # database session, with a request.state of its own, and leaves the session no workspace's (app/web/http.py).

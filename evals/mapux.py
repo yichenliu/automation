@@ -62,7 +62,7 @@ def review(workspace, theirs):
                 finally:
                     browser.close()
         except Exception as exc:  # noqa: BLE001 - the eyes failing is said, never the run
-            out.append(ux._finding("idea", "not looked at", "the owner", "App map", f"the App map couldn't be looked at: {type(exc).__name__}: {str(exc)[:120]}"))
+            out.append(ux._finding("idea", "not looked at", "the owner", "App map", f"the App map couldn't be looked at: {type(exc).__name__}: {str(exc)[:400]}"))
         finally:
             server.should_exit = True
             thread.join(timeout=5)
@@ -89,11 +89,17 @@ def _page(browser, base, email, width, height, broke):
     page.on("pageerror", lambda e: broke.append((where["now"], f"the page fails: {str(e)[:140]}")))
     page.on("console", lambda m: broke.append((where["now"], f"the page says an error: {m.text[:140]}")) if m.type == "error" and "favicon" not in m.text else None)
     page.on("response", lambda r: broke.append((where["now"], f"a request failed ({r.status}) {r.url.split('/app/')[-1][:60]}")) if r.status >= 500 else None)
-    page.goto(base + "/login")
-    page.fill("input[name=email]", email)
-    page.fill("input[name=password]", PASSWORD)
-    page.click("form button.primary")
-    page.wait_for_load_state("networkidle")
+    for attempt in (1, 2):  # once more from the start if the sign-in page didn't take what was typed (a busy machine)
+        try:
+            page.goto(base + "/login")
+            page.fill("input[name=email]", email)
+            page.fill("input[name=password]", PASSWORD)
+            page.click("form button.primary")
+            page.wait_for_load_state("networkidle")
+            break
+        except Exception:  # noqa: BLE001 - Playwright's timeout: the second try's is said
+            if attempt == 2:
+                raise
     return page, where
 
 

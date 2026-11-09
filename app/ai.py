@@ -527,6 +527,23 @@ def chat(messages, *, schema=None, think=None, on_progress=None, purpose=None, p
     return content, thinking
 
 
+def chat_thinking(messages, *, think, **kw):
+    """`chat` for work that may think first: thinking that runs away (round in circles, or past the room it has) is let
+    go and the work answered without it, never failed. Round 43's builder learned it; the owner's checks crashed on it
+    when a cloud model at max effort ran out of room. Returns (content, thinking, seconds lost to the runaway or None)."""
+    began = time.monotonic()
+    try:
+        content, thinking = chat(messages, think=think, **kw)
+        return content, thinking, None
+    except (Stuck, CutOff):
+        if not think:
+            raise
+    lost = round(time.monotonic() - began)
+    log.info("Thinking ran away after %ss; answering without it", lost)
+    content, thinking = chat(messages, think=False, **kw)
+    return content, thinking, lost
+
+
 def _ask(messages, schema, think, on_progress, purpose, priority, workspace_id, *, route=None, seconds=None):
     """One call through the gateway: wait for a turn at its server, ask, count it. Returns (content, thinking, route),
     the route with the model that answered."""
@@ -548,12 +565,13 @@ def _ask(messages, schema, think, on_progress, purpose, priority, workspace_id, 
         try:
             began = time.monotonic()
             _skip_if_down(route.url)  # it went while this call waited
+            asking = _settings(think, purpose, priority, cloud=bool(p.cloud))
             try:
-                content, thinking = ask(route, messages, schema, _settings(think, purpose, priority), on_progress, deadline, usage)
+                content, thinking = ask(route, messages, schema, asking, on_progress, deadline, usage)
             except _Named as named:  # the model chosen as people write it: asked again by the provider's own name for it
                 _named[(route.provider, route.url, route.model)] = named.model
                 route = route._replace(model=named.model)
-                content, thinking = ask(route, messages, schema, _settings(think, purpose, priority), on_progress, deadline, usage)
+                content, thinking = ask(route, messages, schema, asking, on_progress, deadline, usage)
             took = time.monotonic() - began
         finally:
             gate.done(workspace_id)
@@ -610,15 +628,17 @@ def _waiting_note(on_progress):
     return note
 
 
-def _settings(think, purpose, priority):
+def _settings(think, purpose, priority, cloud=False):
     """What's asked of the model besides the conversation, the same whichever server answers: whether it thinks first,
-    how long the answer may be, and how much chance it takes."""
+    how long the answer may be (with room to think: a cloud model's own, AI_THINK_TOKENS_CLOUD), and how much chance it
+    takes."""
     cfg = settings()
     thinks = cfg["AI_THINK"] if think is None else think
     steady, tries = building.get() or purpose == "builder", again.get()
     seed = cfg.get("AI_BUILDER_SEED")
-    return {"think": thinks, "priority": priority,
-            "max_tokens": cfg["AI_MAX_TOKENS"] + (cfg.get("AI_THINK_TOKENS", 8000) if thinks else 0),  # the thinking counts towards the cap
+    room = int(cfg.get("AI_THINK_TOKENS_CLOUD") or 64000) if cloud else int(cfg.get("AI_THINK_TOKENS") or 8000)
+    return {"think": thinks, "priority": priority, "think_room": room if thinks else 0,
+            "max_tokens": cfg["AI_MAX_TOKENS"] + (room if thinks else 0),  # the thinking counts towards the cap
             "temperature": min(0.9, (cfg.get("AI_BUILDER_TEMPERATURE", 0.3) if steady else cfg.get("AI_TEMPERATURE", 0.6)) + 0.2 * tries),
             "top_p": 0.9, "seed": seed + tries if steady and seed is not None else None, "num_ctx": cfg.get("AI_NUM_CTX") or 0}
 
@@ -1126,7 +1146,7 @@ def _anthropic_turns(messages):
 def _anthropic_parts(ask, schema):
     cfg, n = settings(), ask["max_tokens"]
     effort = cfg.get("AI_EFFORT") or "high"
-    budget = max(1024, min(int(cfg.get("AI_THINK_TOKENS") or 8000), n - 2048))
+    budget = max(1024, min(int(ask.get("think_room") or cfg.get("AI_THINK_TOKENS") or 8000), n - 2048))
     if ask["think"]:  # Claude decides how much to think (adaptive), shown in summary; older models by a budget
         thinking = [{"thinking": {"type": "adaptive", "display": "summarized"}}, {"thinking": {"type": "adaptive"}},
                     {"thinking": {"type": "enabled", "budget_tokens": budget}}, {}]

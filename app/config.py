@@ -110,6 +110,10 @@ class Config:
     # of them when AI_THINK_BUILDER is on, none when it's off.
     AI_THINK_STEPS = os.getenv("AI_THINK_STEPS") or ""
     AI_THINK_TOKENS = int(os.getenv("AI_THINK_TOKENS") or 8000)
+    # The room a cloud model has to think. It's charged only for what it uses, and a model that allows less says so when
+    # asked (its limit is learned: ai._step). At max effort Claude needed more than 32,768 tokens for the builder's
+    # steps, and each step that ran out lost five minutes and then answered without thinking.
+    AI_THINK_TOKENS_CLOUD = int(os.getenv("AI_THINK_TOKENS_CLOUD") or 64000)
     AI_NUM_CTX = int(os.getenv("AI_NUM_CTX") or 0)  # 0: use the context size Ollama already has loaded
     AI_MAX_TOKENS = int(os.getenv("AI_MAX_TOKENS") or 12000)  # a cap, so a model stuck in a loop can't run forever
     AI_TEMPERATURE = float(os.getenv("AI_TEMPERATURE") or 0.6)  # lower than most models' 1.0: designs and records need care, not flair

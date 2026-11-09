@@ -258,19 +258,15 @@ def _ask(system, user, schema_, progress=None, tries=0, kind=None):
     right, so the builder's own verified work is what it learns from)."""
     token = ai.again.set(tries)
     messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
-    think, began, lost = thinks(kind), time.monotonic(), None
+    think, lost = thinks(kind), None
     ceiling = ai.think_limit.set(THINK_LIMITS.get(kind or ""))
     try:
-        try:
-            content, _ = ai.chat(messages, schema=schema_, on_progress=progress, think=think, purpose="builder")
-        except (ai.Stuck, ai.CutOff):
-            if not think:
-                raise
-            lost, think = round(time.monotonic() - began), False
-            # thinking that went round in circles, or used up the room for the answer: answered straight away instead,
-            # not asked again to think the same way (round 43: three such tries took the owner's turn 38 minutes)
+        # thinking that went round in circles, or used up the room for the answer: answered straight away instead, not
+        # asked again to think the same way (round 43: three such tries took the owner's turn 38 minutes)
+        content, _, lost = ai.chat_thinking(messages, schema=schema_, on_progress=progress, think=think, purpose="builder")
+        if lost is not None:
             _log.info("The %s step's thinking ran away; answering without it", kind or "builder")
-            content, _ = ai.chat(messages, schema=schema_, on_progress=progress, think=False, purpose="builder")
+            think = False
     finally:
         ai.again.reset(token)
         ai.think_limit.reset(ceiling)
