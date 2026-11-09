@@ -19,8 +19,14 @@ outweighs every "yes". Each answer is then graded:
 
     .venv/bin/python -m app.builder.training report <folders>          how much good data there is, and whether it's enough
     .venv/bin/python -m app.builder.training <folders> --out <folder>   gold lessons as train.jsonl / valid.jsonl
+    .venv/bin/python -m app.builder.training <folders> --out <folder> --by ollama   only those one provider or model wrote
     .venv/bin/python -m app.builder.training label <folder> --message 12 --bad "approvals never moved on"
     .venv/bin/python -m app.builder.training gaps <folders>             what builders couldn't make, most often first
+
+Whichever model answered is kept with each answer (its provider and model, from the AI gateway): the platform's own model
+on this computer or a model server, or a cloud provider's when one is chosen under Settings › AI. The report says how
+many lessons each wrote. A cloud model's right answers are good lessons for the platform's own model (distillation), but
+some providers' terms don't allow training another model on what theirs wrote: `--by` keeps one model's lessons only.
 
 docs/FINETUNE.md says when there's enough to train on, and how to tell whether training helped.
 """
@@ -40,6 +46,7 @@ _log = logging.getLogger(__name__)
 KINDS = ("design", "review", "fix", "examples",  # the first builder's
          "v2_understand", "v2_data", "v2_behaviour", "v2_checks", "v2_fix", "v2_repair", "v2_discover", "v2_learn")  # Keel v2's, in the Keel language
 GRADES = ("gold", "silver", "bronze")
+DESIGN = ("design", "v2_data", "v2_behaviour")  # the answers that design the app: the first builder's, Keel's lists and behaviour
 # Enough to be worth training on (docs/FINETUNE.md): fewer, or from too few businesses, and the model learns the
 # businesses rather than the platform.
 NEEDED = {"gold": 300, "design": 150, "businesses": 40}
@@ -106,10 +113,34 @@ def turns(paths):
             with open(file, encoding="utf-8") as lines:
                 for line in lines:
                     if line.strip():
-                        turn = json.loads(line)
+                        turn = _inferred(json.loads(line))
                         turn["_folder"] = str(file.parent)
                         turn["_verdicts"] = said.get(("message", turn.get("message")), []) + said.get(("workspace", turn.get("workspace")), [])
                         yield turn
+
+
+USED = ("v2_understand", "v2_data", "v2_behaviour", "v2_checks", "v2_repair")
+
+
+def _inferred(turn):
+    """A Keel turn kept before the builder said which answers it used (until November 2026 none was marked, so none was
+    ever a lesson): marked from what the turn shows. Every answer of those steps was used (one that failed isn't kept); a
+    fix only when it was the one chosen. The lists' and behaviour's were put right when the turn sent anything to be
+    repaired, the worked examples' when any had to be written again ("couldn't be acted out")."""
+    calls = turn.get("calls") or []
+    if not any(str(c.get("kind", "")).startswith("v2_") for c in calls) or any("applied" in c for c in calls):
+        return turn
+    repaired = any(c.get("kind") == "v2_repair" for c in calls)
+    rewritten = any(c.get("kind") == "v2_checks" and "couldn't be acted out" in json.dumps(c.get("messages") or [], ensure_ascii=False)
+                    for c in calls)
+    for c in calls:
+        kind = c.get("kind")
+        if kind in USED or (kind == "v2_fix" and c.get("chosen")):
+            c["applied"], c["inferred"] = True, True
+            if (kind in ("v2_data", "v2_behaviour") and repaired) or (kind == "v2_checks" and rewritten
+                                                                       and "couldn't be acted out" not in json.dumps(c.get("messages") or [], ensure_ascii=False)):
+                c["corrected"] = True
+    return turn
 
 
 def _verdicts(folder):
@@ -141,19 +172,33 @@ def call_grade(call, turn):
         return None
     grade = turn_grade(turn)
     if grade == "verified":
-        if call.get("corrected") or call.get("repair"):
-            return "silver"
-        if call.get("kind") in ("design", "review") and not right_first_time(turn["outcome"]):
+        if call.get("corrected") or call.get("repair") or call.get("kind") == "v2_repair":
+            return "silver"  # right only once put right: the answer to learn from is the corrected one
+        if call.get("kind") in DESIGN + ("review",) and not right_first_time(turn["outcome"]):
             return "silver"  # fitted, but the try-out found it needed fixing
         return "gold"
     return {"own": "silver", "done": "bronze"}.get(grade)
 
 
-def examples(paths, grade="gold"):
-    """The fine-tuning examples at this grade or better."""
+def written_by(call):
+    """Which model wrote an answer, "provider model" ("ollama qwen3:32b"); "" for one kept before answers said."""
+    return " ".join(x for x in (call.get("provider"), call.get("model")) if x)
+
+
+def _cloud(call):
+    from ..ai_providers import CATALOG
+    p = CATALOG.get(call.get("provider") or "")
+    return bool(p and p.cloud)
+
+
+def examples(paths, grade="gold", by=None):
+    """The fine-tuning examples at this grade or better; `by`: only those written by a provider or model whose name has
+    these words ("ollama", "claude-opus")."""
     allowed = GRADES[:GRADES.index(grade) + 1]
     for turn in turns(paths):
         for call in turn["calls"]:
+            if by and by.lower() not in written_by(call).lower():
+                continue
             if call_grade(call, turn) in allowed:
                 yield {"messages": call["messages"] + [{"role": "assistant", "content": call["content"]}], "kind": call.get("kind"),
                        "business": _business(turn)}
@@ -186,7 +231,7 @@ def report(paths):
     """How much good data there is, why the rest isn't, and whether it's enough to train on."""
     all_turns = list(turns(paths))
     grades, kinds, businesses, gold_businesses = Counter(), {g: Counter() for g in GRADES}, set(), set()
-    reasons, turn_grades, first = Counter(), Counter(), Counter()
+    reasons, turn_grades, first, gold_by, cloud_gold = Counter(), Counter(), Counter(), Counter(), 0
     for turn in all_turns:
         businesses.add(_business(turn))
         g = turn_grade(turn)
@@ -202,6 +247,8 @@ def report(paths):
                 kinds[cg][call.get("kind")] += 1
                 if cg == "gold":
                     gold_businesses.add(_business(turn))
+                    gold_by[written_by(call) or "a model not recorded"] += 1
+                    cloud_gold += _cloud(call)
     lines = [f"{len(all_turns)} builder turns from {len(businesses)} businesses",
              f"  turns: verified {turn_grades['verified']}, own checks only {turn_grades['own']}, unchecked {turn_grades['done']}, "
              f"found wrong {turn_grades['wrong']}, didn't finish {turn_grades['failed']}"]
@@ -209,9 +256,14 @@ def report(paths):
         lines.append(f"  first draft right, before its own fixes: {first['right']} of {first['right'] + first['not']} tried turns")
     for g in GRADES:
         lines.append(f"  {g:6} {grades[g]:4} lessons" + (f" ({', '.join(f'{k} {n}' for k, n in sorted(kinds[g].items()))})" if grades[g] else ""))
+    if gold_by:
+        lines.append("  gold lessons written by: " + ", ".join(f"{who} {n}" for who, n in gold_by.most_common()))
+    if cloud_gold:
+        lines.append(f"  {cloud_gold} gold lessons were written by a cloud model: check its provider's terms allow training another "
+                     f"model on them, or export another's only (--by)")
     if reasons:
         lines.append("  why turns weren't verified: " + "; ".join(f"{r} ({n})" for r, n in reasons.most_common(6)))
-    have = {"gold": grades["gold"], "design": kinds["gold"]["design"], "businesses": len(gold_businesses)}
+    have = {"gold": grades["gold"], "design": sum(kinds["gold"][k] for k in DESIGN), "businesses": len(gold_businesses)}
     short = [f"{label} {have[k]} of {NEEDED[k]}" for k, label in (("gold", "gold lessons"), ("design", "gold design lessons"),
                                                                      ("businesses", "businesses with gold lessons")) if have[k] < NEEDED[k]]
     lines.append("Ready to try fine-tuning: " + ("yes (docs/FINETUNE.md step 3; switch only if the held-out eval says it's better)"
@@ -265,8 +317,9 @@ def main(argv=None):
     parser.add_argument("--grade", choices=GRADES, default="gold", help="the lowest grade of lesson to include (gold: only verified, right as given)")
     parser.add_argument("--loose", action="store_true", help="the same as --grade bronze")
     parser.add_argument("--valid", type=float, default=0.1, help="share kept apart to check the training on")
+    parser.add_argument("--by", help="only lessons written by this provider or model (words of its name: ollama, claude-opus)")
     args = parser.parse_args(argv)
-    rows = list(examples(args.paths, "bronze" if args.loose else args.grade))
+    rows = list(examples(args.paths, "bronze" if args.loose else args.grade, args.by))
     random.Random(7).shuffle(rows)
     cut = max(1, int(len(rows) * args.valid)) if len(rows) > 1 else 0
     out = Path(args.out)

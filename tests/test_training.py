@@ -48,3 +48,84 @@ def test_a_lesson_is_gold_only_when_verified_and_right_as_given(tmp_path):
     assert [r["kind"] for r in training.examples([folder])] == ["design", "examples"]  # the corrected answer isn't gold
     said = training.report([folder])
     assert "gold      2 lessons (design 1, examples 1)" in said and "first draft right, before its own fixes: 1 of 1" in said, said
+
+
+def _kept(folder, *turns):
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "builder-2026-11.jsonl").write_text("".join(json.dumps(t) + "\n" for t in turns))
+
+
+RIGHT = {"status": "done", "tried": True, "examples": [2, 2], "issues_left": 0, "left_out": 0, "first": {"wrong": 0, "examples": [2, 2]}}
+
+
+def _call(kind, content="{}", asked="hi", **x):
+    return {"kind": kind, "content": content, "messages": [{"role": "user", "content": asked}], **x}
+
+
+def test_keels_turns_kept_before_answers_were_marked_are_still_lessons(tmp_path):
+    """Until November 2026 Keel's builder marked no answer as used, so no verified build ever gave a lesson. What a kept
+    turn shows says which were: every answer of a step (one that failed isn't kept), the fix chosen, and which were put
+    right (a repair sent; examples written again)."""
+    folder = tmp_path / "training"
+    plain = {"workspace": 1, "message": 1, "business": "a", "outcome": RIGHT,
+             "calls": [_call("v2_understand"), _call("v2_data"), _call("v2_behaviour"), _call("v2_checks"),
+                       _call("v2_fix", "a"), _call("v2_fix", "b", chosen=True)]}
+    mended = {"workspace": 1, "message": 2, "business": "a", "outcome": RIGHT,
+              "calls": [_call("v2_data"), _call("v2_repair"), _call("v2_checks"),
+                        _call("v2_checks", asked="These examples couldn't be acted out. Send each corrected")]}
+    _kept(folder, plain, mended)
+    training.verdict(folder, True, by="owner checks", workspace=1)
+    graded = [[(c["kind"], training.call_grade(c, t)) for c in t["calls"]] for t in training.turns([folder])]
+    assert graded[0] == [("v2_understand", "gold"), ("v2_data", "gold"), ("v2_behaviour", "gold"), ("v2_checks", "gold"),
+                         ("v2_fix", None), ("v2_fix", "gold")]
+    assert graded[1] == [("v2_data", "silver"), ("v2_repair", "silver"), ("v2_checks", "silver"), ("v2_checks", "gold")]
+    assert "gold design lessons 2 of 150" in training.report([folder])  # Keel's lists and behaviour are the design
+
+
+def test_whose_answers_the_lessons_are_is_said_and_can_be_kept_to_one_model(tmp_path):
+    """A cloud model may build some apps: its right answers are kept like any other, with its provider and model, and the
+    report says how many each wrote (some providers' terms don't allow training another model on theirs)."""
+    folder = tmp_path / "training"
+    ours = dict(provider="ollama", model="qwen3:32b", applied=True)
+    theirs = dict(provider="anthropic", model="claude-opus-5-5", applied=True)
+    _kept(folder, {"workspace": 1, "message": 1, "business": "a", "outcome": RIGHT,
+                   "calls": [_call("v2_understand", **ours), _call("v2_checks", **theirs), _call("v2_data", **theirs)]})
+    training.verdict(folder, True, by="owner checks", workspace=1)
+    said = training.report([folder])
+    assert "gold lessons written by: anthropic claude-opus-5-5 2, ollama qwen3:32b 1" in said, said
+    assert "2 gold lessons were written by a cloud model" in said
+    assert [r["kind"] for r in training.examples([folder], by="ollama")] == ["v2_understand"]
+    assert [r["kind"] for r in training.examples([folder], by="Claude-Opus")] == ["v2_checks", "v2_data"]
+    out = tmp_path / "set"
+    assert training.main([str(folder), "--out", str(out), "--by", "ollama", "--valid", "0"]) == 0
+    assert len((out / "train.jsonl").read_text().splitlines()) == 1
+
+
+def test_an_eval_builds_with_the_ai_the_platform_chose(app, tmp_path):
+    """Each app an eval builds has a database of its own, so the platform's choice under Settings › AI (a cloud model,
+    say) never reached it: it built with the .env's. Now it's read once from the platform's database, given to each
+    app, its saved keys with it, and each result says which AI built it."""
+    from app import ai, ai_providers as providers
+    from app.security import encrypt
+    providers.save({"use": {"builder": {"provider": "anthropic", "model": "claude-opus-5-5"}}, "urls": {},
+                    "keys": {"anthropic": encrypt("sk-ant-test")}}, by="admin")
+    choice = analyst.platform_ai(app.config["SQLALCHEMY_DATABASE_URI"], app.config["SECRET_KEY"])
+    assert choice == {"use": {"builder": {"provider": "anthropic", "model": "claude-opus-5-5"}}, "urls": {}, "keys": {"anthropic": "sk-ant-test"}}
+    assert analyst.platform_ai(app.config["SQLALCHEMY_DATABASE_URI"], "another platform's secret")["keys"] == {}  # from .env then
+    providers.save({}, by="admin")  # an app's own database, as an eval makes it: nothing chosen
+    assert providers.resolve("builder")[0] != "anthropic"
+    analyst._build_with(choice)
+    assert providers.resolve("builder")[:2] == ("anthropic", "https://api.anthropic.com/v1") and providers.resolve("builder")[2] == "sk-ant-test"
+    used = analyst.ai_used()
+    assert used["builder"] == "Anthropic (Claude) claude-opus-5-5" and used["cloud"] and used["owner"] != used["builder"]
+    assert analyst._ai_line(used).startswith("built by Anthropic (Claude) claude-opus-5-5, owner played by ")
+
+
+def test_an_evals_lessons_are_collected_where_a_temporary_folder_cant_lose_them(tmp_path, monkeypatch):
+    monkeypatch.setenv("TRAINING_DIR", str(tmp_path / "kept"))
+    folder = tmp_path / "run45" / "fresh3" / "training"
+    _kept(folder, {"workspace": 1, "message": 1, "outcome": RIGHT, "calls": []})
+    training.verdict(folder, True, by="owner checks", workspace=1)
+    analyst._keep_lessons(tmp_path / "run45", "fresh3", folder)
+    kept = tmp_path / "kept" / "evals" / "run45" / "fresh3"
+    assert sorted(p.name for p in kept.iterdir()) == ["builder-2026-11.jsonl", "verdicts.jsonl"]

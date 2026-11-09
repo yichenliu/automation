@@ -12,6 +12,12 @@ turn the design is scored (what it has) and the business's stories are acted out
 asked, and does a later change break what already worked); after the last, the finished app is tried out in a copy (every
 list, stage, button, rule, document and screen: what's wrong with it). Results go to <out>/results.jsonl and are printed
 compactly, with totals at the end. The number that matters is right when handed over (handed_over).
+
+The apps are built by the AI the platform uses: the choice under Settings › AI (local or any cloud provider), else the
+.env settings; --env-ai takes the .env's whatever the platform chose. Each result says which AI built it and which played
+the owner, and the totals say it first: a round on a cloud model isn't comparable with one on the platform's own. The
+builder's conversations are kept for training whichever answered, each with its provider and model: in <out>/<app>/training,
+and collected in data/training/evals/<run>/<app> (or TRAINING_DIR), where a temporary --out can't lose them.
 """
 import argparse
 import io
@@ -344,19 +350,93 @@ def _when_the_ai_answers():
             time.sleep(30)
 
 
+def platform_ai(url=None, secret=None):
+    """The AI the platform builds with, as chosen under Settings › AI and kept in the platform's own database, for every
+    app of the run to build with too: local or cloud, an eval measures what owners get. None when nothing's chosen there
+    (the .env settings, as before). Each app has a database of its own, so the choice is read here once and given to each
+    (`_build_with`). A key saved there comes along when this checkout has the platform's secret key (its data/secret_key,
+    or SECRET_KEY); one that can't be read comes from the .env file instead (ANTHROPIC_API_KEY, OPENAI_API_KEY, ...).
+    `url` and `secret`: another platform's database and secret key than this checkout's."""
+    from sqlalchemy import create_engine, text
+    from sqlalchemy.pool import NullPool
+    from app.config import Config, _secret_key
+    from app.core.settings import using
+    from app.security import decrypt
+    try:
+        engine = create_engine(url or Config.SQLALCHEMY_DATABASE_URI, poolclass=NullPool)
+        try:
+            with engine.connect() as conn:
+                row = conn.execute(text("SELECT value FROM platform_setting WHERE key = 'ai'")).first()
+        finally:
+            engine.dispose()
+    except Exception as exc:  # noqa: BLE001 - no platform database here, or none made yet: the .env settings
+        print(f"  (the platform's choice of AI couldn't be read ({type(exc).__name__}): building with the .env settings)", flush=True)
+        return None
+    value = (row[0] if row else None) or {}
+    if not value.get("use"):
+        return None
+    keys = {}
+    with using({"SECRET_KEY": secret or _secret_key(Config.DATA_DIR)}):
+        for name, token in (value.get("keys") or {}).items():
+            said = decrypt(token)
+            if isinstance(said, str) and said:
+                keys[name] = said
+            else:
+                print(f"  (the {name} key saved under Settings › AI can't be read from this checkout: its key comes from the .env file)",
+                      flush=True)
+    return {"use": value["use"], "urls": value.get("urls") or {}, "keys": keys}
+
+
+def _build_with(choice):
+    """An app's own database given the platform's choice of AI (its keys sealed again with this app's secret key)."""
+    from app import ai_providers as providers
+    from app.security import encrypt
+    providers.save({**choice, "keys": {name: encrypt(key) for name, key in choice["keys"].items()}}, by="eval")
+
+
+def ai_used():
+    """Which AI built the app and which played its owner, as people know them: "Anthropic (Claude) claude-opus-5-5"."""
+    from app import ai
+    said = ai.describe()
+    name = lambda x: f"{x['name']} {x['model']}".strip()  # noqa: E731
+    return {"builder": name(said.get("builder") or said), "owner": name(said), "cloud": said["any_cloud"]}
+
+
+def lessons_kept_in():
+    """Where every eval's lessons are collected, whatever folder a run writes to (--out may be a temporary one, cleared
+    later): TRAINING_DIR, else this checkout's data/training, under evals/<run>/<app>. `training report data/training`
+    then counts them with the platform's own."""
+    import os
+    from app.config import Config
+    return Path(os.getenv("TRAINING_DIR") or Path(Config.DATA_DIR) / "training") / "evals"
+
+
+def _keep_lessons(out, key, folder):
+    """An app's builder turns and the verdicts on them (the owner's checks), copied where lessons are collected."""
+    if not folder.is_dir():
+        return
+    to = lessons_kept_in() / Path(out).resolve().name / key
+    try:
+        to.mkdir(parents=True, exist_ok=True)
+        for path in folder.glob("*.jsonl"):
+            shutil.copy2(path, to / path.name)
+    except OSError as exc:
+        print(f"  (couldn't keep {key}'s lessons in {to}: {exc})", flush=True)
+
+
 def _hit_an_outage(result):
     """Whether the AI went away while this app was tried: what it said then is the outage's, not the builder's."""
     said = json.dumps(result, ensure_ascii=False, default=str)
     return "waiting_ai" in said or "isn't answering" in said
 
 
-def run_through_outages(scenario, out, tries=3):
+def run_through_outages(scenario, out, tries=3, ai_choice=None):
     """An app tried as `run` does, tried again from the start if the AI went away part way (an outage isn't a wrong app:
     round 45's first app counted three changes as failed while the model server was being skipped)."""
     from app import ai
     for attempt in range(1, tries + 1):
         try:
-            result = run(scenario, out)
+            result = run(scenario, out, ai_choice)
         except ai.AIUnavailable as exc:
             if attempt == tries:
                 raise
@@ -369,7 +449,8 @@ def run_through_outages(scenario, out, tries=3):
         print(f"  (the AI went away during {scenario['key']}: trying it again from the start)", flush=True)
 
 
-def run(scenario, out):
+def run(scenario, out, ai_choice=None):
+    """One business built and tried; `ai_choice` the platform's choice of AI (platform_ai), or None for the .env's."""
     from app import create_app
     data = out / scenario["key"]
     shutil.rmtree(data, ignore_errors=True)
@@ -379,7 +460,10 @@ def run(scenario, out):
                       "TRAINING_LOG": bool(scenario.get("fresh"))})  # the fixed scenarios are the exam: never lessons
     result = {"key": scenario["key"], "title": scenario["title"], "turns": []}
     with app.app_context():
+        if ai_choice:
+            _build_with(ai_choice)
         _when_the_ai_answers()
+        result["ai"] = ai_used()  # the run's numbers are this AI's: a round on a cloud model isn't one on the platform's own
         if scenario.get("fresh") and not scenario["turns"]:
             opener, real = fresh.owner(scenario["fresh"], scenario.get("style", "plain"))
             scenario = dict(scenario, turns=[{"say": opener, "expect": {}}], real=real)
@@ -468,6 +552,7 @@ def run(scenario, out):
             result["updates"] = updated(ws, owner, scenario, dict(result, stories=result["fixing"].get("stories", result.get("stories"))), theirs)
             ws = db.session.get(Workspace, ws.id)
             (data / "blueprint_updated.json").write_text(json.dumps(ws.blueprint, indent=1, ensure_ascii=False))
+    _keep_lessons(out, scenario["key"], data / "training")
     return result
 
 
@@ -673,8 +758,13 @@ def consistency(results):
     return out
 
 
+def _ai_line(said):
+    return f"built by {said['builder']}" + (f", owner played by {said['owner']}" if said["owner"] != said["builder"] else "")
+
+
 def report(result):
-    lines = [f"\n== {result['title']}"] + ([f"  owner said ({result.get('style', 'plain')}): {result['said'][:400]}"] if result.get("said") else [])
+    lines = [f"\n== {result['title']}"] + ([f"  {_ai_line(result['ai'])}"] if result.get("ai") else []) \
+        + ([f"  owner said ({result.get('style', 'plain')}): {result['said'][:400]}"] if result.get("said") else [])
     for t in result["turns"]:
         if t.get("crash"):
             lines.append(f"  CRASH: {t['crash']}")
@@ -753,7 +843,7 @@ def report(result):
     return "\n".join(lines)
 
 
-def regrade(folder, only=(), resolve=False, ask=False):
+def regrade(folder, only=(), resolve=False, ask=False, ai_choice=None):
     """Try out the designs a run saved (blueprint.json in each scenario's folder) and act out their stories again. `ask`:
     the AI is asked for the changes again too, by today's builder (it needs the model); otherwise what it did then is kept."""
     from app import create_app
@@ -773,6 +863,8 @@ def regrade(folder, only=(), resolve=False, ask=False):
         app = create_app({"DATA_DIR": data, "SQLALCHEMY_DATABASE_URI": _database(path.parent.parent, f"{key}_{'asked' if ask else 'regrade'}"), "WORKER": False,
                           "WTF_CSRF_ENABLED": False, "SECRET_KEY": "eval", "TESTING": True})
         with app.app_context():
+            if ai_choice and ask:
+                _build_with(ai_choice)
             from app.extensions import db
             from app.models import Membership, User, Workspace
             owner = User(email="owner@example.com", name="Sam")
@@ -847,7 +939,9 @@ def totals(results):
     ways = {how: [c for c in changes if c["how"] == how] for how in ("map", "ai")}
     eyes = [f for r in results for f in r.get("map_ux") or []] + [f for r in results for f in (r.get("updates") or {}).get("ux") or []]
     map_kinds = {level: Counter(f["kind"] for f in eyes if f["level"] == level) for level in ("blocker", "confusing", "idea")}
+    ais = Counter(_ai_line(r["ai"]) for r in results if r.get("ai"))
     return (f"\n== TOTALS over {len(results)} run(s)\n"
+            + "".join(f"  AI: {line}" + (f" ({n} of {len(results)} apps)" if n != len(results) else "") + "\n" for line, n in ais.most_common())
             + (f"  CONSISTENT: {len(steady['always']) + len(steady['never'])}/{steady['businesses']} businesses came out the same every "
                f"run (right every time: {len(steady['always'])}, wrong every time: {len(steady['never'])}); sometimes right: "
                f"{', '.join(steady['sometimes']) or 'none'}\n"
@@ -910,10 +1004,13 @@ def main(argv=None):
     parser.add_argument("--resume", action="store_true", help="skip what --out already has a result for (a run that stopped part way)")
     parser.add_argument("--same-as", help="a run's folder: build its businesses again, each owner saying what they said there "
                                           "and checking what they checked (an A/B on the same owners: one setting changed)")
+    parser.add_argument("--env-ai", action="store_true", help="build with the .env file's AI settings, not the platform's choice "
+                                                               "under Settings › AI (an A/B of two models, one in each)")
     parser.add_argument("only", nargs="*")
     args = parser.parse_args(argv)
+    ai_choice = None if args.env_ai else platform_ai()
     if args.regrade:
-        regrade(args.regrade, args.only, args.resolve, args.ask)
+        regrade(args.regrade, args.only, args.resolve, args.ask, ai_choice)
         return 0
     if not args.out:
         parser.error("--out is needed (or --regrade)")
@@ -931,7 +1028,7 @@ def main(argv=None):
                 scenario = dict(scenario, key=f"{scenario['key']}-{n}") if args.repeat > 1 else scenario
                 if scenario["key"] in done:
                     continue
-                result = run_through_outages(scenario, out)
+                result = run_through_outages(scenario, out, ai_choice=ai_choice)
                 result["at"] = datetime.now().isoformat(timespec="seconds")
                 log.write(json.dumps(result, ensure_ascii=False, default=str) + "\n")
                 log.flush()

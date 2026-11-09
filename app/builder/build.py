@@ -439,8 +439,8 @@ class Turn:
         self.made |= made["needs"]
         self.features.update(made["features"])
 
-    def apply(self, patches, group, needs_text, owners=None):
-        """Apply patches; send the refused ones back to be corrected, twice at most. The outcome as finally saved.
+    def apply(self, patches, group, needs_text, owners=None, answers=()):
+        """Apply patches (from `answers`); send the refused ones back to be corrected, twice at most. The outcome as finally saved.
         Make before break: what a need's patches take away (a rule, a feature, a field) waits while what they make for it
         is refused, and is taken away only once that's made; so a fix that would replace what works never leaves the
         app with neither."""
@@ -451,6 +451,7 @@ class Turn:
         self.log.append({"step": group, "patches": patches, "problems": out.problems})
         self.save(out)
         self.credit(patches, out, owners)
+        _mark(answers, corrected=bool(out.problems))
         sent = list(patches)
         for _ in range(REPAIRS):
             if not out.problems:
@@ -473,6 +474,7 @@ class Turn:
                 break
             sent = worded(sent, self.theirs())
             out = lang.apply(self.bp, sent)
+            _mark([answer], corrected=bool(out.problems))
             self.log.append({"step": f"{group} corrected", "patches": sent, "problems": out.problems})
             self.save(out)
             self.credit(sent, out, owners)
@@ -658,9 +660,12 @@ def _turn(turn):
         turn.note(f"Correcting {len(broken)} check{'s' if len(broken) != 1 else ''} that couldn't be acted out")
         said = "\n".join(f"- “{x.get('title')}”: {json.dumps({k: x.get(k) for k in ('steps', 'expect')}, ensure_ascii=False)[:1500]}\n  why: {r.get('problem')}"
                          for x, r in broken)
+        _mark_broken({x.get("title") for x, _ in broken})
         try:
-            found = _ask(CHECKS.format(when_none=""), f"{turn.about()}\n\nThe app:\n{lang.describe(turn.bp)}\n\nThese examples couldn't be acted out. "
-                         f"Send each corrected, with the same title (need 0):\n{said}", EXAMPLE_SCHEMA, turn.progress, kind="checks").get("examples") or []
+            answer = _ask(CHECKS.format(when_none=""), f"{turn.about()}\n\nThe app:\n{lang.describe(turn.bp)}\n\nThese examples couldn't be acted out. "
+                          f"Send each corrected, with the same title (need 0):\n{said}", EXAMPLE_SCHEMA, turn.progress, kind="checks")
+            found = answer.get("examples") or []
+            _mark([answer])
         except TOO_MUCH:  # they stay as they were, said as not acted out
             found = []
         fixed = {x.get("title"): x for x in found if isinstance(x, dict) and x.get("steps") and x.get("expect")}
@@ -708,7 +713,7 @@ def _turn(turn):
         score, out, run, patches, owners = max(tried, key=lambda x: x[0][:2])
         if score[:2] <= _score(best, required):  # nothing tried did better: what there is stands
             break
-        _chosen(score[2])
+        _chosen(score[2], corrected=bool(out.problems))
         turn.save(out)
         turn.credit(patches, out, owners)
         best = run
@@ -770,8 +775,10 @@ def _understand(turn, asked, open_items=()):
             f"The owner says: {asked}")
     for tries, extra in ((0, ""), (1, ""), (2, "\n\n(Keep it short: at most six needs, one sentence each.)")):
         try:
-            return Understood.model_validate(_ask(UNDERSTAND, user + extra, Understood.model_json_schema(), turn.progress, tries,
-                                                  kind="understand"))
+            answer = _ask(UNDERSTAND, user + extra, Understood.model_json_schema(), turn.progress, tries, kind="understand")
+            understood = Understood.model_validate(answer)
+            _mark([answer])
+            return understood
         except TOO_MUCH:
             turn.note("That came out too long; asking again more briefly")
     raise ai.Stuck("I got stuck working out what you need. Press Try again, or say it again in fewer words.")
@@ -806,7 +813,7 @@ def _make_lists(turn, needs_text):
         except TOO_MUCH:  # too much to write at once: a few at a time, then the names alone
             turn.note("That was too much in one go; making the lists a few at a time")
     if data.get("patches"):
-        turn.apply(data["patches"], "data", needs_text)
+        turn.apply(data["patches"], "data", needs_text, answers=[data])
     named = list(data.get("lists") or [])
     size = 4
     for n in range(8):
@@ -822,7 +829,7 @@ def _make_lists(turn, needs_text):
             continue
         if not more.get("patches"):
             return
-        turn.apply(more["patches"], "data", needs_text)
+        turn.apply(more["patches"], "data", needs_text, answers=[more])
 
 
 # what people read in the app that the builder writes (a field's label and help, a message, an email), in the app's
@@ -864,10 +871,12 @@ def _examples_for(turn, needs, which, note):
     turn.note(note)
     wanted = "\n".join(f"{i}. {needs[i - 1].does}" for i in which if 0 < i <= len(needs))
     try:
-        found = _ask(CHECKS.format(when_none=""), f"{turn.about()}\n\nThe needs to check:\n{wanted}\n\nThe app:\n{lang.describe(turn.bp)}",
-                     EXAMPLE_SCHEMA, turn.progress, kind="checks").get("examples") or []
+        answer = _ask(CHECKS.format(when_none=""), f"{turn.about()}\n\nThe needs to check:\n{wanted}\n\nThe app:\n{lang.describe(turn.bp)}",
+                      EXAMPLE_SCHEMA, turn.progress, kind="checks")
     except (ai.CutOff, ai.Stuck):  # no worked examples this time: those needs are said as not tried out
         return []
+    found = answer.get("examples") or []
+    _mark([answer])
     return [x for x in found if isinstance(x, dict) and x.get("steps") and x.get("expect") and isinstance(x.get("need"), int)]
 
 
@@ -889,8 +898,10 @@ def _make_behaviour(turn, needs, needs_text, early=()):
     def ask(extra="", by_need=True, tries=0):
         return _ask(BEHAVIOUR.format(catalog=catalog("behaviour")), f"{turn.about()}\n\nThe needs:\n{needs_text}\n\nThe app now:\n"
                     f"{lang.describe(turn.bp)}{shown}{extra}", _answer_schema("behaviour", by_need=by_need), turn.progress, tries, kind="behaviour")
+    used = []
     try:
         answer = ask()
+        used.append(answer)
         sent, owners = flatten(answer)
         already = {int(i) for i in answer.get("already") or [] if str(i).isdigit()}
         silent = [i for i in range(1, len(needs) + 1) if i not in set(owners.values()) | already]
@@ -902,6 +913,7 @@ def _make_behaviour(turn, needs, needs_text, early=()):
                            f"already does it.", tries=1)
             except TOO_MUCH:  # what the first answer made stays; these are said as not made yet
                 more = {}
+            used.append(more)
             more_sent, more_owners = flatten(more)
             already |= {int(i) for i in more.get("already") or [] if str(i).isdigit()}
             owners.update({len(sent) + k: v for k, v in more_owners.items()})
@@ -917,11 +929,14 @@ def _make_behaviour(turn, needs, needs_text, early=()):
                           by_need=False, tries=1)
             except TOO_MUCH:
                 continue
+            used.append(one)
             for p in one.get("patches") or []:
                 owners[len(sent)] = i
                 sent.append(p)
     if sent:
-        turn.apply(sent, "behaviour", needs_text, owners)
+        turn.apply(sent, "behaviour", needs_text, owners, answers=used)
+    else:  # every need met already: the answer said so, and that's what was done
+        _mark(used)
     return sent, owners
 
 
@@ -945,11 +960,32 @@ def _not_yet_said(wrong, issues, unmade, again=False):
             "should happen.")
 
 
-def _chosen(content):
+def _chosen(content, corrected=False):
     """The candidate fix that was kept, marked among the turn's calls (the others weren't the builder's best)."""
     for c in ai.recording.get() or []:
         if c.get("kind") == "v2_fix" and c.get("content") == content:
-            c["chosen"] = True
+            c.update(chosen=True, applied=True, **({"corrected": True} if corrected else {}))
+
+
+def _mark(answers, corrected=False):
+    """What became of answers (each as _ask gave it), kept on its call among the turn's for training.py to grade the
+    lessons by: it went into the app (applied), and the platform refused some of it, or it was put right after
+    (corrected). An answer never marked wasn't used: it isn't a lesson."""
+    contents = {a.get("_content") for a in answers if isinstance(a, dict) and a.get("_content")}
+    for c in ai.recording.get() or []:
+        if c.get("content") in contents:
+            c["applied"] = True
+            if corrected:
+                c["corrected"] = True
+
+
+def _mark_broken(titles):
+    """The worked examples that couldn't be acted out: the answers that wrote them needed putting right."""
+    for c in ai.recording.get() or []:
+        if c.get("kind") == "v2_checks":
+            said = ai.parse_json(c.get("content") or "") or {}
+            if isinstance(said, dict) and any(isinstance(x, dict) and x.get("title") in titles for x in said.get("examples") or []):
+                c["corrected"] = True
 
 
 KEEP_FROM = re.compile(r"\b(shouldn'?t|should not|mustn'?t|must not|can'?t|cannot|don'?t|do not|never) (be able to )?(see|know|access)\b"

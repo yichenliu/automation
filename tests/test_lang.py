@@ -1,6 +1,7 @@
 """The Keel language (app/lang): patches compile to the design, every name is checked, features make their parts and
 prove themselves in the simulator, and every piece the registry has is one the AI can use (the guard)."""
 import json
+from pathlib import Path
 from datetime import date, timedelta
 
 import pytest
@@ -299,6 +300,54 @@ def test_what_fails_is_put_right_by_the_best_of_several_candidate_fixes(app):
     assert a.checks["fixes"] == 1
     assert a.checks["needs"] == [{"does": "Invoices are marked paid when paid", "said": "payments", "suggested": False, "state": "ok"}]
     assert a.text.startswith("Your app is ready to try.") and "What your app does now:\n- Invoices are marked paid when paid" in a.text
+
+
+def test_each_answer_kept_for_training_says_whether_it_went_into_the_app_and_was_put_right(app):
+    """The builder's answers are kept to train on, graded by what became of each: used as given, used once put right,
+    or not used. Keel's builder marked none of them, so not one answer of hundreds of verified builds was ever a lesson."""
+    ws = _workspace(app, None)
+    good = {"work": [{"need": 1, "patches": [{"do": "payments", "list": "invoices", "payments": "payments", "paid_stage": "Paid", "key": "payments_invoices"}]}]}
+    bad = {"work": [{"need": 0, "patches": [{"do": "add_field", "list": "invoices", "field": {"type": "text", "key": "memo", "label": "Memo"}}]}]}
+    fixes = iter([bad, good, bad])
+    model = Model({
+        "understand": {"needs": [{"said": "payments", "does": "Invoices are marked paid when paid"}], "reply": "OK."},
+        # one list the platform refuses (a link to a list that isn't there), put right when asked again
+        "data": {"patches": [EVERYTHING[0], _invoices(), EVERYTHING[3],
+                             {"do": "add_list", "key": "notes", "label": "Notes", "singular": "Note", "fields": [{"type": "link", "key": "x", "label": "X", "to": "nowhere"}]}]},
+        "repair": {"patches": [{"do": "add_list", "key": "notes", "label": "Notes", "singular": "Note", "fields": [{"type": "text", "key": "x", "label": "X"}]}]},
+        "behaviour": {"work": [{"need": 1, "patches": [{"do": "add_rule", "rule": {"key": "paid", "name": "Note a payment",
+                                                                                   "when": {"on": "added", "list": "payments"},
+                                                                                   "steps": [{"do": "notify", "message": "A payment came in"}]}}]}]},
+        "checks": {"examples": [{"need": 1, "title": "A paid invoice is Paid", "steps": [
+            {"do": "add", "table": "invoices", "as": "i1", "values": {"total": 100}},
+            {"do": "add", "table": "payments", "as": "p1", "values": {"invoice": "i1", "amount": 100}}],
+            "expect": [{"record": "i1", "field": "status", "equals": "Paid"}]}]},
+        "fix": lambda messages: next(fixes),
+    })
+    ai.set_backend(model)
+    q = Message(workspace_id=ws.id, channel="builder", user_id=ws.owner_id, role="user", text="Mark invoices paid when they're paid")
+    a = Message(workspace_id=ws.id, channel="builder", role="assistant", status="queued")
+    db.session.add_all([q, a])
+    db.session.commit()
+    from app.builder import chat, training
+    chat.work(a.id)
+    a = db.session.get(Message, a.id)
+    assert a.status == "done", a.error
+    folder = Path(app.config["DATA_DIR"]) / "training"
+    calls = [c for t in training.turns([folder]) for c in t["calls"]]
+    by = {}
+    for c in calls:
+        by.setdefault(c["kind"], []).append(c)
+    assert all(c.get("applied") and not c.get("inferred") for k in ("v2_understand", "v2_data", "v2_repair", "v2_behaviour", "v2_checks")
+               for c in by[k]), calls
+    assert by["v2_data"][0].get("corrected") and not by["v2_repair"][0].get("corrected")  # refused in part, then put right
+    assert not by["v2_behaviour"][0].get("corrected") and not by["v2_understand"][0].get("corrected")
+    fixes_kept = [c for c in by["v2_fix"] if c.get("applied")]
+    assert len(by["v2_fix"]) == 3 and len(fixes_kept) == 1 and fixes_kept[0]["chosen"]  # only the candidate kept is a lesson
+    training.verdict(folder, True, by="owner checks", workspace=ws.id)
+    grades = {(c["kind"], training.call_grade(c, t)) for t in training.turns([folder]) for c in t["calls"]}
+    assert ("v2_understand", "gold") in grades and ("v2_fix", "gold") in grades and ("v2_data", "silver") in grades
+    assert ("v2_repair", "silver") in grades and ("v2_fix", None) in grades
 
 
 def test_a_need_whose_patches_were_all_refused_is_said_as_not_made_yet(app):

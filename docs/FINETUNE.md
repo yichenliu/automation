@@ -31,7 +31,18 @@ collected from: they stay the exam.
     .venv/bin/python -m app.builder.training report ~/keel-lessons data/training
 
 It says how many lessons there are of each grade, why the rest weren't verified, how often the builder is right first
-time, and whether there's enough.
+time, which model wrote the gold lessons, and whether there's enough. Every eval round's lessons are collected in
+`data/training/evals/<round>/<app>` too (or `TRAINING_DIR`), whatever folder the round itself wrote to, so
+`report data/training` counts them all.
+
+Each answer says which answers went into the app and which the platform or a repair had to put right; that's what the
+grade is read from. (Keel's builder marked none until November 2026, so every lesson of its first 45 eval rounds counted
+as nothing; turns kept before then are marked from what they show: `_inferred` in `app/builder/training.py`.)
+
+**A cloud model's answers.** When Settings › AI sends the builder to a cloud provider, the evals build with it too and
+its answers are kept like any other, each with its provider and model. Its right answers are good lessons for the
+platform's own model (distillation), but some providers' terms don't allow training another model on what theirs
+wrote: check them, or export one model's lessons only with `--by` (`--by ollama`).
 
 **Enough** is 300 gold lessons, 150 of them designs, from at least 40 different businesses. Fewer, or from too few
 businesses, and the model learns those businesses rather than the platform. Until then, keep collecting, and keep
