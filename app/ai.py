@@ -1,11 +1,16 @@
-"""The AI: models on servers the platform runs itself, reached through a gateway.
+"""The AI: models on servers the platform runs itself or a cloud provider's, reached through a gateway.
 
-Two kinds of model server (AI_PROVIDER):
-- ollama: Ollama on this computer, for development and one business on one machine (/api/chat, /api/embed).
-- openai: any OpenAI-compatible server (vLLM, SGLang, llama.cpp's server, LM Studio) at AI_BASE_URL. Production runs vLLM
-  or SGLang on its own GPU servers: they batch many customers' requests together, keep shared prompt prefixes cached and
+Where the calls go (app/ai_providers.py has the catalog, and which one each purpose uses):
+- Ollama on this computer, for development and one business on one machine (/api/chat, /api/embed).
+- Your own OpenAI-compatible server (vLLM, SGLang, llama.cpp's server, LM Studio, LiteLLM). Production runs vLLM or
+  SGLang on its own GPU servers: they batch many customers' requests together, keep shared prompt prefixes cached and
   constrain JSON quickly.
-No cloud model is wired in: a conversation only goes somewhere else if someone puts that address in AI_BASE_URL.
+- A cloud provider: OpenAI, Anthropic (Claude), Google (Gemini), Azure OpenAI, Mistral, Groq, DeepSeek, xAI, OpenRouter,
+  Together, Fireworks, Cerebras, Cohere. Nothing goes to one unless a platform admin chooses it (Settings › AI) or the
+  .env file names it, and the platform says so wherever the AI is shown.
+Three ways of asking cover them all: Ollama's own, OpenAI's chat completions and Anthropic's messages. What one provider
+or model doesn't take (a temperature, a way of switching thinking, a JSON schema too big for it) it says when it refuses
+the request; the part it named is sent another way, or left out, and that's remembered for that model (_negotiate).
 
 Each purpose can have its own model, and its own server: the builder a big model (AI_MODEL_BUILDER, AI_BASE_URL_BUILDER),
 quick jobs a small one (AI_MODEL_FAST), the in-app assistant and background work AI_MODEL.
@@ -15,7 +20,7 @@ model is doing while it works. A model that can't be reached raises AIUnavailabl
 later instead of failing.
 
 The gateway. Every call waits its turn in this process's queue for the server it goes to (one queue per server):
-- At most AI_CONCURRENCY calls go at once (2 for Ollama, 8 for an OpenAI-compatible server, unless set). Sending more
+- At most AI_CONCURRENCY calls go at once (2 for Ollama, 8 for any other server, unless set). Sending more
   only makes every answer slower, and a call still waiting here can be put ahead of others; one already sent can't.
 - Strict priority: an owner waiting on a screen or a question ("interactive") goes before the builder's work ("build"),
   which goes before work nobody is watching ("background").
@@ -38,6 +43,7 @@ requests by how soon they're needed: AI_SERVER_PRIORITY=true sends each call's p
 """
 import contextlib
 import contextvars
+import hashlib
 import json
 import logging
 import os
@@ -48,6 +54,8 @@ import time
 from collections import deque, namedtuple
 
 import requests
+
+from . import ai_providers as providers
 from .core.settings import settings
 
 log = logging.getLogger("ai")
@@ -153,41 +161,48 @@ def _who(purpose=None, priority=None, workspace_id=None):
 # Where calls go ---------------------------------------------------------------------------------------------------
 
 Route = namedtuple("Route", "provider url key model")
-PROVIDERS = ("ollama", "openai")
-_TAGS = {"builder": "_BUILDER", "fast": "_FAST", "embed": "_EMBED"}
+PROVIDERS = tuple(providers.CATALOG)
 
 
 def _route(purpose):
-    """Where a purpose's calls go: its provider, server, key and model. AI_MODEL_BUILDER, AI_BASE_URL_FAST and the like
-    where they're set; the plain AI_* settings otherwise."""
-    cfg = settings()
-    tag = _TAGS.get(purpose, "")
+    """Where a purpose's calls go: its provider, server, key and model (app/ai_providers.py: the platform's choice under
+    Settings › AI, else AI_MODEL_BUILDER, AI_BASE_URL_FAST and the like where they're set, else the plain AI_* settings).
+    A cloud provider's model may be "": its best is found when it's asked (_model)."""
+    return Route(*providers.resolve(purpose))
 
-    def setting(name):
-        return (cfg.get(name + tag) if tag else None) or cfg.get(name)
-    provider = (setting("AI_PROVIDER") or "ollama").strip().lower()
-    url = (setting("AI_BASE_URL") or cfg.get("OLLAMA_URL") or "http://127.0.0.1:11434").rstrip("/")
-    if provider == "openai" and not re.search(r"/v\d+$", url):
-        url += "/v1"  # the address may be given with or without the /v1 the API lives under
-    model = cfg.get("OLLAMA_EMBED_MODEL") if purpose == "embed" else (setting("AI_MODEL") or cfg.get("OLLAMA_MODEL"))
-    return Route(provider, url, setting("AI_API_KEY") or "", model or "")
+
+def _provider(route):
+    return providers.CATALOG.get(route.provider)
 
 
 def _headers(route):
-    return {"Authorization": f"Bearer {route.key}"} if route.key else {}
+    return providers.headers(_provider(route), route.key)
 
 
 def describe():
+    """What the AI is, for the screens that show it: {"model", "url", "provider", "name" (the provider's, as people know
+    it), "cloud" (whether what's asked leaves the platform's own machines), "where", "think"}, with "builder" and "fast"
+    where they go somewhere else, and "embed" (search by meaning: its model, or None for words only)."""
     cfg = settings()
     route = _route("assistant")
-    host = re.sub(r"^\w+://", "", route.url).split("/")[0]
-    out = {"model": route.model, "url": route.url, "think": cfg["AI_THINK"], "provider": route.provider,
-           "where": "on this computer" if host.startswith(("127.", "localhost", "[::1]")) else f"at {host}"}
+    out = {**_described(route), "think": cfg["AI_THINK"]}
     for purpose in ("builder", "fast"):  # a purpose sent to a model or server of its own
         other = _route(purpose)
-        if (other.model, other.url) != (route.model, route.url):
-            out[purpose] = {"model": other.model, "url": other.url, "provider": other.provider}
+        if (other.provider, other.model, other.url) != (route.provider, route.model, route.url):
+            out[purpose] = _described(other)
+    embedding = _route("embed")
+    out["embed"] = _described(embedding) if embedding.model and embedding.provider != providers.WORDS_ONLY else None
+    out["any_cloud"] = any(x.get("cloud") for x in [out, out.get("builder") or {}, out.get("fast") or {}, out.get("embed") or {}])
     return out
+
+
+def _described(route):
+    p = _provider(route)
+    host = re.sub(r"^\w+://", "", route.url or "").split("/")[0]
+    local = host.startswith(("127.", "localhost", "[::1]")) or not host
+    return {"model": route.model or ("its best model" if p and p.cloud else ""), "url": route.url, "provider": route.provider,
+            "name": p.name if p else route.provider, "cloud": bool(p and p.cloud),
+            "where": "on this computer" if local and not (p and p.cloud) else (f"at {p.name}" if p and p.cloud else f"at {host}")}
 
 
 def _unavailable(url, why):
@@ -202,28 +217,37 @@ def _skip_if_down(url):
         raise AIUnavailable(reason)
 
 
+def _no_key(route):
+    p = _provider(route)
+    return AIUnavailable(f"there's no key for {p.name} yet: a platform admin adds one under Settings › AI"
+                         + (f" (or {p.keys[0]} in the .env file)" if p.keys else ""))
+
+
 def check():
     """Raise AIUnavailable unless every model server the AI uses answers: the default one, and the builder's, quick jobs'
-    and the embedding model's where they're set apart."""
+    and the embedding model's where they're set apart. A cloud provider is asked which models it has, which says the
+    key works too."""
     if _backend:
         return
     routes = {}
-    for purpose in ("assistant", "builder", "fast") + (("embed",) if settings().get("OLLAMA_EMBED_MODEL") else ()):
+    for purpose in ("assistant", "builder", "fast", "embed"):
         route = _route(purpose)
-        routes.setdefault((route.provider, route.url), route)
+        if purpose == "embed" and (not route.model or route.provider == providers.WORDS_ONLY):
+            continue
+        routes.setdefault((route.provider, route.url, route.key), route)
     for route in routes.values():
-        if route.provider not in PROVIDERS:
-            raise AIUnavailable(f"AI_PROVIDER is {route.provider!r}: it can be ollama or openai (vLLM, SGLang and other OpenAI-compatible servers)")
+        p = _provider(route)
+        if p is None:
+            raise AIUnavailable(f"AI_PROVIDER is {route.provider!r}: it can be one of {', '.join(PROVIDERS)}")
+        if p.needs_key and not route.key:
+            raise _no_key(route)
         _skip_if_down(route.url)
         try:
-            response = requests.get(route.url + ("/api/tags" if route.provider == "ollama" else "/models"),
-                                    headers=_headers(route), timeout=(5, 15))
-        except requests.RequestException as exc:
+            providers._list(p, route.url, route.key)
+        except providers.KeyRefused as exc:  # it's there, but turned us away (a wrong key): not down
+            raise AIUnavailable(f"{exc}: check the key under Settings › AI") from exc
+        except (requests.RequestException, ValueError) as exc:
             raise _unavailable(route.url, type(exc).__name__) from exc
-        if response.status_code >= 500:
-            raise _unavailable(route.url, f"HTTP {response.status_code}")
-        if response.status_code >= 400:  # it's there, but turned us away (a wrong AI_API_KEY): not down
-            raise AIUnavailable(f"the AI at {route.url} refused to say what it serves (HTTP {response.status_code}); check AI_API_KEY")
         _down.pop(route.url, None)
 
 
@@ -475,28 +499,36 @@ def chat(messages, *, schema=None, think=None, on_progress=None, purpose=None, p
         raise AIUnavailable("the AI isn't asked while an app is being tried out")
     purpose, priority, workspace_id = _who(purpose, priority, workspace_id)
     _let_go()
-    began = time.monotonic()
+    began, route = time.monotonic(), None
     if _backend:
         content, thinking = _backend(messages, schema, on_progress)
     else:
-        content, thinking = _ask(messages, schema, think, on_progress, purpose, priority, workspace_id)
+        content, thinking, route = _ask(messages, schema, think, on_progress, purpose, priority, workspace_id)
     calls = recording.get()
     if calls is not None:  # with how long it took and how much it thought: which steps thinking is worth its wait in
         calls.append({"messages": list(messages), "content": content, "seconds": round(time.monotonic() - began, 1),
-                      "thought": len(thinking or "")})
+                      "thought": len(thinking or ""),
+                      # which model wrote it: a cloud model's answers are told apart from the platform's own model's
+                      **({"provider": route.provider, "model": route.model} if route else {})})
     return content, thinking
 
 
-def _ask(messages, schema, think, on_progress, purpose, priority, workspace_id):
-    """One call through the gateway: wait for a turn at its server, ask, count it."""
-    route = _route(purpose)
-    deadline = Deadline(float(settings().get("AI_DEADLINE") or 900))
+def _ask(messages, schema, think, on_progress, purpose, priority, workspace_id, *, route=None, seconds=None):
+    """One call through the gateway: wait for a turn at its server, ask, count it. Returns (content, thinking, route),
+    the route with the model that answered."""
+    route = route or _route(purpose)
+    deadline = Deadline(float(seconds or settings().get("AI_DEADLINE") or 900))
     asked, usage, waited = time.monotonic(), {}, None
     try:
-        ask = {"ollama": _ollama_chat, "openai": _openai_chat}.get(route.provider)
-        if ask is None:
-            raise AIError(f"AI_PROVIDER is {route.provider!r}: it can be ollama or openai (vLLM, SGLang and other OpenAI-compatible servers)")
+        p = _provider(route)
+        ask = {"ollama": _ollama_chat, "openai": _openai_chat, "anthropic": _anthropic_chat}.get(p.protocol) if p else None
+        if ask is None or not p.chats:
+            raise AIError(f"AI_PROVIDER is {route.provider!r}: it can be one of "
+                          f"{', '.join(k for k, x in providers.CATALOG.items() if x.chats)}")
+        if p.needs_key and not route.key:
+            raise _no_key(route)
         _skip_if_down(route.url)  # not worth waiting for a turn to find the server gone
+        route = _model(route)
         gate = _gate(route)
         waited = gate.wait(priority, workspace_id, deadline, _waiting_note(on_progress) if on_progress else None)
         try:
@@ -510,7 +542,45 @@ def _ask(messages, schema, think, on_progress, purpose, priority, workspace_id):
         _count(purpose, route, waited=time.monotonic() - asked if waited is None else waited, usage=usage, failed=type(exc).__name__)
         raise
     _count(purpose, route, waited=waited, took=took, usage=usage)
-    return content, thinking
+    return content, thinking, route
+
+
+def _model(route, kind="chat"):
+    """The route with its model: the one chosen, or else the provider's best for this key (providers.best_model)."""
+    if route.model:
+        return route
+    p = _provider(route)
+    try:
+        found = providers.best_model(route.provider, providers.models(route.provider, route.url, route.key, kind=kind))
+    except providers.KeyRefused as exc:
+        raise AIUnavailable(f"{exc}: check the key under Settings › AI") from exc
+    except (requests.RequestException, ValueError) as exc:
+        raise _unavailable(route.url, type(exc).__name__) from exc
+    if not found:
+        raise AIUnavailable(f"no model is chosen for {p.name if p else route.provider}: a platform admin chooses one under Settings › AI"
+                            + (" (or AI_MODEL in the .env file)" if kind == "chat" else " (or AI_MODEL_EMBED in the .env file)"))
+    return route._replace(model=found)
+
+
+def try_out(route, *, embed_too=False, seconds=90):
+    """Ask a model one small question the way the platform's calls go, JSON schema and all, to see that it works (Settings
+    › AI's "Try it"): {"ok", "said" (its answer, or what went wrong), "seconds", "model"}."""
+    began = time.monotonic()
+    p = _provider(route)
+    try:
+        if embed_too:
+            vectors = _embed_with(route, ["Is this working?"], Deadline(seconds))
+            return {"ok": True, "said": f"it read a sentence into {len(vectors[0])} numbers", "seconds": round(time.monotonic() - began, 1),
+                    "model": route.model}
+        schema = {"type": "object", "properties": {"greeting": {"type": "string"}}, "required": ["greeting"], "additionalProperties": False}
+        content, _, used = _ask([{"role": "system", "content": "You are the AI inside a business app, checking that you're connected."},
+                                 {"role": "user", "content": "Greet the business owner in eight words or fewer."}],
+                                schema, False, None, "assistant", "interactive", None, route=route, seconds=seconds)
+        said = parse_json(content).get("greeting") or content
+        return {"ok": True, "said": str(said)[:200], "seconds": round(time.monotonic() - began, 1), "model": used.model}
+    except (AIError, requests.RequestException, ValueError) as exc:
+        return {"ok": False, "said": str(exc)[:400] or type(exc).__name__, "seconds": round(time.monotonic() - began, 1),
+                "model": route.model or (f"{p.name}'s best" if p else "")}
 
 
 def _waiting_note(on_progress):
@@ -564,6 +634,8 @@ def _post(route, path, body, deadline, usage, *, stream=True, read_timeout=None)
                 return response
             if response.status_code != 429 and response.status_code < 500:
                 return response  # refused: asking again gets the same answer
+            if response.status_code == 429 and _out_of_credit(response):
+                return response  # not busy: the account has run out, and waiting won't change that
         wait = backoff * 2 ** attempt * random.uniform(0.75, 1.25)  # the jitter keeps calls that failed together apart
         after = _retry_after(response)
         if after is not None:
@@ -594,16 +666,48 @@ def _close(response):
         close()
 
 
+def _out_of_credit(response):
+    text = (getattr(response, "text", "") or "").lower()
+    return any(w in text for w in ("insufficient_quota", "exceeded your current quota", "credit balance", "billing", "out of credit",
+                                   "payment required"))
+
+
 def _refused(response, route, what):
-    """Raise what a model server's error status means (after _post has asked again where that's worth it)."""
+    """Raise what a model server's error status means (after _post has asked again where that's worth it). A key turned
+    away, or an account out of credit, waits like a server that's down (AIUnavailable): the work carries on by itself
+    once a platform admin puts it right."""
     status = response.status_code
     if status < 400:
         return
+    p = _provider(route)
+    who = p.name if p and p.cloud else "Ollama" if route.provider == "ollama" else "The model server"
+    if status in (401, 403):
+        raise AIUnavailable(f"{who} turned the key away (HTTP {status}): a platform admin checks it under Settings › AI")
+    if status == 402 or (status == 429 and _out_of_credit(response)):
+        raise AIUnavailable(f"{who} says the account has run out of credit (HTTP {status}): top it up with {who}, then the work carries on")
     if status == 429:
         raise AIUnavailable(f"the AI at {route.url} is too busy right now (HTTP 429)")
-    if status in (502, 503, 504):
+    if status in (502, 503, 504, 529):
         raise _unavailable(route.url, f"HTTP {status}")
-    raise AIError(f"{'Ollama' if route.provider == 'ollama' else 'The model server'} refused {what} ({status}): {response.text[:300]}")
+    if status == 404 and p and p.cloud:
+        raise AIError(f"{who} has no model called {route.model!r} for this key (HTTP 404): choose another under Settings › AI")
+    raise AIError(f"{who} refused {what} ({status}): {_said(response)[:300]}")
+
+
+def _said(response):
+    """The message in a server's error, else its text."""
+    try:
+        said = response.json()
+        error = said.get("error") if isinstance(said, dict) else None
+        if isinstance(error, dict) and error.get("message"):
+            return str(error["message"])
+        if isinstance(error, str):
+            return error
+        if isinstance(said, dict) and said.get("message"):
+            return str(said["message"])
+    except ValueError:
+        pass
+    return response.text or ""
 
 
 class _Answer:
@@ -709,25 +813,168 @@ def _ollama_chat(route, messages, schema, ask, on_progress, deadline, usage):
     return answer.finish()
 
 
+# Asking in the way a server takes ----------------------------------------------------------------------------------
+
+_learned = {}  # (server, model) -> {a part of the request: the rung it's on now, "cap": the longest answer it allows}
+_learned_lock = threading.Lock()
+
+
+class _Part(namedtuple("_Part", "name words rungs")):
+    """An optional part of a request, as a ladder of ways to send it, best first (a rung is what it adds to the request;
+    {} leaves it out). A server that refuses a request naming the part (`words`, in its error) is asked again a rung
+    down."""
+
+
+def _negotiate(route, path, base, parts, deadline, usage, finish=None):
+    """POST `base` with each part on the rung this server and model haven't refused yet. When the server refuses the
+    request (400, 422) naming one of the parts, that part goes down a rung, remembered for this server and model, and
+    it's asked again; a refusal naming none of them (or a part already left out) is returned as it is. `finish(body,
+    rungs)` makes what a rung asks beyond adding to the body (the JSON schema written into the prompt)."""
+    known = (route.url, route.model)
+    response = None
+    for _ in range(sum(len(part.rungs) for part in parts) + 2):
+        with _learned_lock:
+            learned = dict(_learned.get(known, {}))
+        body, rungs = dict(base), {}
+        for part in parts:
+            rung = part.rungs[min(learned.get(part.name, 0), len(part.rungs) - 1)]
+            rungs[part.name] = rung
+            for k, v in rung.items():
+                if not k.startswith("_"):
+                    body[k] = {**body[k], **v} if isinstance(v, dict) and isinstance(body.get(k), dict) else v
+        if learned.get("cap"):
+            for k in ("max_tokens", "max_completion_tokens"):
+                if body.get(k):
+                    body[k] = min(body[k], learned["cap"])
+        if finish:
+            body = finish(body, rungs)
+        response = _post(route, path, body, deadline, usage)
+        if response.status_code not in (400, 422):
+            return response
+        step = _step(parts, learned, _said(response).lower(), body)
+        if not step:
+            return response
+        with _learned_lock:
+            _learned.setdefault(known, {}).update(step)
+        log.info("The AI at %s (%s) refused %s; asking again with %s", route.url, route.model, _said(response)[:200], step)
+        _close(response)
+    return response
+
+
+def _step(parts, learned, said, body):
+    """What to change after a refusal that says `said`: {"cap": n} when it names the longest answer it allows, or
+    {part: its next rung} for the first part it names that isn't left out already; None when it names none."""
+    sent = body.get("max_completion_tokens") or body.get("max_tokens")
+    if sent and any(w in said for w in ("max_tokens", "max_completion_tokens", "output tokens", "completion tokens")) \
+            and "context length" not in said and "budget" not in said:
+        smaller = [n for n in (int(x) for x in re.findall(r"\d{3,}", said)) if 256 <= n < sent]
+        if smaller:
+            return {"cap": max(smaller)}
+    for part in parts:
+        at = learned.get(part.name, 0)
+        if at < len(part.rungs) - 1 and any(w in said for w in part.words):
+            return {part.name: at + 1}
+    return None
+
+
+def _schema_note(schema):
+    return ("Answer with one JSON object and nothing else: no words before or after it, no code fence. It must match this "
+            "JSON schema:\n" + json.dumps(schema, ensure_ascii=False, separators=(",", ":")))
+
+
+def _schema_key(schema):
+    return "format:" + hashlib.sha1(json.dumps(schema, sort_keys=True, default=str).encode()).hexdigest()[:12]
+
+
+def _image_type(data):
+    head = data[:16]
+    return ("image/jpeg" if head.startswith("/9j/") else "image/gif" if head.startswith("R0lGOD") else
+            "image/webp" if head.startswith("UklGR") else "image/png")
+
+
+def _images(message):
+    """A message's pictures (Ollama's way: base64 in "images") as (media type, base64) pairs."""
+    out = []
+    for data in message.get("images") or []:
+        data = str(data)
+        if data.startswith("data:") and ";base64," in data:
+            kind, data = data[5:].split(";base64,", 1)
+            out.append((kind, data))
+        else:
+            out.append((_image_type(data), data))
+    return out
+
+
+def _openai_messages(messages):
+    """The conversation as chat completions takes it: role and content only, pictures as image parts."""
+    out = []
+    for m in messages:
+        pictures = _images(m)
+        content = m.get("content") or ""
+        if pictures:
+            content = [{"type": "text", "text": content}] + [{"type": "image_url", "image_url": {"url": f"data:{kind};base64,{data}"}}
+                                                            for kind, data in pictures]
+        out.append({"role": m.get("role") or "user", "content": content})
+    return out
+
+
+def _openai_parts(p, ask, schema):
+    """The optional parts of a chat completions request, most likely to be what a refusal names first."""
+    cfg, n = settings(), ask["max_tokens"]
+    parts = []
+    if cfg.get("AI_SERVER_PRIORITY") and p.key == "compatible":
+        parts.append(_Part("priority", ("priority",), [{"priority": PRIORITIES.index(ask["priority"])}, {}]))  # vLLM's: lower first
+    if p.think == "template":
+        # Qwen-style models think first or not by a switch in their chat template, which vLLM, SGLang and llama.cpp pass on
+        # (a template without the switch ignores it). Ollama's own /v1 ignores it: Ollama is AI_PROVIDER=ollama.
+        parts.append(_Part("template", ("chat_template_kwargs",), [{"chat_template_kwargs": {"enable_thinking": bool(ask["think"])}}, {}]))
+    parts.append(_Part("stream_options", ("stream_options", "include_usage"), [{"stream_options": {"include_usage": True}}, {}]))
+    if p.sampling:
+        if ask["seed"] is not None:
+            parts.append(_Part("seed", ("seed",), [{"seed": ask["seed"]}, {}]))
+        parts.append(_Part("top_p", ("top_p",), [{"top_p": ask["top_p"]}, {}]))
+        parts.append(_Part("temperature", ("temperature",), [{"temperature": ask["temperature"]}, {}]))
+    effort = cfg.get("AI_EFFORT") or "high"
+    if p.think == "effort":  # OpenAI's reasoning models and those that copy them: low to high (none, minimal, xhigh on some)
+        on = [{"reasoning_effort": e} for e in dict.fromkeys([effort, "high"])]
+        off = [{"reasoning_effort": e} for e in ("none", "minimal", "low")]
+        parts.append(_Part("think:on" if ask["think"] else "think:off", ("reasoning_effort", "reasoning effort", "reasoning.effort", "reasoning"),
+                           (on if ask["think"] else off) + [{}]))
+    elif p.think == "reasoning":  # OpenRouter's, one way for all its models
+        parts.append(_Part("think:on" if ask["think"] else "think:off", ("reasoning",),
+                           [{"reasoning": {"effort": effort if effort in ("low", "medium", "high") else "high"}} if ask["think"] else
+                            {"reasoning": {"enabled": False}}, {}]))
+    first, other = p.tokens, "max_tokens" if p.tokens == "max_completion_tokens" else "max_completion_tokens"
+    parts.append(_Part("tokens", ("max_tokens", "max_completion_tokens"), [{first: n}, {other: n}]))
+    if schema:
+        # The answer constrained to the schema as it's decoded: vLLM, SGLang, llama.cpp and LM Studio take this form (vLLM
+        # also its older `"guided_json"`). A cloud model is given it to follow (not strict: a schema built for constrained
+        # decoding breaks the rules OpenAI's strict mode has), else told it in the prompt, in JSON mode or without.
+        parts.append(_Part(_schema_key(schema), ("response_format", "json_schema", "json_object", "schema", "json mode"), [
+            {"response_format": {"type": "json_schema", "json_schema": {"name": "answer", "schema": schema, "strict": p.strict}}},
+            {"response_format": {"type": "json_object"}, "_prompt": True}, {"_prompt": True}]))
+    return parts
+
+
 def _openai_chat(route, messages, schema, ask, on_progress, deadline, usage):
     """/v1/chat/completions, streamed as server-sent events: the answer arrives as `content` deltas, the thinking (from a
-    server started with a reasoning parser, e.g. vLLM's --reasoning-parser qwen3) as `reasoning_content` deltas
-    (`reasoning` in newer vLLM), and what it cost in a last chunk of `usage`."""
-    body = {"model": route.model, "messages": messages, "stream": True, "stream_options": {"include_usage": True},
-            "max_tokens": ask["max_tokens"], "temperature": ask["temperature"], "top_p": ask["top_p"],
-            # Qwen-style models think first or not by a switch in their chat template, which vLLM, SGLang and llama.cpp
-            # pass on (a template without the switch ignores it). Ollama's own /v1 ignores it: Ollama is AI_PROVIDER=ollama.
-            "chat_template_kwargs": {"enable_thinking": bool(ask["think"])}}
-    # (AI_NUM_CTX isn't sent: an OpenAI-compatible server's context length is fixed when it starts, vLLM's --max-model-len)
-    if ask["seed"] is not None:
-        body["seed"] = ask["seed"]
-    if schema:
-        # The answer constrained to the schema as it's decoded. vLLM, SGLang, llama.cpp and LM Studio all take this form;
-        # vLLM also takes its older `"guided_json": <schema>` in the body.
-        body["response_format"] = {"type": "json_schema", "json_schema": {"name": "answer", "schema": schema, "strict": True}}
-    if settings().get("AI_SERVER_PRIORITY"):
-        body["priority"] = PRIORITIES.index(ask["priority"])  # vLLM's priority scheduling: lower goes first
-    response = _post(route, "/chat/completions", body, deadline, usage)
+    server started with a reasoning parser, e.g. vLLM's --reasoning-parser qwen3, or a provider that shows it) as
+    `reasoning_content` deltas (`reasoning` in newer vLLM, Groq and OpenRouter), and what it cost in a last chunk of
+    `usage`. (AI_NUM_CTX isn't sent: an OpenAI-compatible server's context length is fixed when it starts.)"""
+    p = _provider(route)
+    base = {"model": route.model, "messages": _openai_messages(messages), "stream": True}
+
+    def finish(body, rungs):
+        if schema and any(r.get("_prompt") for r in rungs.values()):
+            said = list(body["messages"])
+            if said and said[0]["role"] == "system" and isinstance(said[0]["content"], str):
+                said[0] = {**said[0], "content": said[0]["content"] + "\n\n" + _schema_note(schema)}
+            else:
+                said.insert(0, {"role": "system", "content": _schema_note(schema)})
+            body["messages"] = said
+        return body
+
+    response = _negotiate(route, "/chat/completions", base, _openai_parts(p, ask, schema), deadline, usage, finish)
     _refused(response, route, "the request")
     answer = _Answer(response, on_progress, deadline, route.url)
     try:
@@ -755,6 +1002,169 @@ def _openai_chat(route, messages, schema, ask, on_progress, deadline, usage):
     except requests.RequestException as exc:
         raise answer.broke(exc) from exc
     answer.show(done=True)
+    if answer.reason == "content_filter":
+        raise AIError(f"{p.name} held the answer back (its content filter)")
+    return answer.finish()
+
+
+# Anthropic's messages API ----------------------------------------------------------------------------------------
+
+ANTHROPIC_FORMATS = {"date-time", "time", "date", "duration", "email", "hostname", "uri", "ipv4", "ipv6", "uuid"}
+ANTHROPIC_DROPS = {"minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf", "minLength", "maxLength", "maxItems",
+                   "uniqueItems", "minProperties", "maxProperties", "patternProperties", "propertyNames", "contains"}
+
+
+def _anthropic_schema(schema):
+    """The schema as Anthropic's JSON output takes it (every object closed, no number or length limits), or None when it
+    can't be said that way: an open object (a map), a schema that refers to itself, or more optional fields or choices
+    than it allows (24, 16), when the prompt carries it instead."""
+    counts, clean = {"optional": 0, "unions": 0}, set()
+    maps = ("properties", "$defs", "definitions")
+
+    def follow(ref, seen):  # what a reference points to: walked once, to find a schema that refers to itself
+        if not ref.startswith("#/") or ref in seen:
+            raise ValueError("refers to itself")
+        if ref in clean:
+            return
+        target = schema
+        for piece in ref[2:].split("/"):
+            target = target.get(piece, {}) if isinstance(target, dict) else {}
+        walk(target, seen | {ref}, count=False)
+        clean.add(ref)
+
+    def walk(node, seen, count=True):
+        if isinstance(node, list):
+            return [walk(x, seen, count) for x in node]
+        if not isinstance(node, dict):
+            return node
+        if isinstance(node.get("$ref"), str):
+            follow(node["$ref"], seen)
+        out = {}
+        for k, v in node.items():
+            if k in maps and isinstance(v, dict):
+                out[k] = {name: walk(sub, seen, count) for name, sub in v.items()}
+            elif k in ANTHROPIC_DROPS or (k == "format" and isinstance(v, str) and v not in ANTHROPIC_FORMATS) or (k == "minItems" and v not in (0, 1)):
+                continue
+            else:
+                out[k] = v if k in ("enum", "const", "default", "required", "$ref") else walk(v, seen, count)
+        if "oneOf" in out:
+            out["anyOf"] = out.pop("oneOf")
+        if count and ("anyOf" in out or isinstance(out.get("type"), list)):
+            counts["unions"] += 1
+        if out.get("type") == "object" or "properties" in out:
+            if out.get("additionalProperties") not in (None, False):
+                raise ValueError("an open object")
+            out["additionalProperties"] = False
+            if count:
+                counts["optional"] += len(set(out.get("properties") or {}) - set(out.get("required") or []))
+        return out
+    try:
+        made = walk(schema, frozenset())
+    except (ValueError, RecursionError):
+        return None
+    return made if counts["optional"] <= 24 and counts["unions"] <= 16 else None
+
+
+def _anthropic_turns(messages):
+    """The conversation as the messages API takes it: the system prompt apart, pictures as image blocks before the words,
+    and a user turn first."""
+    system = "\n\n".join(m["content"] for m in messages if m.get("role") == "system" and m.get("content"))
+    turns = []
+    for m in messages:
+        if m.get("role") == "system":
+            continue
+        pictures = _images(m)
+        content = m.get("content") or "(nothing)"
+        if pictures:
+            content = [{"type": "image", "source": {"type": "base64", "media_type": kind, "data": data}} for kind, data in pictures] \
+                + [{"type": "text", "text": content}]
+        turns.append({"role": "assistant" if m.get("role") == "assistant" else "user", "content": content})
+    if not turns or turns[0]["role"] != "user":
+        turns.insert(0, {"role": "user", "content": "Go ahead."})
+    return system, turns
+
+
+def _anthropic_parts(ask, schema):
+    cfg, n = settings(), ask["max_tokens"]
+    effort = cfg.get("AI_EFFORT") or "high"
+    budget = max(1024, min(int(cfg.get("AI_THINK_TOKENS") or 8000), n - 2048))
+    if ask["think"]:  # Claude decides how much to think (adaptive), shown in summary; older models by a budget
+        thinking = [{"thinking": {"type": "adaptive", "display": "summarized"}}, {"thinking": {"type": "adaptive"}},
+                    {"thinking": {"type": "enabled", "budget_tokens": budget}}, {}]
+        efforts = [{"output_config": {"effort": e}} for e in dict.fromkeys([effort, "high"])] + [{}]
+    else:  # off where it can be (some newest models always think: the least they do, at low effort)
+        thinking = [{"thinking": {"type": "disabled"}}, {"thinking": {"type": "between_tools"}}, {}]
+        efforts = [{"output_config": {"effort": "low"}}, {}]
+    parts = [_Part("think:on" if ask["think"] else "think:off", ("thinking", "budget_tokens", "adaptive", "between_tools", "display"), thinking),
+             _Part("effort:on" if ask["think"] else "effort:off", ("effort",), efforts),
+             _Part("cache", ("cache_control",), [{"_cache": True}, {}])]
+    if schema:
+        shaped = _anthropic_schema(schema)
+        parts.append(_Part(_schema_key(schema), ("output_config.format", "json_schema", "schema", "too complex", "output format"),
+                           ([{"output_config": {"format": {"type": "json_schema", "schema": shaped}}}] if shaped else []) + [{"_prompt": True}]))
+    return parts
+
+
+def _anthropic_chat(route, messages, schema, ask, on_progress, deadline, usage):
+    """Anthropic's /v1/messages, streamed: the thinking as thinking_delta events (a summary of it), the answer as
+    text_delta, what it cost in message_start and message_delta. The system prompt is cached, so the builder's long
+    shared instructions are paid for in full once in a while, not at every call. No temperature: Claude's newest models
+    take none."""
+    system, turns = _anthropic_turns(messages)
+    base = {"model": route.model, "max_tokens": ask["max_tokens"], "messages": turns, "stream": True}
+
+    def finish(body, rungs):
+        words = system
+        if schema and any(r.get("_prompt") for r in rungs.values()):
+            words = (words + "\n\n" if words else "") + _schema_note(schema)
+        if words:
+            block = {"type": "text", "text": words}
+            if any(r.get("_cache") for r in rungs.values()):
+                block["cache_control"] = {"type": "ephemeral"}
+            body["system"] = [block]
+        return body
+
+    response = _negotiate(route, "/messages", base, _anthropic_parts(ask, schema), deadline, usage, finish)
+    _refused(response, route, "the request")
+    answer = _Answer(response, on_progress, deadline, route.url)
+    try:
+        for line in response.iter_lines():
+            answer.on_time()
+            line = line.decode("utf-8", "replace") if isinstance(line, bytes) else line
+            if not line.startswith("data:"):
+                continue  # "event:" lines name what the data line after says too
+            event = _chunk(line[5:].strip(), "Anthropic")
+            kind = event.get("type")
+            if kind == "message_start":
+                said = (event.get("message") or {}).get("usage") or {}
+                usage["in"] = sum(said.get(k) or 0 for k in ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"))
+            elif kind == "content_block_delta":
+                delta = event.get("delta") or {}
+                if delta.get("type") == "thinking_delta":
+                    answer.think(delta.get("thinking"))
+                elif delta.get("type") == "text_delta":
+                    answer.say(delta.get("text"))
+            elif kind == "message_delta":
+                stop = (event.get("delta") or {}).get("stop_reason")
+                usage["out"] = (event.get("usage") or {}).get("output_tokens")
+                if stop == "refusal":
+                    raise AIError("Claude declined to answer this (Anthropic's safety checks stopped it)")
+                if stop in ("max_tokens", "model_context_window_exceeded"):
+                    answer.reason = "length"
+                elif stop:
+                    answer.reason = stop
+            elif kind == "error":
+                error = event.get("error") or {}
+                if error.get("type") in ("overloaded_error", "api_error", "rate_limit_error"):
+                    _close(response)
+                    raise AIUnavailable(f"Anthropic is busy right now ({error.get('message') or error.get('type')})")
+                raise AIError(f"Anthropic: {error.get('message') or error}")
+            elif kind == "message_stop":
+                break
+            answer.show()
+    except requests.RequestException as exc:
+        raise answer.broke(exc) from exc
+    answer.show(done=True)
     return answer.finish()
 
 
@@ -765,38 +1175,53 @@ def _repeating(text, probe=300, times=4, window=8000):
     return len(end.strip()) >= probe // 3 and len(text) >= probe * times and tail.count(end) >= times
 
 
+def embed_model():
+    """The model search by meaning uses now (what passages' vectors are kept under), or None for words only."""
+    if _embedder:
+        return settings().get("OLLAMA_EMBED_MODEL") or None
+    route = _route("embed")
+    return route.model or None if route.provider != providers.WORDS_ONLY else None
+
+
 def embed(texts):
-    """Vectors for passages of text, from the embedding model (AI_MODEL_EMBED or OLLAMA_EMBED_MODEL, bge-m3 by default):
-    passages that mean the same thing get vectors that point the same way, whatever words they use or language they're in.
+    """Vectors for passages of text, from the embedding model (Settings › AI, or AI_MODEL_EMBED: bge-m3 on this computer
+    by default): passages that mean the same thing get vectors that point the same way, whatever words they use or
+    language they're in.
 
     Embeddings don't wait in the chat queue: they take a moment, not minutes, and a search shouldn't wait behind the
     builder. They're retried, given the deadline and counted (as "embed") like any call."""
     if _embedder:
         return _embedder(list(texts))
-    model = settings().get("OLLAMA_EMBED_MODEL")
-    if not model:
-        raise AIUnavailable("no embedding model is set (AI_MODEL_EMBED)")
-    route, texts = _route("embed"), list(texts)
-    deadline, usage, began = Deadline(float(settings().get("AI_DEADLINE") or 900)), {}, time.monotonic()
+    route = _route("embed")
+    if not route.model or route.provider == providers.WORDS_ONLY:
+        raise AIUnavailable("no embedding model is set (Settings › AI, or AI_MODEL_EMBED)")
+    return _embed_with(route, list(texts), Deadline(float(settings().get("AI_DEADLINE") or 900)))
+
+
+def _embed_with(route, texts, deadline):
+    usage, began = {}, time.monotonic()
+    p = _provider(route)
     try:
-        if route.provider not in PROVIDERS:
-            raise AIError(f"AI_PROVIDER_EMBED is {route.provider!r}: it can be ollama or openai")
+        if p is None or not p.embeds:
+            raise AIError(f"{p.name if p else route.provider} has no model for search by meaning: choose another under Settings › AI")
+        if p.needs_key and not route.key:
+            raise _no_key(route)
         _skip_if_down(route.url)
-        if route.provider == "ollama":
-            response = _post(route, "/api/embed", {"model": model, "input": texts, "truncate": True}, deadline, usage,
+        if p.protocol == "ollama":
+            response = _post(route, "/api/embed", {"model": route.model, "input": texts, "truncate": True}, deadline, usage,
                              stream=False, read_timeout=300)
         else:
-            response = _post(route, "/embeddings", {"model": model, "input": texts}, deadline, usage, stream=False, read_timeout=300)
+            response = _post(route, "/embeddings", {"model": route.model, "input": texts}, deadline, usage, stream=False, read_timeout=300)
         if response.status_code == 404:
-            raise AIUnavailable(f"the embedding model {model} isn't in Ollama yet (run: ollama pull {model})" if route.provider == "ollama"
-                                else f"the server at {route.url} doesn't serve the embedding model {model} (AI_BASE_URL_EMBED)")
+            raise AIUnavailable(f"the embedding model {route.model} isn't in Ollama yet (run: ollama pull {route.model})" if p.protocol == "ollama"
+                                else f"{p.name if p.cloud else 'the server at ' + route.url} doesn't have the embedding model {route.model}")
         _refused(response, route, "to embed")
         said = response.json()
-        if route.provider == "ollama":
+        if p.protocol == "ollama":
             vectors, usage["in"] = said.get("embeddings") or [], said.get("prompt_eval_count")
         else:
             vectors = [x.get("embedding") for x in sorted(said.get("data") or [], key=lambda x: x.get("index", 0))]
-            usage["in"] = (said.get("usage") or {}).get("prompt_tokens")
+            usage["in"] = (said.get("usage") or {}).get("prompt_tokens") or (said.get("usage") or {}).get("total_tokens")
         if len(vectors) != len(texts):
             raise AIError("The embedding model didn't return a vector for every passage.")
     except Exception as exc:

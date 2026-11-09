@@ -29,16 +29,18 @@ class Config:
     PLATFORM_NAME = os.getenv("PLATFORM_NAME") or "Keel"
     PORT = int(os.getenv("PORT") or 5050)
     BASE_URL = (os.getenv("BASE_URL") or f"http://localhost:{os.getenv('PORT') or 5050}").rstrip("/")
-    # The AI (app/ai.py) runs on model servers the platform runs itself; nothing reaches a cloud model unless its address
-    # is put here. AI_PROVIDER=ollama: Ollama on this computer (development, one business on one machine).
-    # AI_PROVIDER=openai: any OpenAI-compatible server (vLLM, SGLang, llama.cpp's server, LM Studio) at AI_BASE_URL, with
-    # AI_API_KEY if it asks for one: the GPU servers production serves many customers from.
+    # The AI (app/ai.py, app/ai_providers.py): Ollama on this computer by default, or any provider in the catalog, local
+    # or cloud: AI_PROVIDER=ollama | compatible (your own vLLM, SGLang, LM Studio, llama.cpp or LiteLLM server, at
+    # AI_BASE_URL) | openai | anthropic | gemini | azure | mistral | groq | deepseek | xai | openrouter | together |
+    # fireworks | cerebras | cohere. (openai with an AI_BASE_URL of your own is your own OpenAI-compatible server, as
+    # before.) A platform admin's choice under Settings › AI comes first; these are what's used when there isn't one.
     AI_PROVIDER = (os.getenv("AI_PROVIDER") or "ollama").strip().lower()
     OLLAMA_URL = (os.getenv("OLLAMA_URL") or "http://127.0.0.1:11434").rstrip("/")
-    AI_BASE_URL = (os.getenv("AI_BASE_URL") or (OLLAMA_URL if AI_PROVIDER == "ollama" else "http://127.0.0.1:8000/v1")).rstrip("/")
+    AI_BASE_URL = (os.getenv("AI_BASE_URL") or (OLLAMA_URL if AI_PROVIDER == "ollama" else "")).rstrip("/")  # empty: the provider's own
     AI_API_KEY = os.getenv("AI_API_KEY") or ""
-    AI_MODEL = os.getenv("AI_MODEL") or os.getenv("OLLAMA_MODEL") or "qwen3.8:27b-dflash2-nvfp4"
-    OLLAMA_MODEL = AI_MODEL  # the older name, still read by some
+    # The model: its name as the provider knows it (empty for a cloud provider: its best one the key can use)
+    AI_MODEL = os.getenv("AI_MODEL") or os.getenv("OLLAMA_MODEL") or ""
+    OLLAMA_MODEL = os.getenv("OLLAMA_MODEL") or os.getenv("AI_MODEL") or "qwen3.8:27b-dflash2-nvfp4"  # Ollama's (and your own server's) when AI_MODEL isn't set
     # One deployment can send each purpose to its own model, and its own server: the builder to a big one, quick jobs to
     # a small one. Each falls back to the plain setting above when it isn't set.
     AI_MODEL_BUILDER = os.getenv("AI_MODEL_BUILDER") or ""
@@ -55,6 +57,28 @@ class Config:
     AI_PROVIDER_EMBED = (os.getenv("AI_PROVIDER_EMBED") or "").strip().lower()
     AI_BASE_URL_EMBED = (os.getenv("AI_BASE_URL_EMBED") or "").rstrip("/")
     AI_API_KEY_EMBED = os.getenv("AI_API_KEY_EMBED") or ""
+    # Cloud providers' keys, under the names their own tools use (AI_API_KEY, or a key saved under Settings › AI, first)
+    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY") or ""
+    ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY") or ""
+    GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or ""
+    AZURE_OPENAI_API_KEY = os.getenv("AZURE_OPENAI_API_KEY") or ""
+    AZURE_OPENAI_ENDPOINT = (os.getenv("AZURE_OPENAI_ENDPOINT") or "").rstrip("/")  # https://NAME.openai.azure.com
+    MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY") or ""
+    GROQ_API_KEY = os.getenv("GROQ_API_KEY") or ""
+    DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY") or ""
+    XAI_API_KEY = os.getenv("XAI_API_KEY") or ""
+    OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY") or ""
+    TOGETHER_API_KEY = os.getenv("TOGETHER_API_KEY") or ""
+    FIREWORKS_API_KEY = os.getenv("FIREWORKS_API_KEY") or ""
+    CEREBRAS_API_KEY = os.getenv("CEREBRAS_API_KEY") or ""
+    COHERE_API_KEY = os.getenv("COHERE_API_KEY") or os.getenv("CO_API_KEY") or ""
+    VOYAGE_API_KEY = os.getenv("VOYAGE_API_KEY") or ""
+    # How hard a cloud model thinks when a step thinks first (AI_THINK, AI_THINK_STEPS): low, medium, high, xhigh, max
+    # (each provider takes the ones it has; one it doesn't is stepped down from by itself)
+    AI_EFFORT = (os.getenv("AI_EFFORT") or "high").strip().lower()
+    # Who may choose the platform's AI under Settings › AI (it's every business's on this platform): these emails,
+    # comma-separated; empty, whoever made the first account (on one business's own computer, its owner)
+    PLATFORM_ADMINS = os.getenv("PLATFORM_ADMINS") or ""
     # The gateway in front of each model server (one queue per process; see app/ai.py). AI_CONCURRENCY: calls at once to
     # one server, 0 for the provider's own default (2 for Ollama, which answers one or two at a time well; 8 for vLLM or
     # SGLang, which batch them). AI_DEADLINE: seconds a whole call may take, its wait for a turn included.

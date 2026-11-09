@@ -337,13 +337,140 @@ def data(request: Request, wid: int, ws=Depends(member_of("admin"))):
     return render(request, "settings/data.html", ws=ws, latest=backup.latest(), section="data", database=database)
 
 
-@router.api_route("/ai", methods=["GET"], name="settings.ai_settings")
-def ai_settings(request: Request, wid: int, ws=Depends(member_of("admin"))):
-    """The AI on this computer: which model answers, which finds things by meaning, and what it can look through."""
+AI_SLOTS = [("assistant", "Everyday work", "Answers people's questions, reads documents and does the jobs in your processes."),
+            ("builder", "Building apps", "Designs and changes apps from what the owner says, and checks them. The hardest work it does."),
+            ("fast", "Quick jobs", "Short answers while someone waits: sorting, suggesting a field."),
+            ("embed", "Finding by meaning", "Finds documents, emails and records that mean what was asked, whatever words they use.")]
+
+
+def _ai_choice(form, saved):
+    """The platform's AI as Settings › AI's form says it: what each purpose uses, and the keys and addresses (a key
+    typed in is kept encrypted; one left blank stays as it was)."""
+    from .. import ai_providers as providers
+    from ..security import encrypt
+    use, problems = {}, []
+    for slot, label, _ in AI_SLOTS:
+        name = providers.canonical(form.get(f"{slot}_provider") or "")
+        model = (form.get(f"{slot}_model") or "").strip()[:200]
+        if not name:
+            continue
+        p = providers.CATALOG.get(name)
+        if name == providers.WORDS_ONLY and slot == "embed":
+            use[slot] = {"provider": name, "model": ""}
+        elif p is None or (slot == "embed" and not p.embeds) or (slot != "embed" and not p.chats):
+            problems.append(f"{label}: {name} can't do that")
+        else:
+            if slot == "embed" and not model and p.key != "ollama":
+                problems.append(f"{label}: say which of {p.name}'s embedding models")
+            if p.key in ("compatible", "azure", "openrouter", "together", "fireworks", "cerebras", "cohere") and not model and slot != "embed":
+                problems.append(f"{label}: say which of {p.name}'s models (it has too many to pick one for you)")
+            use[slot] = {"provider": name, "model": model}
+    keys, urls = dict(saved.get("keys") or {}), dict(saved.get("urls") or {})
+    for name in providers.CATALOG:
+        typed = (form.get(f"key_{name}") or "").strip()
+        if typed:
+            keys[name] = encrypt(typed)
+        elif form.get(f"forget_key_{name}"):
+            keys.pop(name, None)
+        if f"url_{name}" in form:
+            url = (form.get(f"url_{name}") or "").strip()
+            if url and not re.fullmatch(r"https?://[\w.\-\[\]:]+(/\S*)?", url if "://" in url else "https://" + url):
+                problems.append(f"{providers.CATALOG[name].name}: {url} isn't a web address")
+            elif url:
+                urls[name] = url
+            else:
+                urls.pop(name, None)
+    return {"use": use, "keys": keys, "urls": urls}, problems
+
+
+def _ai_page(request, ws, *, choice=None, tried=None, typed=None, status=200):
+    from .. import ai_providers as providers
     from .. import knowledge
+    from ..security import platform_admin
     from .erp import ai_count
+    cfg = current_app.config
+    saved = providers.stored()
+    choice = saved if choice is None else choice
+    routes = {slot: providers.resolve(slot, choice) for slot, _, _ in AI_SLOTS}
+    keys = {}
+    for name, p in providers.CATALOG.items():
+        mine = providers.saved_key(name, saved)
+        from_env = next((k for k in p.keys if cfg.get(k)), None)
+        keys[name] = (f"saved, ending {mine[-4:]}" if mine else f"from {from_env} in the .env file" if from_env else "")
+    use = choice.get("use") or {}
+    in_effect = {routes[slot][0] for slot in routes}
+    env = {slot: providers._env(cfg, slot) for slot, _, _ in AI_SLOTS}
     return render(request, "settings/ai.html", ws=ws, section="ai_settings", ai=ai.describe(), known=knowledge.status(ws),
-                  embed=current_app.config.get("OLLAMA_EMBED_MODEL") or None, helpers=ai_count(ws))
+                  helpers=ai_count(ws), admin=platform_admin(current_user(request)), slots=AI_SLOTS, catalog=providers.CATALOG,
+                  use=use, routes=routes, env=env, keys=keys, urls=choice.get("urls") or {}, in_effect=in_effect, tried=tried,
+                  typed=typed or {}, words_only=providers.WORDS_ONLY, status_code=status)
+
+
+@router.api_route("/ai", methods=["GET", "POST"], name="settings.ai_settings")
+def ai_settings(request: Request, wid: int, ws=Depends(member_of("admin")), form: Form = Depends(form_of)):
+    """The AI: where it runs (on this computer, your own model server, or a cloud provider), for each kind of work; what
+    it can look through, and the jobs it does. A platform admin chooses where it runs, tries the choice before saving it,
+    and saves it: in effect for every business on the platform within seconds, no restart."""
+    from .. import ai_providers as providers
+    from ..security import platform_admin
+    if request.method == "GET":
+        return _ai_page(request, ws)
+    if not platform_admin(current_user(request)):
+        raise HTTPException(403, "Only the person who looks after the platform chooses its AI.")
+    saved = providers.stored()
+    choice, problems = _ai_choice(form, saved)
+    typed = {k: v for k, v in form.items() if k.startswith(("key_", "url_")) and v}  # kept on the page while trying, not saved
+    if problems:
+        for problem in problems:
+            flash(request, problem, "error")
+        return _ai_page(request, ws, choice=choice, typed=typed, status=422)
+    if form.get("do") == "try":
+        tried = []
+        for slot, label, _ in AI_SLOTS:
+            route = ai.Route(*providers.resolve(slot, choice))
+            if slot == "embed" and (route.provider == providers.WORDS_ONLY or not route.model):
+                tried.append({"label": label, "ok": True, "said": "finds things by their words only", "seconds": 0, "model": ""})
+                continue
+            same = next((t for t in tried if t.get("route") == route and slot != "embed"), None)
+            result = dict(same) if same else ai.try_out(route, embed_too=slot == "embed", seconds=60)
+            p = providers.CATALOG.get(route.provider)
+            tried.append({**result, "label": label, "route": route, "where": p.name if p else route.provider, "quote": slot != "embed"})
+        return _ai_page(request, ws, choice=choice, tried=tried, typed=typed)
+    before = {slot: providers.resolve(slot) for slot, _, _ in AI_SLOTS}
+    providers.save(choice, by=current_user(request).email)
+    after = {slot: providers.resolve(slot) for slot, _, _ in AI_SLOTS}
+    changed = [f"{label}: {after[slot][0]} {after[slot][3] or ''}".strip() for slot, label, _ in AI_SLOTS if before[slot] != after[slot]]
+    audit.log(ws.id, "settings", "chose the platform's AI" + (" (" + "; ".join(changed) + ")" if changed else ""))
+    if before["embed"][3] != after["embed"][3] and after["embed"][3]:
+        # found by meaning with another model: every business's documents and records are read into it again (until
+        # then each is found by its words)
+        from .. import jobs
+        from ..models import Workspace
+        for (other,) in db.session.query(Workspace.id).all():
+            jobs.enqueue("knowledge_rebuild", workspace_id=other, dedupe=f"knowledge_rebuild:{other}")
+        db.session.commit()
+    flash(request, "Saved. The AI uses this from now on, for every business on this platform.", "success")
+    return redirect(url_for("settings.ai_settings", wid=wid))
+
+
+@router.api_route("/ai/models", methods=["POST"], name="settings.ai_models")
+def ai_models(request: Request, wid: int, ws=Depends(member_of("admin")), form: Form = Depends(form_of)):
+    """The models a provider has for a key (the one typed, or the one saved), for Settings › AI's model box."""
+    from .. import ai_providers as providers
+    from ..security import platform_admin
+    if not platform_admin(current_user(request)):
+        raise HTTPException(403, "Only the person who looks after the platform chooses its AI.")
+    name = providers.canonical(form.get("provider") or "")
+    if name not in providers.CATALOG:
+        return {"models": [], "best": ""}
+    kind = "embed" if form.get("kind") == "embed" else "chat"
+    try:
+        found = providers.models(name, url=form.get("url") or None, key=form.get("key") or None, kind=kind)
+    except providers.KeyRefused as exc:
+        return {"models": [], "best": "", "error": f"{exc}."}
+    except Exception as exc:  # noqa: BLE001 - only a help for choosing: say why there's no list
+        return {"models": [], "best": "", "error": f"Couldn't ask {providers.CATALOG[name].name} which models it has ({type(exc).__name__})."}
+    return {"models": found[:300], "best": providers.best_model(name, found) if kind == "chat" else ""}
 
 
 @router.api_route("/security", methods=["GET", "POST"], name="settings.security")

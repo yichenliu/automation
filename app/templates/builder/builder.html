@@ -8,7 +8,7 @@
       <a class="brand" href="{{ url_for('workspaces.index') }}" title="Your apps"><span class="mark">{{ platform_name[0] }}</span></a>
       <div class="grow"><div class="ws ellipsis">{{ ws.blueprint.get('name') or ws.name }}</div>
         <div class="faint tiny">Tell me what you need, in your own words<span hidden id="version">{{ ws.version }}</span></div></div>
-      <span class="ai-chip" title="Your AI ({{ ai.model }}) runs on this computer, so your data stays here"><i></i>AI ready</span>
+      <span class="ai-chip" title="{% set b = ai.builder or ai %}{% if b.cloud %}Your AI ({{ b.model }}) runs at {{ b.name }}: what you say and your app's design are sent there to build it{% else %}Your AI ({{ b.model }}) runs {{ b.where }}, so your data stays with you{% endif %}"><i></i>AI ready</span>
     </div>
     <div class="messages" id="messages">
       {% if not messages and (ws.blueprint.get('tables') or []) %}

@@ -180,7 +180,7 @@ def test_an_openai_compatible_server_streams_the_answer_and_its_thinking(app, fa
     assert body["max_tokens"] == app.config["AI_MAX_TOKENS"] + app.config["AI_THINK_TOKENS"]  # the thinking counts towards the cap
     assert body["temperature"] == 0.6 and body["top_p"] == 0.9 and "seed" not in body and "priority" not in body
     calls = _calls("assistant")
-    assert (calls["provider"], calls["model"], calls["calls"], calls["answered"]) == ("openai", "big", 1, 1)
+    assert (calls["provider"], calls["model"], calls["calls"], calls["answered"]) == ("compatible", "big", 1, 1)
     assert (calls["tokens_in"], calls["tokens_out"], calls["failures"]) == (120, 9, 0)
 
 
@@ -218,7 +218,7 @@ def test_each_purpose_goes_to_its_own_model_and_server(app, fake, monkeypatch):
     assert small.seen[0]["path"] == "/v1/chat/completions" and small.seen[0]["body"]["model"] == "small"
     assert asked["model"] == "big" and asked["priority"] == 0  # interactive: first in vLLM's priority scheduling
     assert {c["purpose"] for c in ai.stats()["calls"]} == {"builder", "fast", "assistant"}
-    assert {q["server"] for q in ai.stats()["queues"]} == {f"openai at {fake.url}", f"openai at {small.url}"}
+    assert {q["server"] for q in ai.stats()["queues"]} == {f"compatible at {fake.url}", f"compatible at {small.url}"}
 
 
 def test_embeddings_come_from_v1_embeddings_in_the_order_asked(app, fake, monkeypatch):
@@ -250,10 +250,11 @@ def test_a_busy_server_is_asked_again(app, fake):
 
 
 def test_a_refused_request_is_not_asked_again(app, fake):
-    fake.reply = lambda h, body: h.send_json(400, {"error": {"message": "the schema isn't valid"}})
+    """Refused, naming no part of the request that could be sent another way: asking again gets the same answer."""
+    fake.reply = lambda h, body: h.send_json(400, {"error": {"message": "the conversation isn't valid"}})
     with pytest.raises(ai.AIError) as refused:
         ai.chat([{"role": "user", "content": "hi"}], schema=SCHEMA)
-    assert not isinstance(refused.value, ai.AIUnavailable) and "the schema isn't valid" in str(refused.value)
+    assert not isinstance(refused.value, ai.AIUnavailable) and "the conversation isn't valid" in str(refused.value)
     assert len(fake.seen) == 1 and not ai._down
     assert _calls("assistant")["failed"] == {"AIError": 1}
 

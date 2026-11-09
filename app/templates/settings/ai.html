@@ -1,10 +1,78 @@
 {% extends "settings/_layout.html" %}
-{% block title %}AI on this computer{% endblock %}
+{% block title %}AI{% endblock %}
 {% block content %}
-<h1>AI on this computer</h1><p class="muted mt-1">The AI that builds your app, answers questions and does the jobs in your processes runs here. Your records and documents never leave this computer.</p>
-<div class="card mt-3"><div class="card-head">{{ icon('bot') }}<h2>The models</h2></div><div class="card-body stack">
-  <p>It thinks with <b>{{ ai.model }}</b>{% if embed %}, and finds things by meaning with <b>{{ embed }}</b>{% endif %} ({{ ai.url }}).</p>
-  <p class="muted small">To change a model, set OLLAMA_MODEL{% if embed %} or OLLAMA_EMBED_MODEL{% endif %} in the .env file and restart. Whether it's answering now is on the Health page.</p></div></div>
+{% set clouds = [] %}{% for d in [ai, ai.builder, ai.fast, ai.embed] if d and d.cloud and d.name not in clouds %}{% set _ = clouds.append(d.name) %}{% endfor %}
+<h1>AI</h1><p class="muted mt-1">The AI builds your app, answers questions and does the jobs in your processes. It can run on this computer, on a model server of your own, or at a cloud provider such as OpenAI, Anthropic or Google.</p>
+<div class="card mt-3"><div class="card-head">{{ icon('bot') }}<h2>Where it runs now</h2></div><div class="card-body stack">
+  <ul class="stack">
+    {% for slot, label, about in slots %}{% set d = ai if slot == 'assistant' else (ai.embed if slot == 'embed' else (ai[slot] or ai)) %}
+    <li><b>{{ label }}</b>: {% if slot == 'embed' and not d %}by the words used only{% else %}{{ d.model }} {{ d.where }}{% endif %}<br><span class="muted small">{{ about }}</span></li>
+    {% endfor %}
+  </ul>
+  {% if clouds %}<div class="notice warn">{{ icon('cloud') }}<div>What people type, and the records, documents and emails the AI reads to answer, are sent to <b>{{ clouds | join(' and ') }}</b>, which answers and sends it back. Your records are still kept here.</div></div>
+  {% else %}<div class="notice good">{{ icon('lock') }}<div>Your records, documents and emails never leave your own machines.</div></div>{% endif %}
+  <p class="muted small">Whether it's answering now is on the <a href="{{ url_for('settings.health_page', wid=ws.id) }}">Health</a> page.</p></div></div>
+
+{% if admin %}
+<form method="post" class="card mt-2" data-ai-models="{{ url_for('settings.ai_models', wid=ws.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  <div class="card-head">{{ icon('settings') }}<h2>Choose where it runs</h2></div><div class="card-body stack">
+  <p class="muted small">For every business on this platform. Press <b>Try it</b> to ask each one a small question first: nothing changes until you press <b>Save</b>.</p>
+  {% for slot, label, about in slots %}{% set picked = use.get(slot) or {} %}{% set e = catalog.get(env[slot][0]) %}
+  <div class="grid-2 ai-slot">
+    <label class="field"><span>{{ label }}</span>
+      <select name="{{ slot }}_provider">
+        {% if slot in ('builder', 'fast') %}<option value="">The same as everyday work</option>
+        {% else %}<option value="">As the .env file says ({{ e.name if e else env[slot][0] }}{{ ', ' ~ env[slot][3] if env[slot][3] }})</option>{% endif %}
+        {% if slot == 'embed' %}<option value="{{ words_only }}" {{ 'selected' if picked.provider == words_only }}>By the words used only</option>{% endif %}
+        <optgroup label="On your own machines">{% for name, p in catalog.items() if not p.cloud and (p.embeds if slot == 'embed' else p.chats) %}<option value="{{ name }}" {{ 'selected' if picked.provider == name }}>{{ p.name }}</option>{% endfor %}</optgroup>
+        <optgroup label="In the cloud">{% for name, p in catalog.items() if p.cloud and (p.embeds if slot == 'embed' else p.chats) %}<option value="{{ name }}" {{ 'selected' if picked.provider == name }}>{{ p.name }}</option>{% endfor %}</optgroup>
+      </select></label>
+    <label class="field" data-hide-if='[{"any": [{"field": "{{ slot }}_provider", "op": "is_empty"}, {"field": "{{ slot }}_provider", "op": "equals", "value": "{{ words_only }}"}]}]'><span>Model</span>
+      <input name="{{ slot }}_model" value="{{ picked.model or '' }}" list="models-{{ slot }}" autocomplete="off" placeholder="{{ 'its best model' if slot != 'embed' else 'which embedding model' }}">
+      <datalist id="models-{{ slot }}"></datalist>
+      <small class="help" data-models-note="{{ slot }}">{{ 'Empty: the newest of its leading models.' if slot != 'embed' }}</small></label>
+  </div>
+  {% endfor %}
+
+  <h3 class="mt-2">Keys and addresses</h3>
+  <p class="muted small">A key is kept encrypted, and never shown again. Leave a box empty to keep what's there.</p>
+  {% for name, p in catalog.items() if p.needs_key or name in ('ollama', 'compatible', 'azure') %}
+  {% set when = [] %}{% for slot, _, _ in slots %}{% set _ = when.append({"field": slot ~ "_provider", "op": "equals", "value": name}) %}{% endfor %}
+  <div class="stack ai-key" {% if name not in in_effect %}data-show-if='[{"any": {{ when | tojson }}}]'{% endif %}>
+    <div class="row"><b>{{ p.name }}</b>{% if p.cloud %}<span class="pill amber">cloud</span>{% else %}<span class="pill green">your own</span>{% endif %}</div>
+    {% if p.about %}<small class="help">{{ p.about }}</small>{% endif %}
+    <div class="grid-2">
+    {% if p.needs_key or name == 'compatible' %}
+    <label class="field"><span>Key{{ ' (if it asks for one)' if not p.needs_key }}</span>
+      <input type="password" name="key_{{ name }}" autocomplete="off" value="{{ typed.get('key_' ~ name, '') }}" placeholder="{{ keys[name] or 'paste the key here' }}">
+      <small class="help">{% if p.site %}<a href="{{ p.site }}" target="_blank" rel="noopener">Get a key from {{ p.name }}</a>.{% endif %}
+        {% if keys[name].startswith('saved') %}<label class="check"><input type="checkbox" name="forget_key_{{ name }}"> Remove the saved key</label>{% endif %}</small></label>
+    {% endif %}
+    {% if name in ('ollama', 'compatible', 'azure') %}
+    <label class="field"><span>Address</span>
+      <input name="url_{{ name }}" value="{{ typed.get('url_' ~ name) or urls.get(name, '') }}" placeholder="{{ {'ollama': 'http://127.0.0.1:11434', 'compatible': 'http://gpu1:8000/v1', 'azure': 'https://NAME.openai.azure.com'}[name] }}">
+      <small class="help">{{ {'ollama': 'Empty: Ollama on this computer.', 'compatible': 'Where your server answers.', 'azure': "Your Azure OpenAI resource's address (the model is a deployment's name)."}[name] }}</small></label>
+    {% endif %}
+    </div>
+  </div>
+  {% endfor %}
+
+  {% if tried %}
+  <div class="stack mt-2"><h3>What each one said</h3>
+    {% for t in tried %}
+    <div class="notice {{ 'good' if t.ok else 'bad' }}">{{ icon('circle-check' if t.ok else 'circle-x') }}<div><b>{{ t.label }}</b>{% if t.model %} ({{ t.model }}{{ ' at ' ~ t.where if t.where }}){% endif %}:
+      {{ ('“' ~ t.said ~ '”') if t.ok and t.quote else t.said }}{% if t.seconds %} <span class="muted small">{{ t.seconds }} s</span>{% endif %}</div></div>
+    {% endfor %}
+    {% if tried | selectattr('ok', 'equalto', false) | list %}<p class="muted small">Put right what didn't work (often the key, or the model's name), then try again.</p>
+    {% else %}<p class="muted small">All of them answered. Save to use them.</p>{% endif %}
+  </div>
+  {% endif %}
+  <div class="row"><button class="btn" name="do" value="try">{{ icon('play') }}Try it</button><button class="btn primary" name="do" value="save">Save</button></div>
+</div></form>
+{% else %}
+<p class="muted small mt-2">Only the person who looks after the platform chooses where the AI runs.</p>
+{% endif %}
+
 <div class="card mt-2"><div class="card-head">{{ icon('book-open') }}<h2>What it can look through</h2></div><div class="card-body stack">
   <p><b>{{ known.records }}</b> records, <b>{{ known.files }}</b> documents and <b>{{ known.emails }}</b> emails ({{ known.passages }} passages{% if known.model %}, found by meaning with {{ known.model }}{% endif %}{% if known.waiting %}; {{ known.waiting }} still to read{% endif %}).
     Fields kept from some people are never read into it.</p>

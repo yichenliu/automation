@@ -93,6 +93,25 @@ Only 1 was the model's own judgment.
 **D8. An AI gateway.**
 - Providers: Ollama (dev) and OpenAI-compatible servers (vLLM/SGLang: batching, prefix caching, fast constrained
   decoding).
+- Local or cloud, swapped without a restart (app/ai_providers.py). The catalog has Ollama, your own OpenAI-compatible
+  server, and the cloud providers OpenAI, Anthropic, Gemini, Azure OpenAI, Mistral, Groq, DeepSeek, xAI, OpenRouter,
+  Together, Fireworks, Cerebras and Cohere, with Voyage for embeddings.
+  - Three protocols cover them: Ollama's, OpenAI's chat completions and Anthropic's messages, which carries adaptive
+    thinking, effort, JSON output and a cached system prompt.
+  - Each purpose (everyday, builder, quick jobs, search by meaning) goes where a platform admin chose under Settings › AI.
+    That choice is stored in `platform_setting`, with keys Fernet-encrypted, and every process reads it within 5 s.
+    Without one, the .env decides (AI_PROVIDER, AI_MODEL, ...; *_BUILDER, *_FAST, *_EMBED; OPENAI_API_KEY and the
+    like). A cloud provider given no model uses the newest of its leading family that the key can list.
+  - What a model refuses is learned, not hard-coded per model (`_negotiate`). Each optional part of a request is a
+    ladder of ways to send it: max_completion_tokens or max_tokens; temperature, top_p and seed; thinking by
+    reasoning_effort, a chat-template switch or Anthropic's thinking and effort; the JSON schema as json_schema, then
+    json_object plus the schema in the prompt, then the prompt alone. A 400 that names a part steps it down a rung, and
+    that's remembered for that server and model. A length cap named in a refusal is learned the same way. So a new
+    model or provider quirk works without code.
+  - Search by meaning stays on this computer unless chosen elsewhere. Changing its model reads the knowledge again.
+  - A key turned away, or an account out of credit, waits like a server that's down: the work carries on once fixed.
+  - Recorded builder calls say which provider and model wrote them, so cloud answers can be kept apart from the
+    platform's own model's when choosing training data.
 - Priorities: an owner chatting comes before background work.
 - Fairness between customers, a concurrency cap, and deadlines.
 

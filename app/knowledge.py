@@ -265,7 +265,7 @@ def work(limit=BATCH):
                 db.session.delete(task)
             db.session.commit()
     texts = [f"{doc['title']}\n{doc['text']}" for _, _, docs in prepared for doc in docs]
-    model = settings().get("OLLAMA_EMBED_MODEL") or None
+    model = ai.embed_model()
     vectors, waiting = None, False
     if texts and model:
         try:
@@ -330,7 +330,7 @@ def search(engine, query, k=6, sources=None):
         rows = db.session.execute(sql("SELECT id FROM chunk, websearch_to_tsquery('english', :q) AS q WHERE workspace_id = :ws "
                                       "AND words @@ q ORDER BY ts_rank_cd(words, q, 1) DESC, id LIMIT 80"), {"q": words, "ws": ws_id}).fetchall()
         rankings.append([r[0] for r in rows])
-    model = settings().get("OLLAMA_EMBED_MODEL")
+    model = ai.embed_model()
     similarity = {}
     if model and db.session.query(Chunk.id).filter(Chunk.workspace_id == ws_id, Chunk.model == model).first() is not None:
         try:
@@ -389,7 +389,7 @@ def status(workspace):
     waiting = db.session.query(func.count(IndexTask.id)).filter(IndexTask.workspace_id == workspace.id).scalar() or 0
     return {"records": counts.get("record", 0), "files": counts.get("file", 0), "emails": counts.get("email", 0),
             "passages": passages_, "by_words_only": without, "waiting": waiting,
-            "model": settings().get("OLLAMA_EMBED_MODEL") or None}
+            "model": ai.embed_model()}
 
 
 # --- learning from Microsoft 365 -----------------------------------------------------------------------------------------

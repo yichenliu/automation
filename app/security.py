@@ -37,6 +37,20 @@ def decrypt(token):
         return {}
 
 
+def platform_admin(user):
+    """Whether this person looks after the platform itself, not one business on it: they choose the AI every business
+    here uses (Settings › AI). The emails in PLATFORM_ADMINS; when that's empty, whoever made the first account (on one
+    business's own computer, its owner)."""
+    if not getattr(user, "is_authenticated", False):
+        return False
+    named = {e.strip().lower() for e in (settings().get("PLATFORM_ADMINS") or "").split(",") if e.strip()}
+    if named:
+        return (user.email or "").strip().lower() in named
+    from sqlalchemy import func
+    from .models import User
+    return user.id == db.session.query(func.min(User.id)).scalar()
+
+
 STEP_UP_SECONDS = 10 * 60  # how long a confirmed sign-in counts for steps that need one
 
 

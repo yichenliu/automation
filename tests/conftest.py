@@ -36,6 +36,8 @@ def app(tmp_path, database_url):
         db.session.remove()
         _empty(db)  # the next test starts with nothing, its ids from 1, as a new database would
         db.engine.dispose()
+        from app import ai_providers
+        ai_providers.forget()  # what the last test chose for the AI (Settings › AI) isn't remembered into the next
     ai.set_backend(None)
     ai.set_embedder(None)
 

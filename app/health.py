@@ -67,7 +67,9 @@ def report(ws):
     except ai.AIUnavailable as exc:
         out.append({"name": "The AI", "ok": False, "said": str(exc),
                     "do": ("Start Ollama (or restart the computer it runs on)." if described["provider"] == "ollama" else
-                           f"Start the model server at {described['url']} (vLLM or SGLang), or check AI_BASE_URL.")
+                           f"Check the key and the model under Settings › AI, or whether {described['name']} is having trouble (its status page)."
+                           if described.get("cloud") else
+                           f"Start the model server at {described['url']} (vLLM or SGLang), or check its address under Settings › AI.")
                           + " Work that needs the AI waits and carries on by itself."})
     out.extend(_asked(ai.stats()))
     day = utcnow() - timedelta(days=1)

@@ -314,6 +314,37 @@
   };
   $$("form").filter((f) => f.querySelector("[data-show-if], [data-hide-if], [data-readonly-if], [data-options-by]")).forEach(conditional);
 
+  // --- Settings › AI: the models a provider has, offered in each purpose's model box --------------------------------
+  $$("form[data-ai-models]").forEach((form) => {
+    const slots = ["assistant", "builder", "fast", "embed"], asked = new Map();
+    const load = async (slot) => {
+      const select = form.elements[`${slot}_provider`], list = $(`#models-${slot}`, form), note = $(`[data-models-note="${slot}"]`, form);
+      const provider = select ? select.value : "";
+      if (!provider || provider === "none" || !list) return;
+      const key = form.elements[`key_${provider}`], url = form.elements[`url_${provider}`];
+      const body = new FormData();
+      body.append("provider", provider);
+      body.append("kind", slot === "embed" ? "embed" : "chat");
+      if (key && key.value) body.append("key", key.value);
+      if (url && url.value) body.append("url", url.value);
+      const ask = [provider, slot === "embed", key && key.value, url && url.value].join("|");
+      try {
+        if (!asked.has(ask)) asked.set(ask, fetch(form.dataset.aiModels, { method: "POST", headers: { "X-CSRFToken": csrf }, body }).then((r) => r.json()));
+        const d = await asked.get(ask);
+        list.innerHTML = (d.models || []).map((m) => `<option value="${esc(m)}">`).join("");
+        const input = form.elements[`${slot}_model`];
+        if (input && slot !== "embed") input.placeholder = d.best ? `its best: ${d.best}` : "which model";
+        if (note) note.textContent = d.error || (d.models && d.models.length ? `${d.models.length} to choose from with this key.` : "Type the model's name as the provider writes it.");
+      } catch (e) { asked.clear(); /* the list only helps: the name can be typed */ }
+    };
+    slots.forEach((slot) => {
+      const select = form.elements[`${slot}_provider`], input = form.elements[`${slot}_model`];
+      if (select) select.addEventListener("change", () => load(slot));
+      if (input) input.addEventListener("focus", () => load(slot));
+    });
+    form.addEventListener("change", (e) => { if (/^(key|url)_/.test(e.target.name || "")) slots.forEach(load); });
+  });
+
   // --- trying an AI helper on a record before trusting it (nothing is saved) ------------------------------------
   $$("[data-ai-try]").forEach((button) => button.addEventListener("click", async () => {
     const form = button.closest("form"), out = $("[data-ai-result]", form);

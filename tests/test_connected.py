@@ -204,7 +204,7 @@ def test_the_menus_put_each_thing_in_one_place_and_join_them_up(app, client, own
         assert place in [i["label"] for i in client.get(f"/w/{ws.id}/app/jump?q={place.lower()}").get_json()["items"]], place
     settings = client.get(f"/w/{ws.id}/settings/").get_data(as_text=True)
     for label in ("Your business", "Business details", "People and teams", "Connected", "API and AI assistants", "Looking after it",
-                  "AI on this computer", "Data and backups", "Security", "Audit log", "Health"):
+                  "/settings/ai\"", "Data and backups", "Security", "Audit log", "Health"):
         assert label in settings, label
     assert "Sign people out after" not in settings  # it's under Security now
     assert "Sign people out after" in client.get(f"/w/{ws.id}/settings/security").get_data(as_text=True)

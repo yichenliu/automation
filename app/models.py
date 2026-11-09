@@ -568,3 +568,13 @@ class Suggestion(db.Model):
     decided_at = db.Column(db.DateTime)
     created_at = db.Column(db.DateTime, default=utcnow)
     __table_args__ = (db.UniqueConstraint("workspace_id", "signature"),)
+
+
+class PlatformSetting(db.Model):
+    """A setting of the platform itself, the same for every business on it (which AI it uses, Settings › AI): chosen
+    by a platform admin, read by every web and worker process within seconds, no restart. Secrets in it are encrypted
+    (security.encrypt)."""
+    key = db.Column(db.String(64), primary_key=True)
+    value = db.Column(db.JSON, nullable=False, default=dict)
+    updated_at = db.Column(db.DateTime, default=utcnow, onupdate=utcnow)
+    updated_by = db.Column(db.String(255))
