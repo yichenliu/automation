@@ -430,7 +430,7 @@ ALIASES = {"if": "iif", "datediff": "days_between", "dateadd": "add_days", "edat
 QUERIES = {"count", "sum", "sumif", "avg", "avgif", "min", "max", "any", "all", "none", "where", "first", "last"}
 TODAY_FUNCTIONS = {"days_since", "days_until"}  # days from a date to today, and from today to a date
 NOW_FUNCTIONS = {"hours_since", "hours_until"}  # hours from a time to now, and from now to a time
-RECORD_FUNCTIONS = ("convert", "workday", "add_workdays", "workdays_between", "networkdays")  # a record's context gives these
+RECORD_FUNCTIONS = ("convert", "workday", "add_workdays", "workdays_between", "networkdays", "moved_by")  # a record's context gives these
 KNOWN = set(FUNCTIONS) | set(ALIASES) | {"iif", "today", "now"} | set(RECORD_FUNCTIONS) | QUERIES | TODAY_FUNCTIONS | NOW_FUNCTIONS
 
 # Every function, as the AI is told it (the catalog's FORMULAS): tests/test_queries.py fails for one with no words here.
@@ -451,6 +451,7 @@ SAID = {
     "workday": "workday(d, n) the date n working days on, weekends and the business's holidays skipped (add_workdays the same)",
     "add_workdays": None,
     "workdays_between": "workdays_between(a, b) working days from a to b (networkdays the same)",
+    "moved_by": "moved_by(\"Approved\") who moved the record to a stage, from its history (who approved the payment run)",
     "networkdays": None,
     "end_of_month": "end_of_month(d) the month's last day; end_of_month(d, 1) next month's",
     "date": "date(\"2026-11-05\") or date(2026, 11, 5) a date; datetime(\"2026-11-05 14:30\") a date and time",
@@ -712,6 +713,12 @@ def evaluate(source, context):
 def _attr(value, name):
     if value is None:
         return None
+    if isinstance(value, (list, tuple)):  # several linked records (a tender's invited sellers): each one's (their emails)
+        out = []
+        for one in value:
+            got = _attr(one, name)
+            out.extend(got if isinstance(got, list) else [got] if got not in (None, "") else [])
+        return out
     getter = getattr(value, "field", None)
     if callable(getter):
         return getter(name)

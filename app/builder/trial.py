@@ -1136,8 +1136,15 @@ def _take_along(engine, record, t, target, trial=None, last=True, given=(), othe
             if trial is not None and (last or way[0].lower() != str(target).lower()):
                 _fill_asked(trial, engine, record, t, lambda m: m["to"].lower() == way[0].lower(), given, others)
                 record = engine.get(record.id)
-            pressed = _press_move(engine, record, t, lambda m: m["to"].lower() == way[0].lower(),
-                                  attach=last or way[0].lower() != str(target).lower())
+            pick = lambda m: m["to"].lower() == way[0].lower()  # noqa: E731
+            try:
+                pressed = _press_move(engine, record, t, pick, attach=last or way[0].lower() != str(target).lower())
+            except FieldErrors:
+                # kept from whoever's doing it (someone else approves what they recommended): a colleague who may, does
+                other = _colleague(trial, engine, record, pick)
+                if other is None:
+                    raise
+                pressed = _press_move(other, other.get(record.id), t, pick, attach=last or way[0].lower() != str(target).lower())
         except FieldErrors as exc:
             raise FieldErrors({"_": f"on its way from {began} to {target} (through {', '.join(way[:-1])}), it couldn't move from "
                                     f"{at} to {way[0]}: {'; '.join(exc.errors.values())}"}) from exc
@@ -1156,7 +1163,9 @@ def _fill_asked(trial, engine, record, t, pick, given=(), others=None):
     if move is None:
         return
     asked = [f for f in engine.to_fill(t, record, move) if engine.kind(f) not in schema.FILES]
-    needs = {f["key"]: v for f in asked for v in [sample_value(engine, t, f, trial.owner_id, {}, 300, 0)] if v is not None}
+    # a link it asks for (a category, a cost centre) is one that's there, or an ordinary one added first
+    linked = {f["table"]: got for f in asked if f["type"] == "link" for got in [_one_of(engine, f["table"], trial.owner_id)] if got}
+    needs = {f["key"]: v for f in asked for v in [sample_value(engine, t, f, trial.owner_id, linked, 300, 0)] if v is not None}
     if move.get("only_if") and not engine.matches(record, move["only_if"]):  # “once the clearance date is filled in”
         linked = []
         meet = _meeting(trial, engine, record, t, move["only_if"], given, others or {}, linked)
@@ -1235,6 +1244,44 @@ def _meeting(trial, engine, record, t, conditions, given=(), others=None, linked
         if value is not None:
             out[f["key"]] = value
     return out
+
+
+def _colleague(trial, engine, record, pick):
+    """Someone else who may make the move `pick` likes, when it's kept from this person by separation of duties (they
+    raised it, or moved it to an earlier stage): a member of the team the move is for, or another staff member. None
+    when it isn't kept from them, or there's no trial to bring someone in."""
+    if trial is None:
+        return None
+    found = next(((m, problem) for _, m, problem in engine.moves(record) if pick(m)), None)
+    if found is None or not engine.kept_from(record, found[0].get("not_by")):
+        return None
+    teams = {tm["key"] for tm in schema.teams(engine.bp)}
+    who = next((w for w in found[0].get("who") or [] if w in teams or w in ROLES_BY), None) or "staff member"
+    other = _doer(trial, engine, who)
+    if other is not None and other.user_id is not None:  # a stand-in who sees what the owner sees (not kept from records
+        trial.member(other.user_id).role = "admin"      # by row rules), still held to the move's who and not_by
+        db.session.commit()
+        other = trial.engine(other.user_id)
+    return other
+
+
+def _one_of(engine, table, owner_id, depth=0):
+    """A record of a list for a sample to link to: one that's there, or an ordinary one added (with what it must link to
+    in turn), so a button that needs a category or a cost centre can be pressed in a copy that has none yet."""
+    rows = engine.rows(table)
+    if rows:
+        return rows[0].id
+    t = engine.tables.get(table)
+    if t is None or depth > 3:
+        return None
+    made = {}
+    for f in t["fields"]:
+        if f["type"] == "link" and f.get("required") and f["table"] != table:
+            got = _one_of(engine, f["table"], owner_id, depth + 1)
+            if got:
+                made[f["table"]] = got
+    record, _ = _add(engine, t, sample_values(engine, t, owner_id, made, 900 + depth))
+    return record.id if record is not None else None
 
 
 def _press_move(engine, record, t, pick, attach=True):

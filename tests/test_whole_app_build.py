@@ -358,3 +358,55 @@ def test_a_webhook_rule_about_a_list_runs_on_the_record_the_call_names(app):
     import pytest
     with pytest.raises(LookupError):
         automations.hook_record(e, rule, {"status": "Paid"})
+
+
+def test_everyone_can_see_a_list_only_a_team_changes(app):
+    """The shared catalogue: everyone picks from it, only the curators change it. Naming the team for edit kept it from
+    everyone else's view too."""
+    bp = _ok([{"do": "set_team", "key": "curators", "name": "Curators"},
+              {"do": "add_list", "key": "kinds", "label": "Kinds", "singular": "Kind", "fields": [{"type": "text", "key": "name", "label": "Name"}]},
+              {"do": "set_access", "list": "kinds", "view": "viewer", "edit": "curators"}])
+    assert schema.table(bp, "kinds")["access"] == {"view": "viewer", "edit_teams": ["curators"]}
+    ws = _ws(app, bp)
+    users = {}
+    for name, teams in (("ann", ["curators"]), ("bob", [])):
+        users[name] = User(email=f"{name}@example.com", name=name.title())
+        users[name].set_password("x" * 12)
+        db.session.add(users[name])
+        db.session.flush()
+        db.session.add(Membership(workspace_id=ws.id, user_id=users[name].id, role="editor", teams=teams))
+    db.session.commit()
+
+    def engine(name):
+        return Engine(ws, by=name, member=Membership.query.filter_by(workspace_id=ws.id, user_id=users[name].id).first())
+    t = schema.table(bp, "kinds")
+    assert engine("bob").can(t, "view") and not engine("bob").can(t, "edit")
+    assert engine("ann").can(t, "view") and engine("ann").can(t, "edit")
+
+
+def test_who_moved_a_record_to_a_stage_and_each_of_several_linked_records_emails():
+    from app.blueprint import expr
+    assert "moved_by" in expr.KNOWN
+
+    class One:
+        def __init__(self, email):
+            self.email = email
+
+        def field(self, name):
+            return self.email if name == "email" else None
+
+    class Context:
+        def resolve(self, name):
+            return [One("a@x.example"), One("b@y.example"), One("")] if name == "invited" else None
+    assert expr.render("{{invited.email}}", Context()) == ["a@x.example", "b@y.example"]
+
+
+def test_features_sample_dates_a_day_apart_in_the_order_they_come():
+    """A contract that must end after it starts: every sample date was today+7, so the feature's own checks were refused."""
+    from app.lang import patterns
+    from app.lang.design import Design
+    bp = _ok([{"do": "add_list", "key": "deals", "label": "Deals", "singular": "Deal", "fields": [
+        {"type": "text", "key": "name", "label": "Name", "required": True}, {"type": "date", "key": "starts_on", "label": "Starts", "required": True},
+        {"type": "date", "key": "ends_on", "label": "Ends", "required": True}]}])
+    step = patterns.adding(Design(bp), schema.table(bp, "deals"), "d1")[-1]
+    assert step["values"]["starts_on"] == "today+7" and step["values"]["ends_on"] == "today+8"

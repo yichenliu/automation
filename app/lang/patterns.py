@@ -263,6 +263,8 @@ def adding(d, t, alias, values=None, by=None, depth=0, made=None, through=(), ke
             values[f["key"]] = other_alias
         else:
             values[f["key"]] = _sample(d, f, i, alias)
+            if f["type"] in ("date", "datetime"):  # a day apart, in the order they come: a contract ends after it starts
+                values[f["key"]] = f"today+{7 + sum(1 for g in t['fields'][:i] if g['type'] in ('date', 'datetime') and g['key'] in values)}"
     start = (t.get("workflow") or {}).get("start") or next(iter(d.stages(t) or []), None) if flow_field else None
     staged = asked.get(flow_field) if flow_field in asked and asked.get(flow_field) != start else None
     if staged is not None:  # a record starts at its first stage: taken to the one asked for by its buttons, as people would

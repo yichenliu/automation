@@ -1761,6 +1761,8 @@ def translate(d, p, where):
                 who = _role_or_team(d, value, f"{where} › {action}")
                 if who in schema.ROLE_NAMES:
                     access[action] = who
+                elif action == "edit" and access.get("view"):  # everyone with that role sees it; only the team changes it
+                    access["edit_teams"] = [who]
                 else:
                     teams.append(who)
         if teams:

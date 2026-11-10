@@ -1282,7 +1282,8 @@ def _do(engine, automation, action, record, run):
         notify(engine, text, link, action.get("to", "everyone"), record)
         return {"result": f"Notified: “{text}”", "link": link}
     if kind == "send_email":
-        to = str(_render(action["to"], ctx) or "").strip()
+        sent_to = _render(action["to"], ctx)  # several (every invited seller's email): one email to them all
+        to = (", ".join(str(x).strip() for x in sent_to if str(x or "").strip()) if isinstance(sent_to, list) else str(sent_to or "")).strip()
         if not to and "{{" in str(action["to"]):  # the address it's sent to is empty (a customer with no email): not sent, said
             whose = humanize(engine, action["to"], record.table if record is not None else None)
             what = f"{engine.title(record)}: " if record is not None else ""

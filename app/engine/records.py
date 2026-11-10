@@ -321,7 +321,23 @@ class RecordContext(expr.Context):
     @property
     def functions(self):
         return {"convert": self.engine.convert, "workday": self.engine.workday, "add_workdays": self.engine.workday,
-                "workdays_between": self.engine.workdays_between, "networkdays": self.engine.workdays_between}
+                "workdays_between": self.engine.workdays_between, "networkdays": self.engine.workdays_between,
+                "moved_by": self._moved_by}
+
+    def _moved_by(self, stage):
+        """Who moved this record to a stage, from its history (the last of them): who approved the run, who recommended
+        the award. None if nobody has."""
+        if self.record is None or self.record.id is None:
+            return None
+        from ..models import RecordChange
+        flow = (self.engine.tables.get(self.record.table) or {}).get("workflow")
+        if not flow:
+            return None
+        rows = RecordChange.query.filter_by(record_id=self.record.id).filter(RecordChange.kind.in_(("created", "updated"))) \
+            .order_by(RecordChange.id.desc()).all()
+        uid = next((r.by_id for r in rows if r.by_id and str(((r.changes or {}).get(flow["field"]) or [None, None])[-1]).lower()
+                    == str(stage).strip().lower()), None)
+        return self.engine._person(uid) if uid else None
 
     def resolve(self, name):
         if name in self.names:
@@ -465,6 +481,9 @@ class Engine:
         teams = (t.get("access") or {}).get("teams")
         if teams and self.role is not None and not self._at_least("admin") and not self.teams & set(teams):
             return False  # kept to a team (Payments for Finance), and admins
+        changers = (t.get("access") or {}).get("edit_teams")
+        if action == "edit" and changers and self.role is not None and not self._at_least("admin") and not self.teams & set(changers):
+            return False  # everyone sees it; only these teams change it (the curators, the shared catalogue)
         return self._at_least(need)
 
     def is_workday(self, d):

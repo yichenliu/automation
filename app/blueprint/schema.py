@@ -956,6 +956,9 @@ def normalize_table(raw):
                     "managers": "admin", "manager": "admin"}.get(role, role)
             if role in ROLE_NAMES:
                 clean[action] = role
+        changers = [slug(x) for x in _names(_first(access, "edit_teams", "changed_by_teams", default=[])) if slug(x)]
+        if changers:  # everyone with the view role sees it; only these teams (and admins) change it: the shared catalogue
+            clean["edit_teams"] = list(dict.fromkeys(changers))[:8]
         teams = [slug(x) for x in _names(_first(access, "teams", "team", "only_teams", "groups", default=[])) if slug(x)]
         if teams:  # only these teams (and admins) see and change it: Payments for Finance
             clean["teams"] = list(dict.fromkeys(teams))[:8]
