@@ -567,6 +567,8 @@ def _person(raw):
     who = ".".join(slug(part) for part in str(raw or "admin").split(".") if slug(part)) or "admin"
     if who in _TEAM_KEYS.get():  # a team of the app's own named like one of these words (Requester) is that team
         return who
+    if who in _PERSON_FIELDS.get() and who not in WHO_WORDS:  # the record's own person field (a contract's "manager"), never
+        return who                                            # the word for an admin
     return {"admins": "admin", "manager": "admin", "managers": "admin", "owners": "owner", "editors": "editor", "anyone": "editor",
             "team": "editor", "everyone": "editor", "staff": "editor", "requester": "creator", "submitter": "creator",
             "created_by": "creator", "raised_by": "creator", "author": "creator", "outside_person": "portal",
@@ -655,7 +657,7 @@ def normalize_workflow(raw, label="", fields=()):
                 "label": str(_first(m, "label", "button", "name", "title", default="")).strip()[:60]}
         who = _first(m, "who", "by", "role", "roles", "allowed", "can")
         if who:
-            move["who"] = [_person(x) for x in _names(who)]
+            move["who"] = [slug(x) if slug(x) in fields and slug(x) not in WHO_WORDS else _person(x) for x in _names(who)]
         needs = _first(m, "requires", "required", "require", "needs", "required_fields")
         if needs:
             move["requires"] = [slug(f) for f in _names(needs)]
@@ -2323,7 +2325,12 @@ def normalize_automation(raw):
         if changed and trigger["type"] in ("record_updated", "record_created_or_updated"):
             to = _first(trigger_raw, "to", "value", "changed_to")
             conditions.insert(0, {"field": changed, "op": "changed_to" if to is not None else "changed", **({"value": to} if to is not None else {})})
-    actions = [normalize_action(a) for a in _list(_first(raw, "actions", "then", "do", "steps", default=[]))]
+    about = (_BP_TABLES.get() or {}).get(trigger.get("table") or "") or {}
+    people = _PERSON_FIELDS.set(frozenset(f["key"] for f in about.get("fields", []) if f.get("type") == "user"))
+    try:
+        actions = [normalize_action(a) for a in _list(_first(raw, "actions", "then", "do", "steps", default=[]))]
+    finally:
+        _PERSON_FIELDS.reset(people)
     # the same message, email or task twice in a row is a slip: everyone told twice
     actions = [a for i, a in enumerate(actions) if not (i and a["type"] in REPEATS_ARE_SLIPS and a == actions[i - 1])]
     if not actions:
@@ -2575,11 +2582,16 @@ def _percent_terms(t, tables):
     out = [rf"\b(?:record\.|this\.)?{re.escape(f['key'])}\b(?!\s*[.(])" for f in t["fields"] if _is_percent(f)]
     if not tables:
         return out
-    for f in t["fields"]:  # one link on: criterion.weight
-        target = tables.get(f.get("table")) if f["type"] == "link" else None
-        for g in (target or {}).get("fields", []):
-            if _is_percent(g):
-                out.append(rf"\b(?:record\.|this\.)?{re.escape(f['key'])}\.{re.escape(g['key'])}\b(?!\s*[.(])")
+    ways = [([f["key"]], tables.get(f.get("table"))) for f in t["fields"] if f["type"] == "link" and f.get("table") in tables]
+    for _ in range(3):  # through its links, up to three on: criterion.weight, invoice.buyer.price_tolerance_percent
+        further = []
+        for path, target in ways:
+            for g in (target or {}).get("fields", []):
+                if _is_percent(g):
+                    out.append(r"\b(?:record\.|this\.)?" + r"\.".join(re.escape(k) for k in path + [g["key"]]) + r"\b(?!\s*[.(])")
+                elif g["type"] == "link" and g.get("table") in tables:
+                    further.append((path + [g["key"]], tables[g["table"]]))
+        ways = further
     for other in tables.values():  # a list of records linking here: sum(criteria, weight), avg(...), min(...), max(...)
         if not any(g["type"] == "link" and g.get("table") == t["key"] for g in other.get("fields", [])):
             continue
@@ -2605,9 +2617,11 @@ def percents_fixed(t, source, tables=None):
     for term in _percent_terms(t, tables):
         out = re.sub(rf"({term})\s*/\s*100(?:\.0*)?(?![\d.%])", r"\1", out)
         out = re.sub(rf"\(\s*({term})\s*/\s*100(?:\.0*)?\s*\)", r"\1", out)
-        out = re.sub(rf"(({term})\s*(?:>=|<=|==|!=|>|<)\s*)(\d+(?:\.\d+)?)(?![\d.%])",
+        # compared on its own (never a product or a sum it's part of: "price * discount_percent > 5" is $5)
+        alone = r"(?<![*/+\-]\s)(?<![*/+\-])"
+        out = re.sub(rf"{alone}(({term})\s*(?:>=|<=|==|!=|>|<)\s*)(\d+(?:\.\d+)?)(?![\d.%])(?!\s*[*/+\-])",
                      lambda m: m.group(1) + (f"{float(m.group(3)) / 100:g}" if float(m.group(3)) > 1 else m.group(3)), out)
-        out = re.sub(rf"(?<![\w.])(\d+(?:\.\d+)?)(\s*(?:>=|<=|==|!=|>|<)\s*(?:{term}))",
+        out = re.sub(rf"(?<![\w.*/+\-])(?<![*/+\-]\s)(\d+(?:\.\d+)?)(\s*(?:>=|<=|==|!=|>|<)\s*(?:{term}))(?!\s*[*/+\-])",
                      lambda m: (f"{float(m.group(1)) / 100:g}" if float(m.group(1)) > 1 else m.group(1)) + m.group(2), out)
     if len(_PERCENTS_FIXED) > 20000:
         _PERCENTS_FIXED.clear()
@@ -2720,6 +2734,8 @@ def _path_field(t, path, tables):
 
 
 _TEAM_KEYS = contextvars.ContextVar("team_keys", default=frozenset())
+_PERSON_FIELDS = contextvars.ContextVar("person_fields", default=frozenset())  # the record's person fields, while its rule or moves are read
+_BP_TABLES = contextvars.ContextVar("bp_tables", default=None)  # {key: table} of the design being changed
 _FLOW_KEYS = contextvars.ContextVar("flow_keys", default={})  # the design's flows while it's checked (a task done through one)
 
 
@@ -3627,11 +3643,13 @@ def check(bp):
     """Every reference in the blueprint that doesn't point at something real, as plain sentences."""
     token = _TEAM_KEYS.set(frozenset(tm["key"] for tm in teams(bp)))
     known = _FLOW_KEYS.set({f["key"]: f for f in flows(bp)})
+    tables_ = _BP_TABLES.set({t["key"]: t for t in bp.get("tables", [])})
     try:
         return _check_all(bp)
     finally:
         _TEAM_KEYS.reset(token)
         _FLOW_KEYS.reset(known)
+        _BP_TABLES.reset(tables_)
 
 
 def _check_all(bp):

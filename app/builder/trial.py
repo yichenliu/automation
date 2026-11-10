@@ -1097,8 +1097,9 @@ def _act_outside(trial, doer, step, names, hold=False):
             if not asks:
                 raise FieldErrors({"_": f"nothing on this {schema.lc(t['singular'])} waits for {doer.by}'s answer"})
             said = step.get("comment") or step.get("reason")
-            if asks[0].kind == "task":
-                automations.complete(engine, asks[0], doer.by, comment=said)
+            if asks[0].kind == "task":  # what it asks them for (who signed), as they'd type it
+                given = {k: v for k, v in (step.get("values") or {}).items() if k in (asks[0].fields or [])}
+                automations.complete(engine, asks[0], doer.by, given, comment=said)
             elif asks[0].kind == "change":
                 automations.decide_change(engine, asks[0], do == "approve", doer.by, said)
             else:

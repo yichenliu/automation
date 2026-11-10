@@ -231,6 +231,9 @@ class Design:
         word = _s(name)
         aliases = {"staff": "editor", "editors": "editor", "admins": "admin", "manager": "admin", "managers": "admin", "me": "owner",
                    "boss": "owner", "all": "everyone", "team": "everyone", "the_owner": "owner", "creator": "creator"}
+        own = schema.field(t, word) if t and word not in schema.WHO_WORDS else None
+        if own is not None and own.get("type") == "user" and word in aliases:  # the record's own "manager": that person
+            return word
         word = aliases.get(word, word)
         if word in schema.WHO_WORDS or word == "approver":  # approver: whoever answered the approval before this step
             return word

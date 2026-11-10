@@ -128,12 +128,14 @@ def apply(blueprint, ops, always_check=False, already=(), strict=False):
         restating, said = op.startswith(("update_", "set_")) or op == "rename_app", len(changes)
         before = json.dumps(bp, sort_keys=True, default=str) if restating else None
         token = schema._TEAM_KEYS.set(frozenset(tm["key"] for tm in schema.teams(bp)))  # a team named like a who-word stays the team
+        tables_ = schema._BP_TABLES.set({t["key"]: t for t in bp.get("tables", [])})  # and a list's own person field, its field
         try:
             _apply_one(bp, op, raw, result, where)
         except SchemaError as exc:
             problems.append(f"{where}: {exc}")
         finally:
             schema._TEAM_KEYS.reset(token)
+            schema._BP_TABLES.reset(tables_)
         if restating and json.dumps(bp, sort_keys=True, default=str) == before:  # saying again what's so isn't a change
             del changes[said:]
     result.corrected = [] if strict else _resolve(bp, changes, {t["key"] for t in bp["tables"]} - {t["key"] for t in (blueprint or {}).get("tables", [])})

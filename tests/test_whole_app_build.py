@@ -675,3 +675,33 @@ def test_an_outside_persons_held_change_waits_for_a_colleague_in_an_example(app)
         "expect": [{"record": "f1", "field": "account", "equals": "123456"}]}
     _, (played,) = trial.try_out(ws, [example], screens=False)
     assert played["ok"], played
+
+
+def test_a_lists_own_person_field_named_like_a_role_word_is_that_person():
+    """The contract's manager countersigns: "manager" is also a word for an admin, so the approval went to any admin."""
+    bp = _ok([{"do": "add_list", "key": "deals", "label": "Deals", "singular": "Deal", "fields": [
+                  {"type": "text", "key": "name", "label": "Name"}, {"type": "person", "key": "manager", "label": "Manager"}],
+               "stages": {"stages": ["Draft", "Signed"], "moves": [{"from": ["Draft"], "to": "Signed", "button": "Sign", "who": ["manager"]}]}},
+              {"do": "add_rule", "rule": {"key": "ask", "name": "Ask", "when": {"on": "added", "list": "deals"}, "steps": [
+                  {"do": "approval", "who": "manager", "message": "OK?"}]}}])
+    assert schema.table(bp, "deals")["workflow"]["transitions"][0]["who"] == ["manager"]
+    assert next(a for a in bp["automations"] if a["key"] == "ask")["actions"][0]["approver"] == "manager"
+    plain = _ok([{"do": "add_list", "key": "notes", "label": "Notes", "singular": "Note", "fields": [{"type": "text", "key": "name", "label": "Name"}]},
+                 {"do": "add_rule", "rule": {"key": "ask", "name": "Ask", "when": {"on": "added", "list": "notes"}, "steps": [
+                     {"do": "approval", "who": "manager", "message": "OK?"}]}}])
+    assert next(a for a in plain["automations"] if a["key"] == "ask")["actions"][0]["approver"] == "admin"
+
+
+def test_a_percentage_two_links_on_and_one_inside_a_product():
+    """The buyer's 2% price tolerance, read from an invoice line (invoice.buyer.price_tolerance_percent / 100) was 0.02%;
+    and "price * discount_percent > 5" is $5 of a product, never 5% of the discount."""
+    orgs = {"key": "orgs", "fields": [{"key": "tol", "type": "percent"}]}
+    inv = {"key": "invoices", "fields": [{"key": "buyer", "type": "link", "table": "orgs"}, {"key": "discount_percent", "type": "percent"},
+                                         {"key": "subtotal", "type": "money"}]}
+    lines = {"key": "lines", "fields": [{"key": "invoice", "type": "link", "table": "invoices"}, {"key": "price", "type": "money"}]}
+    tables = {"orgs": orgs, "invoices": inv, "lines": lines}
+    assert schema.percents_fixed(lines, "price * invoice.buyer.tol / 100 > 5", tables) == "price * invoice.buyer.tol > 5"
+    assert schema.percents_fixed(lines, "invoice.buyer.tol > 3", tables) == "invoice.buyer.tol > 0.03"
+    assert schema.percents_fixed(inv, "subtotal * discount_percent / 100 > 5", tables) == "subtotal * discount_percent > 5"
+    assert schema.percents_fixed(inv, "discount_percent + 5 > 10", tables) == "discount_percent + 5 > 10"
+    assert schema.percents_fixed(inv, "(discount_percent > 10) and subtotal > 100", tables) == "(discount_percent > 0.1) and subtotal > 100"
