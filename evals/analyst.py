@@ -724,6 +724,13 @@ def handed_over(result):
     return why
 
 
+def owner_vouched(result):
+    """Whether a check of the owner's own passed: an app right by the builder's own checks alone (the owner said nothing
+    that could be checked, or none could be tried) is right as far as anyone looked, which isn't far. Vague owners gave
+    most of those; counted apart, they can't make a round look better than it is."""
+    return any(c["result"] == "pass" for c in result.get("owner_checks") or [])
+
+
 def kept_working(result):
     """(stories that worked before a later change, {story: the turn that broke it}): a change mustn't break what was right."""
     worked, broke = set(), {}
@@ -822,7 +829,8 @@ def report(result):
                      + (" (its example corrected on a second look)" if c.get("looked_again") == "example" else ""))
     why = handed_over(result)
     if why is not None:
-        lines.append(f"  HANDED OVER: {'RIGHT' if not why else 'not right: ' + '; '.join(why[:6])}")
+        lines.append(f"  HANDED OVER: {'RIGHT' if not why else 'not right: ' + '; '.join(why[:6])}"
+                     + ("" if why or owner_vouched(result) else " (no check of the owner's own passed: only the builder's own say it's right)"))
     fx = result.get("fixing")
     if fx is not None and why:
         asks = fx.get("asks") or []
@@ -954,11 +962,16 @@ def totals(results):
                if steady else "")
             + (f"  RIGHT WHEN HANDED OVER: {sum(1 for w in built if not w)}/{len(built)} apps (did what was asked, nothing wrong "
                f"when tried out, no errors, nothing left out)\n" if built else "")
-            + "".join(f"    owners who {said}: right when handed over {sum(1 for w in mine if not w)}/{len(mine)}, right in the end "
-                      f"{sum(1 for r in rs if (r.get('fixing') or {}).get('right_after') is not None)}/{len(rs)}\n"
+            + (lambda unvouched: f"    {unvouched} of them right by the builder's own checks alone: no check of the owner's own "
+                                 f"passed (they said nothing that could be checked, or none could be tried)\n" if unvouched else "")(
+                sum(1 for r in results if handed_over(r) == [] and not owner_vouched(r)))
+            + "".join(f"    owners who {said}: right when handed over {sum(1 for w in mine if not w)}/{len(mine)}"
+                      + (f" ({alone} by the builder's own checks alone)" if alone else "")
+                      + f", right in the end {sum(1 for r in rs if (r.get('fixing') or {}).get('right_after') is not None)}/{len(rs)}\n"
                       for said, style in (("described their business", "plain"), ("started vague", "vague"))
                       for rs in [[r for r in results if r.get("style") == style and handed_over(r) is not None]]
-                      for mine in [[handed_over(r) for r in rs]] if rs)
+                      for mine in [[handed_over(r) for r in rs]] if rs
+                      for alone in [sum(1 for r in rs if handed_over(r) == [] and not owner_vouched(r))])
             + (lambda fx: f"  RIGHT IN THE END, the owner pressing what the app offers (fix / carry on) up to {ASKS} times: "
                           f"{sum(1 for f in fx if f.get('right_after') is not None)}/{len(fx)} apps (at handover "
                           f"{sum(1 for f in fx if f.get('right_after') == 0)}"

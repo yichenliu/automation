@@ -164,13 +164,21 @@ def owner(trade, style="plain"):
     return content.strip().strip('"'), said
 
 
-def checks(trade, said):
-    """The owner's own checks, written from what they told the builder (`said`: their messages), before it's built."""
+def checks(trade, said, tries=3):
+    """The owner's own checks, written from what they told the builder (`said`: their messages), before it's built.
+
+    None is a fair answer when they said too little to check, but the writer gave none by chance too (round 45 again,
+    on the cloud: the fridge repairer's own words got none, then two, then three), leaving an app nobody checked. So
+    none is asked again: one that stands after `tries` is what they said."""
     from app import ai
-    content, _ = ai.chat([{"role": "user", "content": CHECKS.format(trade=trade, said=said)}], think=False,
-                         schema={"type": "object", "properties": {"checks": {"type": "array", "items": {"type": "string"}}}, "required": ["checks"]})
-    found = ai.parse_json(content).get("checks") or []
-    return [str(c).strip() for c in found if str(c).strip() and not META.search(str(c))][:3]  # “…but I didn't mention it” isn't a check
+    for _ in range(tries):
+        content, _ = ai.chat([{"role": "user", "content": CHECKS.format(trade=trade, said=said)}], think=False,
+                             schema={"type": "object", "properties": {"checks": {"type": "array", "items": {"type": "string"}}}, "required": ["checks"]})
+        found = ai.parse_json(content).get("checks") or []
+        kept = [str(c).strip() for c in found if str(c).strip() and not META.search(str(c))][:3]  # “…but I didn't mention it” isn't a check
+        if kept:
+            return kept
+    return []
 
 
 def answer(trade, said, asked):

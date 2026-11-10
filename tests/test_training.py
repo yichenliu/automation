@@ -135,6 +135,27 @@ def test_a_round_built_again_keeps_only_the_checks_an_owner_wrote_from_their_fir
     assert again["fresh2"]["checks"] == ["A beginner gets a beginner class"]
 
 
+def test_an_owner_left_with_no_checks_by_chance_is_asked_again_and_an_app_nobody_checked_is_said_apart(app, monkeypatch):
+    """The check writer sometimes gave none for words it could check (and some the next time): none is asked again. An app
+    right with no check of the owner's own passing is right only by the builder's say, and the totals count it apart."""
+    from app import ai
+    answers = iter(['{"checks": []}', '{"checks": ["I didn\'t mention prices"]}', '{"checks": ["Unpaid invoices are flagged"]}'])
+    monkeypatch.setattr(ai, "chat", lambda *a, **k: (next(answers), ""))
+    assert analyst.fresh.checks("fridge repairer", "Unpaid invoices") == ["Unpaid invoices are flagged"]
+    monkeypatch.setattr(ai, "chat", lambda *a, **k: ('{"checks": []}', ""))
+    assert analyst.fresh.checks("fridge repairer", "need help") == []
+    turn = {"say": "hi", "status": "done", "tried": {"examples": [{"title": "x", "ok": True}]}, "passed": 0, "of": 0, "checks": {},
+            "seconds": 9, "parts": 1, "repairs": 0, "changes": 3, "reply": "Your app is ready to try."}
+    tryout = {"fix": [], "crashes": [], "check": [], "made": 1, "tables": 1}
+    looked = {"key": "a", "title": "Fresh: a", "style": "vague", "turns": [turn], "tryout": tryout, "owner_checks": [{"check": "c", "result": "pass"}]}
+    alone = {"key": "b", "title": "Fresh: b", "style": "vague", "turns": [turn], "tryout": tryout, "owner_checks": []}
+    assert analyst.owner_vouched(looked) and not analyst.owner_vouched(alone)
+    said = analyst.totals([looked, alone])
+    assert "RIGHT WHEN HANDED OVER: 2/2" in said and "1 of them right by the builder's own checks alone" in said, said
+    assert "started vague: right when handed over 2/2 (1 by the builder's own checks alone)" in said
+    assert "only the builder's own say it's right" in analyst.report(alone) and "own say" not in analyst.report(looked)
+
+
 def test_an_evals_lessons_are_collected_where_a_temporary_folder_cant_lose_them(tmp_path, monkeypatch):
     monkeypatch.setenv("TRAINING_DIR", str(tmp_path / "kept"))
     folder = tmp_path / "run45" / "fresh3" / "training"
