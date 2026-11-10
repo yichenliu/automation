@@ -506,7 +506,7 @@ def test_whoever_records_payments_can_pick_the_lease_and_a_percent_default_is_a_
     commission = schema.field(ws.blueprint["tables"][0], "commission")
     assert commission["default"] == 0.1 and commission["max"] == 1
     found = [i for i in checks.run(Engine(ws)) if i["where"] == "payments"]
-    assert any(i["level"] == "check" and i["plain"].startswith("Finance can add payments, but see only the leases where they're the manager")
+    assert any(i["level"] == "check" and "Finance" in i["plain"] and "can add payments, but see only the leases where they're the manager" in i["plain"]
                for i in found), found
     _built(ws, [{"op": "update_table", "table": "leases", "changes": {"row_access": {"field": "manager", "roles": ["editor"], "teams": ["finance"]}}}])
     assert not [i for i in checks.run(Engine(ws)) if i["where"] == "payments" and "Finance" in i["plain"]]

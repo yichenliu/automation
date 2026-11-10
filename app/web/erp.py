@@ -109,6 +109,8 @@ def nav(ws):
         return _space_sections(engine, space)
     bp_ = engine.visible_blueprint() if engine is not None and engine.ws.id == ws.id else ws.blueprint or {}
     tables = [t for t in bp_.get("tables", []) if not t.get("embedded")]
+    if engine is not None and engine.ws.id == ws.id and len(tables) > MANY_LISTS and schema.spaces(bp_):
+        return _by_spaces(engine, bp_, tables)
     sections, used = [], set()
     for m in bp_.get("modules", []):
         items = [{"kind": "page", "key": p["key"], "label": p["label"], "icon": p.get("icon") or "layout-dashboard"}
@@ -127,6 +129,36 @@ def nav(ws):
     if engine is not None and engine.ws.id == ws.id and engine.role is not None and not engine._at_least("admin") \
             and any(set(sp["for"]) & engine.teams or engine.role in sp["for"] for sp in schema.spaces(engine.bp)):
         sections.append({"label": None, "items": [{"kind": "mine", "label": "Just my team's", "icon": "users"}]})
+    return sections
+
+
+MANY_LISTS = 15  # past this, someone who sees everything (the owner) gets it in the app's own areas, folded
+
+
+def _by_spaces(engine, bp_, tables):
+    """Everything, for someone who sees it all, in the app's own areas (each team's menu), each folded, then what no
+    area has: one long list of every list is where nobody finds anything."""
+    by_key = {t["key"]: t for t in tables}
+    pages = {p["key"]: p for p in bp_.get("pages", [])}
+    sections, placed = [], set()
+    for sp in schema.spaces(bp_):
+        items = []
+        for g in sp["groups"]:
+            for i in g["items"]:
+                if i.get("table") in by_key:
+                    t = by_key[i["table"]]
+                    view = next((v for v in t.get("views", []) if v["key"] == i.get("view")), None)
+                    items.append({"kind": "table", "key": t["key"], "view": i.get("view") if view else None, "icon": t.get("icon") or "table",
+                                  "label": i.get("label") or (view["label"] if view and view["label"] not in ("All", t["label"]) else t["label"])})
+                    placed.add(t["key"])
+                elif i.get("page") in pages and not _home_of(engine, pages[i["page"]]):
+                    p = pages[i["page"]]
+                    items.append({"kind": "page", "key": p["key"], "label": p["label"], "icon": p.get("icon") or "layout-dashboard"})
+        if items:
+            sections.append({"label": sp["label"], "items": list({(x["kind"], x["key"], x.get("view")): x for x in items}.values()), "fold": True})
+    rest = [{"kind": "table", "key": t["key"], "label": t["label"], "icon": t.get("icon") or "table"} for t in tables if t["key"] not in placed]
+    if rest:
+        sections.append({"label": "Everything else", "items": rest, "fold": True})
     return sections
 
 

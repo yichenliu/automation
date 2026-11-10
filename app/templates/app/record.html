@@ -52,6 +52,7 @@
 {% elif stages %}{% set at = path.index(stage) if stage in path else -1 %}<div class="stage-bar">
   <ol class="stage-path" aria-label="Stage">{% for s in path %}<li class="{{ 'done' if loop.index0 < at }}{{ ' current' if loop.index0 == at }}" {% if loop.index0 == at %}aria-current="step"{% endif %}>{{ s }}</li>{% endfor %}</ol>
 </div>{% endif %}
+{% if facts and not hidden %}<div class="facts-strip">{% for f, v in facts %}<div><span class="muted small">{{ f.label }}</span><b>{{ e.display(f, v) }}</b></div>{% endfor %}</div>{% endif %}
 {% set open_moves = moves|rejectattr(2)|list %}{% set blocked = moves|selectattr(2)|list %}
 {% set asks = approvals %}{% set waiting_on = asks|rejectattr('id', 'in', mine)|list %}{% set for_me = asks|selectattr('id', 'in', mine)|list %}
 {% if stages or asks %}{% set first = for_me[0] if for_me else none %}

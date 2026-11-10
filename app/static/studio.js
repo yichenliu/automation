@@ -1003,6 +1003,8 @@
           ${c.problems.map((x) => `<p class="map-line ${x.bad ? "bad-text" : "warn-text"}">${icon("triangle-alert")}<span>${esc(x.text)}</span></p>`).join("")}
         </div></article>`;
     }
+    // a big app's map opens as an overview: each piece of work folded to its name and its steps' names, opened one at a time
+    function bigMap() { return map.processes.reduce((n, x) => n + x.cards.length, 0) > 15; }
     function processHtml(p) {
       const said = new Set();
       p.cards.forEach((c, i) => { if (i) intoStep(p, i).forEach((h) => said.add(`${h.rule}>${h.to}`)); });
@@ -1012,12 +1014,13 @@
       return `<section class="map-proc" data-proc="${esc(p.key)}">
         <header class="map-proc-head"><div class="grow">
           <h2 class="map-proc-title" data-name>${icon("route")}<span>${esc(p.name)}</span>${allowed ? `<button type="button" class="btn sm ghost" data-rename title="Call it what your business calls it">${icon("pencil")}Rename</button>` : ""}</h2>
-          ${p.cards.length > 1 ? `<p class="small muted">${p.cards.length} steps, from top to bottom: ${esc(p.cards.map((c) => c.label).join(" → "))}</p>` : ""}</div>
+          ${p.cards.length > 1 ? `<p class="small muted">${p.cards.length} steps, from top to bottom: ${esc(p.cards.slice(0, 6).map((c) => c.label).join(" → "))}${p.cards.length > 6 ? esc(` → … and ${p.cards.length - 6} more`) : ""}</p>` : ""}</div>
           ${examples.length ? `<form class="map-play" data-form="play">${examples.length > 1 ? `<select name="example" aria-label="Which example">${examples.map((x) => `<option value="${x.n}">${esc(x.title)}</option>`).join("")}</select>`
             : `<input type="hidden" name="example" value="${examples[0].n}">`}
             <button class="btn sm" title="Act out ${examples.length === 1 ? `“${esc(examples[0].title)}”` : "an example"} in a practice copy of your app, and see where it goes">${icon("play")}Try an example</button></form>` : ""}</header>
         ${played && played.process === p.key ? playedHtml() : ""}
-        <div class="map-journey">${steps}</div></section>`;
+        ${bigMap() ? `<details class="map-fold" ${played && played.process === p.key ? "open" : ""}><summary class="btn sm ghost">${icon("chevron-down")}Show ${p.cards.length === 1 ? "it" : `its ${p.cards.length} steps`}</summary>
+          <div class="map-journey">${steps}</div></details>` : `<div class="map-journey">${steps}</div>`}</section>`;
     }
     function wireProcess(sec, p) {
       $("[data-rename]", sec)?.addEventListener("click", (ev) => { ev.stopPropagation(); renameProcess(sec, p); });
@@ -1077,8 +1080,12 @@
       const last = map.last, failing = last ? last.failing : [], issues = last ? last.issues : [];
       if (!found.length && !failing.length && !issues.length) return null;
       const bad = found.some((x) => x.bad) || failing.length;
+      found.sort((a, b) => (b.bad ? 1 : 0) - (a.bad ? 1 : 0));  // what must be fixed first, the rest folded after the first few
+      const line = (x) => `<li>${x.list ? `<button type="button" class="link" data-open="${x.rule ? `rule:${esc(x.rule)}` : `list:${esc(x.list)}`}">${esc(x.label)}</button>: ` : ""}${esc(x.text)}</li>`;
+      const FIRST = 4, more = found.slice(FIRST);
       const box = html(`<section class="map-fix ${bad ? "bad" : ""}"><h3>${icon("triangle-alert")}${bad ? "Something needs fixing" : "Worth a look"}</h3><ul>
-        ${found.map((x) => `<li>${x.list ? `<button type="button" class="link" data-open="${x.rule ? `rule:${esc(x.rule)}` : `list:${esc(x.list)}`}">${esc(x.label)}</button>: ` : ""}${esc(x.text)}</li>`).join("")}
+        ${found.slice(0, FIRST).map(line).join("")}
+        ${more.length ? `<li class="more-fix"><details><summary class="link">${plural(more.length, "more thing", "more things")} worth a look</summary><ul>${more.map(line).join("")}</ul></details></li>` : ""}
         ${failing.length ? `<li>${plural(failing.length, "example doesn't", "examples don't")} come out right: ${esc(failing.slice(0, 3).join("; "))}.</li>` : ""}
         ${issues.slice(0, 2).map((x) => `<li>${esc(x)}</li>`).join("")}</ul>
         <a class="btn sm" href="${esc(root.dataset.checks)}">See all the checks</a>${canEdit ? `<span class="small muted">or say what to fix in the box above</span>` : ""}</section>`);
@@ -1109,7 +1116,7 @@
       if (cameFrom) {  // back from a list: where it is on the map
         const el = $(`#step-${CSS.escape(cameFrom)}`, main);
         cameFrom = null;
-        if (el) { el.scrollIntoView({block: "center"}); el.classList.add("flash"); }
+        if (el) { el.closest("details")?.setAttribute("open", ""); el.scrollIntoView({block: "center"}); el.classList.add("flash"); }
       }
     }
     function drawProcess(p) {

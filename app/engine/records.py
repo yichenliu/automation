@@ -1009,9 +1009,12 @@ class Engine:
             named = str((record.data or {}).get(own) or "").strip() if own else ""
             if text not in ("", "—") and named and (kind == "autonumber" or schema.is_code(key)):
                 text = f"{text} · {named}"  # REQ-0001 · Pipe fittings for the wash plant; 40141700 · Pipe fittings
-            elif text not in ("", "—") and kind in ("link", "autonumber") and record.id is not None and len(self._naming) == 1:
-                others = [self.display(f, self.value(record, f["key"])) for f in t["fields"]
-                          if f["type"] == "link" and f["key"] != key and not f.get("multiple") and (record.data or {}).get(f["key"])][:2]
+            elif text not in ("", "—") and kind in ("link", "autonumber", "user") and record.id is not None and len(self._naming) == 1:
+                choice = [str((record.data or {}).get(f["key"])) for f in t["fields"]  # what kind it is (a limit for Requests)
+                          if kind == "user" and f["type"] == "select" and f["key"] != (t.get("workflow") or {}).get("field")
+                          and (record.data or {}).get(f["key"]) not in (None, "")][:1]
+                others = choice + [self.display(f, self.value(record, f["key"])) for f in t["fields"]
+                                   if f["type"] == "link" and f["key"] != key and not f.get("multiple") and (record.data or {}).get(f["key"])][:2 - len(choice)]
                 text = " · ".join([text] + [o for o in others if o not in ("", "—")])
         finally:
             self._naming.discard(record.id)

@@ -79,8 +79,7 @@ def _default_views(t):
     if t.get("embedded"):
         return
     if not any(v["type"] == "list" for v in t["views"]):
-        columns = [f["key"] for f in t["fields"] if f["type"] != "long_text"][:7]
-        t["views"].insert(0, {"key": "all", "label": f"All {schema.lc(t['label'])}", "type": "list", "columns": columns})
+        t["views"].insert(0, {"key": "all", "label": f"All {schema.lc(t['label'])}", "type": "list", "columns": schema.default_columns(t)})
     status = next((f for f in t["fields"] if f["type"] == "select" and f["key"] in ("status", "stage", "state", "phase")), None)
     if status and not any(v["type"] == "board" for v in t["views"]):
         t["views"].append({"key": "board", "label": f"By {schema.lc(status['label'])}", "type": "board", "group_by": status["key"]})

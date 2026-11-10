@@ -1367,7 +1367,7 @@ def apply(bp, raw_patches, allowed=None):
         t["title_field"] = schema.title_field({**t, "title_field": None})
         every = next((v for v in t.get("views") or [] if v.get("key") == "all" and v.get("type") == "list"), None)
         if every is not None:
-            every["columns"] = [f["key"] for f in t["fields"] if f["type"] != "long_text"][:7]
+            every["columns"] = schema.default_columns(t)
     # everything else, one patch at a time; one refused is tried again once the rest are in (a feature that reads a
     # total another feature in the same batch makes), and only its last problems are kept
     waiting, said = list(rest), {}

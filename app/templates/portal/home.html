@@ -18,7 +18,11 @@
   {% for t, r, moves in waiting %}<div class="list-row"><span class="pill blue">{{ t.singular }}</span><span class="grow">{{ e.title(r) }}: {{ moves|map(attribute='label')|select|join(' or ') or 'move it on' }}</span>
     <a class="btn sm primary" href="{{ url_for('portal.record', wid=ws.id, table=t.key, rid=r.id) }}">Open</a></div>{% endfor %}
 </div></div>{% endif %}
-{% for s in sections %}
+{% set addable = sections|rejectattr('rows')|selectattr('t.portal.can_add')|list %}
+{% if addable %}<div class="card mb-2"><div class="card-head"><h2>{{ icon('plus') }}Start something</h2></div><div class="card-body row wrap">
+  {% for s in addable %}<a class="btn sm" href="{{ url_for('portal.new', wid=ws.id, table=s.t.key) }}">{{ icon(s.t.icon or 'plus') }}New {{ s.t.singular|lc }}</a>{% endfor %}</div></div>{% endif %}
+{# only what has something in it: an empty list says nothing a seller needs to read #}
+{% for s in sections if s.rows %}
 <div class="card mb-2"><div class="card-head"><h2 class="grow">{{ icon(s.t.icon or 'table') }}{{ s.t.label }}</h2><span class="faint small">{{ s.total }}</span>
   {% if s.t.portal.can_add %}<a class="btn sm primary" href="{{ url_for('portal.new', wid=ws.id, table=s.t.key) }}">{{ icon('plus') }}New {{ s.t.singular|lc }}</a>{% endif %}</div>
   {% if s.rows %}<div class="table-wrap"><table class="grid"><thead><tr><th>{{ s.t.singular }}</th>{% for f in s.fields if f.key != s.t.title_field %}<th class="{{ is_num(e, f) }}">{{ f.label }}</th>{% endfor %}</tr></thead><tbody>

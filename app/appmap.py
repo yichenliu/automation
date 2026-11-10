@@ -130,11 +130,16 @@ def processes(bp, names=None):
     # a payment marking its invoice Paid comes after the invoice: work goes from the record it updates to it
     edges = [(h["from"], h["to"]) if h["how"] == "makes" else (h["to"], h["from"]) for h in hands
              if h["from"] in moving and h["to"] in moving]
+    # a list most others link to (the organisation everything belongs to, the seller) says who the work is for: neither a
+    # link to it nor work handed to or from it joins two pieces of work into one
+    hubs = {k for k in tables if len(linked_by[k]) >= max(6, len(tables) // 8)}
+    edges = [(a, b) for a, b in edges if a not in hubs and b not in hubs]
     for t in tables.values():  # an invoice raised from its job: both have stages, so it's the job's work going on
         if t["key"] not in moving:
             continue
         for f in t["fields"]:
-            if f["type"] == "link" and f.get("table") in moving and f["table"] != t["key"] and _stages(t) and _stages(tables[f["table"]]):
+            if f["type"] == "link" and f.get("table") in moving and f["table"] != t["key"] and f["table"] not in hubs \
+                    and _stages(t) and _stages(tables[f["table"]]):
                 edges.append((f["table"], t["key"]))
     groups, seen = [], set()
     for key in [k for k in tables if k in moving]:  # joined up by any hand-off or link, whichever way it goes

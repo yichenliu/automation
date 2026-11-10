@@ -1197,3 +1197,12 @@ input.unsaved { border-color: var(--warn); box-shadow: 0 0 0 2px var(--warn-weak
 .wf-tried.info { border-color: var(--border-strong); background: var(--panel-2); }
 .sidebar .builder-link { position: sticky; bottom: 0; z-index: 2; background: var(--panel); border-top: 1px solid var(--border); }  /* always in sight */
 .version form .btn { white-space: normal; height: auto; min-height: 28px; text-align: left; }
+
+.facts-strip { display: flex; flex-wrap: wrap; gap: 8px 32px; padding: 12px 16px; margin: 0 0 12px; background: var(--surface-2, #eef0f4); border-radius: 10px; }
+.facts-strip > div { display: flex; flex-direction: column; gap: 2px; } .facts-strip b { font-size: 17px; font-variant-numeric: tabular-nums; }
+
+.nav-group > summary { list-style: none; cursor: pointer; display: flex; align-items: center; justify-content: space-between; }
+.nav-group > summary::-webkit-details-marker { display: none; } .nav-group > summary .caret { transition: transform .15s; }
+.nav-group[open] > summary .caret { transform: rotate(180deg); }
+.map-fold > summary { list-style: none; cursor: pointer; display: inline-flex; margin: 4px 0 2px; }
+.map-fold > summary::-webkit-details-marker { display: none; } .map-fold[open] > summary .i { transform: rotate(180deg); }

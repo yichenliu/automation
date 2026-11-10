@@ -343,7 +343,20 @@ def out_of_reach(engine):
     can't see leases): the box is empty for them, so they can't add one at all. Or they see only their own of them,
     which may be meant (a manager's own leases) or not (the bookkeeper's)."""
     from ..engine.records import Engine
-    out = []
+    out, own_only = [], {}
+
+    def kept_by(t):  # the person fields a list's record rules end at (an organisation's members), as (list, field)
+        ends = set()
+        for rule in schema.row_rules(t) if t else []:
+            path, here = str(rule.get("field") or "").split("."), t
+            for part in path[:-1]:
+                f = schema.field(here, part)
+                here = engine.tables.get(f["table"]) if f and f["type"] == "link" else None
+                if here is None:
+                    break
+            if here is not None:
+                ends.add((here["key"], path[-1]))
+        return ends
     for tm in schema.teams(engine.bp):
         them = Engine(engine.ws, member=SimpleNamespace(role="editor", user_id=-1, teams=[tm["key"]]))
         for t in engine.tables.values():
@@ -359,13 +372,19 @@ def out_of_reach(engine):
                                              f"keeping edit to others) or don't let them add {t['key']}",
                                       f"{tm['name']} can add {schema.lc(t['label'])}, but can't see any {schema.lc(target['label'])}, so "
                                       f"“{f['label']}” is empty for them", t["key"]))
-                elif them._owner_rule(target):
-                    owner = schema._path_field(target, target["row_access"]["field"], engine.tables) if target["row_access"]["field"] != "created_by" else None
-                    out.append(_issue("check", f"Team {tm['key']} can add {t['key']} records, but sees only the {target['key']} records where "
-                                               f"{target['row_access']['field']} is them, so that's all {f['key']} offers them. If they should "
-                                               f"pick from all of them, add the team to {target['key']}'s row_access \"teams\"",
-                                      f"{tm['name']} can add {schema.lc(t['label'])}, but see only the {schema.lc(target['label'])} where "
-                                      f"they're the {schema.lc((owner or {'label': 'person who added it'})['label'])}", t["key"]))
+                elif them._owner_rule(target) and not (kept_by(target) & kept_by(t)):  # (both kept per organisation: as meant)
+                    own_only.setdefault((t["key"], f["key"]), []).append(tm)
+    for (tk, fk), teams_ in own_only.items():  # said once for the list, whichever teams it's about
+        t, f = engine.tables[tk], schema.field(engine.tables[tk], fk)
+        target = engine.tables[f["table"]]
+        owner = schema._path_field(target, target["row_access"]["field"], engine.tables) if target["row_access"]["field"] != "created_by" else None
+        names = [tm["name"] for tm in teams_]
+        who = names[0] if len(names) == 1 else f"{', '.join(names[:-1])} and {names[-1]}" if len(names) <= 3 else f"{len(names)} teams"
+        out.append(_issue("check", f"Teams {', '.join(tm['key'] for tm in teams_)} can add {tk} records, but see only the {target['key']} records where "
+                                   f"{target['row_access']['field']} is them, so that's all {fk} offers them. If they should "
+                                   f"pick from all of them, add the teams to {target['key']}'s row_access \"teams\"",
+                          f"{who} can add {schema.lc(t['label'])}, but see only the {schema.lc(target['label'])} where "
+                          f"they're the {schema.lc((owner or {'label': 'person who added it'})['label'])}", tk))
     return out
 
 

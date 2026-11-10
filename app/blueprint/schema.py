@@ -2604,12 +2604,25 @@ def name_field(t, title_key=None):
     return next((k for k in NAME_KEYS if k in keys), None) or next((k for k in keys if k.endswith(("_name", "_title"))), None)
 
 
+def default_columns(t, most=7):
+    """A list's columns when nobody chose them: what each record is called, where it is (its stage), then the rest in
+    order (never long text, files or what's kept secret)."""
+    shown = [f["key"] for f in t["fields"] if f["type"] not in ("long_text", "rich_text", "file", "image", "signature")
+             and not f.get("sensitive")]
+    first = [k for k in (title_field(t), (t.get("workflow") or {}).get("field")) if k in shown]
+    return (list(dict.fromkeys(first)) + [k for k in shown if k not in first])[:most]
+
+
 def title_field(t):
-    if t.get("title_field") and field(t, t["title_field"]):
+    kept = field(t, t["title_field"]) if t.get("title_field") else None
+    if kept is not None and not (kept["type"] == "text" and kept.get("default") not in (None, "")):
         return t["title_field"]
-    for f in t["fields"]:
-        if f["type"] in ("text", "autonumber", "email"):
+    for f in t["fields"]:  # never one most records share (a currency that starts as AUD): it tells them apart from nothing
+        if f["type"] in ("text", "autonumber", "email") and f.get("default") in (None, ""):
             return f["key"]
+    person = next((f for f in t["fields"] if f["type"] == "user" and not f.get("multiple")), None)
+    if person is not None:  # a limit, a panel seat, a score: whose it is
+        return person["key"]
     return t["fields"][0]["key"] if t["fields"] else None
 
 

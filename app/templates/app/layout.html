@@ -13,13 +13,16 @@
     <nav class="nav">
       {% set home_url = url_for('app.home', wid=ws.id) %}<a href="{{ home_url }}?home=1" class="{{ 'active' if here.rstrip('/') == home_url.rstrip('/') }}">{{ icon('house') }}<span>Home</span></a>
       {% for section in nav_for(ws) %}
-        {% if section.label %}<div class="section">{{ section.label }}</div>{% endif %}
+        {% if section.fold %}{% set open_here = section['items']|selectattr('key')|selectattr('kind', 'in', ['table', 'page'])|map(attribute='key')|select('in', here)|list %}
+        <details class="nav-group" {{ 'open' if open_here }}><summary class="section">{{ section.label }}{{ icon('chevron-down', 'caret') }}</summary>
+        {% elif section.label %}<div class="section">{{ section.label }}</div>{% endif %}
         {% for item in section['items'] %}
           {% if item.kind == 'link' %}<a href="{{ item.url }}" target="_blank" rel="noopener" title="Opens {{ item.url }}">{{ icon(item.icon) }}<span class="ellipsis">{{ item.label }}</span></a>
           {% elif item.kind in ('all', 'mine') %}<form method="post" action="{{ url_for('app.menu_switch', wid=ws.id) }}" class="nav-switch"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="show" value="{{ item.kind }}"><button>{{ icon(item.icon) }}<span class="ellipsis">{{ item.label }}</span></button></form>
           {% else %}{% set href = url_for('app.page', wid=ws.id, key=item.key) if item.kind == 'page' else url_for('app.flow_list', wid=ws.id) if item.kind in ('flows', 'flow') else url_for('app.table', wid=ws.id, table=item.key, view=item.view) if item.view else url_for('app.table', wid=ws.id, table=item.key) %}
           <a href="{{ href }}{{ '#flow-' ~ item.key if item.kind == 'flow' }}" class="{{ 'active' if (here == href or here.startswith(href ~ '/')) and item.kind != 'flow' }}">{{ icon(item.icon) }}<span class="ellipsis">{{ item.label }}</span>{% if item.count %}<span class="count" title="{{ item.count }} in it now">{{ item.count }}</span>{% endif %}</a>{% endif %}
         {% endfor %}
+        {% if section.fold %}</details>{% endif %}
       {% else %}<p class="faint small pad">Nothing here yet.</p>{% endfor %}
     </nav>
     <div class="foot nav">

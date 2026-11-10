@@ -115,13 +115,13 @@ def _ran(engine, request=None):
 
 
 def columns(t, view):
-    """A list's columns: as its view says, or its name first, then where each is (its stage), then the rest in order."""
-    keys = (view or {}).get("columns")
-    if not keys:
-        shown = [f["key"] for f in t["fields"] if f["type"] not in ("long_text", "rich_text", "file", "image", "signature")
-                 and not f.get("sensitive")]
-        first = [k for k in (schema.title_field(t), ((t.get("workflow") or {}).get("field"))) if k in shown]
-        keys = (list(dict.fromkeys(first)) + [k for k in shown if k not in first])[:7]
+    """A list's columns: as its view says, or its name first, then where each is (its stage), then the rest in order. A
+    list with stages always says where each record is: its stage goes after the name when the view left it out."""
+    keys = list((view or {}).get("columns") or []) or schema.default_columns(t)
+    stage = (t.get("workflow") or {}).get("field")
+    if stage and stage not in keys and schema.field(t, stage):
+        at = keys.index(schema.title_field(t)) + 1 if schema.title_field(t) in keys else 0
+        keys.insert(at + (1 if at == 0 and keys and (schema.field(t, keys[0]) or {}).get("type") == "autonumber" else 0), stage)
     return [schema.field(t, k) for k in keys if schema.field(t, k)]
 
 
@@ -239,7 +239,7 @@ def table(request: Request, wid: int, table: str, user=Depends(signed_in)):
         return render(request, "app/sheet.html", rows=rows, columns=cols, editable=SHEET, more=max(total - 500, 0),
                                options=_options(engine, t), **common)
     shown = rows
-    cols = [f for f in columns(t, view) if not (not view.get("columns") and _only_one(engine, f))]
+    cols = [f for f in columns(t, view) if not _only_one(engine, f)]
     if group_field is None:  # the whole list's totals: SQL's sums of kept amounts, worked-out ones added up here
         totals = {f["key"]: engine.total(t["key"], "sum", f["key"], filters, q=q) for f in cols if engine.summable(f)}
     else:
@@ -565,6 +565,27 @@ def _sections(t, lines=False, later=()):
     return sections
 
 
+def _facts(engine, t, r):
+    """What a record's page says at the top, beside its stage (its money, worked out: Subtotal, Total), and the fields its
+    boxes needn't say again: those, its stage (on the stage bar), its number (in its name), a link that can only be one
+    thing to this person (their own organisation). ([(field, value)], {keys})."""
+    money = [f for f in t["fields"] if f["type"] in ("formula", "rollup") and engine.kind(f) == "money"]
+    named = sorted(money, key=lambda f: (0 if f["key"] in ("total", "total_amount", "grand_total", "to_pay") else
+                                          1 if f["key"] in ("subtotal", "amount", "value") else 2))[:3]
+    facts = [(f, engine.value(r, f["key"])) for f in named]
+    facts = [(f, v) for f, v in facts if v not in (None, "")]
+    said = {f["key"] for f, _ in facts}
+    stage = (t.get("workflow") or {}).get("field")
+    if stage and schema.stages(t):
+        said.add(stage)
+    title = schema.field(t, schema.title_field(t))
+    if title is not None and title["type"] == "autonumber":
+        said.add(title["key"])
+    said |= {f["key"] for f in t["fields"] if f["type"] == "link" and not f.get("required") is True and _only_one(engine, f)}
+    said |= {f["key"] for f in t["fields"] if f["type"] == "link" and f.get("required") and _only_one(engine, f)}
+    return facts, said
+
+
 def set_by_the_app(engine, t):
     """A list's fields that people don't fill in when they add a record: what its rules set on it (a request's approver's
     brief, who it waits on), what the AI writes, a stage's own "ordered at" and "approved by", and what only a later stage
@@ -684,7 +705,9 @@ def record(request: Request, wid: int, table: str, rid: int, user=Depends(signed
     others = [a for a in approvals if a.id not in ({x.id for x in my_approvals(ws, member)} if member else set())]
     waiting_text = (f"Waiting for {automations._named(engine, others)} to "
                     + {"task": "do their part", "review": "check the AI's work", "change": "approve a change"}.get(others[0].kind, "approve it") + ".") if others else ""
-    return render(request, "app/record.html", ws=ws, e=engine, t=t, r=r, sections=_sections(t), related=_related(engine, t, r),
+    facts, said_already = _facts(engine, t, r)
+    sections = [{**s_, "fields": [f for f in s_["fields"] if f["key"] not in said_already]} for s_ in _sections(t)]
+    return render(request, "app/record.html", ws=ws, e=engine, t=t, r=r, sections=sections, facts=facts, related=_related(engine, t, r),
                            sealed=sealed, hidden=hidden, waiting_text=waiting_text, to_finish=to_finish, journey=journey(engine, t, r), stepped=engine.stepped_up,
                            teams={tm["key"]: tm["name"] for tm in schema.teams(engine.bp)},
                            lines=lines, history=history, runs=runs, buttons=buttons, approvals=approvals, comments=comments,

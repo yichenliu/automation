@@ -1837,6 +1837,16 @@ def _named(engine, rows):
     return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
 
 
+def _names_it(engine, record, message):
+    """Whether a message already says which record it's about: its name, its number or code, or what it's called."""
+    t = engine.tables.get(record.table) or {}
+    key = schema.title_field(t) if t else None
+    said = [engine.title(record), str((record.data or {}).get(key) or "") if key else ""]
+    own = schema.name_field(t, key) if t and key else None
+    said.append(str((record.data or {}).get(own) or "") if own else "")
+    return any(x and len(x) >= 3 and x in message for x in said)
+
+
 def _ask(engine, automation, action, record, run, at):
     """An approval or a task: asked of its people the first time the run reaches it, then the answer read on each look.
     Returns {"result"} once approved or done, {"rejected": True, "result"} on a no; raises Paused while waiting."""
@@ -1847,7 +1857,7 @@ def _ask(engine, automation, action, record, run, at):
     if not rows:
         ctx = _context(engine, run, record)
         message = str(_render(action["message"], ctx))
-        if record is not None and not task and engine.title(record) not in message:  # "Please approve this": which one, and why
+        if record is not None and not task and not _names_it(engine, record, message):  # "Please approve this": which one, and why
             t = engine.tables.get(record.table) or {}
             why = _why(engine, automation, action, at, record.table)
             message = f"{message.rstrip()} ({t.get('singular', 'record').lower()} “{engine.title(record)}”{': ' + why if why else ''})"

@@ -409,8 +409,12 @@ def page_widgets(engine, p, period=None):
         else:
             item["rows"] = rows[:w.get("limit", 5)]
             list_view = next((v for v in t["views"] if v["type"] == "list"), {})
-            keys = w.get("columns") or [c for c in (list_view.get("columns") or [f["key"] for f in t["fields"]])][:4]
-            item["columns"] = [schema.field(t, c) for c in keys if schema.field(t, c)]
+            from .erp_records import _only_one, columns as list_columns
+            if w.get("columns"):
+                chosen = [schema.field(t, c) for c in w["columns"] if schema.field(t, c)]
+            else:  # as its list shows them (the name, where each is), less what can only say one thing to this person
+                chosen = [f for f in list_columns(t, list_view) if not _only_one(engine, f)][:4]
+            item["columns"] = chosen
             item.setdefault("total", len(rows))
         widgets.append(item)
     return widgets
