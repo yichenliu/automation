@@ -378,7 +378,7 @@ def new(request: Request, wid: int, table: str, user=Depends(signed_in), form: F
         raise HTTPException(404)
     head = t["portal"]["via"].partition(".")[0]
     via = schema.field(t, head)
-    if via is None or via["type"] != "link":
+    if via is None or via["type"] != "link":  # (a list shown to everyone in the portal isn't added to from it)
         raise HTTPException(404)
     direct = via["table"] == portal["table"]
     fields = [f for f in _fields(t) if f["key"] != (head if direct else None) and f["type"] in schema.STORED - {"autonumber", "user"}

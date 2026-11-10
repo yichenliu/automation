@@ -242,10 +242,32 @@ def button_held(engine, automation, record):
     return f"You can press “{label}” once {automations_words(engine, plain, record.table)}"
 
 
-def start_from(engine, automation, kind, item, trigger):
+def start_from(engine, automation, kind, item, trigger, record=None):
     """An email arrived, a file was added or a webhook was called (kind "email", "file" or "payload"); `item` is what
-    steps see as {{email}}, {{file}} or {{payload}}."""
-    return start(engine, automation, None, trigger, context={kind: item, "files": item.get("file_ids", [])})
+    steps see as {{email}}, {{file}} or {{payload}}. record: the one a webhook call is about (hook_record)."""
+    return start(engine, automation, record, trigger, context={kind: item, "files": item.get("file_ids", [])})
+
+
+def hook_record(engine, automation, payload):
+    """The record a webhook call is about, for a webhook rule that names its list: the one whose id the call sends
+    ("id"), or whose number or name it sends ("record", "number" or "reference": INV-0042). None when the rule names no
+    list; raises LookupError when it does and the call names none of its records."""
+    table = automation["trigger"].get("table")
+    if not table:
+        return None
+    sent = payload if isinstance(payload, dict) else {}
+    rid = sent.get("id")
+    if isinstance(rid, int) or str(rid or "").isdigit():
+        found = engine.get(int(rid), table)
+        if found is not None:
+            return found
+    for key in ("record", "number", "reference"):
+        if sent.get(key):
+            found = engine.by_code(str(sent[key]))
+            if found is not None and found.table == table:
+                return found
+    raise LookupError(f"the call names no record of {engine.tables[table]['label'] if table in engine.tables else table}: send its \"id\" or its "
+                      "\"number\"")
 
 
 class _Item:

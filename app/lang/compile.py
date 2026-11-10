@@ -337,9 +337,10 @@ def _set_list(d, t, node, scopes):
     return None
 
 
-def _check_formula(d, t, source, where, item=None, created=None):
+def _check_formula(d, t, source, where, item=None, created=None, about=None):
     """Every name a formula reads is a field (or a linked one) of the record it's worked out on, or of the records a
-    count(...), sum(...) or any(...) looks at (those linking to it, or a whole list)."""
+    count(...), sum(...) or any(...) looks at (those linking to it, or a whole list). about: the list "record" names
+    when the formula is about other records (an AI step's reads: record is the rule's record)."""
     compared = []
     try:
         tree = expr.parse(source)
@@ -365,6 +366,13 @@ def _check_formula(d, t, source, where, item=None, created=None):
                     d.path(created, rest)
                 except NameProblem as exc:
                     raise Problem(f"{where}: created.{rest}: {exc}") from None
+            continue
+        if head == "record" and about is not None and not scopes:  # the rule's record, not the one being looked at
+            if rest:
+                try:
+                    d.path(about, rest)
+                except NameProblem as exc:
+                    raise Problem(f"{where}: record.{rest}: {exc}") from None
             continue
         if head in ("record", "this") or (t is not None and not scopes and head == schema.slug(t.get("singular") or "")
                                           and d.field(t, head) is None):  # "client.name" in a rule about clients: the record
@@ -435,25 +443,25 @@ NUMBER_OPS = {"greater_than", "less_than", "at_least", "at_most"}
 DATE_OPS = {"before_today", "after_today", "within_next_days", "within_last_days", "more_than_days_ago", "today", *schema.PERIOD_OPS}
 
 
-def ir_conditions(d, t, conditions, where):
-    return [ir_condition(d, t, c, f"{where} {i}") for i, c in enumerate(conditions, start=1)]
+def ir_conditions(d, t, conditions, where, about=None):
+    return [ir_condition(d, t, c, f"{where} {i}", about=about) for i, c in enumerate(conditions, start=1)]
 
 
-def ir_condition(d, t, c, where):
+def ir_condition(d, t, c, where, about=None):
     """A condition read on records of t: its path resolved, its value as the field writes it. Text is a formula that
     must hold (it may look at other records: count(client.invoices where …) == 0); {"any": [...]} or {"all": [...]} a
     group of them."""
     if isinstance(c, str):
         if not c.strip():
             raise Problem(f"{where}: an empty condition")
-        _check_formula(d, t, c, where)
+        _check_formula(d, t, c, where, about=about)
         return {"formula": c.strip()}
     if c.any is not None or c.all is not None:
         word = "any" if c.any is not None else "all"
         parts = c.any if c.any is not None else c.all
         if not parts:
             raise Problem(f"{where}: an “{word}” group needs the conditions in it")
-        return {word: [ir_condition(d, t, x, f"{where} › {word} {i}") for i, x in enumerate(parts, start=1)]}
+        return {word: [ir_condition(d, t, x, f"{where} › {word} {i}", about=about) for i, x in enumerate(parts, start=1)]}
     if not c.field or not c.op:
         raise Problem(f"{where}: a condition names a field and an op ({{\"field\": \"status\", \"op\": \"equals\", \"value\": \"Paid\"}}), "
                       f"or is a formula, or a group (any / all)")
@@ -916,7 +924,7 @@ def _ai_step(d, t, s, where):
         other = _list(d, r.list, f"{where} › reads {i}")
         one = {"table": other["key"]}
         if r.where:
-            one["where"] = ir_conditions(d, other, r.where, f"{where} › reads {i} › where")
+            one["where"] = ir_conditions(d, other, r.where, f"{where} › reads {i} › where", about=t)  # record: the rule's record
         reads.append(one)
     if reads:
         out["reads"] = reads[:4]

@@ -277,3 +277,84 @@ def test_a_lock_written_as_a_formula_is_kept_and_said():
                                          "sealed": {"until": "round.closes_at"}}}])
     t = schema.table(bp, "bids")
     assert t["lock_if"] == [{"formula": "round.closes_at <= now()"}] and t["sealed"]["until"] == "round.closes_at" and t["audit_views"]
+
+
+def test_an_ai_steps_reads_are_about_the_rules_record(app):
+    """“contracts where buyer == record.buyer”: record is the rule's record (the question being answered), as it is in
+    a value. It was read as each contract itself, so the condition always held and the AI read every buyer's contracts."""
+    from app import intelligence
+    bp = _ok([{"do": "add_list", "key": "orgs", "label": "Orgs", "singular": "Org", "fields": [{"type": "text", "key": "name", "label": "Name"}]},
+              {"do": "add_list", "key": "deals", "label": "Deals", "singular": "Deal", "fields": [
+                  {"type": "text", "key": "name", "label": "Name"}, {"type": "link", "key": "org", "label": "Org", "to": "orgs"}]},
+              {"do": "add_list", "key": "questions", "label": "Questions", "singular": "Question", "fields": [
+                  {"type": "text", "key": "question", "label": "Question"}, {"type": "long_text", "key": "answer", "label": "Answer"},
+                  {"type": "link", "key": "org", "label": "Org", "to": "orgs"}]},
+              {"do": "add_rule", "rule": {"key": "answer", "name": "Answer", "when": {"on": "added", "list": "questions"}, "steps": [
+                  {"do": "ai_fill", "field": "answer", "instructions": "Answer from the deals.",
+                   "reads": [{"list": "deals", "where": ["org == record.org"]}]}]}}])
+    ws = _ws(app, bp)
+    e = Engine(ws)
+    ours, theirs = e.create("orgs", {"name": "Ours"}), e.create("orgs", {"name": "Theirs"})
+    e.create("deals", {"name": "Our deal", "org": ours.id})
+    e.create("deals", {"name": "Their deal", "org": theirs.id})
+    asked = e.create("questions", {"question": "Which deals?", "org": ours.id}, automations=False)
+    step = next(a for a in bp["automations"] if a["key"] == "answer")["actions"][0]
+    read = intelligence.references(e, asked, step)
+    assert [r["Name"] for r in read["Deals"]] == ["Our deal"]
+
+
+def test_a_formula_named_like_the_field_it_sums_doesnt_use_itself():
+    """A remittance's amount is the sum of its run's items' amounts: the amount inside sum(…) is the items', not its own."""
+    _ok([{"do": "add_list", "key": "items", "label": "Items", "singular": "Item", "fields": [
+             {"type": "text", "key": "name", "label": "Name"}, {"type": "money", "key": "amount", "label": "Amount"}]},
+         {"do": "add_list", "key": "notes", "label": "Notes", "singular": "Note", "fields": [
+             {"type": "text", "key": "name", "label": "Name"},
+             {"type": "formula", "key": "amount", "label": "Amount", "formula": "sum(items where name == this.name, amount)"}]}])
+    out = apply({}, [{"do": "add_list", "key": "x", "label": "X", "singular": "X", "fields": [
+        {"type": "formula", "key": "n", "label": "N", "formula": "n + 1"}]}])
+    assert out.problems  # one that really reads itself is still refused
+
+
+def test_a_portal_list_can_be_for_everyone_in_the_portal(app):
+    """Figures published to every seller (market demand with five or more buyers behind it): no link to them needed."""
+    bp = _ok([{"do": "add_list", "key": "contacts", "label": "Contacts", "singular": "Contact", "fields": [
+                  {"type": "text", "key": "name", "label": "Name"}, {"type": "email", "key": "email", "label": "Email"}]},
+              {"do": "add_list", "key": "figures", "label": "Figures", "singular": "Figure", "fields": [
+                  {"type": "text", "key": "name", "label": "Name"}, {"type": "number", "key": "buyers", "label": "Buyers"}]},
+              {"do": "design_op", "op": {"op": "set_portal", "portal": {"table": "contacts", "email_field": "email"}}},
+              {"do": "design_op", "op": {"op": "update_table", "table": "figures", "portal": {
+                  "everyone": True, "show_if": [{"field": "buyers", "op": "at_least", "value": 5}]}}}])
+    ws = _ws(app, bp)
+    e = Engine(ws)
+    ann = e.create("contacts", {"name": "Ann", "email": "ann@x.example"})
+    wide, thin = e.create("figures", {"name": "Fuel", "buyers": 7}), e.create("figures", {"name": "Rare", "buyers": 2})
+    assert e.portal_reaches(wide, ann.id) and not e.portal_reaches(thin, ann.id)
+
+
+def test_a_team_named_like_a_who_word_stays_the_team():
+    """A team called Requester was read as the word for whoever raised a record: its menu was refused."""
+    bp = _ok([{"do": "set_team", "key": "requester", "name": "Requester"},
+              {"do": "add_list", "key": "asks", "label": "Asks", "singular": "Ask", "fields": [{"type": "text", "key": "name", "label": "Name"}]},
+              {"do": "design_op", "op": {"op": "set_space", "space": {"key": "asking", "label": "Asking", "for": ["requester"],
+                                                                     "groups": [{"label": "Asks", "items": [{"table": "asks"}]}]}}}])
+    assert bp["spaces"][0]["for"] == ["requester"]
+
+
+def test_a_webhook_rule_about_a_list_runs_on_the_record_the_call_names(app):
+    """“A payment status from the ERP” for invoice INV-0001: the rule changes that invoice. A webhook rule always ran with no
+    record, so it could only make new ones."""
+    bp = _ok([{"do": "add_list", "key": "invoices", "label": "Invoices", "singular": "Invoice", "fields": [
+                  {"type": "auto_number", "key": "number", "label": "Number", "prefix": "INV-"}, {"type": "text", "key": "paid", "label": "Paid"}]},
+              {"do": "add_rule", "rule": {"key": "paid_in", "name": "Payment status in", "when": {"on": "webhook", "list": "invoices"},
+                                          "steps": [{"do": "set", "values": [{"field": "paid", "formula": "payload.status"}]}]}}])
+    ws = _ws(app, bp)
+    e = Engine(ws)
+    inv = e.create("invoices", {})
+    rule = next(a for a in bp["automations"] if a["key"] == "paid_in")
+    found = automations.hook_record(e, rule, {"number": e.get(inv.id).data["number"], "status": "Paid"})
+    assert found.id == inv.id
+    automations.start_from(e, rule, "payload", {"id": inv.id, "status": "Paid"}, "test", record=found)
+    assert Engine(ws).get(inv.id).data["paid"] == "Paid"
+    import pytest
+    with pytest.raises(LookupError):
+        automations.hook_record(e, rule, {"status": "Paid"})

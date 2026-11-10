@@ -565,6 +565,8 @@ def _person(raw):
     key: anyone in Accounts payable), "portal" (the outside person the record is for: the supplier), a person field of
     the record, or one through its links ("cost_centre.manager")."""
     who = ".".join(slug(part) for part in str(raw or "admin").split(".") if slug(part)) or "admin"
+    if who in _TEAM_KEYS.get():  # a team of the app's own named like one of these words (Requester) is that team
+        return who
     return {"admins": "admin", "manager": "admin", "managers": "admin", "owners": "owner", "editors": "editor", "anyone": "editor",
             "team": "editor", "everyone": "editor", "staff": "editor", "requester": "creator", "submitter": "creator",
             "created_by": "creator", "raised_by": "creator", "author": "creator", "outside_person": "portal",
@@ -990,6 +992,14 @@ def normalize_table(raw):
     if slug(_first(raw, "layout", "record_layout", "page_layout", default="")) in ("tabs", "tabbed"):
         table["layout"] = "tabs"
     portal = _first(raw, "portal", "portal_access", "customer_portal")
+    if isinstance(portal, dict) and _yes(_first(portal, "everyone", "all", "public", "for_everyone")):
+        # every outside person sees these (a price list, figures published to every seller), those meeting show_if
+        table["portal"] = {"via": "", "everyone": True, "people": slug(_first(portal, "people", "portal", "for", default="")),
+                           "fields": [slug(f) for f in _list(_first(portal, "fields", "show", "columns", default=[]))], "can_add": False}
+        show_if = _first(portal, "show_if", "only_if", "visible_if", "shown_if")
+        if show_if:
+            table["portal"]["show_if"] = [normalize_condition(c) for c in _list(show_if)]
+        portal = None
     if portal:
         if isinstance(portal, str):
             portal = {"via": portal}
@@ -1056,6 +1066,16 @@ def normalize_table(raw):
 def row_rules(t):
     """A table's rules for which of its records each person sees: its row_access, and any more that must hold too."""
     return [r for r in [(t or {}).get("row_access")] + list((t or {}).get("row_access_also") or []) if r]
+
+
+def _own_names(source):
+    """The names a formula reads of its own record: outside count(...), sum(...) and the like (whose names are the records
+    they look at), and this.x inside them."""
+    try:
+        names = set(expr.outer_names(source))
+    except expr.ExprError:
+        return set(expr.names_in(source))
+    return names | set(re.findall(r"\bthis\.(\w+)", source))
 
 
 def _combine_arm(raw, label):
@@ -1257,7 +1277,10 @@ def portal_of(bp, table):
 
 def portal_shows(tables, t, people):
     """Whether a table's records reach the people of the portal for the table `people`: its "portal" link points at
-    them, or at a record that links to them (a stage's project's client)."""
+    them, or at a record that links to them (a stage's project's client); or it's for everyone in a portal (the one
+    named, or any)."""
+    if (t.get("portal") or {}).get("everyone"):
+        return not t["portal"].get("people") or t["portal"]["people"] == people
     head, _, hop = (t.get("portal") or {}).get("via", "").partition(".")
     via = field(t, head)
     if via is None or via["type"] != "link":
@@ -2785,7 +2808,7 @@ def _check_table(t, tables, modules, problems):
                     problems.append(f"{where} only offers {other['label'].lower()} matching this record's “{ours}”, which isn't one of its fields")
         if f["type"] == "formula":
             _check_expression(f["expression"], set(keys) | {"record", "id", "created_at", "updated_at", "created_by"}, where, problems, tables=tables, t=t)
-            if f["key"] in expr.names_in(f["expression"]):
+            if f["key"] in _own_names(f["expression"]):  # its own name inside sum(…, amount) is the summed records' field
                 problems.append(f"{where}: a formula can't use itself")
         if f["type"] == "lookup" and "where" in f:
             source = tables.get(f["table"])
@@ -2951,7 +2974,12 @@ def _check_table(t, tables, modules, problems):
         if rule.get("field") and rule["field"] not in keys:
             problems.append(f"a colour rule on {t['label']} colours “{rule['field']}”, which isn't a field")
     portal = t.get("portal")
-    if portal:
+    if portal and portal.get("everyone"):
+        for k in portal["fields"]:
+            if k not in keys:
+                problems.append(f"the portal on {t['label']} shows “{k}”, which isn't a field")
+        _check_conditions(portal.get("show_if"), t, f"what the portal shows of {t['label']}", problems, tables)
+    elif portal:
         head, _, hop = portal["via"].partition(".")
         via = keys.get(head)
         if not via or via["type"] != "link":
@@ -3548,8 +3576,8 @@ def _check_automation_in(a, tables, problems, documents, bp_pages=(), automation
         return created_table, made
 
     check_steps(a["actions"], None, set())
-    if trig["type"] == "webhook_received" and not any(x["type"] in ("ai_create_record", "create_record", "notify", "webhook", "send_email")
-                                                       for x in steps_of(a["actions"])):
+    if trig["type"] == "webhook_received" and not trig.get("table") and not any(x["type"] in ("ai_create_record", "create_record", "notify", "webhook", "send_email")
+                                                                                  for x in steps_of(a["actions"])):  # about a record: it may change it
         problems.append(f"{where} starts from a webhook but does nothing with what it's sent; use create_record with {{{{payload.field}}}} values, or ai_create_record")
     if trig["type"] in ("email_received", "file_added") and not any(x["type"] in ("ai_create_record", "notify", "webhook", "create_record")
                                                                      for x in steps_of(a["actions"])):

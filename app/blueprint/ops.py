@@ -127,10 +127,13 @@ def apply(blueprint, ops, always_check=False, already=(), strict=False):
             continue
         restating, said = op.startswith(("update_", "set_")) or op == "rename_app", len(changes)
         before = json.dumps(bp, sort_keys=True, default=str) if restating else None
+        token = schema._TEAM_KEYS.set(frozenset(tm["key"] for tm in schema.teams(bp)))  # a team named like a who-word stays the team
         try:
             _apply_one(bp, op, raw, result, where)
         except SchemaError as exc:
             problems.append(f"{where}: {exc}")
+        finally:
+            schema._TEAM_KEYS.reset(token)
         if restating and json.dumps(bp, sort_keys=True, default=str) == before:  # saying again what's so isn't a change
             del changes[said:]
     result.corrected = [] if strict else _resolve(bp, changes, {t["key"] for t in bp["tables"]} - {t["key"] for t in (blueprint or {}).get("tables", [])})
@@ -1210,7 +1213,7 @@ def _resolve_portals(bp, tables, changes):
     for t in bp["tables"]:
         portal = t.get("portal")
         own = next((p for p in current if p["table"] == t["key"]), None)
-        if portal and own is not None and (portal["via"] in ("record", "self", "id", "this", "own", "contact", t["key"], schema.slug(t["singular"]))
+        if portal and own is not None and not portal.get("everyone") and (portal["via"] in ("record", "self", "id", "this", "own", "contact", t["key"], schema.slug(t["singular"]))
                                            or not schema.field(t, portal["via"].partition(".")[0])):
             # the portal's people seeing their own record: that's the portal's "profile" (their details, kept up to date)
             keys = {f["key"]: f for f in t["fields"]}

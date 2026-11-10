@@ -862,6 +862,10 @@ class Engine:
         portal = t.get("portal")
         if not portal:
             return False
+        if portal.get("everyone"):  # every outside person in its portal: those that meet its show_if
+            contact = self.get(contact_id)
+            return contact is not None and schema.portal_shows(self.tables, t, contact.table) and \
+                (not portal.get("show_if") or self.matches(record, portal["show_if"]))
         people = next((p["table"] for p in schema.portals(self.bp) if schema.portal_shows(self.tables, t, p["table"])), None)
         head, _, hop = portal["via"].partition(".")
         via = self.field(t["key"], head)
@@ -1480,8 +1484,11 @@ class Engine:
                     return False
                 continue
             if "formula" in c:  # count(client.invoices where …) == 0: a formula that must hold
+                # about another record (an AI step's reads): "record" is that one, as {{record.x}} in a value is; the one
+                # checked is "this" and its own fields (the rule's buyer, not each contract's own, read as itself)
+                named = {**(names or {}), "record": RecordProxy(self, about)} if about is not None and about is not record else names
                 try:
-                    if not to_bool(expr.evaluate(schema.percents_fixed(self.tables.get(record.table), c["formula"]), RecordContext(self, record, names))):
+                    if not to_bool(expr.evaluate(schema.percents_fixed(self.tables.get(record.table), c["formula"]), RecordContext(self, record, named))):
                         return False
                 except expr.ExprError as exc:
                     log.warning("The condition %r couldn't be worked out: %s", c["formula"], exc)

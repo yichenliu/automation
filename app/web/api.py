@@ -259,7 +259,11 @@ def hook(request: Request, wid: int, key: str, token: str, sent=Depends(json_of)
     if payload is None:
         payload = form.to_dict() or {"body": body.decode("utf-8", "replace")[:20000]}
     engine = Engine(ws, by="webhook")
+    try:  # a rule about a list's records runs on the one the call names (a payment status for invoice INV-0042)
+        record = automations.hook_record(engine, automation, payload)
+    except LookupError as exc:
+        return _error(404, str(exc)[0].upper() + str(exc)[1:] + ".")
     run = automations.start_from(engine, automation, "payload", payload if isinstance(payload, dict) else {"items": payload},
-                                 f"Webhook call from {client_ip(request)}")
+                                 f"Webhook call from {client_ip(request)}", record=record)
     run = db.session.get(Run, run.id)
     return json_response({"run": run.id, "status": run.status, "steps": [s.get("result") for s in run.steps or []]}, 202)
