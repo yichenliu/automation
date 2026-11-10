@@ -80,7 +80,12 @@ class Stuck(AIError):
 
 
 class CutOff(AIError):
-    """The answer reached the length limit before it was finished (asked for too much at once)."""
+    """The answer reached the length limit before it was finished: `content`, what of the answer was written by then
+    (empty when the model was still thinking), and `thinking`."""
+
+    def __init__(self, message, content="", thinking=""):
+        super().__init__(message)
+        self.content, self.thinking = content, thinking
 
 
 class _Named(AIError):
@@ -515,7 +520,7 @@ def chat(messages, *, schema=None, think=None, on_progress=None, purpose=None, p
     if _backend:
         content, thinking = _backend(messages, schema, on_progress)
     else:
-        content, thinking, route = _ask(messages, schema, think, on_progress, purpose, priority, workspace_id)
+        content, thinking, route = _finished(messages, schema, think, on_progress, purpose, priority, workspace_id)
     calls = recording.get()
     if calls is not None:  # with how long it took and how much it thought: which steps thinking is worth its wait in
         calls.append({"messages": list(messages), "content": content, "seconds": round(time.monotonic() - began, 1),
@@ -523,6 +528,48 @@ def chat(messages, *, schema=None, think=None, on_progress=None, purpose=None, p
                       # which model wrote it: a cloud model's answers are told apart from the platform's own model's
                       **({"provider": route.provider, "model": route.model} if route else {})})
     return content, thinking
+
+
+GO_ON = ("Your answer above was cut off at the length limit before it ended. Continue it from exactly where it stops: "
+         "write only the rest, starting with the very next character. Don't repeat anything already written, don't start "
+         "over, and add nothing else.")
+CONTINUATIONS = 2  # more goes at an answer cut off part way before it's given up as too long to finish
+
+
+def _finished(messages, schema, think, on_progress, purpose, priority, workspace_id):
+    """_ask, with an answer that reached the length limit part way finished, whichever model wrote it: it's shown what
+    it wrote and asked for the rest (without thinking again, and not held to the schema: the rest isn't a whole
+    answer), up to CONTINUATIONS more goes, and the pieces joined. One cut off before any answer (its thinking took all
+    the room) has nothing to finish: CutOff, and chat_thinking answers it again without thinking."""
+    try:
+        return _ask(messages, schema, think, on_progress, purpose, priority, workspace_id)
+    except CutOff as cut:
+        if not cut.content.strip():
+            raise
+        written, thinking = cut.content, cut.thinking
+    for n in range(1, CONTINUATIONS + 1):
+        log.info("The AI's answer was cut off at the length limit after %s characters; asking for the rest (%s of %s)",
+                 f"{len(written):,}", n, CONTINUATIONS)
+        more = list(messages) + [{"role": "assistant", "content": written}, {"role": "user", "content": GO_ON}]
+        try:
+            rest, _, route = _ask(more, None, False, on_progress, purpose, priority, workspace_id)
+            return written + _after(written, rest), thinking, route
+        except CutOff as cut:
+            if not cut.content.strip():
+                raise
+            written += _after(written, cut.content)
+    raise CutOff(f"The AI's answer was still not finished after {CONTINUATIONS} more goes ({len(written):,} characters).",
+                 content=written, thinking=thinking)
+
+
+def _after(written, rest):
+    """What the rest of an answer adds to what was written: a code fence it opened again, and what it wrote again
+    from the end of the part before (a model asked to go on often starts a little back), taken off."""
+    rest = re.sub(r"^\s*```[a-zA-Z]*\n", "", rest) if "```" not in written[-200:] else rest
+    for k in range(min(len(written), len(rest), 2000), 7, -1):  # the longest overlap first; a few characters is chance
+        if written.endswith(rest[:k]):
+            return rest[k:]
+    return rest
 
 
 def chat_thinking(messages, *, think, **kw):
@@ -829,7 +876,9 @@ class _Answer:
             inline.insert(0, before)
         text = content.strip()
         if self.reason == "length":
-            raise CutOff(f"The AI's answer was cut off at the length limit ({len(text):,} characters written).")
+            said = content.split("<think>")[0]  # cut off in thinking written inline: none of it is the answer
+            raise CutOff(f"The AI's answer was cut off at the length limit ({len(text):,} characters written).",
+                         content=said if said.strip() else "", thinking=thinking or "\n".join(inline))
         return text, thinking or "\n".join(x.strip() for x in inline if x.strip())
 
 

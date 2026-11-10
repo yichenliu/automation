@@ -422,6 +422,33 @@ def test_every_model_is_asked_for_the_same_length_and_one_that_allows_less_is_le
     assert "max_completion_tokens" not in server.seen[-1]["body"] and "max_tokens" not in server.seen[-1]["body"]
 
 
+def test_an_answer_cut_off_part_way_is_finished_by_the_model_that_wrote_it(app, server):
+    """Any model, any caller: an answer that reaches the length limit part way is shown back to the model, which writes
+    the rest (without thinking again, and not held to the schema: the rest isn't a whole answer), and the pieces are
+    joined, what it wrote again where it picked up taken off. One that never ends is given up after CONTINUATIONS."""
+    def reply(h, body):
+        if body["messages"][-1]["content"] != ai.GO_ON:
+            return anthropic_stream(h, '{"name": "Clients", "reply": "Kept a list of', thinking="Clients.", stop="max_tokens")
+        anthropic_stream(h, 'a list of your clients."}')  # picked up a little back
+    server.reply = reply
+    choose("anthropic", "claude-sonnet-5-5", server.url)
+    content, thinking = ai.chat([{"role": "user", "content": "clients"}], schema=SCHEMA, think=True)
+    assert ai.parse_json(content, SCHEMA) == {"name": "Clients", "reply": "Kept a list of your clients."} and thinking == "Clients."
+    first, rest = server.seen[-2]["body"], server.seen[-1]["body"]
+    assert first["output_config"].get("format") and "format" not in (rest.get("output_config") or {})
+    assert rest["messages"][-2] == {"role": "assistant", "content": '{"name": "Clients", "reply": "Kept a list of'}
+    assert rest.get("thinking", {}).get("type") != "adaptive"  # the rest isn't thought about again
+    server.reply = lambda h, body: anthropic_stream(h, "and on and on " + str(len(server.seen)), stop="max_tokens")
+    asked = len(server.seen)
+    with pytest.raises(ai.CutOff, match="still not finished"):
+        ai.chat([{"role": "user", "content": "everything"}])
+    assert len(server.seen) - asked == 1 + ai.CONTINUATIONS
+    server.reply = lambda h, body: anthropic_stream(h, "", thinking="Hmm " * 50, stop="max_tokens")
+    with pytest.raises(ai.CutOff) as cut:  # all thinking, no answer: nothing to finish (chat_thinking answers again)
+        ai.chat([{"role": "user", "content": "think"}], think=True)
+    assert cut.value.content == "" and len(server.seen) - asked == 2 + ai.CONTINUATIONS
+
+
 def test_thinking_that_runs_away_is_let_go_wherever_it_is(app, monkeypatch):
     """The owner's checks crashed when a cloud model's thinking ran out of room; only the builder answered without it.
     Now any work that thinks does (ai.chat_thinking)."""
