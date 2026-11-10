@@ -28,6 +28,10 @@ router = APIRouter(prefix="/portal/{wid:int}", route_class=PageRoute, dependenci
 def _ctx(wid, user):
     ws = db.session.get(Workspace, wid)
     member = Membership.query.filter_by(workspace_id=wid, user_id=user.id).first() if ws else None
+    from ..security import two_step_needed
+    from .http import Redirect
+    if ws is not None and member is not None and two_step_needed(ws, user):  # everyone, the business's outside people too
+        raise Redirect(url_for("account.page"))
     try:
         engine, portal, contact = outside.enter(ws, member, user.display)
     except outside.Gone:

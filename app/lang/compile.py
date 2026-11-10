@@ -642,7 +642,7 @@ def _whole_list(d, t, said):
     return each, (m_.group(2) or "").strip() or None
 
 
-NO_RECORD = (m.SetValues, m.AddEach, m.MakeDocument, m.PaymentLink, m.Task, m.Approval, m.Wait, m.Assign, m.Allocate, m.Copy, m.Delete, m.RunRule, m.AiFill,
+NO_RECORD = (m.ImportFile, m.SetValues, m.AddEach, m.MakeDocument, m.PaymentLink, m.Task, m.Approval, m.Wait, m.Assign, m.Allocate, m.Copy, m.Delete, m.RunRule, m.AiFill,
              m.AiCheck, m.UpdateEach)
 
 
@@ -860,10 +860,49 @@ def ir_step(d, t, s, where, made=None):
         if schema.slug(s.rule) not in known:
             raise Problem(f"{where}: there's no rule “{s.rule}” (rules: {', '.join(known) or 'none'})")
         out = {"type": "run_automation", "automation": schema.slug(s.rule)}
+    elif isinstance(s, m.ImportFile):
+        f = d.field(t, s.file)
+        if f is None or f["type"] not in schema.FILES:
+            raise Problem(f"{where} › file: {t['label']} has no file field “{s.file}”")
+        target = _list(d, s.list, where)
+        out = {"type": "import_rows", "field": f["key"], "table": target["key"], "values": ir_values(d, t, target, s.values, where)}
+        for col, key in (s.columns or {}).items():
+            if d.field(target, key) is None:
+                raise Problem(f"{where} › columns: “{key}” (for the column {col}) isn't a field of {target['label']}")
+        if s.columns:
+            out["columns"] = {c: schema.slug(k) for c, k in s.columns.items()}
+        if s.match_on:
+            if d.field(target, s.match_on) is None:
+                raise Problem(f"{where} › match_on: “{s.match_on}” isn't a field of {target['label']}")
+            out["match_on"] = schema.slug(s.match_on)
+        if s.result:
+            r = d.field(t, s.result)
+            if r is None or r["type"] not in ("text", "long_text", "rich_text"):
+                raise Problem(f"{where} › result: {t['label']} has no text field “{s.result}” to say what came of each row")
+            out["result"] = r["key"]
     elif isinstance(s, m.Webhook):
-        if not s.url.startswith(("https://", "http://")):
-            raise Problem(f"{where} › url: a web address starts with https://")
+        from_data = s.url.strip().startswith("{{")
+        if not s.url.startswith(("https://", "http://")) and not from_data:
+            raise Problem(f"{where} › url: a web address starts with https://, or comes from the record ({{{{integration.endpoint}}}}/orders)")
+        if from_data and not s.hosts:
+            raise Problem(f"{where} › hosts: an address from the record needs the hosts it may reach (a list, or a field holding one per line), "
+                          f"so a record can't send it anywhere")
+        if "{{" in s.url and t is not None:
+            _template(d, t, s.url, f"{where} › url")
         out = {"type": "webhook", "url": s.url, "method": s.method}
+        if s.payload:
+            out["payload"] = s.payload
+        if s.headers:
+            out["headers"] = {k: str(v) for k, v in s.headers.items()}
+        if s.hosts:
+            out["hosts"] = s.hosts
+        if s.save:
+            if t is None:
+                raise Problem(f"{where} › save: a rule about no list has no record to keep the answer on")
+            for key in s.save:
+                if d.field(t, key) is None:
+                    raise Problem(f"{where} › save: “{key}” isn't a field of {t['label']}")
+            out["save"] = {schema.slug(k): str(v) for k, v in s.save.items()}
     else:
         raise Problem(f"{where}: unknown step")
     if getattr(s, "only_if", None):
@@ -886,8 +925,14 @@ def _ai_step(d, t, s, where):
         if f["type"] in schema.CALCULATED:
             raise Problem(f"{where} › {what}: {f['key']} is worked out, so nothing fills it in")
         return f["key"]
+    def sureness(out):
+        if getattr(s, "confidence", None):
+            out["confidence"] = field_of(s.confidence, "confidence", ("number", "percent"))
+        if getattr(s, "sure_above", None) is not None:
+            out["sure_above"] = min(max(int(s.sure_above), 0), 100)
     if isinstance(s, m.AiFill):
         out = {"type": "ai_fill", "field": field_of(s.field, "field"), "instructions": s.instructions}
+        sureness(out)
         if s.read_files:
             out["read_files"] = True
         if s.use_knowledge:
@@ -911,6 +956,7 @@ def _ai_step(d, t, s, where):
             out["attach_to"] = f["key"]
     else:
         out = {"type": "ai_check", "field": field_of(s.field, "field", ("select",)), "instructions": s.instructions}
+        sureness(out)
         if s.notes_field:
             out["notes_field"] = field_of(s.notes_field, "notes_field", ("long_text", "text", "rich_text"))
     if getattr(s, "review", "never") != "never":
@@ -1155,7 +1201,8 @@ ESCAPE = {"add_page", "update_page", "remove_page", "add_document", "update_docu
 POLICY_KEYS = {"op", "table", "access", "permissions", "row_access", "own_records", "rules", "validations", "unique_together",
                "approve_changes", "sealed", "colors", "journey", "portal", "audit_views", "wizard",
                "sections", "layout",  # how a record's fields are grouped on its form (a step-by-step form's steps), and tabs
-               "lock_if", "lock_except"}  # when records can't be changed, by a condition (a bid once the tender's bids close)
+               "lock_if", "lock_except",  # when records can't be changed, by a condition (a bid once the tender's bids close)
+               "keep_for"}  # how long records are kept, and what (a legal hold) stops their deletion
 
 
 def apply(bp, raw_patches, allowed=None):

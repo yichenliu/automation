@@ -6,6 +6,11 @@
   <div class="card-head">{{ icon('clock') }}<h2>Shared computers</h2></div><div class="card-body stack">
   <label class="field"><span>Sign people out after</span><select name="idle_minutes">{% for m, said in [(0, 'Never: they stay signed in'), (15, '15 minutes without use'), (30, '30 minutes without use'), (60, 'An hour without use'), (240, 'Four hours without use')] %}<option value="{{ m }}" {{ 'selected' if (ws.settings.get('idle_minutes') or 0) == m }}>{{ said }}</option>{% endfor %}</select>
     <small class="help">For computers several people share, such as on the shop floor.</small></label>
+  <label class="check"><input type="checkbox" name="require_two_step" value="1" {{ 'checked' if ws.settings.get('require_two_step') }}>
+    Everyone signs in with two steps <small class="help">Anyone without it (and not on single sign-on) turns it on before carrying on, outside people in the portal too.</small></label>
+  <label class="field"><span>The app's rules may call only these hosts</span>
+    <textarea name="outbound_hosts" rows="3" placeholder="api.example.com&#10;*.mycompany.com">{{ (ws.settings.get('outbound_hosts') or [])|join('\n') }}</textarea>
+    <small class="help">One per line. Left empty, a rule calls the addresses written in it (an address taken from a record is always held to the hosts its rule names).</small></label>
   <div><button class="btn primary">Save</button></div></div></form>
 <div class="card mt-2"><div class="card-head">{{ icon('key') }}<h2>Signing in</h2></div><div class="card-body stack">
   <p>{% if sso %}{{ icon('circle-check', 'good') }} Single sign-on with <b>{{ sso_name }}</b> is on: {{ sso_linked }} of {{ people }} {{ 'person has' if people == 1 else 'people have' }} linked it.{% else %}Single sign-on (Google, Microsoft Entra, Okta, Auth0) isn't set up: set OIDC_ISSUER, OIDC_CLIENT_ID and OIDC_CLIENT_SECRET in the .env file and restart.{% endif %}</p>

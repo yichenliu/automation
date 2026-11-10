@@ -222,3 +222,71 @@ def _linked(engine, f, value, details):
     title = schema.title_field(target)
     made = engine.create(f["table"], {**details, **({title: value} if title else {})}, automations=False, ai=False)
     return made.id, made
+
+
+MOST_ROWS = 5000  # rows a rule's import reads from one file (a seller's price list); a bigger one goes through Import
+
+
+def rows_into(engine, action, record, fixed, by, depth=0):
+    """A rule's import: the spreadsheet in one of the record's file fields brought into a list, a record for each row,
+    every one given `fixed` (whose they are: the seller); a row whose match_on field matches one of those records (the
+    same seller's) updates it. What came of each row goes into the record's `result` field. Returns the step's result."""
+    from .engine.records import FieldErrors
+    from .files import readers
+    files = engine.files(record, action["field"]) if record is not None else []
+    if not files:
+        return {"result": "There was no file to bring in"}
+    file = db.session.get(File, files[-1]["id"])
+    headers, rows = readers.sheet_rows(path_of(file), name=file.name)
+    t = engine.tables[action["table"]]
+    fixed = {k: engine.coerce(engine.field(t["key"], k), v) for k, v in fixed.items() if engine.field(t["key"], k)}  # as they're kept (the seller's id)
+    said = action.get("columns") or {}
+    mapping = {h: said[h] for h in headers if h in said} if said else match_by_name(t, headers)
+    columns = [(headers.index(h), k) for h, k in mapping.items() if k not in fixed and schema.field(t, k)
+               and schema.field(t, k)["type"] in IMPORTABLE]
+    if not columns:
+        raise ValueError(f"None of {file.name}'s columns ({', '.join(str(h) for h in headers[:12])}) match a field of {t['label']}")
+    match_on = action.get("match_on")
+    existing = {}
+    if match_on:  # only theirs: a row never updates another seller's record with the same code
+        for r in engine.rows(t["key"]):
+            if all(str((r.data or {}).get(k)) == str(v) for k, v in fixed.items() if v not in (None, "")):
+                value = (r.data or {}).get(match_on)
+                if value not in (None, ""):
+                    existing[str(value).strip().lower()] = r
+    outcome, added, updated, refused, more = [], 0, 0, 0, False
+    with engine.batch(BATCH):
+        for number, row in enumerate(rows, start=2):
+            if number - 1 > MOST_ROWS:
+                more = True
+                break
+            cell = lambda i: row[i] if i < len(row) and row[i] not in (None, "") else None  # noqa: E731
+            data = {key: cell(i) for i, key in columns if cell(i) is not None}
+            if not data:
+                continue
+            key = str(data.get(match_on, "")).strip().lower() if match_on and data.get(match_on) not in (None, "") else None
+            try:
+                with engine.atomic():
+                    found = existing.get(key) if key else None
+                    if found is not None:
+                        engine.update(found, data, by=by, depth=depth)
+                        updated += 1
+                        outcome.append(f"Row {number}: updated {engine.title(found)}")
+                    else:
+                        made = engine.create(t["key"], {**data, **fixed}, by=by, depth=depth, ai=False)
+                        if key:
+                            existing[key] = made
+                        added += 1
+                        outcome.append(f"Row {number}: added {engine.title(made)}")
+            except FieldErrors as exc:
+                refused += 1
+                outcome.append(f"Row {number}: not brought in: " + "; ".join(f"{(engine.field(t['key'], k) or {'label': k})['label']}: {v}"
+                                                                              if k != "_" else str(v) for k, v in exc.errors.items()))
+    if more:
+        outcome.append(f"Only the first {MOST_ROWS} rows were read: bring a longer file in with Import")
+    said = (f"Brought {added} new {schema.lc(t['label'] if added != 1 else t['singular'])} and updated {updated} from {file.name}"
+            + (f"; {refused} row{'s' if refused != 1 else ''} couldn't be brought in" if refused else ""))
+    if action.get("result") and record is not None:
+        engine.update(engine.get(record.id), {action["result"]: (said + "\n" + "\n".join(outcome))[:20000]}, by=by, depth=depth,
+                      automations=False)
+    return {"result": said}

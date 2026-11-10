@@ -160,7 +160,7 @@ def apply(blueprint, ops, always_check=False, already=(), strict=False):
 POLICIES = ("access", "permissions", "row_access", "own_records", "only_own", "rules", "validations", "constraints", "checks",
             "lock_if", "locked_when", "lock_when", "lock_except", "still_editable", "portal", "workflow", "stages", "status_flow",
             "transitions", "stage_flow", "unique_together", "unique", "approve_changes", "changes_need_approval", "sealed", "sealed_until",
-            "audit_views", "journey", "limits", "capacity", "no_overlap")
+            "audit_views", "journey", "limits", "capacity", "no_overlap", "keep_for", "retention")
 
 
 POLICY_PARTS = [(("access", "permissions"), "who may see or change {}"),
@@ -172,7 +172,8 @@ POLICY_PARTS = [(("access", "permissions"), "who may see or change {}"),
                 (("unique_together", "unique"), "what no two {} may share"),
                 (("limits", "capacity", "no_overlap"), "how many {} may share a day or a time"),
                 (("approve_changes", "changes_need_approval"), "which changes to {} need approval"),
-                (("sealed", "sealed_until"), "when {} open"), (("journey",), "the journey shown on {}")]
+                (("sealed", "sealed_until"), "when {} open"), (("journey",), "the journey shown on {}"),
+                (("keep_for", "retention"), "how long {} are kept")]
 
 
 def _without_policies(raw):
@@ -1844,8 +1845,10 @@ def _apply_one(bp, op, raw, result, where):
                     "limits": ("limits", "capacity", "no_overlap", "max_per"),
                     "approve_changes": ("approve_changes", "changes_need_approval", "change_approval"),
                     "sealed": ("sealed", "sealed_until"), "audit_views": ("audit_views", "log_views"),
-                    "journey": ("journey", "timeline", "progress")}
+                    "journey": ("journey", "timeline", "progress"), "keep_for": ("keep_for", "retention", "retain_for")}
         given = {key: next(updates[a] for a in names if a in updates) for key, names in policies.items() if any(a in updates for a in names)}
+        if given.get("keep_for"):  # counted from a date of its own: read against its fields
+            given["keep_for"] = schema.normalize_keep_for(given["keep_for"], t)
         if isinstance(given.get("layout"), list):  # a list of sections, handled above
             given.pop("layout")
         if given:
@@ -1876,7 +1879,7 @@ def _apply_one(bp, op, raw, result, where):
                      "unique_together": f"what no two {label.lower()} may share", "approve_changes": f"which changes to {label.lower()} need approval",
                      "limits": f"how many {label.lower()} may share a day or a time",
                      "sealed": f"when {label.lower()} open", "audit_views": f"who opened {label.lower()} (kept in their history)",
-                     "journey": f"the journey shown on {label.lower()}"}
+                     "journey": f"the journey shown on {label.lower()}", "keep_for": f"how long {label.lower()} are kept"}
             said = _policies_said(t) if given.keys() & {"access", "row_access", "rules", "lock_if", "lock_except", "workflow", "unique_together",
                                                         "limits", "approve_changes", "sealed"} else []
             changes.append("Set " + "; ".join(words[k] for k in given) + (f" ({'; '.join(said)})" if said else ""))

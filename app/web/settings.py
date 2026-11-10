@@ -502,9 +502,18 @@ def security(request: Request, wid: int, ws=Depends(member_of("admin")), form: F
     from ..security import IDLE_CHOICES
     if request.method == "POST":
         minutes = form.get("idle_minutes", type=int)
-        ws.settings = {**(ws.settings or {}), "idle_minutes": minutes if minutes in IDLE_CHOICES else 0}
+        hosts = [h.strip().lower() for h in re.split(r"[\s,;]+", form.get("outbound_hosts") or "")
+                 if re.fullmatch(r"(\*\.)?[a-z0-9.-]+\.[a-z]{2,}", h.strip().lower())][:100]
+        two_step = bool(form.get("require_two_step"))
+        if two_step and not (current_user(request).totp_secret or current_user(request).sso_identity):
+            flash(request, "Turn on two-step sign-in for yourself first (under your own details), so asking everyone doesn't lock you out.", "error")
+            return redirect(url_for("settings.security", wid=wid))
+        ws.settings = {**(ws.settings or {}), "idle_minutes": minutes if minutes in IDLE_CHOICES else 0, "require_two_step": two_step,
+                       "outbound_hosts": hosts}
         db.session.commit()
-        audit.log(ws.id, "settings", f"sign people out after {minutes or 0} idle minutes")
+        audit.log(ws.id, "settings", f"sign people out after {minutes or 0} idle minutes; two-step sign-in "
+                                     f"{'asked of everyone' if two_step else 'each person’s choice'}; calls out to "
+                                     f"{', '.join(hosts) if hosts else 'any host the rules name'}")
         flash(request, "Saved.", "success")
         return redirect(url_for("settings.security", wid=wid))
     people = [u for m, u in db.session.query(Membership, User).filter(Membership.workspace_id == ws.id, Membership.user_id == User.id,

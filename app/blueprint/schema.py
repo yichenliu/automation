@@ -174,7 +174,7 @@ TRIGGER_ALIASES = {
 EVERY = ["hour", "day", "week", "month"]
 ACTIONS = ["update_record", "create_record", "create_for_each", "update_each", "delete_record", "assign", "allocate", "wait", "notify",
            "send_email", "generate_document", "request_approval", "webhook", "ai_fill", "ai_extract", "ai_create_record",
-           "branch", "task", "run_automation", "ai_check", "copy_record", "payment_link", "send_sms"]
+           "branch", "task", "run_automation", "ai_check", "copy_record", "payment_link", "send_sms", "import_rows"]
 APPROVAL_MODES = ["any", "all"]  # one of the approvers decides, or every one of them must approve
 AI_STEPS = ("ai_fill", "ai_extract", "ai_create_record", "ai_check")
 # Whether a person checks an AI step's work before it counts: every time, only when the AI isn't sure (and now and then
@@ -196,6 +196,7 @@ ACTION_ALIASES = {
     "make_document": "generate_document", "create_document": "generate_document",
     "approval": "request_approval", "approve": "request_approval", "ask_approval": "request_approval", "get_approval": "request_approval",
     "http": "webhook", "post": "webhook", "call_url": "webhook", "api_call": "webhook",
+    "import": "import_rows", "import_file": "import_rows", "import_spreadsheet": "import_rows",
     "ai_read": "ai_extract", "extract": "ai_extract", "read_document": "ai_extract", "ai_read_file": "ai_extract",
     "ai_create": "ai_create_record", "create_from_email": "ai_create_record", "create_from_file": "ai_create_record",
     "ai_intake": "ai_create_record", "intake": "ai_create_record",
@@ -574,6 +575,35 @@ def _person(raw):
             "created_by": "creator", "raised_by": "creator", "author": "creator", "outside_person": "portal",
             "portal_person": "portal", "portal_user": "portal", "external": "portal", "the_supplier": "portal",
             "the_customer": "portal", "the_seller": "portal"}.get(who, who)
+
+
+def normalize_keep_for(raw, table=None):
+    """How long a list's records are kept: {"years": 7, "from": "invoice_date", "unless": [conditions]}. Past it a record
+    is deleted, unless a condition holds (a legal hold on it), and erased for good a while after (see app/engine/retention.py).
+    "from" is a date of the record's own, or when it was added (created_at)."""
+    if isinstance(raw, (int, float)):
+        raw = {"years": raw}
+    if not isinstance(raw, dict):
+        raise SchemaError("keep_for looks like {\"years\": 7, \"from\": \"invoice_date\", \"unless\": [a legal hold]}")
+    out = {}
+    for unit in ("years", "months", "days"):
+        n = _first(raw, unit, unit[:-1])
+        if n not in (None, ""):
+            try:
+                out[unit] = max(int(float(n)), 0)
+            except (TypeError, ValueError):
+                raise SchemaError(f"keep_for {unit} is a number") from None
+    if not any(out.get(u) for u in ("years", "months", "days")):
+        raise SchemaError("keep_for needs how long: years, months or days")
+    since = slug(str(_first(raw, "from", "since", "after", "field", default="created_at")))
+    fields = {f["key"]: f for f in (table or {}).get("fields", [])}
+    if since not in ("created_at", "updated_at") and fields and (since not in fields or fields[since]["type"] not in ("date", "datetime")):
+        raise SchemaError(f"keep_for counts from a date of the record's own, or created_at; “{since}” isn't one")
+    out["from"] = since
+    unless = _first(raw, "unless", "except_when", "not_while", "held_if")
+    if unless:
+        out["unless"] = [normalize_condition(c) for c in _list(unless)]
+    return out
 
 
 def _not_by(raw, fields=()):
@@ -1027,6 +1057,9 @@ def normalize_table(raw):
             said = _first(portal, part, "self_register" if part == "sign_up" else "own_fields")
             if said:
                 table["portal"][part] = said if isinstance(said, (dict, list, bool)) else _names(said)
+    keep = _first(raw, "keep_for", "retention", "retain_for", "keep")
+    if keep:
+        table["keep_for"] = normalize_keep_for(keep, table)
     lock = _first(raw, "lock_if", "locked_when", "lock_when", "read_only_if")
     if lock:
         table["lock_if"] = [normalize_condition(c) for c in _list(lock)]
@@ -1117,6 +1150,8 @@ def normalize_change_approval(raw, label=""):
         out["tell"] = ".".join(slug(p) for p in str(tell).split(".")[:2] if slug(p))
     if _yes(_first(raw, "step_up", "reauthenticate", "confirm_sign_in", "second_factor")):
         out["step_up"] = True
+    if out.get("tell") and _yes(_first(raw, "told_first", "notice_first", "only_once_told", "require_notice")):
+        out["told_first"] = True  # not approved until the notice has gone out (by email, or in the portal)
     return out
 
 
@@ -1398,9 +1433,12 @@ def normalize_section(raw):
     if not isinstance(raw, dict):
         raise SchemaError("a section looks like {\"label\": \"Billing\", \"fields\": [\"rate\", \"terms\"]}")
     fields = [slug(f) for f in _list(_first(raw, "fields", "columns", default=[]))]
-    if not fields:
-        raise SchemaError("a section needs its fields")
+    lines = _first(raw, "lines", "line_items", "items")
+    if not fields and not lines:
+        raise SchemaError("a section needs its fields, or the lines it is ({\"label\": \"What to price\", \"lines\": \"tender_lines\"})")
     section = {"label": str(_first(raw, "label", "name", "title", default="Details")).strip()[:60], "fields": fields}
+    if lines:  # a step of the form that is the record's lines, where it stands among the others
+        section["lines"] = slug(str(lines))
     show_if = _first(raw, "show_if", "visible_if", "only_if", "show_when")
     if show_if:  # the whole section shows only while these hold (Delivery details for delivered orders)
         section["show_if"] = [normalize_condition(c) for c in _list(show_if)]
@@ -2027,6 +2065,16 @@ def normalize_action(raw):
     if atype in AI_STEPS and _first(raw, "use_knowledge", "knowledge", "search_knowledge",
                                                                          "use_documents", "rag") in (True, "true", "yes", 1):
         action["use_knowledge"] = True
+    if atype in ("ai_fill", "ai_check"):  # how sure the AI is, 0 to 100, kept in a number field; below sure_above it isn't sure
+        confidence = _first(raw, "confidence", "confidence_field", "score_field")
+        if confidence:
+            action["confidence"] = slug(str(confidence))
+        above = _first(raw, "sure_above", "confidence_above", "threshold", "min_confidence")
+        if above not in (None, ""):
+            try:
+                action["sure_above"] = min(max(int(float(above)), 0), 100)
+            except (TypeError, ValueError):
+                raise SchemaError("an AI step's sure_above is a number from 0 to 100") from None
     only_if = _first(raw, "only_if", "if", "conditions", "when")
     if only_if and isinstance(only_if, (list, dict)):
         action["only_if"] = [normalize_condition(c) for c in _list(only_if)]
@@ -2235,8 +2283,17 @@ def normalize_action(raw):
         if app:  # a connected app (Xero, Shopify, EasyPost…): its address and sign-in are added, the url is its API's path
             action["app"] = app
             url = url if url.startswith("/") or re.match(r"^https?://", url, re.I) else "/" + url
-        elif not re.match(r"^https?://", url, re.I):
+        elif not re.match(r"^https?://", url, re.I) and not url.startswith("{{"):
             raise SchemaError("a webhook needs a \"url\" starting with http:// or https://, or an \"app\" and the path on it")
+        hosts = _first(raw, "hosts", "allowed_hosts", "only_hosts", "allow")
+        if hosts:  # the only hosts it may reach: a list, or a field holding one per line ({{integration.allowed_hosts}})
+            action["hosts"] = str(hosts)[:300] if isinstance(hosts, str) else [str(h).strip().lower()[:200] for h in _list(hosts)][:20]
+        elif url.startswith("{{") and not app:
+            raise SchemaError("a webhook whose address comes from the record needs \"hosts\": the hosts it may reach, so a record can't "
+                              "send it anywhere")
+        headers = _first(raw, "headers", "header")
+        if isinstance(headers, dict):
+            action["headers"] = {str(k)[:100]: str(v)[:2000] for k, v in list(headers.items())[:20]}
         action["url"] = url[:500]
         payload = _first(raw, "payload", "body", "data", "json")
         if isinstance(payload, dict):
@@ -2246,6 +2303,23 @@ def normalize_action(raw):
         save = _first(raw, "save", "save_to", "store", "response_to")
         if isinstance(save, dict) and save:  # {"field": "path.in.the.answer"}: keep what the other system answers
             action["save"] = {slug(k): str(v) for k, v in save.items()}
+    elif atype == "import_rows":  # a spreadsheet in one of the record's file fields, brought into a list row by row
+        source, into = _first(raw, "field", "from", "file", "source"), _first(raw, "table", "list", "into", "to")
+        if not source or not into:
+            raise SchemaError("import_rows needs \"field\" (the record's file field holding the spreadsheet) and \"table\" (the list its rows go into)")
+        action["field"], action["table"] = slug(str(source)), slug(str(into))
+        values = _first(raw, "values", "set", "fixed")
+        if isinstance(values, dict):
+            action["values"] = values
+        columns = _first(raw, "columns", "mapping", "map")
+        if isinstance(columns, dict):
+            action["columns"] = {str(k)[:200]: slug(str(v)) for k, v in list(columns.items())[:200]}
+        match = _first(raw, "match_on", "update_by", "match")
+        if match:
+            action["match_on"] = slug(str(match))
+        result = _first(raw, "result", "outcome", "save_result_to")
+        if result:
+            action["result"] = slug(str(result))
     elif atype == "payment_link":  # a card payment page for the amount (Stripe); paying it sets "paid" on the record
         amount = _first(raw, "amount", "total", "value")
         if not amount:
@@ -2928,6 +3002,10 @@ def _check_table(t, tables, modules, problems):
         if missing:
             problems.append(f"the section {t['label']} › {section['label']} lists {', '.join(missing)}, which aren't fields")
         _check_conditions(section.get("show_if"), t, f"the section {t['label']} › {section['label']}", problems, tables)
+        lines = tables.get(section.get("lines") or "")
+        if section.get("lines") and (lines is None or not lines.get("embedded")
+                                     or not any(f["type"] == "link" and f.get("table") == t["key"] for f in lines["fields"])):
+            problems.append(f"the section {t['label']} › {section['label']} is the lines “{section['lines']}”, which aren't line items of {t['label']}")
     for v in t.get("views", []):
         where = f"the view {t['label']} › {v['label']}"
         needs = {"board": [("group_by", ("select",))], "calendar": [("date_field", ("date", "datetime")), ("end_field", ("date", "datetime"))],
@@ -3021,6 +3099,7 @@ def _check_table(t, tables, modules, problems):
         if rule.get("field") and rule["field"] not in keys:
             problems.append(f"{where} shows its message on “{rule['field']}”, which isn't a field")
     _check_conditions(t.get("lock_if"), t, f"the lock on {t['label']}", problems, tables)
+    _check_conditions((t.get("keep_for") or {}).get("unless"), t, f"what keeps {t['label']} past their time", problems, tables)
     for k in t.get("lock_except", []):
         if k not in keys:
             problems.append(f"the lock on {t['label']} leaves “{k}” editable, but that isn't a field")
@@ -3168,9 +3247,13 @@ def _person_path(t, path, tables):
             source = lookup_source(t, f, tables)
             return source if source and source["type"] == "user" else None
         return f if f["type"] == "user" else None
-    if f["type"] != "link" or f["table"] not in tables or len(parts) != 2:
-        return None
-    target = field(tables[f["table"]], parts[1])
+    here = t
+    for part in parts[:-1]:  # through links, as many as it takes: an offer's round's buyer's members
+        f = field(here, part)
+        if f is None or f["type"] != "link" or f.get("table") not in tables:
+            return None
+        here = tables[f["table"]]
+    target = field(here, parts[-1])
     return target if target and target["type"] == "user" else None
 
 
@@ -3366,6 +3449,10 @@ def _check_automation_in(a, tables, problems, documents, bp_pages=(), automation
                 problems.append(f"{where} keeps a step from “{who}”: use creator, a stage (whoever moved the record there), a team or a "
                                 f"person field" + (f" of {t['label']}" if t else ""))
 
+    def sure_field(act):  # how sure the AI is, kept in a number field of the record
+        if act.get("confidence") and t is not None and (field(t, act["confidence"]) or {}).get("type") not in ("number", "percent"):
+            problems.append(f"{where}: it keeps how sure the AI is in “{act['confidence']}”, which must be a number field of {t['label']}")
+
     def check_steps(steps, created_table, made):
         """Steps in order (a branch's paths and an approval's "if rejected" are checked the same way); returns the last
         record made by them and every table they made records in."""
@@ -3555,6 +3642,24 @@ def _check_automation_in(a, tables, problems, documents, bp_pages=(), automation
                 for k in (act.get("save") or {}):
                     if t and not field(t, k):
                         problems.append(f"{where}: it keeps the answer in “{k}”, which isn't a field of {t['label']}")
+                for text in [act["url"], *(act.get("headers") or {}).values(), *([act["hosts"]] if isinstance(act.get("hosts"), str) else [])]:
+                    _check_template(text, where, problems, context_fields)
+            elif kind == "import_rows":
+                into = tables.get(act["table"])
+                if t is None or (field(t, act["field"]) or {}).get("type") not in FILES:
+                    problems.append(f"{where}: it brings in the spreadsheet in “{act['field']}”, which must be a file field of "
+                                    f"{t['label'] if t else 'the record'}")
+                if into is None:
+                    problems.append(f"{where}: its rows go into “{act['table']}”, which isn't a list")
+                else:
+                    for k in [*(act.get("values") or {}), *(act.get("columns") or {}).values(), *([act["match_on"]] if act.get("match_on") else [])]:
+                        if not field(into, k):
+                            problems.append(f"{where}: “{k}” isn't a field of {into['label']}")
+                    for v in (act.get("values") or {}).values():
+                        if isinstance(v, str):
+                            _check_template(v, where, problems, context_fields)
+                if act.get("result") and t and not field(t, act["result"]):
+                    problems.append(f"{where}: what came of each row goes in “{act['result']}”, which isn't a field of {t['label']}")
             elif kind == "payment_link":
                 if t is None:
                     problems.append(f"{where}: a payment link is for a record (an invoice)")
@@ -3576,7 +3681,9 @@ def _check_automation_in(a, tables, problems, documents, bp_pages=(), automation
                                     f"(Pass, Issues, Fail)" + (f" ({', '.join(choices)})" if choices else "; add one"))
                 if act.get("notes_field") and (field(t, act["notes_field"]) or {}).get("type") not in ("text", "long_text", "rich_text"):
                     problems.append(f"{where}: what the AI found goes in “{act['notes_field']}”, which must be a long text field of {t['label']}")
+                sure_field(act)
             elif kind == "ai_fill":
+                sure_field(act)
                 if act.get("reviewer"):
                     person(act["reviewer"], "asks to check the AI's work")
                 f = field(t, act["field"])

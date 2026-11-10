@@ -89,6 +89,9 @@ class Design:
             keys.append(f["key"])
             if i < len(parts) - 1 and f["type"] == "user" and parts[i + 1] in ("name", "email", "first_name") and i + 1 == len(parts) - 1:
                 return {"key": parts[i + 1], "type": "email" if parts[i + 1] == "email" else "text", "label": parts[i + 1]}, here, keys + [parts[i + 1]]
+            if i == len(parts) - 2 and f["type"] in schema.FILES and parts[i + 1] in ("fingerprint", "sha256", "name", "size", "count"):
+                kind = "number" if parts[i + 1] in ("size", "count") else "text"  # signed_pdf.fingerprint: the stored file's SHA-256
+                return {"key": parts[i + 1], "type": kind, "label": parts[i + 1]}, here, keys + [parts[i + 1]]
             if i < len(parts) - 1 and f["type"] == "user" and parts[i + 1] == "contact":  # an outside person's own record
                 people = [p["table"] for p in schema.portals(self.bp)]
                 if len(people) != 1:

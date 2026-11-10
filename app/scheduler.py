@@ -22,7 +22,8 @@ from .extensions import db
 from .models import Connection, Job, ScheduleRun, Workspace, utcnow
 
 log = logging.getLogger("scheduler")
-EVERY = {"schedules": 30, "notifications": 60, "apps": 60, "watch": 120, "learn": 3600, "backup": 3600, "tidy": 3600, "norms": 20}  # seconds
+EVERY = {"schedules": 30, "notifications": 60, "apps": 60, "watch": 120, "learn": 3600, "backup": 3600, "tidy": 3600, "norms": 20,
+         "retention": 3600}  # seconds
 DUE_AT_ONCE = 500  # workspaces looked at in one go (the rest are still due next time round)
 KEEP_SLOTS = timedelta(days=60)  # how long a schedule's taken times are kept
 
@@ -166,6 +167,20 @@ def tidy():
     db.session.commit()
 
 
+def retention():
+    """Each app's lists that say how long their records are kept: what's past its time deleted (unless held), what was
+    deleted long enough ago erased (app/engine/retention.py)."""
+    from .engine import retention as kept
+    for ws in Workspace.query.order_by(Workspace.id).all():
+        if not any(t.get("keep_for") for t in (ws.blueprint or {}).get("tables", [])):
+            continue
+        try:
+            kept.run(ws)
+        except Exception:  # noqa: BLE001 - one app's trouble doesn't stop the others'
+            log.exception("Retention failed for workspace %s", ws.id)
+            db.session.rollback()
+
+
 def norms(batch=2000):
     """Records saved before their values were kept as compared (models.normalised) get them, a batch at a time: until
     then they're read along with what the index finds, so nothing is ever missed."""
@@ -179,7 +194,7 @@ def norms(batch=2000):
 
 
 WORK = {"schedules": schedules, "notifications": notifications, "apps": apps, "watch": watch, "learn": learn, "backup": backup,
-        "tidy": tidy, "norms": norms}
+        "tidy": tidy, "norms": norms, "retention": retention}
 
 
 class Scheduler:

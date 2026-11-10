@@ -151,7 +151,11 @@ def _step(s):
     if kind == "run_automation":
         return f"run {s.get('automation')}"
     if kind == "webhook":
-        return f"webhook {s.get('method', 'POST')} {s.get('url')}"
+        return (f"webhook {s.get('method', 'POST')} {s.get('url')}" + (f" hosts {s['hosts']}" if s.get("hosts") else "")
+                + (f" save {json.dumps(s['save'], ensure_ascii=False)}" if s.get("save") else ""))
+    if kind == "import_rows":
+        return (f"import {s.get('field')} into {s.get('table')} {json.dumps(s.get('values') or {}, ensure_ascii=False)}"
+                + (f" matching {s['match_on']}" if s.get("match_on") else "") + (f" result {s['result']}" if s.get("result") else ""))
     return kind
 
 

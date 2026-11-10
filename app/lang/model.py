@@ -446,6 +446,8 @@ class AiFill(Base):
     reads: list[Reads] = Field(default_factory=list)
     learn: bool = Field(True, description="it's shown people's past corrections of its work")
     manual: bool = Field(False, description="switched off: a person does the job instead, as a task")
+    confidence: str | None = Field(None, description="a number field that keeps how sure the AI is, 0 to 100")
+    sure_above: int | None = Field(None, description="below this confidence (0 to 100) it counts as unsure: checked when review is when_unsure")
     only_if: list[Condition | str] = Field(default_factory=list)
 
 
@@ -500,6 +502,8 @@ class AiCheck(Base):
     reads: list[Reads] = Field(default_factory=list)
     learn: bool = True
     manual: bool = False
+    confidence: str | None = Field(None, description="a number field that keeps how sure the AI is, 0 to 100")
+    sure_above: int | None = Field(None, description="below this confidence (0 to 100) it counts as unsure")
 
 
 @register("step", {"do": "assign", "field": "assigned_to", "among": "editor"})
@@ -564,12 +568,40 @@ class RunRule(Base):
     only_if: list[Condition | str] = Field(default_factory=list)
 
 
+@register("step", {"do": "import", "file": "price_list", "list": "seller_items", "values": [{"field": "seller", "formula": "record.seller"}],
+                   "match_on": "code", "result": "import_result"})
+class ImportFile(Base):
+    """Bring a spreadsheet (CSV or Excel) in one of the record's file fields into a list, a record for each row: its
+    columns matched to the list's fields by name (or `columns`: column heading → field), `values` given to every one
+    (whose they are: record.seller); a row whose `match_on` field matches one of those records updates it. What came of
+    each row (added, updated, or why not) goes into `result`, a long text field of the record."""
+    do: Literal["import"]
+    file: str
+    list: str
+    values: list[Value] = Field(default_factory=list)
+    columns: dict[str, str] | None = None
+    match_on: str | None = None
+    result: str | None = None
+    only_if: list[Condition | str] = Field(default_factory=list)
+
+
 @register("step", {"do": "webhook", "url": "https://hooks.example.com/new-job", "method": "POST"})
+@register("step", {"do": "webhook", "url": "https://abr.example.gov.au/abn/{{abn}}", "method": "GET",
+                   "save": {"abn_status": "status", "abn_legal_name": "entity.name"}})
+@register("step", {"do": "webhook", "url": "{{integration.endpoint}}/orders", "hosts": "{{integration.allowed_hosts}}",
+                   "headers": {"Authorization": "Bearer {{integration.secret}}"}, "payload": {"order": "{{number}}", "total": "{{total}}"}})
 class Webhook(Base):
-    """Send the record to another system's web address."""
+    """Call another system's web address: send the record (or `payload`), and keep parts of its answer in fields (`save`:
+    field → where it is in the answer, "entity.name"). An address from the record ({{integration.endpoint}}) needs
+    `hosts`: the only hosts it may reach (a list, or a field holding one per line); `headers` (a key from a field kept
+    secret) are only ever sent there."""
     do: Literal["webhook"]
     url: str
     method: Literal["POST", "PUT", "PATCH", "GET"] = "POST"
+    payload: dict[str, Any] | None = None
+    headers: dict[str, str] | None = None
+    save: dict[str, str] | None = None
+    hosts: str | list[str] | None = None
     only_if: list[Condition | str] = Field(default_factory=list)
 
 

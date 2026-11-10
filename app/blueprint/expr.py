@@ -254,6 +254,18 @@ class ItemContext(Context):
         return self.outer.resolve(name)
 
 
+def _matches(s, pattern):
+    """Whether text has the shape a pattern says (an ABN of 11 digits: "^\\d{11}$"), case aside; a pattern that isn't one
+    matches nothing, and a slow one is cut off rather than let run."""
+    pattern = _text(pattern)
+    if not pattern or len(pattern) > 200:
+        return False
+    try:
+        return re.search(pattern, _text(s)[:5000], re.I) is not None
+    except re.error:
+        return False
+
+
 def _fn_iif(cond, a=None, b=None):
     return a if cond else b
 
@@ -422,10 +434,20 @@ FUNCTIONS = {
     "digits": lambda s: re.sub(r"\D", "", _text(s)),
     "cents": lambda x: int(round((to_number(x) or 0) * 100)),
     "format_date": lambda d, f="%d%m%y": to_date(d).strftime(str(f)) if to_date(d) else "",
+    # words in text, as people look for them (case aside): a name on a sanctions list, an email's domain
+    "contains": lambda s, part: _text(part).strip().lower() in _text(s).lower() if _text(part).strip() else False,
+    "starts_with": lambda s, part: _text(s).lower().startswith(_text(part).lower()),
+    "ends_with": lambda s, part: _text(s).lower().endswith(_text(part).lower()),
+    "replace": lambda s, old, new="": _text(s).replace(_text(old), _text(new)) if _text(old) else _text(s),
+    "trim": lambda s: re.sub(r"\s+", " ", _text(s)).strip(),
+    "left": lambda s, n: _text(s)[:max(int(_num(n)), 0)],
+    "right": lambda s, n: _text(s)[-int(_num(n)):] if int(_num(n)) > 0 else "",
+    "matches": lambda s, pattern: _matches(s, pattern),
 }
 ALIASES = {"if": "iif", "datediff": "days_between", "dateadd": "add_days", "edate": "add_months", "eomonth": "end_of_month",
            "today": "today", "now": "now", "countif": "count", "countifs": "count", "exists": "any", "filter": "where",
-           "sumif": "sumif", "sumifs": "sumif", "average": "avg", "averageif": "avgif", "mean": "avg", "overlap": "overlaps"}
+           "sumif": "sumif", "sumifs": "sumif", "average": "avg", "averageif": "avgif", "mean": "avg", "overlap": "overlaps",
+           "includes": "contains", "startswith": "starts_with", "endswith": "ends_with", "substitute": "replace", "strip": "trim"}
 # what looks at several records: count(client.invoices where status = "Unpaid"), sum(job.payments, amount)
 QUERIES = {"count", "sum", "sumif", "avg", "avgif", "min", "max", "any", "all", "none", "where", "first", "last"}
 TODAY_FUNCTIONS = {"days_since", "days_until"}  # days from a date to today, and from today to a date
@@ -468,6 +490,11 @@ SAID = {
     "concat": "concat(a, b, …) text joined (a + b says the same); upper(s), lower(s), text(x), number(s), len(s)",
     "join": "join(job.crew, \", \") the names of several, one text",
     "upper": None, "lower": None, "text": None, "number": None, "len": None,
+    "contains": "contains(name, \"pty\") whether text has a part in it, case aside; starts_with(s, part), ends_with(email, \"@acme.com\") the same at its start or end",
+    "starts_with": None, "ends_with": None,
+    "replace": "replace(s, \"-\", \"\") text with a part changed; trim(s) spaces tidied; left(s, n), right(s, n) its first or last n characters",
+    "trim": None, "left": None, "right": None,
+    "matches": "matches(abn, \"^\\\\d{11}$\") whether text has a pattern's shape (a regular expression), case aside",
     "convert": "convert(total, \"USD\") into the business's own currency at its exchange rates (or convert(x, \"USD\", \"EUR\"))",
     "count": "count(client.invoices where status = \"Unpaid\") how many; any(…), all(…), none(…) whether some, each or none of them hold",
     "any": None, "all": None, "none": None,

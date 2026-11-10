@@ -145,6 +145,29 @@ class Person(str):
         raise expr.ExprError(f"“.{name}” isn't something a person has: use .name, .email, or .contact (an outside person's record)")
 
 
+class Files(str):
+    """A file field's files as expressions see them: their names, as before, and `signed_pdf.fingerprint` (the SHA-256 of
+    the latest, as it was stored: a copy is checked against it), `.name`, `.size` (bytes), `.count`."""
+
+    def __new__(cls, files):
+        files = list(files or [])
+        out = super().__new__(cls, ", ".join(x["name"] for x in files))
+        out.files = files
+        return out
+
+    def field(self, name):
+        last = self.files[-1] if self.files else {}
+        if name in ("fingerprint", "sha256", "hash"):
+            return last.get("sha256")
+        if name in ("name", "file_name"):
+            return last.get("name")
+        if name == "size":
+            return last.get("size")
+        if name == "count":
+            return len(self.files)
+        raise expr.ExprError(f"“.{name}” isn't something a file has: use .fingerprint, .name, .size or .count")
+
+
 class RecordProxy:
     """A record as expressions see it: `client.payment_terms`, `record.name`, or the record itself (its title)."""
 
@@ -590,30 +613,38 @@ class Engine:
             return True
         if owner == "created_by":  # by who they are, not their name (anyone can change their name)
             return record.created_by_id is not None and record.created_by_id == self.user_id
-        head, _, rest = owner.partition(".")
-        if rest:  # a linked record's person: an order is a rep's when its customer is
-            f = self.field(record.table, head)
-            linked = self.get((record.data or {}).get(head), f["table"]) if f and f["type"] == "link" else None
-            value = (linked.data or {}).get(rest) if linked is not None else None
+        if "." in owner:  # a linked record's person, through as many links as it takes: an order is a rep's when its
+            values = self._people_through(record, owner)  # customer is; an offer is a buyer's members' through its round
         else:
             value = self.value(record, owner)  # a person field, or a lookup of one
-        if isinstance(value, list):
-            return str(self.user_id) in [str(v) for v in value]
-        return value is not None and str(value) == str(self.user_id)
+            values = value if isinstance(value, list) else [value]
+        return str(self.user_id) in [str(v) for v in values if v is not None]
+
+    def _people_through(self, record, path):
+        """The people a path through links ends at ("round.buyer.members"): every one named where it leads."""
+        parts, reached = path.split("."), [record]
+        for part in parts[:-1]:
+            further = []
+            for r in reached:
+                f = self.field(r.table, part)
+                value = (r.data or {}).get(part) if f is not None and f["type"] == "link" else None
+                ids = value if isinstance(value, list) else [value]
+                further += [x for x in (self.get(i, f["table"]) for i in ids if str(i or "").isdigit()) if x is not None]
+            reached = further
+        out = []
+        for r in reached:
+            value = (r.data or {}).get(parts[-1])
+            out += value if isinstance(value, list) else [value]
+        return [v for v in out if v not in (None, "")]
 
     def _nobody_at(self, record, owner):
         """Whether a record names nobody where a rule looks (its link is empty, or the person field is)."""
         if owner == "created_by":
             return record.created_by_id is None
-        head, _, rest = owner.partition(".")
-        value = (record.data or {}).get(head)
-        if value in (None, "", []):
+        head = owner.partition(".")[0]
+        if (record.data or {}).get(head) in (None, "", []):
             return True
-        if rest:
-            f = self.field(record.table, head)
-            linked = self.get(value, f["table"]) if f and f["type"] == "link" and not isinstance(value, list) else None
-            return linked is None or (linked.data or {}).get(rest) in (None, "", [])
-        return False
+        return "." in owner and not self._people_through(record, owner)
 
     def _asked(self):
         """The records this person was asked to approve or do something on, or answered for: they may open those, whoever
@@ -924,7 +955,7 @@ class Engine:
             return []
         if (record.id, key) not in self._files:
             rows = File.query.filter_by(record_id=record.id, field=key, deleted_at=None).order_by(File.id).all()
-            self._files[(record.id, key)] = [{"id": x.id, "name": x.name, "mime": x.mime, "size": x.size} for x in rows]
+            self._files[(record.id, key)] = [{"id": x.id, "name": x.name, "mime": x.mime, "size": x.size, "sha256": x.sha256} for x in rows]
         return self._files[(record.id, key)]
 
     def rows(self, table):
@@ -1101,7 +1132,7 @@ class Engine:
         if kind in ("duration", "rating"):
             return to_number(raw)
         if kind in schema.FILES:
-            return ", ".join(x["name"] for x in raw)
+            return Files(raw)
         if kind == "date":
             return to_date(raw)
         if kind in ("datetime", "created_time", "modified_time"):

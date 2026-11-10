@@ -1,0 +1,23 @@
+{# a line table's editor on a record's form (c: the child table; rows: its lines) #}
+  <div class="card mb-2" id="lines-{{ c.table.key }}" data-step="{{ step_label or c.table.label }}"><div class="card-head"><h2 class="grow">{{ step_label or c.table.label }}</h2><span class="faint small hide-phone">A new row appears as you type.</span></div>
+    <div class="table-wrap"><table class="grid lines-editor" data-lines="{{ c.table.key }}" data-next="{{ rows|length }}">
+      <thead><tr>{% for f in c.fields %}<th class="{{ 'num' if f.type in ('number', 'money', 'percent', 'duration') or (f.type == 'formula' and f.format in ('number', 'money', 'percent')) }}">{{ f.label }}</th>{% endfor %}<th></th></tr></thead>
+      <tbody>
+      {% for row in rows + [{'id': none, 'values': {}, 'blank': true}] %}{% set i = loop.index0 %}
+        <tr class="{{ 'blank' if row.blank }}" {% if row.blank %}data-template{% endif %}>
+          {% for f in c.fields %}{% set n = 'lines-' ~ c.table.key ~ '-' ~ i ~ '-' ~ f.key %}{% set v = row['values'].get(f.key) %}
+          <td class="{{ 'num' if f.type in ('number', 'money', 'percent', 'duration') }}">
+            {% if f.type in ('formula', 'rollup', 'lookup', 'autonumber') %}<span class="calc-cell" data-expr="{{ f.expression if f.type == 'formula' else '' }}" data-format="{{ f.format or 'number' }}">{{ e.display(f, e.value(e.get(row.id), f.key)) if row.id else '' }}</span>
+            {% elif f.type == 'select' %}<select name="{{ n }}"><option value=""></option>{% for o in f.options %}<option {{ 'selected' if v and v|string|lower == o|lower }}>{{ o }}</option>{% endfor %}</select>
+            {% elif f.type == 'link' %}{% set adds = e.role and f.table in e.tables and e.can(e.tables[f.table], 'edit') %}<select name="{{ n }}" data-searchable {% if adds %}data-quick-link="{{ url_for('app.quick_add', wid=e.ws.id, table=f.table) }}" data-title-field="{{ e.tables[f.table].title_field }}" data-singular="{{ e.tables[f.table].singular }}" data-full="{{ url_for('app.new', wid=e.ws.id, table=f.table) }}"{% endif %} {% if options.get(f.key ~ '__fill') %}data-fill='{{ options[f.key ~ '__fill']|json }}'{% endif %}><option value=""></option>{% for id, title in options.get(f.key, []) %}<option value="{{ id }}" {{ 'selected' if v is not none and v|string == id|string }}>{{ title }}</option>{% endfor %}</select>
+            {% elif f.type == 'checkbox' %}<input type="checkbox" name="{{ n }}" value="1" {{ 'checked' if v }}>
+            {% elif f.type == 'date' %}<input type="date" name="{{ n }}" value="{{ v or '' }}">
+            {% else %}<input type="text" name="{{ n }}" value="{{ ('%.2f'|format(v) if f.type == 'money' and v is number else '%g'|format((v * 100)|round(4)) if f.type == 'percent' and v is number else v) if v is not none else '' }}" data-key="{{ f.key }}" {% if f.type in ('number', 'money', 'percent', 'duration') %}inputmode="decimal"{% endif %}>{% endif %}
+          </td>{% endfor %}
+          <td class="row-tools">{% if row.id %}<input type="hidden" name="lines-{{ c.table.key }}-{{ i }}-id" value="{{ row.id }}">{% endif %}
+            <label class="btn sm ghost icon" title="Remove this line"><input type="checkbox" name="lines-{{ c.table.key }}-{{ i }}-remove" value="1" hidden data-remove-line>{{ icon('trash-2') }}</label></td>
+        </tr>
+      {% endfor %}
+      </tbody></table></div>
+    {% if errors.get(c.table.key) %}<div class="card-foot field-error">{{ errors[c.table.key] }}</div>{% endif %}
+  </div>

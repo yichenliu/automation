@@ -532,13 +532,14 @@ def _related(engine, t, record):
     return out
 
 
-def _sections(t):
-    """The record's fields grouped for its page and form: the table's sections, then any field not in one."""
+def _sections(t, lines=False):
+    """The record's fields grouped for its page and form: the table's sections, then any field not in one. With `lines`
+    (the form), a section that is the record's lines (What to price) too, where it stands."""
     sections, placed = [], set()
     for s in t.get("sections", []):
         fields = [schema.field(t, k) for k in s["fields"] if schema.field(t, k)]
-        if fields:
-            sections.append({"label": s["label"], "fields": fields, "show_if": s.get("show_if")})
+        if fields or (lines and s.get("lines")):
+            sections.append({"label": s["label"], "fields": fields, "show_if": s.get("show_if"), "lines": s.get("lines") if lines else None})
             placed |= {f["key"] for f in fields}
     rest = [f for f in t["fields"] if f["key"] not in placed]
     if rest and sections:
@@ -982,7 +983,7 @@ def _render_form(ws, engine, t, r, values, errors, line_rows=None, status=200, r
     hidden = {k: v for k, v in (errors or {}).items() if k != "_" and (k not in shown_keys or (stage_lock and k == stage_lock["key"] and r is None))}
     if hidden:  # a problem with something the form doesn't show (the stage, a rule on two fields): said at the top
         errors = {**{k: v for k, v in errors.items() if k not in hidden}, "_": "; ".join(([errors["_"]] if errors.get("_") else []) + list(hidden.values()))}
-    sections = _sections(t)
+    sections = _sections(t, lines=True)
     page = render(request, "app/form.html", status_code=status, ws=ws, e=engine, t=t, r=r, values=values, errors=errors, sections=sections,
                   stage_lock=stage_lock, first_move=first_move,
                   waiting=_waiting(t, sections, kids, values, errors, stage_lock and r is None and stage_lock["key"], r is None),

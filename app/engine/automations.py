@@ -742,6 +742,7 @@ def _ai_work(engine, automation, action, record, run, at=None, learned=None):
                     "link": _link(record.table, record.id), "fallback": answer["why"]}
         f = engine.field(record.table, action["field"])
         found = answer["findings"]
+        answer = {**answer, **_sureness(action, answer, answer["values"])}
         return {"proposal": {"table": record.table, "record_id": record.id, "values": answer["values"], "sure": answer["sure"],
                              "why": (f"Found {len(found)} problem{'s' if len(found) != 1 else ''}: " + "; ".join(found[:3]) if found
                                      else "No problems found") + (f". {answer['why']}" if answer["why"] else ""),
@@ -752,7 +753,8 @@ def _ai_work(engine, automation, action, record, run, at=None, learned=None):
         if answer["value"] in (None, "", []):
             return {"result": f"The AI couldn't tell {f['label']}" + (f": {answer['why']}" if answer["why"] else " from what the record says"),
                     "link": _link(record.table, record.id), "fallback": answer["why"]}
-        return {"proposal": {"table": record.table, "record_id": record.id, "values": {f["key"]: answer["value"]}, "sure": answer["sure"],
+        answer = {**answer, **_sureness(action, answer, {f["key"]: answer["value"]})}
+        return {"proposal": {"table": record.table, "record_id": record.id, "values": answer["values"], "sure": answer["sure"],
                              "why": answer["why"], "unsure": [] if answer["sure"] else [f["label"]]}}
     if kind == "ai_extract":
         files = _source_files(run, record, action["from"])
@@ -1351,6 +1353,10 @@ def _do(engine, automation, action, record, run):
             raise ValueError(str(exc)) from exc
         engine.update(record, {action["save_to"]: url}, by=_by(automation), depth=depth)
         return {"result": f"Made a payment link for {currency.upper()} {amount:,.2f}"}
+    if kind == "import_rows":  # a seller's price list brought into its catalogue, row by row, each row's outcome kept
+        from .. import importer
+        fixed = _render_values(action.get("values") or {}, ctx, engine, action["table"])
+        return importer.rows_into(engine, action, record, fixed, by=_by(automation), depth=depth + 1)
     if kind == "webhook" and action.get("app"):  # a connected app (Xero, Shopify, EasyPost…): its address and sign-in added
         from ..connectors import apps
         payload = _deep(engine, action.get("payload") or {}, ctx, record)
@@ -1374,13 +1380,17 @@ def _do(engine, automation, action, record, run):
         elif record is not None:
             payload = {"id": record.id, "table": record.table,
                        "record": {f["key"]: _plain(engine.value(record, f["key"])) for f in engine.tables[record.table]["fields"]}}
-        url = _render(action["url"], ctx) if "{{" in action["url"] else action["url"]
+        url = str(_render(action["url"], ctx) if "{{" in action["url"] else action["url"]).strip()
+        _reachable(engine, action, ctx, url)  # only the hosts it (and the app) may reach: refused before anything is sent
         if settings().get("TRYING_OUT"):  # a copy being tried reaches nothing outside
             return {"result": f"Would send to {url} (not sent while trying the app out)"}
+        headers = _headers(engine, action, ctx)
         if action.get("method", "POST") == "GET":
-            response = requests.get(url, params={k: v for k, v in (payload or {}).items() if not isinstance(v, (dict, list))}, timeout=15)
+            response = requests.get(url, params={k: v for k, v in (payload or {}).items() if not isinstance(v, (dict, list))}, headers=headers,
+                                    timeout=15)
         else:
-            response = requests.request(action.get("method", "POST"), url, json={"automation": automation["name"], **(payload or {})}, timeout=15)
+            response = requests.request(action.get("method", "POST"), url, json={"automation": automation["name"], **(payload or {})},
+                                        headers=headers, timeout=15)
         if response.status_code >= 400:
             raise ValueError(f"{url} answered {response.status_code}")
         if action.get("save") and record is not None:  # keep parts of the answer (an exchange rate, a tracking number)
@@ -1393,6 +1403,61 @@ def _do(engine, automation, action, record, run):
             return {"result": f"Called {url} and saved {', '.join(engine.field(record.table, k)['label'] for k in values if engine.field(record.table, k))}"}
         return {"result": f"Sent to {url} (it answered {response.status_code})"}
     raise ValueError(f"unknown action {kind}")
+
+
+def allowed_hosts(engine, action, ctx):
+    """The lists of hosts a call may reach, each of which must allow it: the step's own (a list, or a field holding one per
+    line: each buyer's ERP), and the app's (Settings). [] when neither says."""
+    lists = []
+    said = action.get("hosts")
+    if said:
+        text = _render(said, ctx) if isinstance(said, str) and "{{" in said else said
+        items = text if isinstance(text, list) else re.split(r"[\s,;]+", str(text or ""))
+        lists.append({str(h).strip().lower() for h in items if str(h or "").strip()})  # a field left empty reaches nothing
+    app_wide = (engine.ws.settings or {}).get("outbound_hosts") or []
+    if app_wide:
+        lists.append({str(h).strip().lower() for h in app_wide if str(h).strip()})
+    return lists
+
+
+def _host_allowed(host, allowed):
+    """sap.example.com is allowed by itself, or by *.example.com."""
+    return any(host == h or (h.startswith("*.") and host.endswith(h[1:])) for h in allowed)
+
+
+def _reachable(engine, action, ctx, url):
+    """Refuses a call to a host the step or the app doesn't allow (an address from a record must stay within them)."""
+    from urllib.parse import urlparse
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    if parsed.scheme not in ("http", "https") or not host:
+        raise ValueError(f"“{url[:200]}” isn't a web address")
+    for allowed in allowed_hosts(engine, action, ctx):
+        if not _host_allowed(host, allowed):
+            raise ValueError(f"{host} isn't one of the hosts this may reach ({', '.join(sorted(allowed)) or 'none are set'})")
+
+
+def _headers(engine, action, ctx):
+    """The step's headers, a key kept secret in a field written in full: only ever sent to the hosts allowed."""
+    if not action.get("headers"):
+        return {}
+    was, engine.revealing = engine.revealing, True
+    try:
+        return {k: str(_render(v, ctx) if "{{" in str(v) else v) for k, v in action["headers"].items()}
+    finally:
+        engine.revealing = was
+
+
+def _sureness(action, answer, values):
+    """An AI step's answer with how sure it was kept (the step's confidence field) and judged by the step's threshold: under
+    sure_above (or with no number at all) it isn't sure, whatever it said."""
+    confidence, values = answer.get("confidence"), dict(values)
+    if action.get("confidence") and confidence is not None:
+        values[action["confidence"]] = confidence
+    sure = answer["sure"]
+    if action.get("sure_above") is not None:
+        sure = sure and confidence is not None and confidence >= action["sure_above"]
+    return {"values": values, "sure": sure}
 
 
 def _walk(answer, path):
@@ -1484,7 +1549,8 @@ def propose_change(engine, record, values, by):
             shown[f["label"]] = [engine.display(f, old, record), engine.display(f, new, record)]
     ready = utcnow() + timedelta(days=held["wait_days"]) if held.get("wait_days") else None
     proposal = {"values": values, "shown": shown, "by": by, "by_id": engine.user_id, "contact": engine.portal_contact,
-                "ready_at": ready.isoformat() if ready else None, "step_up": bool(held.get("step_up"))}
+                "ready_at": ready.isoformat() if ready else None, "step_up": bool(held.get("step_up")),
+                "told_first": bool(held.get("told_first"))}
     if held.get("tell"):
         proposal["token"] = secrets.token_urlsafe(24)
     title = engine.title(record)
@@ -1506,7 +1572,11 @@ def propose_change(engine, record, values, by):
         for r in rows:
             _tell(engine, r, record, f"Approval needed: {message}" + (f" (it can be approved from {ready:%d %b})" if ready else ""))
         if held.get("tell"):
-            _tell_contact(engine, record, held["tell"], proposal["token"], what, by)
+            how = _tell_contact(engine, record, held["tell"], proposal["token"], what, by)
+            if how:  # the notice went out: kept on the change (and, with told_first, it may now be approved)
+                for r in rows:
+                    r.proposal = {**(r.proposal or {}), "told_at": utcnow().isoformat(), "told_by": how}
+                db.session.commit()
     if engine._depth:
         engine._after.append(tell)
     else:
@@ -1529,15 +1599,19 @@ def _tell_contact(engine, record, field_key, token, what, by):
             sent = True
         except Exception as exc:  # the change still waits for approval; the approver sees nobody was told by email
             _log.warning("Couldn't tell %s about a change: %s", address, exc)
-    for uid in portal_people(engine, record):
+    told = portal_people(engine, record)
+    for uid in told:
         db.session.add(Notification(workspace_id=engine.ws.id, user_id=uid, kind="approval", text=text[:2000], link=f"cancel:{token}"))
     db.session.commit()
-    return sent
+    return " and ".join(x for x in ("by email" if sent else "", "in the portal" if told else "") if x)  # how it went out ("": it didn't)
 
 
 def decide_change(engine, change, approved, by, comment=None):
     """Approve (it's saved now, as the change it was) or turn down a change waiting for approval."""
     proposal = change.proposal or {}
+    if approved and proposal.get("told_first") and not proposal.get("told_at"):
+        raise FieldErrors({"_": "This change can't be approved yet: the registered contact hasn't been told of it (no email went "
+                                "out and they aren't in the portal). Tell them first, then approve it."})
     if approved and proposal.get("ready_at") and datetime.fromisoformat(proposal["ready_at"]) > utcnow():
         raise FieldErrors({"_": f"This change can be approved from {datetime.fromisoformat(proposal['ready_at']):%d %b %Y %H:%M} "
                                 "(its cooling-off period)."})
@@ -2451,6 +2525,11 @@ def describe_action(engine, automation, action):
         text = f"Run “{name}”{target}"
     elif kind == "webhook":
         text = f"Send the details to {action['url']}"
+    elif kind == "import_rows":
+        f, into = engine.field(table, action["field"]) if table else None, engine.tables.get(action["table"])
+        text = (f"Bring the rows of the spreadsheet in {f['label'] if f else action['field']} into "
+                f"{into['label'] if into else action['table']}" + (f", updating those with the same {action['match_on'].replace('_', ' ')}"
+                                                                   if action.get("match_on") else ""))
     elif kind == "ai_fill":
         f = engine.field(table, action["field"])
         text = f"Have the AI fill {f['label'] if f else action['field']}: “{schema.named(engine.bp, action['instructions'])}”"

@@ -96,8 +96,19 @@ def workspace(wid, role="viewer", request=None):
     _signed_out_if_idle(request, ws)
     if not member.can(role):
         raise HTTPException(403)
+    if two_step_needed(ws, current_user(request)):
+        flash(request, f"{ws.name} asks everyone to use two-step sign-in: turn it on here, then carry on.", "info")
+        raise Redirect(url_for("account.page"))
     request.state.ws, request.state.member = ws, member
     return ws
+
+
+def two_step_needed(ws, user):
+    """The business asks everyone to sign in with a second step, and this person hasn't one yet (single sign-on brings
+    its own)."""
+    if not (ws.settings or {}).get("require_two_step") or user is None:
+        return False
+    return not getattr(user, "totp_secret", None) and not getattr(user, "sso_identity", None)
 
 
 IDLE_CHOICES = (0, 15, 30, 60, 240)  # minutes; 0: never
