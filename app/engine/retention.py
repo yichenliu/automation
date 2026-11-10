@@ -17,14 +17,28 @@ ERASE_AFTER = timedelta(days=30)
 BY = "Data retention"
 
 
-def _ends(keep, start):
-    """The day a record's time is up, counted from its start date."""
+def _amount(engine, record, value):
+    """A length of keep_for: a number, or a formula worked out for the record (none when it can't be: kept)."""
+    if not isinstance(value, str):
+        return int(value or 0)
+    from .records import RecordContext
+    try:
+        n = expr.to_number(expr.evaluate(value, RecordContext(engine, record)))
+    except expr.ExprError:
+        return None
+    return int(n) if n is not None else None
+
+
+def _ends(keep, start, engine=None, record=None):
+    """The day a record's time is up, counted from its start date (None: not known, so it's kept)."""
     if start is None:
         return None
-    months = int(keep.get("years") or 0) * 12 + int(keep.get("months") or 0)
-    end = expr.FUNCTIONS["add_months"](start, months) if months else start
+    years, months, days = (_amount(engine, record, keep.get(u)) for u in ("years", "months", "days"))
+    if None in (years, months, days):
+        return None
+    end = expr.FUNCTIONS["add_months"](start, years * 12 + months) if years * 12 + months else start
     end = expr.to_date(end) if not isinstance(end, date) else end
-    return end + timedelta(days=int(keep.get("days") or 0)) if end else None
+    return end + timedelta(days=days) if end else None
 
 
 def _start(engine, record, keep):
@@ -42,7 +56,7 @@ def due(engine, t):
         return []
     out = []
     for r in engine.rows(t["key"]):
-        end = _ends(keep, _start(engine, r, keep))
+        end = _ends(keep, _start(engine, r, keep), engine, r)
         if end is None or end > engine.today:
             continue
         if keep.get("unless") and any(engine.matches(r, [c]) for c in keep["unless"]):

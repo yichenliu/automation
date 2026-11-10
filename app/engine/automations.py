@@ -742,7 +742,7 @@ def _ai_work(engine, automation, action, record, run, at=None, learned=None):
                     "link": _link(record.table, record.id), "fallback": answer["why"]}
         f = engine.field(record.table, action["field"])
         found = answer["findings"]
-        answer = {**answer, **_sureness(action, answer, answer["values"])}
+        answer = {**answer, **_sureness(action, answer, answer["values"], _percent(engine, record, action))}
         return {"proposal": {"table": record.table, "record_id": record.id, "values": answer["values"], "sure": answer["sure"],
                              "why": (f"Found {len(found)} problem{'s' if len(found) != 1 else ''}: " + "; ".join(found[:3]) if found
                                      else "No problems found") + (f". {answer['why']}" if answer["why"] else ""),
@@ -753,7 +753,7 @@ def _ai_work(engine, automation, action, record, run, at=None, learned=None):
         if answer["value"] in (None, "", []):
             return {"result": f"The AI couldn't tell {f['label']}" + (f": {answer['why']}" if answer["why"] else " from what the record says"),
                     "link": _link(record.table, record.id), "fallback": answer["why"]}
-        answer = {**answer, **_sureness(action, answer, {f["key"]: answer["value"]})}
+        answer = {**answer, **_sureness(action, answer, {f["key"]: answer["value"]}, _percent(engine, record, action))}
         return {"proposal": {"table": record.table, "record_id": record.id, "values": answer["values"], "sure": answer["sure"],
                              "why": answer["why"], "unsure": [] if answer["sure"] else [f["label"]]}}
     if kind == "ai_extract":
@@ -1397,7 +1397,13 @@ def _do(engine, automation, action, record, run):
             try:
                 answer = response.json()
             except ValueError:
-                raise ValueError(f"{url} didn't answer with JSON, so nothing could be saved from it")
+                wrapped = re.fullmatch(r"\s*[\w.$]+\((.*)\)\s*;?\s*", response.text or "", re.S)  # JSONP: callback({...})
+                try:
+                    answer = json.loads(wrapped.group(1)) if wrapped else None
+                except ValueError:
+                    answer = None
+                if answer is None:
+                    raise ValueError(f"{url} didn't answer with JSON, so nothing could be saved from it") from None
             values = {key: _walk(answer, path) for key, path in action["save"].items()}
             engine.update(record, values, by=_by(automation), depth=depth)
             return {"result": f"Called {url} and saved {', '.join(engine.field(record.table, k)['label'] for k in values if engine.field(record.table, k))}"}
@@ -1448,16 +1454,22 @@ def _headers(engine, action, ctx):
         engine.revealing = was
 
 
-def _sureness(action, answer, values):
-    """An AI step's answer with how sure it was kept (the step's confidence field) and judged by the step's threshold: under
-    sure_above (or with no number at all) it isn't sure, whatever it said."""
+def _sureness(action, answer, values, fraction=False):
+    """An AI step's answer with how sure it was kept (the step's confidence field: a percentage field keeps 92 as 0.92)
+    and judged by the step's threshold: under sure_above (or with no number at all) it isn't sure, whatever it said."""
     confidence, values = answer.get("confidence"), dict(values)
     if action.get("confidence") and confidence is not None:
-        values[action["confidence"]] = confidence
+        values[action["confidence"]] = confidence / 100 if fraction else confidence
     sure = answer["sure"]
     if action.get("sure_above") is not None:
         sure = sure and confidence is not None and confidence >= action["sure_above"]
     return {"values": values, "sure": sure}
+
+
+def _percent(engine, record, action):
+    """Whether an AI step keeps its confidence in a percentage field."""
+    f = engine.field(record.table, action["confidence"]) if action.get("confidence") and record is not None else None
+    return f is not None and engine.kind(f) == "percent"
 
 
 def _walk(answer, path):

@@ -591,8 +591,10 @@ def normalize_keep_for(raw, table=None):
         if n not in (None, ""):
             try:
                 out[unit] = max(int(float(n)), 0)
-            except (TypeError, ValueError):
-                raise SchemaError(f"keep_for {unit} is a number") from None
+            except (TypeError, ValueError):  # a formula, worked out for each record (the buyer's own years for invoices)
+                if not isinstance(n, str) or not n.strip():
+                    raise SchemaError(f"keep_for {unit} is a number, or a formula giving one") from None
+                out[unit] = n.strip()[:500]
     if not any(out.get(u) for u in ("years", "months", "days")):
         raise SchemaError("keep_for needs how long: years, months or days")
     since = slug(str(_first(raw, "from", "since", "after", "field", default="created_at")))
@@ -3100,6 +3102,9 @@ def _check_table(t, tables, modules, problems):
             problems.append(f"{where} shows its message on “{rule['field']}”, which isn't a field")
     _check_conditions(t.get("lock_if"), t, f"the lock on {t['label']}", problems, tables)
     _check_conditions((t.get("keep_for") or {}).get("unless"), t, f"what keeps {t['label']} past their time", problems, tables)
+    for unit, amount in (t.get("keep_for") or {}).items():  # a length worked out for each record
+        if unit in ("years", "months", "days") and isinstance(amount, str):
+            _check_conditions([{"formula": f"({amount}) >= 0"}], t, f"how long {t['label']} are kept", problems, tables)
     for k in t.get("lock_except", []):
         if k not in keys:
             problems.append(f"the lock on {t['label']} leaves “{k}” editable, but that isn't a field")

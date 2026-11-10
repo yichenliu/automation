@@ -262,3 +262,54 @@ def test_records_are_kept_only_as_long_as_their_list_says(app):
     assert retention.run(ws) == (0, 1)
     erased = db.session.get(Record, old.id)
     assert erased.table == retention.ERASED and "name" not in erased.data and retention.run(ws) == (0, 0)
+
+
+def test_how_long_records_are_kept_can_be_worked_out_for_each(app):
+    """Each buyer keeps its invoices as long as its own rule says."""
+    bp = _ok([{"do": "add_list", "key": "orgs", "label": "Orgs", "singular": "Org", "fields": [
+                  {"type": "text", "key": "name", "label": "Name"}, {"type": "number", "key": "keep_years", "label": "Keep years"}]},
+              {"do": "add_list", "key": "invoices", "label": "Invoices", "singular": "Invoice", "fields": [
+                  {"type": "text", "key": "name", "label": "Name"}, {"type": "link", "key": "buyer", "label": "Buyer", "to": "orgs"},
+                  {"type": "date", "key": "invoice_date", "label": "Invoice date"}]},
+              {"do": "design_op", "op": {"op": "update_table", "table": "invoices", "keep_for": {
+                  "years": "coalesce(buyer.keep_years, 7)", "from": "invoice_date"}}}])
+    assert schema.check(bp) == []
+    ws = _ws(app, bp)
+    e = Engine(ws)
+    short, long_ = e.create("orgs", {"name": "Short", "keep_years": 2}), e.create("orgs", {"name": "Long"})
+    three = (e.today - timedelta(days=365 * 3 + 2)).isoformat()
+    a = e.create("invoices", {"name": "A", "buyer": short.id, "invoice_date": three})
+    b = e.create("invoices", {"name": "B", "buyer": long_.id, "invoice_date": three})
+    assert retention.run(ws) == (1, 0) and Engine(ws).get(a.id) is None and Engine(ws).get(b.id) is not None
+
+
+def test_a_percentage_field_keeps_the_ais_confidence_as_a_fraction():
+    action = {"confidence": "match_confidence", "sure_above": 80}
+    assert automations._sureness(action, {"sure": True, "confidence": 92}, {"x": 1}, fraction=True)["values"]["match_confidence"] == 0.92
+
+
+def test_an_example_meets_a_control_that_needs_another_record(app):
+    """A contract can't go for signing unless a delegation limit covers it: the simulator adds the limit an administrator
+    would, rather than the example stopping there; a step meant to be stopped still is."""
+    from app.builder import trial
+    bp = _ok([{"do": "add_list", "key": "orgs", "label": "Orgs", "singular": "Org", "fields": [{"type": "text", "key": "name", "label": "Name"}]},
+              {"do": "add_list", "key": "limits", "label": "Limits", "singular": "Limit", "fields": [
+                  {"type": "link", "key": "buyer", "label": "Buyer", "to": "orgs", "required": True},
+                  {"type": "text", "key": "document", "label": "Document", "required": True}, {"type": "money", "key": "up_to", "label": "Up to", "required": True}]},
+              {"do": "add_list", "key": "deals", "label": "Deals", "singular": "Deal", "fields": [
+                  {"type": "text", "key": "name", "label": "Name"}, {"type": "link", "key": "buyer", "label": "Buyer", "to": "orgs"},
+                  {"type": "money", "key": "value", "label": "Value"}],
+               "stages": {"stages": ["Draft", "Signing"], "moves": [{"from": ["Draft"], "to": "Signing", "button": "Sign"}]}},
+              {"do": "add_validation", "list": "deals", "only_if": [{"field": "status", "op": "equals", "value": "Signing"}],
+               "check": 'count(limits where buyer == this.buyer and document == "Deal" and up_to >= this.value) > 0',
+               "message": "No limit covers this deal"}])
+    ws = _ws(app, bp)
+    steps = [{"do": "add", "as": "o", "table": "orgs", "values": {"name": "Pilbara"}},
+             {"do": "add", "as": "d", "table": "deals", "values": {"name": "Big", "buyer": "o", "value": 5000}}]
+    went = {"title": "Signed", "steps": steps + [{"do": "move", "record": "d", "to": "Signing"}],
+            "expect": [{"record": "d", "field": "status", "equals": "Signing"}, {"table": "limits", "count": 1}]}
+    stopped = {"title": "Stopped", "steps": steps + [{"do": "move", "record": "d", "to": "Signing", "refused": True}],
+               "expect": [{"record": "d", "field": "status", "equals": "Draft"}]}
+    _, (one, two) = trial.try_out(ws, [went, stopped], screens=False)
+    assert one["ok"], one
+    assert two["ok"], two

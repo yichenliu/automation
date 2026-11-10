@@ -1205,7 +1205,13 @@ def _act(trial, engine, step, names, hold=False):
             # shown with "refused")
             _fill_asked(trial, engine, record, t, lambda m: m["to"].lower() == wanted, given, names["_given"])
             record = engine.get(record.id)
-        if not _press_move(engine, record, t, lambda m: m["to"].lower() == wanted, attach=not step.get("refused")):
+        try:
+            pressed = _press_move(engine, record, t, lambda m: m["to"].lower() == wanted, attach=not step.get("refused"))
+        except FieldErrors as exc:  # a control that needs another record (a delegation limit covering it): added, then again
+            if step.get("refused") or not _provide(trial, engine, record, t, exc):
+                raise
+            pressed = _press_move(engine, engine.get(record.id), t, lambda m: m["to"].lower() == wanted, attach=True)
+        if not pressed:
             _take_along(engine, record, t, step.get("to"), trial, last=not step.get("refused"), given=given, others=names["_given"])
     elif do == "press":
         wanted = str(step.get("button") or "").strip().lower()
@@ -1339,14 +1345,22 @@ def _take_along(engine, record, t, target, trial=None, last=True, given=(), othe
                 _fill_asked(trial, engine, record, t, lambda m: m["to"].lower() == way[0].lower(), given, others)
                 record = engine.get(record.id)
             pick = lambda m: m["to"].lower() == way[0].lower()  # noqa: E731
-            try:
-                pressed = _press_move(engine, record, t, pick, attach=last or way[0].lower() != str(target).lower())
-            except FieldErrors:
-                # kept from whoever's doing it (someone else approves what they recommended): a colleague who may, does
-                other = _colleague(trial, engine, record, pick)
-                if other is None:
-                    raise
-                pressed = _press_move(other, other.get(record.id), t, pick, attach=last or way[0].lower() != str(target).lower())
+            on_the_way = last or way[0].lower() != str(target).lower()
+            actor, provided = engine, 0
+            while True:
+                try:
+                    pressed = _press_move(actor, actor.get(record.id), t, pick, attach=on_the_way)
+                    break
+                except FieldErrors as exc:
+                    # a control that needs another record (a delegation limit covering it): the one a person would add
+                    if trial is not None and on_the_way and provided < 2 and _provide(trial, engine, record, t, exc):
+                        provided += 1
+                        continue
+                    # kept from whoever's doing it (someone else approves what they recommended): a colleague who may, does
+                    other = _colleague(trial, engine, record, pick) if actor is engine else None
+                    if other is None:
+                        raise
+                    actor = other
         except FieldErrors as exc:
             raise FieldErrors({"_": f"on its way from {began} to {target} (through {', '.join(way[:-1])}), it couldn't move from "
                                     f"{at} to {way[0]}: {'; '.join(exc.errors.values())}"}) from exc
@@ -1398,6 +1412,76 @@ def _fill_asked(trial, engine, record, t, pick, given=(), others=None):
             for f in dates:
                 tries = own + _others(engine, f, 0)
                 needs[f["key"]] = tries[attempt % len(tries)] if tries else needs[f["key"]]
+
+
+def _provide(trial, engine, record, t, refused):
+    """When a move is stopped by a rule asking for another record ("count(delegation_limits where buyer == this.buyer and
+    document == \"Contract\" and up_to >= this.value) > 0"), add one that meets it, as the person told so would (an
+    administrator sets the delegation limit). Returns whether it added one."""
+    import ast
+    said = set(str(v) for v in refused.errors.values())
+    for rule in t.get("rules") or []:
+        if rule.get("message") not in said:
+            continue
+        try:
+            tree = expr.parse(schema.percents_fixed(t, rule["check"], engine.tables)).body
+        except expr.ExprError:
+            continue
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Compare) and isinstance(node.left, ast.Call) and getattr(node.left.func, "id", "") == "count"
+                    and len(node.ops) == 1 and isinstance(node.ops[0], (ast.Gt, ast.GtE, ast.NotEq))
+                    and isinstance(node.comparators[0], ast.Constant) and node.left.args):
+                continue
+            inner = node.left.args[0]
+            if not (isinstance(inner, ast.Call) and getattr(inner.func, "id", "") == "where" and len(inner.args) == 2
+                    and isinstance(inner.args[0], ast.Name) and inner.args[0].id in engine.tables):
+                continue
+            other = engine.tables[inner.args[0].id]
+            values = _wanted(engine, record, other, inner.args[1])
+            if values is None:
+                continue
+            values = {**sample_values(engine, other, trial.owner_id, {}, 400), **values}
+            try:
+                engine.system().create(other["key"], values, ai=False)
+            except FieldErrors:
+                continue
+            engine.reset()
+            return True
+    return False
+
+
+def _wanted(engine, record, other, cond):
+    """The values a record of `other` takes to meet a count's condition (buyer == this.buyer, up_to >= this.value), or
+    None when it can't be told (an "or", a function)."""
+    import ast
+    parts = cond.values if isinstance(cond, ast.BoolOp) and isinstance(cond.op, ast.And) else [cond]
+    out = {}
+    for c in parts:
+        if not (isinstance(c, ast.Compare) and len(c.ops) == 1 and isinstance(c.left, ast.Name)):
+            return None
+        f = schema.field(other, c.left.id)
+        if f is None:
+            continue  # (id != this.id and the like)
+        right = c.comparators[0]
+        if isinstance(right, ast.Constant):
+            value = right.value
+        elif isinstance(right, ast.Attribute) and isinstance(right.value, ast.Name) and right.value.id in ("this", "record"):
+            value = (record.data or {}).get(right.attr) if right.attr != "id" else record.id
+        else:
+            return None
+        op = c.ops[0]
+        number = to_number(value) if not isinstance(value, bool) else None
+        if isinstance(op, ast.Eq):
+            out[f["key"]] = value
+        elif isinstance(op, (ast.GtE, ast.Gt)) and number is not None:
+            out[f["key"]] = number + (1 if isinstance(op, ast.Gt) else 0)
+        elif isinstance(op, (ast.LtE, ast.Lt)) and number is not None:
+            out[f["key"]] = number - (1 if isinstance(op, ast.Lt) else 0)
+        elif isinstance(op, ast.NotEq):
+            continue
+        else:
+            return None
+    return out
 
 
 def _meeting(trial, engine, record, t, conditions, given=(), others=None, linked=None):
