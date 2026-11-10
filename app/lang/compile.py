@@ -200,11 +200,17 @@ def _ir_field(d, t, f, where):
             out["multiple"] = True
         if f.required:
             out["required"] = True
+        if f.default:  # {{tender.buyer}}: read from the new record, so its path must be one there
+            inner = re.fullmatch(r"\s*\{\{\s*(.+?)\s*\}\}\s*", f.default)
+            if inner is None:
+                raise Problem(f"{where} › default: a link's default is read from the new record, as {{{{tender.buyer}}}}")
+            _check_formula(d, t, inner.group(1), f"{where} › default")
+            out["default"] = f.default
     elif isinstance(f, m.AutoNumber):
         out.update(type="autonumber", prefix=f.prefix)
     elif isinstance(f, m.Formula):
         _check_formula(d, t, f.formula, f"{where} › formula of {f.key}")
-        written = schema.percents_fixed(t, f.formula)  # a percentage is kept as a fraction: discount_percent / 100 is it
+        written = schema.percents_fixed(t, f.formula, {x["key"]: x for x in d.bp.get("tables", [])})  # a percentage is kept as a fraction
         if f.shows == "percent":
             written = design_ops._as_fraction(written)  # have / par * 100 shown as a percentage: have / par
         same = next((x for x in (t or {}).get("fields", []) if x.get("type") == "formula" and x["key"] != schema.slug(f.key)

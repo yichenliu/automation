@@ -138,7 +138,11 @@ class Person(str):
             return self._engine._emails.get(self.uid)
         if name == "id":
             return self.uid
-        raise expr.ExprError(f"“.{name}” isn't something a person has: use .name or .email")
+        if name == "contact":  # an outside person's own record (the seller's person who asked): None for staff
+            member = Membership.query.filter_by(workspace_id=self._engine.ws.id, user_id=self.uid, role="portal").first() if self.uid else None
+            found = self._engine.get(member.contact_id) if member is not None and member.contact_id else None
+            return RecordProxy(self._engine, found) if found is not None else None
+        raise expr.ExprError(f"“.{name}” isn't something a person has: use .name, .email, or .contact (an outside person's record)")
 
 
 class RecordProxy:
@@ -1123,7 +1127,7 @@ class Engine:
             return None  # a formula that (indirectly) uses itself
         self._computing.add(memo_key)
         try:
-            value = expr.evaluate(schema.percents_fixed(self.tables.get(record.table), f["expression"]), RecordContext(self, record))
+            value = expr.evaluate(schema.percents_fixed(self.tables.get(record.table), f["expression"], self.tables), RecordContext(self, record))
         except expr.ExprError:
             value = None
         finally:
@@ -1507,7 +1511,7 @@ class Engine:
                 # checked is "this" and its own fields (the rule's buyer, not each contract's own, read as itself)
                 named = {**(names or {}), "record": RecordProxy(self, about)} if about is not None and about is not record else names
                 try:
-                    if not to_bool(expr.evaluate(schema.percents_fixed(self.tables.get(record.table), c["formula"]), RecordContext(self, record, named))):
+                    if not to_bool(expr.evaluate(schema.percents_fixed(self.tables.get(record.table), c["formula"], self.tables), RecordContext(self, record, named))):
                         return False
                 except expr.ExprError as exc:
                     log.warning("The condition %r couldn't be worked out: %s", c["formula"], exc)
@@ -1879,7 +1883,7 @@ class Engine:
     def _clean(self, t, data, creating, record=None, unfinished=False):
         """unfinished: a record a rule adds, whose must-haves it couldn't know (which supplier), is added all the same;
         those left empty are kept in self.left_unfilled (their labels), for people to fill in."""
-        values, errors = {}, {}
+        values, errors, read_later = {}, {}, []
         self.left_unfilled = []
         data = {k: v for k, v in data.items() if not str(k).startswith("_")}
         for f in t["fields"]:
@@ -1909,13 +1913,19 @@ class Engine:
                 except ValueError as exc:
                     errors[f["key"]] = str(exc)
             elif creating and f.get("default") not in (None, ""):
+                if isinstance(f["default"], str) and "{{" in f["default"]:  # read once what it's given is known: an
+                    read_later.append(f)  # award's buyer, {{tender.buyer}}
+                    continue
                 try:
-                    default = f["default"]
-                    if isinstance(default, str) and "{{" in default:
-                        default = expr.render(default, RecordContext(self, record))
-                    values[f["key"]] = self.coerce(f, default)
-                except (ValueError, expr.ExprError):
+                    values[f["key"]] = self.coerce(f, f["default"])
+                except ValueError:
                     pass
+        for f in read_later:
+            draft = Record(workspace_id=self.ws.id, table=t["key"], data=dict(values))
+            try:
+                values[f["key"]] = self.coerce(f, expr.render(f["default"], RecordContext(self, draft)))
+            except (ValueError, expr.ExprError):
+                pass
         flow = t.get("workflow")
         if creating and flow and values.get(flow["field"]) in (None, "") and schema.start_stage(t):
             values[flow["field"]] = schema.start_stage(t)
@@ -2613,7 +2623,7 @@ class Engine:
 
     def _keeps(self, t, record, rule):
         """Whether a record keeps a rule: its check is true, and what it says must hold does."""
-        return to_bool(expr.evaluate(schema.percents_fixed(t, rule["check"]), RecordContext(self, record))) \
+        return to_bool(expr.evaluate(schema.percents_fixed(t, rule["check"], self.tables), RecordContext(self, record))) \
             and (not rule.get("holds") or self.matches(record, rule["holds"]))
 
     def _kept_out_of_it(self, t, record, rule):

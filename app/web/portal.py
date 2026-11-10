@@ -14,7 +14,7 @@ their kind's portal.
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from ..blueprint import schema
-from ..engine import automations
+from ..engine import automations, outside
 from ..engine.records import Conflict, Engine, FieldErrors
 from ..extensions import db
 from ..models import Approval, Comment, File, Membership, Notification, User, Workspace
@@ -28,101 +28,25 @@ router = APIRouter(prefix="/portal/{wid:int}", route_class=PageRoute, dependenci
 def _ctx(wid, user):
     ws = db.session.get(Workspace, wid)
     member = Membership.query.filter_by(workspace_id=wid, user_id=user.id).first() if ws else None
-    if member is None or member.role != "portal":
-        raise HTTPException(404)
-    engine = Engine(ws, by=f"{user.display} (through the portal)")
-    contact = engine.get(member.contact_id)
-    if contact is None:
-        raise HTTPException(403)
-    portal = schema.portal_of(engine.bp, contact.table)
-    if portal is None or not portal.get("enabled", True):
-        raise HTTPException(404)
-    engine.portal_contact = contact.id  # sealed records they made open to them; their changes may wait for approval
+    try:
+        engine, portal, contact = outside.enter(ws, member, user.display)
+    except outside.Gone:
+        raise HTTPException(403) from None
+    except outside.NotTheirs:
+        raise HTTPException(404) from None
     return ws, engine, portal, contact
 
 
-def _tables(engine, portal):
-    """The tables this person's portal shows: those reaching their kind (a subcontractor's jobs, not clients' projects)."""
-    return [t for t in engine.bp.get("tables", []) if t.get("portal") and not t.get("embedded")
-            and schema.portal_shows(engine.tables, t, portal["table"])]
-
-
-def _fields(t):
-    """What the portal shows of a table: the fields the design lists, or everything people type in (never fields kept
-    from staff below admin, or to a team)."""
-    chosen = [schema.field(t, k) for k in t["portal"].get("fields") or [] if schema.field(t, k)]
-    return [f for f in (chosen or t["fields"]) if not f.get("access")]
-
-
-def _mine(engine, t, contact):
-    return [r for r in engine.rows(t["key"]) if engine.portal_reaches(r, contact.id)]
+# what an outside person may see and do is the engine's (app/engine/outside.py), the same for the simulator
+_tables, _fields, _mine, _locked, _editable, _lines, _options, _ids_reaching = (
+    outside.tables, outside.fields, outside.mine, outside.locked, outside.editable, outside.lines, outside.options, outside.ids_reaching)
 
 
 def _record(engine, contact, table, rid):
-    t = engine.tables.get(table)
-    if t is None or not t.get("portal") or t.get("embedded"):
-        raise HTTPException(404)
-    r = engine.get(rid, table)
-    if r is None or not engine.portal_reaches(r, contact.id):
-        raise HTTPException(404)
-    return t, r
-
-
-def _locked(engine, t, r):
-    """Why they can't change it now (it's locked, sent, closed), or None."""
-    reason = engine.locked(r)
-    if reason:
-        return reason
-    if t.get("lock_if") and engine.matches(r, t["lock_if"]):
-        return f"This {schema.lc(t['singular'])} is locked, so it can't be changed here."
-    return None
-
-
-def _editable(engine, t, r):
-    """The fields they may change on a record now: the portal's "edit" fields, while its "edit_if" holds."""
-    portal = t["portal"]
-    if "edit" not in portal or (portal.get("edit_if") and not engine.matches(r, portal["edit_if"])) or _locked(engine, t, r):
-        return []
-    keys = portal["edit"] or [f["key"] for f in _fields(t)]
-    flow = (t.get("workflow") or {}).get("field")
-    return [f for f in (schema.field(t, k) for k in keys) if f and f["type"] in schema.STORED - {"autonumber"} and not f.get("access")
-            and f["key"] != flow and f["key"] != t["portal"]["via"].partition(".")[0]]
-
-
-def _lines(engine, t):
-    """The line items of a table as the portal shows and edits them (a bid's prices): not fields kept from them."""
-    out = []
-    for child in engine.bp.get("tables", []):
-        parent = next((f for f in child["fields"] if f["type"] == "link" and not (engine.tables.get(f["table"]) or {}).get("embedded")), None)
-        link = parent if parent is not None and parent["table"] == t["key"] else None
-        if child.get("embedded") and link:
-            fields = [f for f in child["fields"] if f["key"] != link["key"] and not f.get("access") and f["type"] not in schema.FILES]
-            out.append({"t": child, "table": child, "via": link, "cols": fields, "fields": fields})
-    return out
-
-
-def _options(engine, fields, contact=None):
-    """The choices of the link fields they fill in: records that are theirs (the tenders they're invited to), or reference
-    records anyone may name (an item on a bid line); never other outside people's."""
-    out = {}
-    contact = contact if contact is not None else engine.get(engine.portal_contact) if engine.portal_contact else None
-    people = contact.table if contact is not None else None
-    for f in fields:
-        if f["type"] != "link":
-            continue
-        target = engine.tables.get(f["table"]) or {}
-        to_people = [g for g in target.get("fields", []) if g["type"] == "link" and g["table"] == people]
-        rows = engine.rows(f["table"])
-        if f["table"] == people:
-            rows = [x for x in rows if contact is not None and x.id == contact.id]
-        elif target.get("portal"):
-            rows = [x for x in rows if contact is not None and engine.portal_reaches(x, contact.id)]
-        elif to_people:  # theirs when one of its links names them (a tender's invited suppliers)
-            ids = lambda v: v if isinstance(v, list) else [v]  # noqa: E731
-            rows = [x for x in rows if contact is not None and any(str(contact.id) in [str(i) for i in ids((x.data or {}).get(g["key"]))]
-                                                                   for g in to_people)]
-        out[f["key"]] = [(x.id, engine.title(x)) for x in rows[:500]]
-    return out
+    try:
+        return outside.find(engine, contact, table, rid)
+    except outside.NotTheirs:
+        raise HTTPException(404) from None
 
 
 def _save_lines(form, engine, t, parent, editable_lines):
@@ -240,7 +164,7 @@ def edit(request: Request, wid: int, table: str, rid: int, user=Depends(signed_i
                          form.getlist(f["key"]) if f["type"] == "multi_select" else form.get(f["key"])) for f in editable}
     try:
         with engine.atomic():
-            engine.update(r, values, expected_version=form.get("_version"))
+            outside.change(engine, contact, t, r, values, expected_version=form.get("_version"))
             problems = _save_lines(form, engine, t, r, _lines(engine, t))
             if problems:
                 raise FieldErrors({"_": "; ".join(problems)})
@@ -259,11 +183,8 @@ def move(request: Request, wid: int, table: str, rid: int, index: int, user=Depe
     """A move meant for them: Acknowledge the order, Accept the variation, Submit the bid."""
     ws, engine, portal, contact = _ctx(wid, user)
     t, r = _record(engine, contact, table, rid)
-    reason = _locked(engine, t, r) if (t.get("lock_if") and engine.matches(r, t["lock_if"])) else None
     try:
-        if reason:
-            raise FieldErrors({"_": reason})
-        engine.move(r, index, by=f"{user.display} (through the portal)")
+        outside.move(engine, contact, t, r, index, by=f"{user.display} (through the portal)")
     except (FieldErrors, Conflict) as exc:
         flash(request, "; ".join(exc.errors.values()) if isinstance(exc, FieldErrors) else "This changed just now; try again.", "error")
     else:
@@ -373,67 +294,28 @@ def file(request: Request, wid: int, fid: int, user=Depends(signed_in)):
 def new(request: Request, wid: int, table: str, user=Depends(signed_in), form: Form = Depends(form_of)):
     """Adding a record from the portal (a job request, a bid, an invoice with its lines): it's theirs from the start."""
     ws, engine, portal, contact = _ctx(wid, user)
-    t = engine.tables.get(table)
-    if t is None or not (t.get("portal") or {}).get("can_add"):
-        raise HTTPException(404)
-    head = t["portal"]["via"].partition(".")[0]
-    via = schema.field(t, head)
-    if via is None or via["type"] != "link":  # (a list shown to everyone in the portal isn't added to from it)
-        raise HTTPException(404)
-    direct = via["table"] == portal["table"]
-    fields = [f for f in _fields(t) if f["key"] != (head if direct else None) and f["type"] in schema.STORED - {"autonumber", "user"}
-              and f["key"] != (t.get("workflow") or {}).get("field")]
-    if not direct and via not in fields:  # theirs through the record it's for (a question on a tender they're invited to)
-        fields = [via] + fields
-    lines = _lines(engine, t)
-    options = _options(engine, fields + [f for c in lines for f in c["cols"]], contact)
-    if not direct:
-        options[via["key"]] = [(x.id, engine.title(x)) for x in engine.rows(via["table"])
-                               if contact.id in _ids_reaching(engine, t, x)]
+    try:
+        adding = outside.addable(engine, portal, contact, table)
+    except outside.NotTheirs:
+        raise HTTPException(404) from None
+    t, fields, lines, options = adding["t"], adding["fields"], adding["lines"], adding["options"]
     errors, values = {}, dict(request.query_params) if request.method == "GET" else {}
     if request.method == "POST":
         values = {f["key"]: form.get(f["key"]) if f["type"] != "checkbox" else bool(form.get(f["key"])) for f in fields}
         if any(f["type"] == "multi_select" for f in fields):
             values.update({f["key"]: form.getlist(f["key"]) for f in fields if f["type"] == "multi_select"})
-        if direct:
-            values[via["key"]] = contact.id
-        for f in fields:  # a link they choose must be one offered to them
-            if f["type"] == "link" and values.get(f["key"]) not in (None, "") and \
-                    str(values[f["key"]]) not in {str(i) for i, _ in options.get(f["key"], [])}:
-                errors[f["key"]] = f"Choose a {schema.lc(f['label'])} that's open to you"
-        if not errors:
-            try:
-                with engine.atomic():
-                    r = engine.create(t["key"], values)
-                    problems = _save_lines(form, engine, t, r, lines)
-                    if problems:
-                        raise FieldErrors({"_": "; ".join(problems)})
-            except FieldErrors as exc:
-                errors = exc.errors
-            else:
-                db.session.add(Notification(workspace_id=ws.id, link=f"table:{t['key']}:record:{r.id}",
-                                            text=f"{engine.title(contact)} added {schema.lc(t['singular'])} “{engine.title(r)}” in the portal"))
-                db.session.commit()
-                flash(request, f"Thanks: your {schema.lc(t['singular'])} is in.", "success")
-                return redirect(url_for("portal.record", wid=wid, table=table, rid=r.id))
+        try:
+            r = outside.add(engine, portal, contact, table, values, then=lambda made, lines_: _save_lines(form, engine, t, made, lines_))
+        except FieldErrors as exc:
+            errors = exc.errors
+        else:
+            db.session.add(Notification(workspace_id=ws.id, link=f"table:{t['key']}:record:{r.id}",
+                                        text=f"{engine.title(contact)} added {schema.lc(t['singular'])} “{engine.title(r)}” in the portal"))
+            db.session.commit()
+            flash(request, f"Thanks: your {schema.lc(t['singular'])} is in.", "success")
+            return redirect(url_for("portal.record", wid=wid, table=table, rid=r.id))
     return render(request, "portal/new.html", status_code=400 if errors else 200, ws=ws, e=engine, portal=portal, contact=contact, t=t,
                   fields=fields, values=values, errors=errors, lines=lines, options=options)
-
-
-def _ids_reaching(engine, t, middle):
-    """The outside people a record that a table's records hang off reaches (a tender's invited suppliers)."""
-    hop = t["portal"]["via"].partition(".")[2]
-    portal_people = next((p["table"] for p in schema.portals(engine.bp) if schema.portal_shows(engine.tables, t, p["table"])), None)
-    mt = engine.tables.get(middle.table) or {}
-    on = schema.field(mt, hop) if hop else next((f for f in mt.get("fields", []) if f["type"] == "link" and f["table"] == portal_people), None)
-    value = (middle.data or {}).get(on["key"]) if on else None
-    ids = [int(x) for x in (value if isinstance(value, list) else [value]) if str(x).isdigit()]
-    if on is not None and on.get("table") not in (None, portal_people):  # one more record on: a case's seller, whose people they are
-        last = next((f for f in (engine.tables.get(on["table"]) or {}).get("fields", []) if f["type"] == "link" and f["table"] == portal_people), None)
-        reached = [engine.get(i, on["table"]) for i in ids] if last else []
-        ids = [int(x) for r in reached if r is not None for x in (lambda v: v if isinstance(v, list) else [v])((r.data or {}).get(last["key"]))
-               if str(x).isdigit()]
-    return ids
 
 
 join = APIRouter(route_class=PageRoute, dependencies=[Depends(check_csrf)])

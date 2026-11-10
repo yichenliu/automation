@@ -628,10 +628,14 @@ _RESERVED = re.compile(r"\b(" + "|".join(sorted(RESERVED)) + r")\b")
 _QUOTED = re.compile(r"(\"(?:[^\"\\]|\\.)*\"|'(?:[^'\\]|\\.)*')")
 
 
+# a percentage written as one: "sum(criteria, weight) == 100%", "discount > 12.5%" (never a remainder: nothing follows it)
+_PERCENT = re.compile(r"(?<![\w.])(\d+(?:\.\d+)?)\s*%(?=\s*(?:$|[),\]<>=!+\-*/]|and\b|or\b|if\b|else\b))")
+
+
 def _as_names(text):
     """`class.capacity` read as the field it is, not Python's `class`: such words, outside quotes, get a mark taken off again
-    once the formula is read."""
-    return "".join(part if i % 2 else _RESERVED.sub(r"\1__kw", part) for i, part in enumerate(_QUOTED.split(text)))
+    once the formula is read. Outside quotes too, 15% is 0.15: how a percentage is kept."""
+    return "".join(part if i % 2 else _PERCENT.sub(r"(\1 / 100)", _RESERVED.sub(r"\1__kw", part)) for i, part in enumerate(_QUOTED.split(text)))
 
 
 def parse(source):

@@ -2284,6 +2284,10 @@ def formula_words(source):
     where status is Unpaid number 0."""
     text = re.sub(r"\s*\band\s+id\s*!=\s*(this|record)\.id\b|\bid\s*!=\s*(this|record)\.id\s+and\s+", " ", expr.normalise(source))
     text = re.sub(r"[\"']", "", text)
+    aggregate = {"sum": "the total", "avg": "the average", "average": "the average", "min": "the lowest", "max": "the highest"}
+    text = re.sub(r"\b(sum|avg|average|min|max)\(\s*(\w+(?:\.\w+)*)\s*,\s*(\w+)\s*\)",  # sum(criteria, weight): the total weight of criteria
+                  lambda m: f"{aggregate[m.group(1)]} {m.group(3)} of {m.group(2)}", text)
+    text = re.sub(r"\bcount\(\s*(\w+(?:\.\w+)*)\s*\)", r"how many \1", text)
     for a, b in ((r"\bnot any\(where\(", "no "), (r"\bany\(where\(", "any "), (r"\bcount\(where\(", "how many "),
                  (r"\bsum\(where\(", "the total of "), (r"\bwhere\(", ""), (r"\bthis\.", "its "), (r"\brecord\.", "its "),
                  (r"\s*==\s*", " is "), (r"\s*!=\s*", " isn't "), (r"\s*>=\s*", " at least "), (r"\s*<=\s*", " at most "),

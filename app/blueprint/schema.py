@@ -2565,21 +2565,57 @@ def as_fraction(value):
     return n / 100 if text.endswith("%") or abs(n) > 1 else n
 
 
-def percents_fixed(t, source):
-    """A formula with its percentage fields used as they're kept: "subtotal * discount_percent / 100" is
-    "subtotal * discount_percent" (15% is already 0.15), and "discount_percent > 10" is "discount_percent > 0.1"."""
+def _is_percent(f):
+    return f is not None and (f["type"] == "percent" or (f["type"] == "formula" and f.get("format") == "percent"))
+
+
+def _percent_terms(t, tables):
+    """Regexes for what reads as a percentage in a formula on t: its own percentage fields, one reached through its links
+    (criterion.weight), and a total of a list's percentages (sum(criteria, weight))."""
+    out = [rf"\b(?:record\.|this\.)?{re.escape(f['key'])}\b(?!\s*[.(])" for f in t["fields"] if _is_percent(f)]
+    if not tables:
+        return out
+    for f in t["fields"]:  # one link on: criterion.weight
+        target = tables.get(f.get("table")) if f["type"] == "link" else None
+        for g in (target or {}).get("fields", []):
+            if _is_percent(g):
+                out.append(rf"\b(?:record\.|this\.)?{re.escape(f['key'])}\.{re.escape(g['key'])}\b(?!\s*[.(])")
+    for other in tables.values():  # a list of records linking here: sum(criteria, weight), avg(...), min(...), max(...)
+        if not any(g["type"] == "link" and g.get("table") == t["key"] for g in other.get("fields", [])):
+            continue
+        for g in other["fields"]:
+            if _is_percent(g):
+                out.append(rf"\b(?:sum|avg|average|min|max)\(\s*{re.escape(other['key'])}\b(?:\s+where\b[^,()]*(?:\([^()]*\)[^,()]*)*)?,"
+                           rf"\s*{re.escape(g['key'])}\s*\)")
+    return out
+
+
+def percents_fixed(t, source, tables=None):
+    """A formula with its percentages used as they're kept: "subtotal * discount_percent / 100" is
+    "subtotal * discount_percent" (15% is already 0.15), and "discount_percent > 10" is "discount_percent > 0.1". With
+    `tables`, the same for a linked record's percentage (criterion.weight > 50) and a list's total of them
+    (sum(criteria, weight) == 100 is all of it: 1)."""
     if not t or not isinstance(source, str):
         return source
+    key = (id(t), id(tables), source)
+    kept = _PERCENTS_FIXED.get(key)
+    if kept is not None and kept[0] is t and kept[1] is tables:  # (asked for every record a condition is checked on)
+        return kept[2]
     out = source
-    for f in t["fields"]:
-        if f["type"] != "percent" and not (f["type"] == "formula" and f.get("format") == "percent"):
-            continue
-        key = re.escape(f["key"])
-        out = re.sub(rf"(\b(?:record\.)?{key}\b)\s*/\s*100(?:\.0*)?(?![\d.])", r"\1", out)
-        out = re.sub(rf"\(\s*((?:record\.)?{key})\s*/\s*100(?:\.0*)?\s*\)", r"\1", out)
-        out = re.sub(rf"(\b(?:record\.)?{key}\b\s*(?:>=|<=|==|!=|>|<)\s*)(\d+(?:\.\d+)?)(?![\d.%])",
-                     lambda m: m.group(1) + (f"{float(m.group(2)) / 100:g}" if float(m.group(2)) > 1 else m.group(2)), out)
+    for term in _percent_terms(t, tables):
+        out = re.sub(rf"({term})\s*/\s*100(?:\.0*)?(?![\d.%])", r"\1", out)
+        out = re.sub(rf"\(\s*({term})\s*/\s*100(?:\.0*)?\s*\)", r"\1", out)
+        out = re.sub(rf"(({term})\s*(?:>=|<=|==|!=|>|<)\s*)(\d+(?:\.\d+)?)(?![\d.%])",
+                     lambda m: m.group(1) + (f"{float(m.group(3)) / 100:g}" if float(m.group(3)) > 1 else m.group(3)), out)
+        out = re.sub(rf"(?<![\w.])(\d+(?:\.\d+)?)(\s*(?:>=|<=|==|!=|>|<)\s*(?:{term}))",
+                     lambda m: (f"{float(m.group(1)) / 100:g}" if float(m.group(1)) > 1 else m.group(1)) + m.group(2), out)
+    if len(_PERCENTS_FIXED) > 20000:
+        _PERCENTS_FIXED.clear()
+    _PERCENTS_FIXED[key] = (t, tables, out)
     return out
+
+
+_PERCENTS_FIXED = {}
 
 
 PRICE_WORDS = ("price", "rate", "cost", "fee", "charge")

@@ -22,7 +22,7 @@ from pathlib import Path
 
 from .. import database
 from ..blueprint import expr, schema
-from ..engine import automations
+from ..engine import automations, outside
 from ..engine.records import Engine, FieldErrors, NoRate, RecordContext, automations_words, mask, masked, parse_duration, to_number
 from ..extensions import db
 from ..models import Approval, Membership, Record, Run, User, Workspace, utcnow
@@ -471,7 +471,7 @@ def _formulas(engine, t, record):
         if f["type"] != "formula":
             continue
         try:
-            expr.evaluate(schema.percents_fixed(t, f["expression"]), RecordContext(engine, record))
+            expr.evaluate(schema.percents_fixed(t, f["expression"], engine.tables), RecordContext(engine, record))
         except NoRate:
             continue  # the owner's to add: said once, as a check (checks.py), not a fault of the design
         except expr.ExprError as exc:
@@ -862,7 +862,13 @@ def _values(engine, t, values, names):
         if f["type"] == "link":
             many = value if isinstance(value, list) else [value]
             for v in many:
-                if isinstance(v, str) and v not in names:
+                if isinstance(v, str) and v not in names and "." in v and v.split(".")[0] in names:  # s1.bids: the bid the app made for s1
+                    engine.reset()
+                    found = _followed(engine, names, v)
+                    if found is None:
+                        raise ExampleWrong(f"“{v}” leads to no record (no {v.split('.')[-1]} of {v.split('.')[0]} yet)")
+                    names[v] = found.id
+                elif isinstance(v, str) and v not in names:
                     _guess(engine, names, v, f["table"])
             ids = [names.get(v, v) if isinstance(v, str) else v for v in many]
             value = ids if f.get("multiple") else ids[0]
@@ -888,12 +894,17 @@ STAFF = re.compile(r"^(an? )?((ordinary|regular) )?(staff( member)?|member of st
 ROLES_BY = {"admin": "admin", "an admin": "admin", "editor": "editor", "viewer": "viewer"}
 
 
-def _doer(trial, engine, by):
+def _doer(trial, engine, by, names=None):
     """Who does a step done "by" someone other than the owner: an ordinary staff member, someone in a team (its key or
-    name), an admin, or a person by name (a stand-in joins, as the owner would invite them). None: the owner."""
+    name), an admin, a person by name (a stand-in joins, as the owner would invite them), or an outside person (the
+    example's name for a seller, or one of its people: an Outsider). None: the owner."""
     text = str(by or "").strip()
     if not text or text.lower() in ("me", "owner", "the owner", "i", "admin@example.com"):
         return None
+    if names is not None and text in names:
+        found = _outsider(trial, engine, text, names)
+        if found is not None:
+            return found
     key = schema.slug(text)
     team = next((tm for tm in schema.teams(engine.bp) if key in (tm["key"], schema.slug(tm.get("label") or ""))), None)
     if team is not None:
@@ -906,14 +917,177 @@ def _doer(trial, engine, by):
         trial.member(uid).role = ROLES_BY[text.lower()]
         db.session.commit()
     else:
+        found = _outsider(trial, engine, text, names) if names is not None and not STAFF.match(text) else None
+        if found is not None:
+            return found
         uid = _person(engine, "Staff member" if STAFF.match(text) else text, make=True)
     return None if uid == engine.user_id else trial.engine(uid)
+
+
+class Outsider:
+    """An outside person a step is done by (a seller's person submitting their bid, a client accepting a quote): they act
+    through what the portal lets them do (app/engine/outside.py), never as staff."""
+
+    def __init__(self, trial, member, name):
+        self.engine, self.portal, self.contact = outside.enter(trial.ws, member, name)
+        self.user_id, self.by = member.user_id, f"{name} (through the portal)"
+
+
+def _portal_kin(engine):
+    """{table: (the portal's people table, their link to it, its link back to them)}: a portal's people, and the records
+    they're people of (the seller a seller's person signs in for)."""
+    out = {}
+    for p in schema.portals(engine.bp):
+        people = engine.tables.get(p["table"])
+        if people is None or not p.get("enabled", True):
+            continue
+        out[people["key"]] = (people["key"], None, None)
+        for f in people["fields"]:
+            if f["type"] == "link" and f["table"] in engine.tables and f["table"] not in out:
+                back = next((g for g in engine.tables[f["table"]]["fields"] if g["type"] == "link" and g["table"] == people["key"]), None)
+                out[f["table"]] = (people["key"], f, back)
+    return out
+
+
+def _ids(value):
+    return [int(x) for x in (value if isinstance(value, list) else [value]) if str(x).isdigit()]
+
+
+def _person_of(engine, record, people_key, to_it, back):
+    """One of a record's outside people (a seller's person, who signs in for them): one it has, or a stand-in who joins
+    its people, as the business would invite one."""
+    system = engine.system()
+    ids = _ids((record.data or {}).get(back["key"])) if back is not None else []
+    if to_it is not None:
+        ids += [r.id for r in system.rows(people_key) if record.id in _ids((r.data or {}).get(to_it["key"]))]
+    found = next((x for x in (system.get(i, people_key) for i in ids) if x is not None), None)
+    if found is not None:
+        return found
+    portal, t, title = schema.portal_of(engine.bp, people_key), engine.tables[people_key], engine.title(record)
+    values = {f["key"]: f"{title} contact" for f in t["fields"] if f.get("required") and f["type"] == "text"}
+    if portal.get("email_field"):
+        values[portal["email_field"]] = re.sub(r"\W+", ".", title.lower()).strip(".") + ".contact@example.com"
+    if to_it is not None:
+        values[to_it["key"]] = [record.id] if to_it.get("multiple") else record.id
+    person = system.create(people_key, values, automations=False, ai=False)
+    if back is not None:
+        had = _ids((record.data or {}).get(back["key"]))
+        system.update(system.get(record.id), {back["key"]: had + [person.id] if back.get("multiple") else (had[0] if had else person.id)},
+                      automations=False)
+    return person
+
+
+def _outsider(trial, engine, text, names):
+    """The outside person a step's "by" names (the example's name for their record, or its title), signed in to the
+    portal as if invited from their record; None when it names no one outside."""
+    kin = _portal_kin(engine)
+    if not kin:
+        return None
+    record = None
+    if isinstance(names.get(text), int):
+        record = engine.get(names[text])
+        record = record if record is not None and record.table in kin else None
+    elif text not in names:
+        record = next((r for key in kin for r in engine.rows(key) if str(engine.title(r)).strip().lower() == text.lower()), None)
+    if record is None:
+        return None
+    people_key, to_it, back = kin[record.table]
+    contact = record if record.table == people_key else _person_of(engine, record, people_key, to_it, back)
+    member = Membership.query.filter_by(workspace_id=trial.ws_id, role="portal", contact_id=contact.id).first()
+    if member is None:
+        portal = schema.portal_of(engine.bp, people_key)
+        email = str((contact.data or {}).get(portal.get("email_field") or "") or "").strip().lower()
+        user = User.query.filter_by(email=email).first() if email else None
+        if user is not None and Membership.query.filter_by(workspace_id=trial.ws_id, user_id=user.id).first() is not None:
+            user, email = None, f"portal.{contact.id}.{email}"  # (one of the business's own people: a sign-in of its own)
+        if user is None:
+            user = User(email=email or f"portal.{contact.id}@example.com", name=str(engine.title(contact)))
+            user.password_hash = "!"  # nobody signs in as them
+            db.session.add(user)
+            db.session.flush()
+        member = Membership(workspace_id=trial.ws_id, user_id=user.id, role="portal", contact_id=contact.id)
+        db.session.add(member)
+        db.session.commit()
+    user = db.session.get(User, member.user_id)
+    return Outsider(trial, member, user.name or str(engine.title(contact)))
+
+
+def _act_outside(trial, doer, step, names, hold=False):
+    """A step done by an outside person: what the portal lets them do, or refused as it would be there."""
+    engine, contact, do = doer.engine, doer.contact, step.get("do")
+    try:
+        if do == "add":
+            t = _table(engine, step.get("table"))
+            names["_adding"] = step.get("as")
+            try:
+                given = _values(engine, t, step.get("values"), names)
+            finally:
+                names.pop("_adding", None)
+            record = outside.add_line(engine, contact, t["key"], given) if t.get("embedded") else \
+                outside.add(engine, doer.portal, contact, t["key"], given, automations=not hold)
+            if step.get("as"):
+                names[step["as"]] = record.id
+            names.setdefault("_added", []).append((t["key"], record.id))
+            names.setdefault("_given", {}).setdefault(record.id, set()).update(given)
+            return
+        alias = step.get("record") or (step.get("as") if step.get("as") in names else None)
+        if alias in (None, ""):
+            found = _the_one_meant(engine, step, names)
+            if found is not None:
+                alias, names["_this"] = "_this", found
+        record = _record(engine, names, alias)
+        t = engine.tables[record.table]
+        if not t.get("embedded"):
+            outside.find(engine, contact, t["key"], record.id)
+        if do == "change":
+            values = _values(engine, t, step.get("values"), names)
+            outside.change(engine, contact, t, record, values)
+            names.setdefault("_given", {}).setdefault(record.id, set()).update(values)
+            return
+        if do == "press":  # a stage's button (Submit the bid): the move it makes; nothing else is pressed in the portal
+            wanted = str(step.get("button") or "").strip().lower()
+            move = next((m for m in (t.get("workflow") or {}).get("transitions") or [] if str(m.get("label") or "").strip().lower() == wanted), None)
+            if move is None:
+                raise FieldErrors({"_": f"there's no “{step.get('button')}” button for {doer.by}"})
+            step, do = {**step, "do": "move", "to": move["to"]}, "move"
+        if do == "move":
+            if step.get("values"):
+                outside.change(engine, contact, t, record, _values(engine, t, step["values"], names))
+                engine.reset()
+                record = engine.get(record.id)
+            wanted = str(step.get("to") or "").strip().lower()
+            offered = [(i, problem) for i, m, problem in engine.moves(record) if m["to"].lower() == wanted]
+            index = next((i for i, problem in offered if not problem), None)
+            if index is None:
+                at = (record.data or {}).get((t.get("workflow") or {}).get("field"))
+                why = next((problem for _, problem in offered if problem), None)
+                raise FieldErrors({"_": why or f"{doer.by} can't move a {schema.lc(t['singular'])} at {at} to {step.get('to')}"})
+            outside.move(engine, contact, t, record, index, by=doer.by)
+            return
+        if do in ("approve", "reject"):  # what was sent to them (sign the contract), or a colleague's change of theirs
+            asks = Approval.query.filter_by(workspace_id=trial.ws_id, record_id=record.id, status="pending",
+                                            assignee_id=doer.user_id).order_by(Approval.id).all()
+            if not asks:
+                raise FieldErrors({"_": f"nothing on this {schema.lc(t['singular'])} waits for {doer.by}'s answer"})
+            said = step.get("comment") or step.get("reason")
+            if asks[0].kind == "task":
+                automations.complete(engine, asks[0], doer.by, comment=said)
+            elif asks[0].kind == "change":
+                automations.decide_change(engine, asks[0], do == "approve", doer.by, said)
+            else:
+                automations.decide(engine, asks[0], do == "approve", doer.by, said)
+            return
+        raise ExampleWrong(f"“{do}” isn't a step an outside person takes (add, change, move, press, approve or reject)")
+    except outside.NotTheirs:
+        raise FieldErrors({"_": f"that isn't open to {doer.by} in the portal"}) from None
 
 
 def _act(trial, engine, step, names, hold=False):
     """Do one step of an example as whoever would. Raises ExampleWrong or FieldErrors (the app refused)."""
     do = step.get("do")
-    doer = _doer(trial, engine, step.get("by")) if do not in ("wait", "run") else None
+    doer = _doer(trial, engine, step.get("by"), names) if do not in ("wait", "run") else None
+    if isinstance(doer, Outsider):
+        return _act_outside(trial, doer, step, names, hold)
     if doer is not None and do == "add":
         engine = doer
     if do == "add":

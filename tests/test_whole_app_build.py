@@ -485,3 +485,114 @@ def test_records_a_rule_adds_or_changes_in_bulk_start_their_own_rules(app):
     assert Engine(ws).get(inv.id).data["status"] == "Scheduled"
     e.update(e.get(run.id), {"paid": True})
     assert Engine(ws).get(inv.id).data["status"] == "Paid"
+
+
+BIDDING = [{"do": "add_list", "key": "firms", "label": "Firms", "singular": "Firm", "fields": [
+               {"type": "text", "key": "name", "label": "Name", "required": True}, {"type": "email", "key": "email", "label": "Email"}]},
+           {"do": "add_list", "key": "rounds", "label": "Rounds", "singular": "Round", "fields": [
+               {"type": "text", "key": "name", "label": "Name"}, {"type": "date", "key": "closes_on", "label": "Closes"}]},
+           {"do": "add_list", "key": "bids", "label": "Bids", "singular": "Bid", "fields": [
+               {"type": "link", "key": "firm", "label": "Firm", "to": "firms"}, {"type": "link", "key": "round", "label": "Round", "to": "rounds"},
+               {"type": "money", "key": "amount", "label": "Amount"}, {"type": "text", "key": "notes", "label": "Notes"},
+               {"type": "person", "key": "added_by", "label": "Added by"}],
+            "stages": {"stages": ["Draft", "Submitted"], "moves": [{"from": ["Draft"], "to": "Submitted", "button": "Submit", "who": ["portal"]}]}},
+           {"do": "design_op", "op": {"op": "set_portal", "portal": {"table": "firms", "email_field": "email"}}},
+           {"do": "design_op", "op": {"op": "update_table", "table": "bids", "portal": {
+               "via": "firm", "can_add": True, "edit": ["round", "amount", "notes"], "edit_if": ["round.closes_on > today()"]}}},
+           {"do": "add_rule", "rule": {"key": "who", "name": "Note which firm's person added it", "when": {"on": "added", "list": "bids"},
+                                       "steps": [{"do": "set", "values": [{"field": "added_by", "formula": "record.created_by"},
+                                                                          {"field": "notes", "formula": "record.created_by.contact.name"}]}]}}]
+
+
+def test_an_example_acts_out_an_outside_person_through_the_portal(app):
+    """A seller's bid, submitted and kept from a rival, unchangeable once its round closes: the simulator acted everyone
+    out as the business's own staff, so nothing an outside person does (or mustn't) could be tried."""
+    from app.builder import trial
+    ws = _ws(app, _ok(BIDDING))
+    example = {"title": "A firm bids", "steps": [
+        {"do": "add", "as": "f1", "table": "firms", "values": {"name": "Acme", "email": "bids@acme.example"}},
+        {"do": "add", "as": "f2", "table": "firms", "values": {"name": "Bolt", "email": "bids@bolt.example"}},
+        {"do": "add", "as": "r1", "table": "rounds", "values": {"name": "Pipes", "closes_on": "today+3"}},
+        {"do": "add", "as": "b1", "table": "bids", "by": "f1", "values": {"round": "r1", "amount": 100}},
+        {"do": "move", "record": "b1", "to": "Submitted", "by": "f1"},
+        {"do": "change", "record": "b1", "by": "f2", "values": {"amount": 1}, "refused": True},
+        {"do": "add", "as": "b2", "table": "bids", "by": "f2", "values": {"firm": "f1", "round": "r1", "amount": 5}, "refused": True},
+        {"do": "wait", "days": 4},
+        {"do": "change", "record": "b1", "by": "f1", "values": {"amount": 90}, "refused": True}],
+        "expect": [{"record": "b1", "field": "status", "equals": "Submitted"}, {"record": "b1", "field": "amount", "equals": 100},
+                   {"record": "b1", "field": "notes", "equals": "Acme"}, {"table": "bids", "count": 1}]}
+    _, (played,) = trial.try_out(ws, [example], screens=False)
+    assert played["ok"], played
+
+
+def test_what_an_outside_person_adds_is_theirs_and_staff_moves_stay_staffs(app):
+    from app.engine import outside
+    ws = _ws(app, _ok(BIDDING))
+    e = Engine(ws)
+    firm = e.create("firms", {"name": "Acme", "email": "bids@acme.example"})
+    rnd = e.create("rounds", {"name": "Pipes", "closes_on": e.today.replace(year=e.today.year + 1).isoformat()})
+    person = _outside(ws, "bids@acme.example", "Ann of Acme", firm.id)
+    member = Membership.query.filter_by(workspace_id=ws.id, user_id=person.id).one()
+    engine, portal, contact = outside.enter(ws, member, person.name)
+    bid = outside.add(engine, portal, contact, "bids", {"round": rnd.id, "amount": 10})
+    saved = Engine(ws).get(bid.id)
+    assert saved.created_by_id == person.id and saved.data["firm"] == firm.id and saved.data["notes"] == "Acme"
+    import pytest
+    from app.engine.records import FieldErrors
+    with pytest.raises(FieldErrors):  # the stage is moved by its buttons, not typed in
+        outside.change(engine, contact, schema.table(ws.blueprint, "bids"), saved, {"status": "Submitted"})
+
+
+def test_a_links_default_is_read_from_the_new_record():
+    """An award is its tender's buyer's: a default read from what the new record was given."""
+    bp = _ok([{"do": "add_list", "key": "orgs", "label": "Orgs", "singular": "Org", "fields": [{"type": "text", "key": "name", "label": "Name"}]},
+              {"do": "add_list", "key": "tenders", "label": "Tenders", "singular": "Tender", "fields": [
+                  {"type": "text", "key": "title", "label": "Title"}, {"type": "link", "key": "buyer", "label": "Buyer", "to": "orgs"}]},
+              {"do": "add_list", "key": "awards", "label": "Awards", "singular": "Award", "fields": [
+                  {"type": "link", "key": "buyer", "label": "Buyer", "to": "orgs", "default": "{{tender.buyer}}"},
+                  {"type": "link", "key": "tender", "label": "Tender", "to": "tenders", "required": True}]}])
+    assert schema.field(schema.table(bp, "awards"), "buyer")["default"] == "{{tender.buyer}}"
+    out = apply(bp, [{"do": "change_field", "list": "awards", "field": {"type": "link", "key": "buyer", "label": "Buyer", "to": "orgs",
+                                                                         "default": "{{tender.owner}}"}}])
+    assert out.problems  # a path the new record doesn't have is said when it's written
+
+
+def test_a_links_default_fills_a_new_record(app):
+    bp = _ok([{"do": "add_list", "key": "orgs", "label": "Orgs", "singular": "Org", "fields": [{"type": "text", "key": "name", "label": "Name"}]},
+              {"do": "add_list", "key": "tenders", "label": "Tenders", "singular": "Tender", "fields": [
+                  {"type": "text", "key": "title", "label": "Title"}, {"type": "link", "key": "buyer", "label": "Buyer", "to": "orgs"}]},
+              {"do": "add_list", "key": "awards", "label": "Awards", "singular": "Award", "fields": [
+                  {"type": "link", "key": "buyer", "label": "Buyer", "to": "orgs", "default": "{{tender.buyer}}"},
+                  {"type": "link", "key": "tender", "label": "Tender", "to": "tenders", "required": True}]}])
+    ws = _ws(app, bp)
+    e = Engine(ws)
+    org, other = e.create("orgs", {"name": "Pilbara"}), e.create("orgs", {"name": "Other"})
+    tender = e.create("tenders", {"title": "Pipes", "buyer": org.id})
+    assert Engine(ws).get(e.create("awards", {"tender": tender.id}).id).data["buyer"] == org.id
+    assert Engine(ws).get(e.create("awards", {"tender": tender.id, "buyer": other.id}).id).data["buyer"] == other.id
+
+
+def test_percentages_read_alike_through_links_and_totals():
+    """Weights that must add up to 100: a percentage is kept as a fraction (60% is 0.6), and the publish check written
+    as people say it was never true. A linked record's percentage and a list's total of them now read as their own do."""
+    from app.blueprint import expr
+    tenders = {"key": "tenders", "fields": [{"key": "title", "type": "text"}]}
+    criteria = {"key": "criteria", "fields": [{"key": "tender", "type": "link", "table": "tenders"}, {"key": "weight", "type": "percent"}]}
+    scores = {"key": "scores", "fields": [{"key": "criterion", "type": "link", "table": "criteria"}, {"key": "score", "type": "number"}]}
+    tables = {"tenders": tenders, "criteria": criteria, "scores": scores}
+    assert schema.percents_fixed(tenders, "sum(criteria, weight) == 100", tables) == "sum(criteria, weight) == 1"
+    assert schema.percents_fixed(scores, "criterion.weight > 50 and score > 5", tables) == "criterion.weight > 0.5 and score > 5"
+    assert schema.percents_fixed(scores, "score * criterion.weight / 100", tables) == "score * criterion.weight"
+    assert schema.percents_fixed(criteria, "weight >= 10") == "weight >= 0.1"
+
+    class Context:
+        def resolve(self, name):
+            return {"weight": 0.6, "n": 7}.get(name)
+    assert expr.evaluate("weight == 60%", Context()) is True and expr.evaluate("n % 3", Context()) == 1
+    assert expr.evaluate("weight < 12.5% or n > 1", Context()) is True
+
+
+def test_a_total_in_a_condition_is_said_in_words():
+    from app.engine.automations import formula_words
+    assert formula_words("sum(criteria, weight) == 100") == "the total weight of criteria is 100"
+    assert formula_words("avg(scores, score) >= 5") == "the average score of scores at least 5"

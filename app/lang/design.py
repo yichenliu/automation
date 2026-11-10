@@ -71,9 +71,14 @@ class Design:
         if t is None:  # a rule about no list (on a schedule with no list, an email, a file): no record to read
             raise NameProblem(f"“{path}” is a field, and this rule is about no list's records: give its when the list it's about, "
                               f"or write an address (or {{{{email.sender}}}} for an email that came in)")
-        here, keys = t, []
+        here, keys, skip = t, [], None
         for i, part in enumerate(parts):
+            if i == skip:  # .contact, read through already
+                keys.append(part)
+                continue
             f = self.field(here, part)
+            if f is None and part == "created_by" and i < len(parts) - 1:  # who added it: read on as a person (created_by.contact.seller)
+                f = {"key": "created_by", "type": "user", "label": "Added by"}
             if f is None:
                 if part in schema.SYSTEM_TIMES.values() or part in ("created_at", "updated_at", "id", "created_by"):
                     kind = {"id": "number", "created_by": "user"}.get(part, "datetime")
@@ -84,6 +89,15 @@ class Design:
             keys.append(f["key"])
             if i < len(parts) - 1 and f["type"] == "user" and parts[i + 1] in ("name", "email", "first_name") and i + 1 == len(parts) - 1:
                 return {"key": parts[i + 1], "type": "email" if parts[i + 1] == "email" else "text", "label": parts[i + 1]}, here, keys + [parts[i + 1]]
+            if i < len(parts) - 1 and f["type"] == "user" and parts[i + 1] == "contact":  # an outside person's own record
+                people = [p["table"] for p in schema.portals(self.bp)]
+                if len(people) != 1:
+                    raise NameProblem(f"“{part}.contact” is an outside person's own record, and this app has "
+                                      + ("no portal" if not people else f"several kinds of them ({', '.join(people)})"))
+                if i + 1 == len(parts) - 1:
+                    return {"key": "contact", "type": "link", "table": people[0], "label": "Their record"}, here, keys + ["contact"]
+                here, skip = self.list(people[0]), i + 1
+                continue
             if i < len(parts) - 1:
                 if f["type"] == "link":
                     here = self.list(f.get("table"))
