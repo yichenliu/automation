@@ -179,3 +179,14 @@ def test_the_builder_asks_once_more_for_an_answer_it_cant_read(app, monkeypatch)
     import pytest
     with pytest.raises(ai.AIError):
         build._ask("system", "add a stage", schema, kind="behaviour")
+
+
+def test_a_fix_that_replaces_a_feature_is_still_asked_what_the_feature_was_checked_for():
+    """A ready-made feature's own checks go with it; a fix that swapped it for rules doing the same job (a deposit
+    reminder that skips quotes already paid) was scored as if those checks had failed. They're acted out on it instead."""
+    from app.builder import build
+    before = [{"title": "Paid quotes aren't chased"}, {"title": "A quote still Accepted after 7 days is chased"}]
+    after = [{"title": "Paid quotes aren't chased"}, {"title": "Deposit reminder"}]
+    assert [x["title"] for x in build._still_asked(after, before)] == [
+        "Paid quotes aren't chased", "Deposit reminder", "A quote still Accepted after 7 days is chased"]
+    assert build._still_asked(before, before) == before

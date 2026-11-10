@@ -333,6 +333,15 @@ def _run(workspace, bp, examples, screens=False, asked=""):
     return {"walked": walked, "results": results, "examples": examples, "hard": hard}
 
 
+def _still_asked(suite, before):
+    """A fix's checks, with those it took away: a ready-made feature's own go with it, but what they checked is still
+    asked of the app. Acted out on the fixed app, they pass when what replaced the feature does the same job, and fail
+    when it was dropped. Counted as failed unseen, a fix that swapped a feature for rules (a deposit reminder that skips
+    quotes already paid) scored below the app it put right, and the owner was told no way was found."""
+    have = {x.get("title") for x in suite}
+    return suite + [x for x in before if x.get("title") not in have]
+
+
 def _score(run, required):
     """How right a design came out: the checks required of it that pass (one it no longer has fails), then fewer
     problems found walking it."""
@@ -708,7 +717,7 @@ def _turn(turn):
             if not out.changes:
                 continue
             made = credited(patches, out, owners)
-            run = _run(workspace, out.blueprint, _suite(workspace, out.blueprint, custom), asked=asked)
+            run = _run(workspace, out.blueprint, _still_asked(_suite(workspace, out.blueprint, custom), examples), asked=asked)
             passing, issues = _score(run, required)
             tried.append(((passing + len(made["needs"] & set(unmade)), issues, answer.get("_content")), out, run, patches, owners))
         if not tried:
