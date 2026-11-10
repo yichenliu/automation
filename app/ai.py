@@ -842,8 +842,44 @@ def _chunk(line, server):
         raise AIError(f"{server} sent something that couldn't be read: {str(line)[:200]!r}") from exc
 
 
+_levels = {}  # (Ollama's address, model) -> the thinking levels Ollama says the model takes, None when it names none
+
+
+def _ollama_levels(route):
+    """The thinking levels a model takes, as Ollama says (/api/show's "thinking" values: Qwen 3.8's are false, low, medium
+    and xhigh, its default medium); None from an Ollama or a model that names none. Asked once a model."""
+    key = (route.url, route.model)
+    if key not in _levels:
+        try:
+            response = requests.post(route.url.rstrip("/") + "/api/show", json={"model": route.model}, timeout=(5, 15))
+        except requests.RequestException:
+            return None  # asked again next time: the chat itself says what's wrong
+        try:
+            values = ((response.json() or {}).get("thinking") or {}).get("values") if response.ok else None
+        except ValueError:
+            values = None
+        _levels[key] = list(values) if isinstance(values, list) and values else None
+    return _levels[key]
+
+
+def _ollama_think(route, think, effort):
+    """What Ollama is told about thinking. A model with levels thinks at the effort asked for, or the nearest level below
+    it that the model has (the least it has when none is below): "true" alone thinks at its default, which for Qwen 3.8 is
+    medium, whatever AI_EFFORT says. Off is off where the model can stop thinking, else its lowest level."""
+    levels = _ollama_levels(route)
+    named = sorted((v for v in levels or () if v in EFFORTS), key=EFFORTS.index)
+    if not named:
+        return bool(think)
+    if not think:
+        return False if False in levels else named[0]
+    rank = EFFORTS.index(effort) if effort in EFFORTS else EFFORTS.index("high")
+    below = [v for v in named if EFFORTS.index(v) <= rank]
+    return below[-1] if below else named[0]
+
+
 def _ollama_chat(route, messages, schema, ask, on_progress, deadline, usage):
-    body = {"model": route.model, "messages": messages, "stream": True, "think": ask["think"]}
+    think = _ollama_think(route, ask["think"], settings().get("AI_EFFORT") or "xhigh")
+    body = {"model": route.model, "messages": messages, "stream": True, "think": think}
     if schema:
         body["format"] = schema
     body["options"] = {"num_predict": ask["max_tokens"], "top_p": ask["top_p"], "temperature": ask["temperature"],

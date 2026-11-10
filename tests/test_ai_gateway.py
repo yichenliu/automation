@@ -403,15 +403,44 @@ def test_ollama_still_answers_as_it_did_and_says_what_it_cost(app, fake, monkeyp
             h.wfile.write((json.dumps(line) + "\n").encode())
     fake.reply = reply
     assert ai.chat([{"role": "user", "content": "hi"}], schema=SCHEMA, think=True) == ("{}", "Hmm.")
-    sent = fake.seen[0]
-    assert sent["path"] == "/api/chat" and sent["body"]["format"] == SCHEMA and sent["body"]["think"] is True
+    chats = lambda: [s for s in fake.seen if s["path"] == "/api/chat"]  # noqa: E731 - besides asking what levels it has
+    sent = chats()[0]
+    assert sent["body"]["format"] == SCHEMA and sent["body"]["think"] is True  # an Ollama that names no levels: on
     assert sent["body"]["options"]["num_predict"] == app.config["AI_MAX_TOKENS"] + app.config["AI_THINK_TOKENS"]
     calls = _calls("assistant")
     assert (calls["provider"], calls["tokens_in"], calls["tokens_out"]) == ("ollama", 50, 3)
     fake.reply = lambda h, body: h.send_json(400, {"error": "invalid format"})
     with pytest.raises(ai.AIError, match="Ollama refused the request"):
         ai.chat([{"role": "user", "content": "hi"}], schema=SCHEMA)
-    assert len(fake.seen) == 2
+    assert len(chats()) == 2
+
+
+def test_a_local_model_with_thinking_levels_thinks_at_the_effort_asked(app, fake, monkeypatch):
+    """Qwen 3.8 through Ollama has levels (false, low, medium, xhigh): "think": true is its default, medium, so the
+    builder thought at medium while AI_EFFORT said max. It's told the level now, or the nearest below that it has."""
+    monkeypatch.setitem(app.config, "AI_PROVIDER", "ollama")
+    monkeypatch.setitem(app.config, "AI_BASE_URL", fake.root)
+    levels = {"values": [False, "low", "medium", "xhigh"], "default": "medium"}
+
+    def reply(h, body):
+        if h.path == "/api/show":
+            return h.send_json(200, {"capabilities": ["completion", "thinking"], "thinking": levels})
+        h.send_response(200)
+        h.send_header("Content-Type", "application/x-ndjson")
+        h.end_headers()
+        h.wfile.write((json.dumps({"message": {"content": "ok"}, "done": True, "done_reason": "stop"}) + "\n").encode())
+    fake.reply = reply
+    sent = lambda: [s["body"]["think"] for s in fake.seen if s["path"] == "/api/chat"][-1]  # noqa: E731
+    for effort, think, told in (("xhigh", True, "xhigh"), ("max", True, "xhigh"), ("high", True, "medium"),
+                                ("low", True, "low"), ("xhigh", False, False)):
+        monkeypatch.setitem(app.config, "AI_EFFORT", effort)
+        ai.chat([{"role": "user", "content": "hi"}], think=think)
+        assert sent() == told, (effort, think)
+    assert sum(1 for s in fake.seen if s["path"] == "/api/show") == 1  # asked once a model
+    ai._levels.clear()
+    levels = {"values": ["low", "medium", "high"], "default": "medium"}  # one that always thinks: the least it does
+    ai.chat([{"role": "user", "content": "hi"}], think=False)
+    assert sent() == "low"
 
 
 def test_what_a_call_is_for_comes_from_where_its_asked(app, owner):

@@ -73,9 +73,9 @@ class Config:
     CEREBRAS_API_KEY = os.getenv("CEREBRAS_API_KEY") or ""
     COHERE_API_KEY = os.getenv("COHERE_API_KEY") or os.getenv("CO_API_KEY") or ""
     VOYAGE_API_KEY = os.getenv("VOYAGE_API_KEY") or ""
-    # How hard a cloud model thinks when a step thinks first (AI_THINK, AI_THINK_STEPS): low, medium, high, xhigh, max.
-    # xhigh, one below max: nearly as careful, without max's long runs of thinking. Each provider takes the levels it
-    # has; one it doesn't is stepped down from a level at a time. A local model thinks or doesn't (no levels).
+    # How hard a model thinks when a step thinks first (AI_THINK, AI_THINK_STEPS): low, medium, high, xhigh, max; xhigh,
+    # one below max, unless set. Each model takes the levels it has; one it hasn't is stepped down from a level at a time.
+    # A local model through Ollama too, when Ollama says it has levels (Qwen 3.8: low, medium, xhigh; on alone is medium).
     AI_EFFORT = (os.getenv("AI_EFFORT") or "xhigh").strip().lower()
     # Who may choose the platform's AI under Settings › AI (it's every business's on this platform): these emails,
     # comma-separated; empty, whoever made the first account (on one business's own computer, its owner)
