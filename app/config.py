@@ -97,7 +97,7 @@ class Config:
     AI_THINK = (os.getenv("AI_THINK") or "false").lower() == "true"
     # The builder's own reasoning-heavy work (designing, fixing what the try-out found, writing worked examples) thinks
     # first when this is on, whatever AI_THINK says for the quick jobs. How hard it thinks is AI_EFFORT; there's no budget
-    # or length limit (ai._settings: an answer is as long as it takes).
+    # (ai._settings: every model may write AI_MAX_TOKENS, or its own limit if that's less).
     TENANCY_RLS = (os.getenv("TENANCY_RLS") or "true").lower() != "false"  # PostgreSQL row-level security behind the workspace filters
     FILES_BACKEND = (os.getenv("FILES_BACKEND") or "local").lower()  # local (the data folder) or s3 (S3-compatible object storage)
     S3_BUCKET = os.getenv("S3_BUCKET") or ""
@@ -111,6 +111,10 @@ class Config:
     # behaviour, checks (worked examples), fix, repair, owner_check (an owner's check made an example). Left empty, all
     # of them when AI_THINK_BUILDER is on, none when it's off.
     AI_THINK_STEPS = os.getenv("AI_THINK_STEPS") or ""
+    # How long any model may write, thinking and answer together: far more than a step needs, so nothing is cut off part
+    # way, and said outright, so no server's smaller default applies. A model that allows less says so, and its own limit
+    # is learned (ai._step); it's charged only for what it writes. No thinking budget: AI_EFFORT says how hard it thinks.
+    AI_MAX_TOKENS = int(os.getenv("AI_MAX_TOKENS") or 128000)
     AI_NUM_CTX = int(os.getenv("AI_NUM_CTX") or 0)  # 0: use the context size Ollama already has loaded
     AI_TEMPERATURE = float(os.getenv("AI_TEMPERATURE") or 0.6)  # lower than most models' 1.0: designs and records need care, not flair
     # The builder's own work is steadier: less chance, and a fixed seed, so the same request gets the same design

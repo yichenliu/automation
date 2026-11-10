@@ -138,7 +138,7 @@ def test_openai_is_asked_its_way_and_what_a_model_refuses_is_learned_once(app, s
     sent = server.seen[-1]
     assert sent["headers"]["Authorization"] == "Bearer sk-test"
     body = sent["body"]
-    assert "max_completion_tokens" not in body and "max_tokens" not in body  # no length: as long as it takes
+    assert body["max_completion_tokens"] == 128000 and "max_tokens" not in body  # OpenAI's name for the length
     assert body["reasoning_effort"] == "minimal" and "temperature" not in body and "top_p" not in body
     assert "chat_template_kwargs" not in body  # a vLLM switch OpenAI doesn't know
     assert body["response_format"]["json_schema"]["strict"] is False  # followed, not constrained: any schema is taken
@@ -169,10 +169,8 @@ def test_a_schema_a_provider_wont_take_is_written_into_the_prompt(app, server):
 
 
 def test_a_cap_on_the_answers_length_is_learned_from_the_refusal(app, server):
-    def reply(h, body):  # it stops short at a length of its own unless told one, and allows at most 8192
-        if "max_tokens" not in body:
-            return h.stream("cut", reason="length")
-        if body["max_tokens"] > 8192:
+    def reply(h, body):
+        if body.get("max_tokens", 0) > 8192:
             return refuse(h, f"max_tokens is too large: {body['max_tokens']}. This model supports at most 8192 completion tokens, "
                              f"whereas you provided {body['max_tokens']}.")
         h.stream("fine")
@@ -199,7 +197,7 @@ def test_anthropic_is_asked_its_way_and_its_stream_read(app, server):
     assert body["thinking"] == {"type": "adaptive", "display": "summarized"} and body["output_config"]["effort"] == "high"
     assert body["output_config"]["format"] == {"type": "json_schema", "schema": {**SCHEMA, "additionalProperties": False}}
     assert "temperature" not in body and "top_p" not in body
-    assert body["max_tokens"] == ai.MOST_OUT  # thinking: as long as the model allows
+    assert body["max_tokens"] == 128000  # the same length for every model, thinking or not
     calls = next(c for c in ai.stats()["calls"] if c["purpose"] == "assistant")
     assert (calls["provider"], calls["model"], calls["tokens_in"], calls["tokens_out"]) == ("anthropic", "claude-opus-5-5", 140, 12)
 
@@ -398,11 +396,11 @@ def test_names_written_another_way_are_the_providers_own_only_when_theres_one_su
     assert providers.own_name("claude-sonnet", CLAUDES) == ""  # which one? not guessed
 
 
-def test_an_answer_has_no_length_limit_but_what_the_model_or_its_server_insists_on(app, server):
-    """No budget and no length limit: how much a model thinks is its effort level, and a limit only cut answers off part
-    way (Claude at max ran out of 32,768 tokens three times in one build, each step then answering without thinking).
-    Anthropic needs a length sent: the most the model allows, learned from the refusal that names it. A server that
-    cuts an answer short at a default of its own is asked again for the most it allows, and that's remembered."""
+def test_every_model_is_asked_for_the_same_length_and_one_that_allows_less_is_learned(app, server):
+    """No budget: how much a model thinks is its effort level, and a length limit only cut answers off part way (Claude
+    at max ran out of 32,768 tokens three times in one build, each step then answering without thinking). Every model
+    is asked for AI_MAX_TOKENS, 128,000, said outright so no server's smaller default applies; one that allows less
+    names its limit, and that's learned. A server that names only its context is sent no length."""
     def reply(h, body):
         if body["max_tokens"] > 64000:
             return refuse(h, f"max_tokens: {body['max_tokens']} > 64000, which is the maximum allowed number of output tokens", anthropic=True)
@@ -410,30 +408,16 @@ def test_an_answer_has_no_length_limit_but_what_the_model_or_its_server_insists_
     server.reply = reply
     choose("anthropic", "claude-sonnet-5-5", server.url)
     assert ai.chat([{"role": "user", "content": "hi"}], think=True)[0] == "hello"
-    assert [x["body"]["max_tokens"] for x in server.seen] == [ai.MOST_OUT, 64000]
+    assert [x["body"]["max_tokens"] for x in server.seen] == [128000, 64000]
     assert ai.chat([{"role": "user", "content": "hi"}], think=False)[0] == "hello"
-    assert server.seen[-1]["body"]["max_tokens"] == 64000  # not thinking: the same, all the model allows
+    assert server.seen[-1]["body"]["max_tokens"] == 64000  # thinking or not: all the model allows
 
-    def short(h, body):  # a provider that stops at 4,096 tokens unless told more
-        if "max_completion_tokens" not in body and "max_tokens" not in body:
-            return h.stream("{\"name\": \"Cli", reason="length")
-        h.stream('{"name": "Clients"}')
-    server.reply = short
-    choose("openai", "gpt-9", server.url)
-    asked = len(server.seen)
-    assert ai.chat([{"role": "user", "content": "hi"}], schema=SCHEMA)[0] == '{"name": "Clients"}'
-    assert [("max_completion_tokens" in x["body"]) for x in server.seen[asked:]] == [False, True]
-    assert server.seen[-1]["body"]["max_completion_tokens"] == ai.MOST_OUT
-    ai.chat([{"role": "user", "content": "again"}], schema=SCHEMA)  # remembered: asked for the most at once
-    assert len(server.seen) == asked + 3 and server.seen[-1]["body"]["max_completion_tokens"] == ai.MOST_OUT
-
-    def context(h, body):  # one that names no limit of its own, only its context: asked with none
+    def context(h, body):  # vLLM: the length more than its context, no limit of its own named
         if "max_completion_tokens" in body or "max_tokens" in body:
             return refuse(h, "max_completion_tokens is too large: this model's context length is 131072 tokens")
         h.stream("fine")
     server.reply = context
-    ai._short.add((server.url, "gpt-9-long"))
-    choose("openai", "gpt-9-long", server.url)
+    choose("openai", "gpt-9", server.url)
     assert ai.chat([{"role": "user", "content": "hi"}], think=True)[0] == "fine"
     assert "max_completion_tokens" not in server.seen[-1]["body"] and "max_tokens" not in server.seen[-1]["body"]
 
