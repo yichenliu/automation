@@ -596,3 +596,82 @@ def test_a_total_in_a_condition_is_said_in_words():
     from app.engine.automations import formula_words
     assert formula_words("sum(criteria, weight) == 100") == "the total weight of criteria is 100"
     assert formula_words("avg(scores, score) >= 5") == "the average score of scores at least 5"
+
+
+def test_a_move_for_the_outside_person_isnt_the_staffs(app):
+    """Accept a buyer's invitation to connect: "portal" is also the lowest role, so everyone ranked above it could press
+    the outside person's button for them."""
+    ws = _ws(app, _ok(BIDDING))
+    staff = User(email="sam@example.com", name="Sam")
+    staff.set_password("x" * 12)
+    db.session.add(staff)
+    db.session.flush()
+    db.session.add(Membership(workspace_id=ws.id, user_id=staff.id, role="admin"))
+    db.session.commit()
+    e = Engine(ws)
+    firm = e.create("firms", {"name": "Acme", "email": "bids@acme.example"})
+    bid = e.create("bids", {"firm": firm.id})
+    sam = Engine(ws, by="Sam", member=Membership.query.filter_by(workspace_id=ws.id, user_id=staff.id).one())
+    move = schema.table(ws.blueprint, "bids")["workflow"]["transitions"][0]
+    assert not sam.may_move(sam.get(bid.id), move) and Engine(ws).may_move(bid, move)
+
+
+def test_the_platform_acting_for_an_outside_person_is_never_them(app):
+    """A colleague approving a seller's held bank change in the portal: the approved change was saved "as the platform",
+    which was still the outside person, so it was held again, and again."""
+    from app.engine import outside
+    ws = _ws(app, _ok(BIDDING))
+    firm = Engine(ws).create("firms", {"name": "Acme", "email": "bids@acme.example"})
+    person = _outside(ws, "bids@acme.example", "Ann of Acme", firm.id)
+    engine, _, _ = outside.enter(ws, Membership.query.filter_by(workspace_id=ws.id, user_id=person.id).one(), person.name)
+    system = engine.system()
+    assert system is not engine and system.portal_contact is None and system.user_id is None
+
+
+def test_an_example_names_a_second_member_of_a_team(app):
+    """Four eyes: one verifier proposes, another decides. "another Verifier" is someone else in the team."""
+    from app.builder import trial
+    bp = _ok([{"do": "set_team", "key": "verifier", "name": "Verifier"},
+              {"do": "add_list", "key": "matches", "label": "Matches", "singular": "Match", "fields": [
+                  {"type": "text", "key": "name", "label": "Name"}],
+               "stages": {"stages": ["Open", "Proposed", "Decided"], "moves": [
+                   {"from": ["Open"], "to": "Proposed", "button": "Propose", "who": ["verifier"]},
+                   {"from": ["Proposed"], "to": "Decided", "button": "Decide", "who": ["verifier"], "not_by": ["Proposed"]}]}}])
+    ws = _ws(app, bp)
+    example = {"title": "Four eyes", "steps": [
+        {"do": "add", "as": "m1", "table": "matches", "by": "Verifier", "values": {"name": "Acme"}},
+        {"do": "move", "record": "m1", "to": "Proposed", "by": "Verifier"},
+        {"do": "move", "record": "m1", "to": "Decided", "by": "Verifier", "refused": True},
+        {"do": "move", "record": "m1", "to": "Decided", "by": "another Verifier"}],
+        "expect": [{"record": "m1", "field": "status", "equals": "Decided"}]}
+    _, (played,) = trial.try_out(ws, [example], screens=False)
+    assert played["ok"], played
+
+
+def test_an_outside_persons_held_change_waits_for_a_colleague_in_an_example(app):
+    """A seller's person changes the firm's bank account: it waits for another of the firm's people (never the one who
+    made it), and only after its cooling-off."""
+    from app.builder import trial
+    bp = _ok([{"do": "add_list", "key": "firms", "label": "Firms", "singular": "Firm", "fields": [
+                  {"type": "text", "key": "name", "label": "Name", "required": True}, {"type": "email", "key": "email", "label": "Email"},
+                  {"type": "text", "key": "account", "label": "Account"}, {"type": "link", "key": "people", "label": "People", "to": "contacts", "many": True}]},
+              {"do": "add_list", "key": "contacts", "label": "Contacts", "singular": "Contact", "fields": [
+                  {"type": "text", "key": "name", "label": "Name", "required": True}, {"type": "email", "key": "email", "label": "Email"},
+                  {"type": "link", "key": "firm", "label": "Firm", "to": "firms"}]},
+              {"do": "design_op", "op": {"op": "set_portal", "portal": {"table": "contacts", "email_field": "email"}}},
+              {"do": "design_op", "op": {"op": "update_table", "table": "firms", "portal": {"via": "people", "edit": ["account"]},
+                                         "approve_changes": {"fields": ["account"], "approver": "portal", "wait_days": 7}}}])
+    ws = _ws(app, bp)
+    example = {"title": "A held change", "steps": [
+        {"do": "add", "as": "f1", "table": "firms", "values": {"name": "Acme"}},
+        {"do": "add", "as": "c1", "table": "contacts", "values": {"name": "Ann", "email": "ann@acme.example", "firm": "f1"}},
+        {"do": "add", "as": "c2", "table": "contacts", "values": {"name": "Bob", "email": "bob@acme.example", "firm": "f1"}},
+        {"do": "change", "record": "f1", "values": {"people": ["c1", "c2"]}},
+        {"do": "change", "record": "f1", "by": "c1", "values": {"account": "123456"}},
+        {"do": "approve", "record": "f1", "by": "c1", "refused": True},
+        {"do": "approve", "record": "f1", "by": "c2", "refused": True},
+        {"do": "wait", "days": 8},
+        {"do": "approve", "record": "f1", "by": "c2"}],
+        "expect": [{"record": "f1", "field": "account", "equals": "123456"}]}
+    _, (played,) = trial.try_out(ws, [example], screens=False)
+    assert played["ok"], played

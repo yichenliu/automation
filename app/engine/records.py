@@ -631,7 +631,7 @@ class Engine:
     def system(self):
         """The same workspace, acting as the platform itself: what automations run as, whoever's save started them (they
         fill read-only fields and may change locked records; the people who set them up decided that)."""
-        return self if self.role is None else Engine(self.ws, by=self.by)
+        return self if self.role is None and self.portal_contact is None else Engine(self.ws, by=self.by)  # (never an outside person's)
 
     def by_code(self, code, names=True):
         """The record a scanned or typed code is (its barcode, its number such as INV-0042, or with `names` its name),
@@ -2120,6 +2120,8 @@ class Engine:
         (in a person field, or one through its links: the cost centre's manager)."""
         if self.role is None:
             return True
+        if who == "portal":  # the record's outside person (Acknowledge, Accept), in the portal: never the business's own people
+            return False
         if who in ROLES:
             return self._at_least(who)
         if who in {tm["key"] for tm in schema.teams(self.bp)}:

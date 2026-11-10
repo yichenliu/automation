@@ -890,6 +890,7 @@ def _values(engine, t, values, names):
 
 
 RELATIVE = re.compile(r"^today\s*([+-]\s*\d+)?$", re.I)
+ANOTHER = re.compile(r"^(?:another|a second|second|the other|other)\s+(.+)$|^(.+?)\s+(\d+)$", re.I)
 STAFF = re.compile(r"^(an? )?((ordinary|regular) )?(staff( member)?|member of staff|employee|worker|team member|someone else)$", re.I)
 ROLES_BY = {"admin": "admin", "an admin": "admin", "editor": "editor", "viewer": "viewer"}
 
@@ -905,10 +906,14 @@ def _doer(trial, engine, by, names=None):
         found = _outsider(trial, engine, text, names)
         if found is not None:
             return found
-    key = schema.slug(text)
-    team = next((tm for tm in schema.teams(engine.bp) if key in (tm["key"], schema.slug(tm.get("label") or ""))), None)
+    nth = ANOTHER.match(text)  # four eyes: "another Verifier", "a second verifier", "Verifier 2" is someone else in the team
+    named, n = (nth.group(1) or nth.group(2), 2 if nth.group(1) else int(nth.group(3))) if nth else (text, 1)
+    key = schema.slug(named)
+    team = next((tm for tm in schema.teams(engine.bp) if key in (tm["key"], schema.slug(tm.get("label") or ""), schema.slug(tm.get("name") or ""))), None)
+    if team is None and nth:
+        key, n = schema.slug(text), 1
     if team is not None:
-        uid = _person(engine, f"{team.get('label') or team['key']} member", make=True)
+        uid = _person(engine, f"{team.get('label') or team.get('name') or team['key']} member" + (f" {n}" if n > 1 else ""), make=True)
         member = trial.member(uid)
         member.teams = sorted(set(member.teams or []) | {team["key"]})
         db.session.commit()
@@ -993,9 +998,31 @@ def _outsider(trial, engine, text, names):
         return None
     people_key, to_it, back = kin[record.table]
     contact = record if record.table == people_key else _person_of(engine, record, people_key, to_it, back)
+    member = _portal_account(trial, engine, contact)
+    for colleague in _colleagues(engine, contact, kin):  # the rest of their organisation's people are signed up too (a
+        _portal_account(trial, engine, colleague)       # change one makes waits for another of them)
+    user = db.session.get(User, member.user_id)
+    return Outsider(trial, member, user.name or str(engine.title(contact)))
+
+
+def _colleagues(engine, contact, kin):
+    """The other outside people of the record theirs hang off (the seller's other people), those with an email."""
+    portal = schema.portal_of(engine.bp, contact.table)
+    out = []
+    for table, (people_key, to_it, back) in kin.items():
+        if people_key != contact.table or to_it is None:
+            continue
+        mine = set(_ids((contact.data or {}).get(to_it["key"])))
+        out += [r for r in engine.rows(people_key) if r.id != contact.id and mine & set(_ids((r.data or {}).get(to_it["key"])))
+                and (r.data or {}).get(portal.get("email_field") or "")]
+    return out
+
+
+def _portal_account(trial, engine, contact):
+    """Their portal sign-in, as if invited from their record: made the first time it's needed."""
     member = Membership.query.filter_by(workspace_id=trial.ws_id, role="portal", contact_id=contact.id).first()
     if member is None:
-        portal = schema.portal_of(engine.bp, people_key)
+        portal = schema.portal_of(engine.bp, contact.table)
         email = str((contact.data or {}).get(portal.get("email_field") or "") or "").strip().lower()
         user = User.query.filter_by(email=email).first() if email else None
         if user is not None and Membership.query.filter_by(workspace_id=trial.ws_id, user_id=user.id).first() is not None:
@@ -1008,8 +1035,8 @@ def _outsider(trial, engine, text, names):
         member = Membership(workspace_id=trial.ws_id, user_id=user.id, role="portal", contact_id=contact.id)
         db.session.add(member)
         db.session.commit()
-    user = db.session.get(User, member.user_id)
-    return Outsider(trial, member, user.name or str(engine.title(contact)))
+        engine._members = None
+    return member
 
 
 def _act_outside(trial, doer, step, names, hold=False):
