@@ -244,7 +244,7 @@ def work(message_id):
         message.progress = message.progress + ["Working out what to look up"]
         db.session.commit()
         content, _ = ai.chat(convo, schema=PLAN_SCHEMA, think=False)
-        plan = ai.parse_json(content)
+        plan = ai.parse_json(content, PLAN_SCHEMA)
         queries = plan.get("queries") or []
         searches = [str(x)[:300] for x in plan.get("search") or [] if str(x).strip()][:3]
         results = []
@@ -263,7 +263,7 @@ def work(message_id):
                                               results=json.dumps(results, ensure_ascii=False, default=str)[:24000] if results else "(none)",
                                               passages=knowledge.as_context(passages, 1100) if passages else "(none found)")}],
                                  schema=ANSWER_SCHEMA, think=False)
-            reply = ai.parse_json(content).get("reply", "")
+            reply = ai.parse_json(content, ANSWER_SCHEMA).get("reply", "")
         else:
             reply = plan.get("reply", "")
     except ai.AIUnavailable as exc:

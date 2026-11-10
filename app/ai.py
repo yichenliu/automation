@@ -1144,6 +1144,12 @@ def _anthropic_schema(schema):
             return [walk(x, seen, count) for x in node]
         if not isinstance(node, dict):
             return node
+        if not node:  # any value ({}), which Anthropic refuses: any it can say (an open object it can't)
+            counts["unions"] += 1 if count else 0
+            return {"anyOf": [{"type": "string"}, {"type": "number"}, {"type": "boolean"}, {"type": "null"},
+                              {"type": "array", "items": {"anyOf": [{"type": "string"}, {"type": "number"}, {"type": "boolean"}]}}]}
+        if node.get("type") == "object" and not node.get("properties") and node.get("additionalProperties") is not False:
+            raise ValueError("an open object")  # a map ({"type": "object"} alone): closed, it could only ever be {}
         if isinstance(node.get("$ref"), str):
             follow(node["$ref"], seen)
         out = {}
@@ -1338,16 +1344,43 @@ def _embed_with(route, texts, deadline):
     return vectors
 
 
-def parse_json(text):
-    """The model's answer as a dict (tolerating stray text around the JSON object)."""
+def _whole_objects(text):
+    """Each JSON object written whole in the text, outermost ones only, in order, and whether the first "{" began one
+    (when it didn't, an object found later may be a piece of an answer that was cut off)."""
+    decoder, found, i, first = json.JSONDecoder(), [], text.find("{"), None
+    while i != -1:
+        try:
+            value, end = decoder.raw_decode(text, i)
+        except json.JSONDecodeError:
+            first = False if first is None else first
+            i = text.find("{", i + 1)
+            continue
+        first = True if first is None else first
+        if isinstance(value, dict):
+            found.append(value)
+        i = text.find("{", end)
+    return found, bool(first)
+
+
+def parse_json(text, schema=None):
+    """The model's answer as a dict. A model told the answer's shape in the prompt only (Anthropic can't be held to the
+    builder's: it has maps and more optional fields than it allows) wraps it in stray words, a code fence or a made-up tool
+    call, or writes it twice ("Wait — the answer must be only the JSON object. Here it is: {…}"): the cloud round's
+    changes failed on it 8 times in 33. Its answer is the last whole object: with a schema, the last with every key it
+    requires; without, the last of those after a first "{" that began one."""
     try:
         return json.loads(text)
-    except json.JSONDecodeError as first:
-        match = re.search(r"\{.*\}", text or "", re.S)
-        try:
-            if not match:
-                raise first
-            return json.loads(match.group(0))
-        except json.JSONDecodeError as exc:
-            log.warning("Unreadable AI answer (%s); it began: %r … and ended: %r", exc, (text or "")[:600], (text or "")[-300:])
-            raise AIError(f"The AI's answer wasn't valid JSON: {exc}") from exc
+    except json.JSONDecodeError as exc:
+        found, whole = _whole_objects(text or "")
+        need = set((schema or {}).get("required") or ())
+        found = [o for o in found if need <= o.keys()] if need else found if whole else []
+        if found:
+            return found[-1]
+        match = re.search(r"\{.*\}", text or "", re.S)  # one object, stray words around it
+        if match:
+            try:
+                return json.loads(match.group(0))
+            except json.JSONDecodeError:
+                pass
+        log.warning("Unreadable AI answer (%s); it began: %r … and ended: %r", exc, (text or "")[:600], (text or "")[-300:])
+        raise AIError(f"The AI's answer wasn't valid JSON: {exc}") from exc

@@ -164,3 +164,18 @@ def test_an_evals_lessons_are_collected_where_a_temporary_folder_cant_lose_them(
     analyst._keep_lessons(tmp_path / "run45", "fresh3", folder)
     kept = tmp_path / "kept" / "evals" / "run45" / "fresh3"
     assert sorted(p.name for p in kept.iterdir()) == ["builder-2026-11.jsonl", "verdicts.jsonl"]
+
+
+def test_the_builder_asks_once_more_for_an_answer_it_cant_read(app, monkeypatch):
+    """One unreadable answer failed the owner's change outright; it's asked for again (warmer, another seed) first."""
+    from app import ai
+    from app.builder import build
+    said, asked = iter(['<invoke name="noop"></invoke> {"patches": [{"do": "add_st', '{"patches": [], "reply": "Done."}']), []
+    monkeypatch.setattr(ai, "chat_thinking", lambda messages, **k: (asked.append(ai.again.get()), (next(said), "", None))[1])
+    schema = {"type": "object", "required": ["patches"], "properties": {"patches": {"type": "array"}, "reply": {"type": "string"}}}
+    assert build._ask("system", "add a stage", schema, kind="behaviour")["reply"] == "Done."
+    assert asked == [0, 1]
+    monkeypatch.setattr(ai, "chat_thinking", lambda messages, **k: ("not json", "", None))
+    import pytest
+    with pytest.raises(ai.AIError):
+        build._ask("system", "add a stage", schema, kind="behaviour")

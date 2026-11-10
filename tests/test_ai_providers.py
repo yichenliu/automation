@@ -250,6 +250,36 @@ def test_a_schema_claude_cant_take_goes_in_the_prompt_and_its_stops_mean_what_th
         ai.chat([{"role": "user", "content": "bad"}])
 
 
+def test_a_part_that_takes_any_value_is_said_the_way_claude_takes_it_and_a_bare_object_is_a_map():
+    """Anthropic refuses {} ("Empty schema that accepts any JSON value is not supported"): it's said as the values Claude
+    can give. A bare {"type": "object"} is a map: closed, as every object is for Claude, it could only ever be {} (an
+    example's values, the assistant's record), so the schema goes in the prompt instead."""
+    made = ai._anthropic_schema({"type": "object", "required": ["equals"], "properties": {"equals": {}}})
+    assert {"type": "string"} in made["properties"]["equals"]["anyOf"] and made["additionalProperties"] is False
+    assert ai._anthropic_schema({"type": "object", "properties": {"values": {"type": "object"}}}) is None
+    from app.builder import prompts
+    assert ai._anthropic_schema(prompts.EXAMPLES_SCHEMA) is None
+    closed = {"type": "object", "properties": {"none": {"type": "object", "additionalProperties": False}}}
+    assert ai._anthropic_schema(closed)["properties"]["none"] == {"type": "object", "additionalProperties": False}
+
+
+def test_an_answer_written_twice_or_wrapped_is_read_as_its_last_whole_object():
+    """Told the shape in the prompt only, Claude wrapped the change step's answer in a made-up tool call and a code fence,
+    then wrote it again: 8 of the cloud round's 33 changes failed on it."""
+    patch = '{"lists":["orders"],"patches":[{"do":"add_field","list":"orders"}],"reply":"Added a Team note."}'
+    said = f'<invoke name="noop">\n</invoke>\n```json\n{patch}\n```\n\nWait — the answer must be only the JSON object. Here it is:\n\n{patch.replace("Added", "I added")}'
+    schema = {"type": "object", "required": ["patches"], "properties": {"patches": {"type": "array"}}}
+    assert ai.parse_json(said, schema)["reply"] == "I added a Team note."
+    assert ai.parse_json(said)["reply"] == "I added a Team note."  # without a schema too: the first "{" began a whole one
+    assert ai.parse_json('I sent {{order_number}} to them.\n\n' + patch, schema)["lists"] == ["orders"]
+    cut = '{"lists":["orders"],"patches":[{"do":"add_field","list":"orders"},{"do":"add_st'
+    with pytest.raises(ai.AIError, match="wasn't valid JSON"):
+        ai.parse_json(cut, schema)  # a patch inside an answer cut off isn't the answer
+    with pytest.raises(ai.AIError, match="wasn't valid JSON"):
+        ai.parse_json(cut)
+    assert ai.parse_json('Sure: {"a": 1} hope that helps') == {"a": 1}
+
+
 def test_pictures_go_the_way_each_provider_takes_them(app, server):
     png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
     server.reply = lambda h, body: h.stream("a receipt")

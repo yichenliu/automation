@@ -252,10 +252,11 @@ def thinks(kind):
     return "all" in steps or (kind or "") in steps
 
 
-def _ask(system, user, schema_, progress=None, tries=0, kind=None):
+def _ask(system, user, schema_, progress=None, tries=0, kind=None, unreadable=False):
     """One call to the model: the answer as a dict. Each `tries` asks a little differently (another seed, warmer). The
     call is kept tagged with its step and the language it was written in (training.py keeps the turns that came out
-    right, so the builder's own verified work is what it learns from)."""
+    right, so the builder's own verified work is what it learns from). An answer that can't be read at all is asked for
+    once more (`unreadable`), rather than failing the owner's turn on one bad answer."""
     token = ai.again.set(tries)
     messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
     think, lost = thinks(kind), None
@@ -275,7 +276,13 @@ def _ask(system, user, schema_, progress=None, tries=0, kind=None):
         mine = next((c for c in reversed(calls) if c.get("messages") == messages and c.get("content") == content), None)
         if mine is not None:
             mine.update(kind=f"v2_{kind}", language=registry.fingerprint(), think=think, **({"ran_away": lost} if lost else {}))
-    answer = ai.parse_json(content) or {}
+    try:
+        answer = ai.parse_json(content, schema_) or {}
+    except ai.AIError:
+        if unreadable:
+            raise
+        _log.info("The %s step's answer couldn't be read; asking once more", kind or "builder")
+        return _ask(system, user, schema_, progress, tries + 1, kind, unreadable=True)
     if isinstance(answer, dict):
         answer["_content"] = content
     return answer

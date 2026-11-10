@@ -116,7 +116,7 @@ def add(workspace, said, by=None):
         content, _, _ = ai.chat_thinking(convo, schema=prompts.ONE_EXAMPLE_SCHEMA, think=_thinks("owner_check"))
     finally:
         ai.building.reset(steady)
-    found = [x for x in ai.parse_json(content).get("examples") or [] if isinstance(x, dict) and x.get("steps")][:1]
+    found = [x for x in ai.parse_json(content, prompts.ONE_EXAMPLE_SCHEMA).get("examples") or [] if isinstance(x, dict) and x.get("steps")][:1]
     if not found:
         return None
     example = {**found[0], "title": said.strip()[:160], "by": by or "owner"}
@@ -201,7 +201,7 @@ def _again(workspace, engine, convo, said, example, result):
     steady = ai.building.set(True)
     try:
         content, _, _ = ai.chat_thinking(ask, schema=prompts.CHECK_AGAIN_SCHEMA, think=_thinks("owner_check"))
-        answer = ai.parse_json(content)
+        answer = ai.parse_json(content, prompts.CHECK_AGAIN_SCHEMA)
     except ai.AIError:
         return example, result
     finally:
