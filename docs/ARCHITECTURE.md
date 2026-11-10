@@ -108,6 +108,10 @@ Only 1 was the model's own judgment.
     json_object plus the schema in the prompt, then the prompt alone. A 400 that names a part steps it down a rung, and
     that's remembered for that server and model. A length cap named in a refusal is learned the same way. So a new
     model or provider quirk works without code.
+  - How hard a model thinks is AI_EFFORT (xhigh unless set), stepped down a level at a time where a model lacks one.
+    Ollama doesn't refuse a level a model lacks, so each model's levels are read from /api/show instead (Qwen 3.8: off,
+    low, medium, xhigh). "think": true alone is the model's default, medium. AI_THINK_TOKENS caps how long a local model
+    may think; it isn't a budget the model aims at.
   - Search by meaning stays on this computer unless chosen elsewhere. Changing its model reads the knowledge again.
   - A key turned away, or an account out of credit, waits like a server that's down: the work carries on once fixed.
   - Recorded builder calls say which provider and model wrote them, so cloud answers can be kept apart from the
