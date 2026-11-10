@@ -410,3 +410,78 @@ def test_features_sample_dates_a_day_apart_in_the_order_they_come():
         {"type": "date", "key": "ends_on", "label": "Ends", "required": True}]}])
     step = patterns.adding(Design(bp), schema.table(bp, "deals"), "d1")[-1]
     assert step["values"]["starts_on"] == "today+7" and step["values"]["ends_on"] == "today+8"
+
+
+def test_a_link_compares_with_an_id_by_the_records_id():
+    """count(run_items where invoice == this.id): the link and the number used to be compared as the invoice's name and a
+    number, so nothing ever matched."""
+    from app.blueprint import expr
+
+    class Rec:
+        def __init__(self, n):
+            self.n = n
+
+        def field(self, name):
+            return {"id": self.n, "name": f"Invoice {self.n}"}.get(name)
+
+    class Context:
+        def resolve(self, name):
+            return {"invoice": Rec(7), "same": Rec(7), "other": Rec(8)}.get(name)
+    for source, expected in (("invoice == 7", True), ("invoice == \"7\"", True), ("invoice == 8", False), ("7 == invoice", True),
+                             ("invoice == same", True), ("invoice == other", False), ("invoice != 8", True)):
+        assert expr.evaluate(source, Context()) is expected, source
+
+
+def test_a_locked_record_still_moves_by_its_buttons(app):
+    """A sent invoice is locked, yet its Mark paid button still moves it on; what's in it stays as it was."""
+    bp = _ok([{"do": "add_list", "key": "invoices", "label": "Invoices", "singular": "Invoice", "fields": [
+                  {"type": "text", "key": "name", "label": "Name"}, {"type": "money", "key": "amount", "label": "Amount"}],
+               "stages": {"stages": ["Draft", "Sent", "Paid"], "moves": [
+                   {"from": ["Draft"], "to": "Sent", "button": "Send"}, {"from": ["Sent"], "to": "Paid", "button": "Mark paid"}]}},
+              {"do": "design_op", "op": {"op": "update_table", "table": "invoices",
+                                         "lock_if": [{"field": "status", "op": "equals", "value": "Sent"}]}}])
+    ws = _ws(app, bp)
+    owner = User.query.filter_by(email="owner@example.com").one()
+    member = Membership.query.filter_by(workspace_id=ws.id, user_id=owner.id).first()
+    member.role = "editor"
+    db.session.commit()
+    e = Engine(ws, by=owner.name, member=member)
+    inv = e.create("invoices", {"name": "A", "amount": 10})
+    index = next(i for i, m, _ in e.moves(inv) if m["to"] == "Sent")
+    e.move(inv, index)
+    import pytest
+    from app.engine.records import FieldErrors
+    with pytest.raises(FieldErrors):
+        e.update(e.get(inv.id), {"amount": 20})
+    index = next(i for i, m, _ in e.moves(e.get(inv.id)) if m["to"] == "Paid")
+    e.move(e.get(inv.id), index)
+    assert Engine(ws).get(inv.id).data["status"] == "Paid" and Engine(ws).get(inv.id).data["amount"] in (10, "10", 10.0)
+
+
+def test_records_a_rule_adds_or_changes_in_bulk_start_their_own_rules(app):
+    """A payment run adds an item for each approved invoice: each item's own rule (schedule its invoice) never ran, and
+    marking the run's items paid never started theirs (pay the invoice): bulk steps made their changes as no one at all."""
+    bp = _ok([{"do": "add_list", "key": "invoices", "label": "Invoices", "singular": "Invoice", "fields": [
+                  {"type": "text", "key": "name", "label": "Name"}], "stages": {"stages": ["Approved", "Scheduled", "Paid"]}},
+              {"do": "add_list", "key": "runs", "label": "Runs", "singular": "Run", "fields": [
+                  {"type": "text", "key": "name", "label": "Name"}, {"type": "yes_no", "key": "paid", "label": "Paid"}]},
+              {"do": "add_list", "key": "items", "label": "Items", "singular": "Item", "fields": [
+                  {"type": "link", "key": "run", "label": "Run", "to": "runs"}, {"type": "link", "key": "invoice", "label": "Invoice", "to": "invoices"},
+                  {"type": "yes_no", "key": "paid", "label": "Paid", "default": False}]},
+              {"do": "add_rule", "rule": {"key": "prepare", "name": "Prepare", "when": {"on": "added", "list": "runs"}, "steps": [
+                  {"do": "add_each", "list": "items", "for_each": 'invoices where status == "Approved"', "values": [
+                      {"field": "run", "formula": "record"}, {"field": "invoice", "formula": "item"}]}]}},
+              {"do": "add_rule", "rule": {"key": "schedule", "name": "Schedule", "when": {"on": "added", "list": "items"}, "steps": [
+                  {"do": "set", "on": "invoice", "values": [{"field": "status", "to": "Scheduled"}]}]}},
+              {"do": "add_rule", "rule": {"key": "pay_run", "name": "Pay the run", "when": {"on": "changed", "list": "runs", "field": "paid"},
+                                          "steps": [{"do": "update_each", "list": "items", "link": "run", "values": [{"field": "paid", "formula": "True"}]}]}},
+              {"do": "add_rule", "rule": {"key": "pay_item", "name": "Pay an item", "when": {"on": "changed", "list": "items", "field": "paid"},
+                                          "only_if": [{"field": "paid", "op": "equals", "value": True}],
+                                          "steps": [{"do": "set", "on": "invoice", "values": [{"field": "status", "to": "Paid"}]}]}}])
+    ws = _ws(app, bp)
+    e = Engine(ws)
+    inv = e.create("invoices", {"name": "A", "status": "Approved"})
+    run = e.create("runs", {"name": "R"})
+    assert Engine(ws).get(inv.id).data["status"] == "Scheduled"
+    e.update(e.get(run.id), {"paid": True})
+    assert Engine(ws).get(inv.id).data["status"] == "Paid"

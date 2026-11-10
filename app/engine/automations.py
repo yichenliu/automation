@@ -1208,7 +1208,7 @@ def _do(engine, automation, action, record, run):
                 values = _render_values(action["values"], _context(engine, run, record, item=row), engine, action["table"])
                 if action.get("copy_matching"):
                     values = {**copy_matching(engine, action["table"], row, also=[record]), **values}
-                made.append(engine.create(action["table"], values, by=_by(automation), depth=depth, automations=False, unfinished=True))
+                made.append(engine.create(action["table"], values, by=_by(automation), depth=depth, unfinished=True))
                 _to_finish(engine, automation, action["table"], made[-1])
         t, s = engine.tables[action["table"]], engine.tables[source["table"]]
         if not made:
@@ -1225,7 +1225,7 @@ def _do(engine, automation, action, record, run):
                 if action.get("copy_matching"):
                     made_for = (_context(engine, run, record).names.get("created") or None)
                     values = {**copy_matching(engine, action["table"], row, also=[made_for.record if made_for else None, record]), **values}
-                made.append(engine.create(action["table"], values, by=_by(automation), depth=depth, automations=False, unfinished=True))
+                made.append(engine.create(action["table"], values, by=_by(automation), depth=depth, unfinished=True))
                 _to_finish(engine, automation, action["table"], made[-1])
         t, s = engine.tables[action["table"]], engine.tables[source["table"]]
         if not made:
@@ -1250,7 +1250,7 @@ def _do(engine, automation, action, record, run):
         with engine.atomic():  # all of them or none
             for row in list(rows):
                 if engine.update(row, _render_values(action["values"], _context(engine, run, record, item=row), engine, row.table), by=_by(automation),
-                                 depth=depth, automations=False):
+                                 depth=depth):
                     changed += 1
         s = engine.tables[source["table"]]
         return {"result": f"Updated {changed} of {len(rows)} {schema.lc(s['label'])}"}

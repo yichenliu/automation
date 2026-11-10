@@ -790,7 +790,27 @@ def _arith(op, a, b):
     raise ExprError("unsupported arithmetic")
 
 
+def _record_id(x):
+    """A linked record's (or a person's) id when x is one: compared with a number, or with another record, by id."""
+    if not _record_like(x):
+        return None
+    try:
+        got = x.field("id")
+    except Exception:  # noqa: BLE001 - something with fields of its own, but no id: compared as it was
+        return None
+    return got if isinstance(got, int) else None
+
+
 def _comparable(a, b):
+    ra, rb = _record_id(a), _record_id(b)
+    if ra is not None or rb is not None:  # a line's invoice == this.id: the link and the id, not the invoice's name and a number
+        numeric = lambda v: isinstance(v, int) and not isinstance(v, bool) or isinstance(v, str) and v.strip().isdigit()  # noqa: E731
+        if ra is not None and rb is not None:
+            return ra, rb
+        if ra is not None and numeric(b):
+            return ra, int(b)
+        if rb is not None and numeric(a):
+            return int(a), rb
     if isinstance(a, timedelta) or isinstance(b, timedelta):
         return _span(a), _span(b)
     if isinstance(a, datetime) or isinstance(b, datetime):

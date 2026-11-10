@@ -2263,7 +2263,8 @@ class Engine:
             if record is None or (record.data or {}).get(key) != at or self.waiting_for(record):
                 return record  # the rule moved it on, or it now waits for the next approver
             return self.system().update(record, {key: found[0]["to"], **self._stamps(record, found[0]["to"])}, by=by or self.by)
-        moved = self.update(record, {key: found[0]["to"], **self._stamps(record, found[0]["to"])}, by=by)
+        stamps = self._stamps(record, found[0]["to"])
+        moved = self.update(record, {key: found[0]["to"], **stamps}, by=by, moving=(key, *stamps))
         if schema.says_no(found[0]["to"]) and self.waiting_for(record):
             from . import automations
             automations.withdraw(self, record, by or self.by)
@@ -2728,7 +2729,9 @@ class Engine:
                 return f"This {schema.lc(t['singular'])} is locked ({what}), so only an admin can change it."
         return None
 
-    def _check_lock(self, record, changing):
+    def _check_lock(self, record, changing, also=()):
+        """also: what a move on a locked record may change (its stage, what moving stamps): a sent invoice is still marked
+        paid by its button; what's in it stays as it was."""
         sealed = self._sealed_lock(record) if record is not None else None
         reason = sealed[0] if sealed else self.locked(record)
         if reason is None:
@@ -2737,6 +2740,7 @@ class Engine:
             return
         t = self.tables.get(record.table) or {}
         allowed = sealed[1] if sealed else set(t.get("lock_except") or []) if not t.get("embedded") else set()
+        allowed = set(allowed) | (set(also) if not sealed else set())
         if changing is None or set(changing) - allowed:
             raise FieldErrors({"_": reason})
 
@@ -2806,7 +2810,7 @@ class Engine:
             from . import combined
             combined.sync(self, record)
 
-    def update(self, record, data, *, by=None, automations=True, depth=0, ai_filled=False, expected_version=None):
+    def update(self, record, data, *, by=None, automations=True, depth=0, ai_filled=False, expected_version=None, moving=()):
         """Change a record. ai_filled: the AI wrote these values (it may rewrite them later); otherwise a person or a rule
         did, and the AI leaves those fields alone from now on. expected_version: the version the person was looking at;
         if the record has changed since, the save is refused (Conflict)."""
@@ -2831,7 +2835,7 @@ class Engine:
                 values = {k: v for k, v in values.items() if k not in proposed}
         if not diff:
             return {}
-        self._check_lock(record, list(diff))
+        self._check_lock(record, list(diff), also=moving)
         if t.get("embedded"):  # a line moved to another record mustn't land in one that's locked
             link = next((f for f in t["fields"] if f["type"] == "link" and f["key"] in diff and not (self.tables.get(f["table"]) or {}).get("embedded")), None)
             if link is not None:
