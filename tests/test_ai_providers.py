@@ -197,7 +197,7 @@ def test_anthropic_is_asked_its_way_and_its_stream_read(app, server):
     assert body["thinking"] == {"type": "adaptive", "display": "summarized"} and body["output_config"]["effort"] == "high"
     assert body["output_config"]["format"] == {"type": "json_schema", "schema": {**SCHEMA, "additionalProperties": False}}
     assert "temperature" not in body and "top_p" not in body
-    assert body["max_tokens"] == app.config["AI_MAX_TOKENS"] + app.config["AI_THINK_TOKENS_CLOUD"]  # a cloud model's room
+    assert body["max_tokens"] == ai.MOST_OUT  # thinking: as long as the model allows
     calls = next(c for c in ai.stats()["calls"] if c["purpose"] == "assistant")
     assert (calls["provider"], calls["model"], calls["tokens_in"], calls["tokens_out"]) == ("anthropic", "claude-opus-5-5", 140, 12)
 
@@ -396,13 +396,11 @@ def test_names_written_another_way_are_the_providers_own_only_when_theres_one_su
     assert providers.own_name("claude-sonnet", CLAUDES) == ""  # which one? not guessed
 
 
-def test_a_cloud_model_has_room_of_its_own_to_think_and_its_limit_is_learned(app, server, monkeypatch):
-    """At max effort Claude needed more than the 32,768 tokens the local model thinks in: the builder's three design
-    steps each ran out after five minutes and answered without thinking. A cloud model has AI_THINK_TOKENS_CLOUD (it's
-    charged only for what it uses); one that allows less says so, and that's learned."""
-    monkeypatch.setitem(app.config, "AI_THINK_TOKENS", 32768)
-    monkeypatch.setitem(app.config, "AI_THINK_TOKENS_CLOUD", 100000)
-
+def test_a_model_that_thinks_has_no_budget_but_its_own_limit(app, server):
+    """How much a model thinks is its effort level; a length limit only cut thinking off part way, and the step then
+    answered without any (Claude at max ran out of 32,768 tokens three times in one build). A cloud model that thinks
+    is asked for as much as it allows; one that allows less says so, and that's learned. Not thinking, an answer has
+    AI_MAX_TOKENS."""
     def reply(h, body):
         if body["max_tokens"] > 64000:
             return refuse(h, f"max_tokens: {body['max_tokens']} > 64000, which is the maximum allowed number of output tokens", anthropic=True)
@@ -410,9 +408,18 @@ def test_a_cloud_model_has_room_of_its_own_to_think_and_its_limit_is_learned(app
     server.reply = reply
     choose("anthropic", "claude-sonnet-5-5", server.url)
     assert ai.chat([{"role": "user", "content": "hi"}], think=True)[0] == "hello"
-    assert [x["body"]["max_tokens"] for x in server.seen] == [app.config["AI_MAX_TOKENS"] + 100000, 64000]
+    assert [x["body"]["max_tokens"] for x in server.seen] == [ai.MOST_OUT, 64000]
     assert ai.chat([{"role": "user", "content": "hi"}], think=False)[0] == "hello"
     assert server.seen[-1]["body"]["max_tokens"] == app.config["AI_MAX_TOKENS"]  # not thinking: the answer's room only
+
+    def context(h, body):  # one that names no limit of its own, only its context: asked with none
+        if "max_completion_tokens" in body or "max_tokens" in body:
+            return refuse(h, "max_completion_tokens is too large: this model's context length is 131072 tokens")
+        h.stream("fine")
+    server.reply = context
+    choose("openai", "gpt-9", server.url)
+    assert ai.chat([{"role": "user", "content": "hi"}], think=True)[0] == "fine"
+    assert "max_completion_tokens" not in server.seen[-1]["body"] and "max_tokens" not in server.seen[-1]["body"]
 
 
 def test_thinking_that_runs_away_is_let_go_wherever_it_is(app, monkeypatch):

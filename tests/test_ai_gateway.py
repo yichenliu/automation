@@ -177,7 +177,7 @@ def test_an_openai_compatible_server_streams_the_answer_and_its_thinking(app, fa
     assert body["model"] == "big" and body["stream"] is True and body["stream_options"] == {"include_usage": True}
     assert body["response_format"] == {"type": "json_schema", "json_schema": {"name": "answer", "schema": SCHEMA, "strict": True}}
     assert body["chat_template_kwargs"] == {"enable_thinking": True}
-    assert body["max_tokens"] == app.config["AI_MAX_TOKENS"] + app.config["AI_THINK_TOKENS"]  # the thinking counts towards the cap
+    assert "max_tokens" not in body and "max_completion_tokens" not in body  # thinking on our own server: no budget
     assert body["temperature"] == 0.6 and body["top_p"] == 0.9 and "seed" not in body and "priority" not in body
     calls = _calls("assistant")
     assert (calls["provider"], calls["model"], calls["calls"], calls["answered"]) == ("compatible", "big", 1, 1)
@@ -406,7 +406,7 @@ def test_ollama_still_answers_as_it_did_and_says_what_it_cost(app, fake, monkeyp
     chats = lambda: [s for s in fake.seen if s["path"] == "/api/chat"]  # noqa: E731 - besides asking what levels it has
     sent = chats()[0]
     assert sent["body"]["format"] == SCHEMA and sent["body"]["think"] is True  # an Ollama that names no levels: on
-    assert sent["body"]["options"]["num_predict"] == app.config["AI_MAX_TOKENS"] + app.config["AI_THINK_TOKENS"]
+    assert sent["body"]["options"]["num_predict"] == -1  # thinking: as long as the model takes, its effort level says how long
     calls = _calls("assistant")
     assert (calls["provider"], calls["tokens_in"], calls["tokens_out"]) == ("ollama", 50, 3)
     fake.reply = lambda h, body: h.send_json(400, {"error": "invalid format"})

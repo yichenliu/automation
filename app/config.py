@@ -96,7 +96,8 @@ class Config:
     AI_SERVER_PRIORITY = (os.getenv("AI_SERVER_PRIORITY") or "false").lower() == "true"
     AI_THINK = (os.getenv("AI_THINK") or "false").lower() == "true"
     # The builder's own reasoning-heavy work (designing, fixing what the try-out found, writing worked examples) thinks
-    # first when this is on, whatever AI_THINK says for the quick jobs; AI_THINK_TOKENS is the room for that thinking.
+    # first when this is on, whatever AI_THINK says for the quick jobs. How hard it thinks is AI_EFFORT; there's no budget
+    # (ai._settings: a step that thinks may write as much as the model allows).
     TENANCY_RLS = (os.getenv("TENANCY_RLS") or "true").lower() != "false"  # PostgreSQL row-level security behind the workspace filters
     FILES_BACKEND = (os.getenv("FILES_BACKEND") or "local").lower()  # local (the data folder) or s3 (S3-compatible object storage)
     S3_BUCKET = os.getenv("S3_BUCKET") or ""
@@ -110,13 +111,8 @@ class Config:
     # behaviour, checks (worked examples), fix, repair, owner_check (an owner's check made an example). Left empty, all
     # of them when AI_THINK_BUILDER is on, none when it's off.
     AI_THINK_STEPS = os.getenv("AI_THINK_STEPS") or ""
-    AI_THINK_TOKENS = int(os.getenv("AI_THINK_TOKENS") or 8000)
-    # The room a cloud model has to think. It's charged only for what it uses, and a model that allows less says so when
-    # asked (its limit is learned: ai._step). At max effort Claude needed more than 32,768 tokens for the builder's
-    # steps, and each step that ran out lost five minutes and then answered without thinking.
-    AI_THINK_TOKENS_CLOUD = int(os.getenv("AI_THINK_TOKENS_CLOUD") or 64000)
     AI_NUM_CTX = int(os.getenv("AI_NUM_CTX") or 0)  # 0: use the context size Ollama already has loaded
-    AI_MAX_TOKENS = int(os.getenv("AI_MAX_TOKENS") or 12000)  # a cap, so a model stuck in a loop can't run forever
+    AI_MAX_TOKENS = int(os.getenv("AI_MAX_TOKENS") or 12000)  # an answer's room when the model doesn't think first
     AI_TEMPERATURE = float(os.getenv("AI_TEMPERATURE") or 0.6)  # lower than most models' 1.0: designs and records need care, not flair
     # The builder's own work is steadier: less chance, and a fixed seed, so the same request gets the same design
     # (AI_BUILDER_SEED=none for a different one each time)

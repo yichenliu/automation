@@ -239,7 +239,7 @@ def _patch_lines(classes):
 # How much a step may think (characters) before it's taken to have run away and is answered straight away instead: what
 # it needed when it came out right, with room to spare. Round 44: the understand step never thought more than 15,000
 # characters when it came out right, but ran away in 5 of 56 calls (mostly an owner's follow-up), each about 12 minutes
-# before the length limit stopped it. Steps not named here think up to AI_THINK_TOKENS.
+# before the length limit stopped it. Steps not named here think as long as their effort level takes them.
 THINK_LIMITS = {"understand": 30000}
 
 

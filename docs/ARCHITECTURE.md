@@ -110,8 +110,10 @@ Only 1 was the model's own judgment.
     model or provider quirk works without code.
   - How hard a model thinks is AI_EFFORT (xhigh unless set), stepped down a level at a time where a model lacks one.
     Ollama doesn't refuse a level a model lacks, so each model's levels are read from /api/show instead (Qwen 3.8: off,
-    low, medium, xhigh). "think": true alone is the model's default, medium. AI_THINK_TOKENS caps how long a local model
-    may think; it isn't a budget the model aims at.
+    low, medium, xhigh). "think": true alone is the model's default, medium. There's no thinking budget: a step that
+    thinks may write as much as the model allows (no limit sent to the platform's own servers; a cloud model is asked
+    for MOST_OUT and its own limit learned). Runaways are stopped by loop detection, per-step ceilings measured from
+    real runs (build.THINK_LIMITS) and the deadline.
   - Search by meaning stays on this computer unless chosen elsewhere. Changing its model reads the knowledge again.
   - A key turned away, or an account out of credit, waits like a server that's down: the work carries on once fixed.
   - Recorded builder calls say which provider and model wrote them, so cloud answers can be kept apart from the

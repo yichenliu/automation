@@ -628,17 +628,26 @@ def _waiting_note(on_progress):
     return note
 
 
+# What a cloud model that thinks is asked for: as long an answer as it allows. It says its limit when that's less, and
+# that's learned (_step); it's charged only for what it writes.
+MOST_OUT = 128000
+
+
 def _settings(think, purpose, priority, cloud=False):
     """What's asked of the model besides the conversation, the same whichever server answers: whether it thinks first,
-    how long the answer may be (with room to think: a cloud model's own, AI_THINK_TOKENS_CLOUD), and how much chance it
-    takes."""
+    how long the answer may be, and how much chance it takes.
+
+    A step that thinks has no budget of ours: how much it thinks is its effort level (AI_EFFORT), and a length limit
+    only cut thinking off part way, wasting it all (the step then answered without any). So it may write as much as the
+    model allows: on the platform's own machines no limit is sent, and a cloud model is asked for MOST_OUT. Thinking
+    that runs away is still stopped: going round in circles, far past what a step needs (build.THINK_LIMITS), and at
+    the deadline. One that doesn't think has AI_MAX_TOKENS: the answer's room."""
     cfg = settings()
     thinks = cfg["AI_THINK"] if think is None else think
     steady, tries = building.get() or purpose == "builder", again.get()
     seed = cfg.get("AI_BUILDER_SEED")
-    room = int(cfg.get("AI_THINK_TOKENS_CLOUD") or 64000) if cloud else int(cfg.get("AI_THINK_TOKENS") or 8000)
-    return {"think": thinks, "priority": priority, "think_room": room if thinks else 0,
-            "max_tokens": cfg["AI_MAX_TOKENS"] + (room if thinks else 0),  # the thinking counts towards the cap
+    return {"think": thinks, "priority": priority,
+            "max_tokens": cfg["AI_MAX_TOKENS"] if not thinks else MOST_OUT if cloud else None,
             "temperature": min(0.9, (cfg.get("AI_BUILDER_TEMPERATURE", 0.3) if steady else cfg.get("AI_TEMPERATURE", 0.6)) + 0.2 * tries),
             "top_p": 0.9, "seed": seed + tries if steady and seed is not None else None, "num_ctx": cfg.get("AI_NUM_CTX") or 0}
 
@@ -882,7 +891,7 @@ def _ollama_chat(route, messages, schema, ask, on_progress, deadline, usage):
     body = {"model": route.model, "messages": messages, "stream": True, "think": think}
     if schema:
         body["format"] = schema
-    body["options"] = {"num_predict": ask["max_tokens"], "top_p": ask["top_p"], "temperature": ask["temperature"],
+    body["options"] = {"num_predict": ask["max_tokens"] or -1, "top_p": ask["top_p"], "temperature": ask["temperature"],
                        **({"seed": ask["seed"]} if ask["seed"] is not None else {}),
                        **({"num_ctx": ask["num_ctx"]} if ask["num_ctx"] else {})}
     response = _post(route, "/api/chat", body, deadline, usage)
@@ -1051,8 +1060,9 @@ def _openai_parts(p, ask, schema):
         parts.append(_Part("think:on" if ask["think"] else "think:off", ("reasoning",),
                            [{"reasoning": {"effort": effort if effort in ("low", "medium", "high") else "high"}} if ask["think"] else
                             {"reasoning": {"enabled": False}}, {}]))
-    first, other = p.tokens, "max_tokens" if p.tokens == "max_completion_tokens" else "max_completion_tokens"
-    parts.append(_Part("tokens", ("max_tokens", "max_completion_tokens"), [{first: n}, {other: n}]))
+    if n:  # none when thinking on the platform's own machines: as long as the server allows
+        first, other = p.tokens, "max_tokens" if p.tokens == "max_completion_tokens" else "max_completion_tokens"
+        parts.append(_Part("tokens", ("max_tokens", "max_completion_tokens"), [{first: n}, {other: n}, {}]))
     if schema:
         # The answer constrained to the schema as it's decoded: vLLM, SGLang, llama.cpp and LM Studio take this form (vLLM
         # also its older `"guided_json"`). A cloud model is given it to follow (not strict: a schema built for constrained
@@ -1197,10 +1207,16 @@ def _anthropic_turns(messages):
     return system, turns
 
 
+def _old_claude_budget(most):
+    """A Claude model from before adaptive thinking is given a budget to think in: all it may write but the answer's
+    room."""
+    return max(1024, most - max(2048, int(settings().get("AI_MAX_TOKENS") or 4096)))
+
+
 def _anthropic_parts(ask, schema):
-    cfg, n = settings(), ask["max_tokens"]
+    cfg, n = settings(), ask["max_tokens"] or MOST_OUT
     effort = cfg.get("AI_EFFORT") or "xhigh"
-    budget = max(1024, min(int(ask.get("think_room") or cfg.get("AI_THINK_TOKENS") or 8000), n - 2048))
+    budget = _old_claude_budget(n)
     if ask["think"]:  # Claude decides how much to think (adaptive), shown in summary; older models by a budget
         thinking = [{"thinking": {"type": "adaptive", "display": "summarized"}}, {"thinking": {"type": "adaptive"}},
                     {"thinking": {"type": "enabled", "budget_tokens": budget}}, {}]
@@ -1224,9 +1240,11 @@ def _anthropic_chat(route, messages, schema, ask, on_progress, deadline, usage):
     shared instructions are paid for in full once in a while, not at every call. No temperature: Claude's newest models
     take none."""
     system, turns = _anthropic_turns(messages)
-    base = {"model": route.model, "max_tokens": ask["max_tokens"], "messages": turns, "stream": True}
+    base = {"model": route.model, "max_tokens": ask["max_tokens"] or MOST_OUT, "messages": turns, "stream": True}
 
     def finish(body, rungs):
+        if (body.get("thinking") or {}).get("type") == "enabled":  # its budget within the limit the model said it has
+            body["thinking"] = {**body["thinking"], "budget_tokens": _old_claude_budget(body["max_tokens"])}
         words = system
         if schema and any(r.get("_prompt") for r in rungs.values()):
             words = (words + "\n\n" if words else "") + _schema_note(schema)
