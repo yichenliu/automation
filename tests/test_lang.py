@@ -1416,6 +1416,34 @@ def test_a_vague_new_app_gets_a_few_quick_questions_to_click_once(app, owner):
     assert again.status == "done" and again.version_after and not again.proposals  # asked once: now it builds
 
 
+def test_a_new_app_is_never_told_of_choices_that_arent_there(app, owner):
+    """Round 45 locally at xhigh: the understand step gave the pet food round no needs and no questions, put the numbers
+    of the questions it meant in "about" (a field for what isn't right in an app that exists), and the owner was told "a
+    few quick choices" with none to click. It's shown only the fields that fit; an answer leaving a new app nothing to
+    make or ask is asked again; and if none comes, the owner is asked plainly."""
+    from app.builder import build, chat
+    _, ws = owner
+    new = build._understood_schema(True, [])
+    assert "questions" in new["properties"] and "about" not in new["properties"]
+    mending = build._understood_schema(False, ["Paid invoices are chased"])
+    assert "questions" not in mending["properties"] and "about" in mending["properties"] and "Question" not in mending.get("$defs", {})
+    empty = {"needs": [], "reply": "I can help. A few quick choices will make it fit your round.", "about": [1, 2, 3]}
+    asking = {"needs": [], "questions": [{"ask": "What do you deliver?", "choices": ["Dry food", "Raw food"]}], "reply": ""}
+    said = iter([empty, asking])
+    model = Model({"understand": lambda messages: next(said)})
+    ai.set_backend(model)
+    m = chat.ask(ws, "hey need help w/ the pet food route its a mess")
+    chat.work(m.id)
+    m = db.session.get(Message, m.id)
+    assert m.proposals["questions"][0]["ask"] == "What do you deliver?" and model.asked == ["understand", "understand"]
+    other = _workspace(app, None)
+    ai.set_backend(Model({"understand": empty}))
+    q = chat.ask(other, "need help")
+    chat.work(q.id)
+    q = db.session.get(Message, q.id)
+    assert q.status == "done" and q.text == build.NOTHING_YET and "choices" not in q.text and not q.version_after
+
+
 def test_the_checks_written_first_are_shown_to_the_behaviour_step_with_recipes(app):
     """How a need will be tried is written before it's made, and the behaviour step is shown it, with how needs like it
     are made in other apps (known to work)."""

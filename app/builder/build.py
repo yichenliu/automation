@@ -171,6 +171,28 @@ class Understood(BaseModel):
                                                                 "message is about: explains, or asks to be put right")
 
 
+def _questions(understood):
+    """The quick questions worth asking: a plain question with at least two answers to click; three at most (four at
+    once reads as a form to fill in: rounds 44 and 45, a beginner's eyes)."""
+    return [q for q in understood.questions if q.ask.strip() and len([c for c in q.choices if c.strip()]) >= 2][:3]
+
+
+def _understood_schema(new, open_items):
+    """The understand step's answer, with only what fits this message: quick questions only for a new app not yet asked
+    them, "about" only when there's something not right to point at. Given both, a local model put the numbers of the
+    questions it meant to ask in "about", asked none, and told the owner "a few quick choices" with none to click."""
+    schema = Understood.model_json_schema()
+    if not open_items:
+        schema["properties"].pop("about", None)
+    if not new:
+        schema["properties"].pop("questions", None)
+        schema.get("$defs", {}).pop("Question", None)
+    return schema
+
+
+NOTHING_YET = "Tell me a bit about your business: what do you need to keep track of, and what should the app do for you?"
+
+
 def _patches(group):
     if group == "data":
         allowed = registry.items("patch", "data")
@@ -606,8 +628,7 @@ def _turn(turn):
         if listed:  # after "Not everything works yet": only what this message is about is taken on
             picked = [listed[i - 1] for i in dict.fromkeys(understood.about) if 0 < i <= len(listed)]
             mending = {**mending, "found": {k: [x for kind, x, _ in picked if kind == k] for k in ("failing", "issues", "missing")}} if picked else None
-        # three at most: four at once reads as a form to fill in (rounds 44 and 45, a beginner's eyes)
-        asking = [q for q in understood.questions if q.ask.strip() and len([c for c in q.choices if c.strip()]) >= 2][:3]
+        asking = _questions(understood)
         if asking and not changing and not _asked_before(workspace, turn.message):  # a new app from almost nothing: asked, once
             turn.message.text = "A few quick questions, so I build what your business needs:\n" + "\n".join(
                 f"{i}. {q.ask.strip()} ({' / '.join(c.strip() for c in q.choices if c.strip())})" for i, q in enumerate(asking, start=1))
@@ -618,6 +639,10 @@ def _turn(turn):
             return
         if understood.question and not needs:
             turn.message.text, turn.message.status, turn.message.finished_at = understood.question, "done", utcnow()
+            db.session.commit()
+            return
+        if not needs and not changing:  # a new app with nothing to make or ask: asked plainly, never told of choices not there
+            turn.message.text, turn.message.status, turn.message.finished_at = NOTHING_YET, "done", utcnow()
             db.session.commit()
             return
         if needs:
@@ -785,14 +810,22 @@ def _understand(turn, asked, open_items=()):
                "it to be put right); none when it asks for something else. Its needs are only what the message asks.") if open_items else ""
     user = (f"{turn.about()}\n\nThe app now:\n{lang.describe(turn.bp)}\n\nEarlier:\n{turn.history() or '(nothing yet)'}{shown}\n\n"
             f"The owner says: {asked}")
+    new = not turn.bp.get("tables") and not _asked_before(turn.workspace, turn.message)
+    understood = None
     for tries, extra in ((0, ""), (1, ""), (2, "\n\n(Keep it short: at most six needs, one sentence each.)")):
         try:
-            answer = _ask(UNDERSTAND, user + extra, Understood.model_json_schema(), turn.progress, tries, kind="understand")
+            answer = _ask(UNDERSTAND, user + extra, _understood_schema(new, open_items), turn.progress, tries, kind="understand")
             understood = Understood.model_validate(answer)
-            _mark([answer])
-            return understood
         except TOO_MUCH:
             turn.note("That came out too long; asking again more briefly")
+            continue
+        if not turn.bp.get("tables") and not (understood.needs or _questions(understood) or understood.question.strip()):
+            _log.info("The understand step gave a new app nothing to make or ask; asking again")
+            continue  # nothing for the owner: not an answer (not kept as a lesson either)
+        _mark([answer])
+        return understood
+    if understood is not None:  # still nothing to make or ask: the turn asks plainly (NOTHING_YET)
+        return understood
     raise ai.Stuck("I got stuck working out what you need. Press Try again, or say it again in fewer words.")
 FIX_ONLY = re.compile(r"^\W*(please\W+)?(fix|sort out|sort|correct|repair|mend)\b.{0,40}$|^\W*(yes|yeah|yep|ok|okay|sure|go ahead|do it|"
                       r"please)\W*(please|thanks|do it)?\W*$", re.I | re.S)
