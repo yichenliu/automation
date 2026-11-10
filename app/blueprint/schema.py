@@ -572,12 +572,16 @@ def _person(raw):
             "the_customer": "portal", "the_seller": "portal"}.get(who, who)
 
 
-def _not_by(raw):
+def _not_by(raw, fields=()):
     """Separation of duties: who may not do this (whoever raised it, whoever moved it to a stage, the person in a field):
-    ["creator", "Recommended", "prepared_by"]. Stage names are kept as written; the rest as who-words."""
+    ["creator", "Recommended", "prepared_by"]. Stage names are kept as written; the rest as who-words, except a field of
+    the record's own (a contract's "manager" is its manager, not the word for an admin)."""
     out = []
     for x in _names(_first(raw, "not_by", "not", "except_by", "separate_from", "segregate_from", "different_from", "not_same_as",
                            default=[])):
+        if slug(x) in fields:
+            out.append(slug(x))
+            continue
         word = _person(x)
         out.append(word if word in ("creator", "portal") or re.fullmatch(r"[a-z0-9_.]+", str(x).strip()) else str(x).strip())
     return list(dict.fromkeys(o for o in out if o))[:6]
@@ -629,7 +633,7 @@ def _branch(raw):
     return action
 
 
-def normalize_workflow(raw, label=""):
+def normalize_workflow(raw, label="", fields=()):
     """How a table's records move from stage to stage: {"field": the stage (a select), "start": the stage new records
     begin at, "transitions": [{"from": [stages] (none: any), "to": a stage, "label": the button, "who": [roles, person
     fields or "creator"], "requires": fields filled in first, "only_if": conditions}]}. People move records only these
@@ -656,7 +660,7 @@ def normalize_workflow(raw, label=""):
         only = _first(m, "only_if", "if", "when", "conditions")
         if only:
             move["only_if"] = [normalize_condition(c) for c in _list(only)]
-        apart = _not_by(m)
+        apart = _not_by(m, fields)
         if apart:  # separation of duties: whoever recommended an award can't approve it
             move["not_by"] = apart
         if _yes(_first(m, "step_up", "reauthenticate", "confirm_sign_in", "second_factor")):
@@ -956,6 +960,11 @@ def normalize_table(raw):
         if clean:
             table["access"] = clean
     rows = _first(raw, "row_access", "own_records", "only_own", "record_access")
+    also = list(_list(_first(raw, "row_access_also", default=[])))
+    if isinstance(rows, list):  # several, each of which must hold: an organisation's own records, and of them an evaluator's own scores
+        rows, also = (rows[0] if rows else None), list(rows[1:]) + also
+    if also:
+        table["row_access_also"] = [normalize_table({"label": label, "fields": [], "row_access": x})["row_access"] for x in also[:4]]
     if rows:
         if isinstance(rows, str):
             rows = {"field": rows}
@@ -968,6 +977,8 @@ def normalize_table(raw):
         every = [slug(x) for x in _names(_first(rows, "teams", "except_teams", "all_for", "see_all", "except", default=[])) if slug(x)]
         if every:  # teams who see every record all the same (Finance doing the books, while each manager sees their own)
             table["row_access"]["teams"] = list(dict.fromkeys(every))[:8]
+        if _yes(_first(rows, "shared_when_empty", "empty_is_shared", "everyones_when_empty")):
+            table["row_access"]["shared_when_empty"] = True  # nobody in it: everyone's (the platform's standard clauses, beside a buyer's own)
     rules = _first(raw, "rules", "validations", "validation", "constraints", "checks")
     if rules:
         table["rules"] = [normalize_rule(r, label) for r in _list(rules)]
@@ -1009,7 +1020,7 @@ def normalize_table(raw):
             table["lock_except"] = [slug(x) for x in _list(editable)]
     flow = _first(raw, "workflow", "stages", "status_flow", "transitions", "stage_flow")
     if isinstance(flow, dict) or isinstance(flow, list) and flow and all(isinstance(x, dict) for x in flow):
-        table["workflow"] = normalize_workflow(flow, label)  # (a plain list of stage names is just the select's options)
+        table["workflow"] = normalize_workflow(flow, label, {f["key"] for f in table["fields"]})  # (a plain list of stage names is just the select's options)
     unique = _first(raw, "unique_together", "unique", "no_duplicates", "unique_fields")
     if unique and not isinstance(unique, (bool, int, dict)):  # no two records alike in these fields together (a supplier's invoice number)
         groups = [unique] if isinstance(unique, str) or isinstance(unique, list) and unique and all(isinstance(x, str) for x in unique) else unique
@@ -1040,6 +1051,11 @@ def normalize_table(raw):
     if journey:
         table["journey"] = normalize_journey(journey, label)
     return table
+
+
+def row_rules(t):
+    """A table's rules for which of its records each person sees: its row_access, and any more that must hold too."""
+    return [r for r in [(t or {}).get("row_access")] + list((t or {}).get("row_access_also") or []) if r]
 
 
 def _combine_arm(raw, label):
@@ -3022,16 +3038,16 @@ def _check_table(t, tables, modules, problems):
     for f in t["fields"]:
         if f.get("access") and f["access"] not in ROLE_NAMES and f["access"] not in _TEAM_KEYS.get():
             problems.append(f"{t['label']} › {f['label']} is kept to “{f['access']}”: use admin, owner or a team")
-    rows = t.get("row_access")
-    for team in (rows or {}).get("teams") or []:
-        if team not in _TEAM_KEYS.get():
-            problems.append(f"row_access on {t['label']} lets the team “{team}” see every record, but it isn't a team (add it with set_team)")
-    if rows and rows["field"] != "created_by" and _person_path(t, rows["field"], tables) is None:
-        people = [x["key"] for x in t["fields"] if x["type"] == "user"] + [
-            f"{x['key']}.{y['key']}" for x in t["fields"] if x["type"] == "link" and x["table"] in tables
-            for y in tables[x["table"]]["fields"] if y["type"] == "user"]
-        problems.append(f"row_access on {t['label']} needs “{rows['field']}” to be a person (user) field, a linked record's "
-                        f"person field such as customer.sales_rep, or created_by" + (f" ({', '.join(people)})" if people else ""))
+    for rows in row_rules(t):
+        for team in rows.get("teams") or []:
+            if team not in _TEAM_KEYS.get():
+                problems.append(f"row_access on {t['label']} lets the team “{team}” see every record, but it isn't a team (add it with set_team)")
+        if rows["field"] != "created_by" and _person_path(t, rows["field"], tables) is None:
+            people = [x["key"] for x in t["fields"] if x["type"] == "user"] + [
+                f"{x['key']}.{y['key']}" for x in t["fields"] if x["type"] == "link" and x["table"] in tables
+                for y in tables[x["table"]]["fields"] if y["type"] == "user"]
+            problems.append(f"row_access on {t['label']} needs “{rows['field']}” to be a person (user) field, a linked record's "
+                            f"person field such as customer.sales_rep, or created_by" + (f" ({', '.join(people)})" if people else ""))
     for f in t["fields"]:
         if not f.get("currency_field"):
             continue

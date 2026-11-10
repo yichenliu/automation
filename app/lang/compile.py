@@ -1140,7 +1140,8 @@ ESCAPE = {"add_page", "update_page", "remove_page", "add_document", "update_docu
           "remove_flow", "set_theme", "rename_app", "set_module", "update_view", "remove_view", "order_fields", "update_table"}
 POLICY_KEYS = {"op", "table", "access", "permissions", "row_access", "own_records", "rules", "validations", "unique_together",
                "approve_changes", "sealed", "colors", "journey", "portal", "audit_views", "wizard",
-               "sections", "layout"}  # how a record's fields are grouped on its form (a step-by-step form's steps), and tabs
+               "sections", "layout",  # how a record's fields are grouped on its form (a step-by-step form's steps), and tabs
+               "lock_if", "lock_except"}  # when records can't be changed, by a condition (a bid once the tender's bids close)
 
 
 def apply(bp, raw_patches, allowed=None):
@@ -1211,6 +1212,20 @@ def apply(bp, raw_patches, allowed=None):
             op["embedded"] = True
         if not _apply_ops(out, [op], here):
             refused.add(n)
+    # fields added to lists that were there already, once the new lists are: a new list's formula can read one (an
+    # adjustment's price reads its contract line's new share); one that can't be added yet waits for the rest, as before
+    added = [(n, p) for n, p in rest if isinstance(p, (m.AddField, m.ChangeField)) and schema.slug(p.list) not in made_here]
+    for n, p in added:
+        before, snapshot = len(out.problems), copy.deepcopy(out.blueprint)
+        try:
+            ok = _apply_ops(out, translate(Design(out.blueprint), p, where(n, p)), where(n, p))
+        except Problem:
+            ok = False
+        if ok:
+            rest = [(k, x) for k, x in rest if k != n]
+        else:
+            out.blueprint = snapshot
+            del out.problems[before:]
     # phase B and C: links, then what's worked out. A worked-out field can read one another new list hasn't made yet
     # (a quote's total sums its lines' amounts, a formula of the lines'): what can't be made is tried again once the rest
     # is in, and only what still can't is refused, with its last problem

@@ -1406,6 +1406,19 @@ def _automation_said(bp, a):
     return when + ": " + "; ".join(said[:10]) + ("; …" if len(said) > 10 else "")
 
 
+def _condition_words(t, c):
+    """A condition in words: a field's test (Status equals Sent), a formula as written (tender.bids_close_at <= now()), or a
+    group of either."""
+    if c.get("formula"):
+        return str(c["formula"])
+    for word in ("any", "all"):
+        if c.get(word):
+            joined = (" or " if word == "any" else " and ").join(_condition_words(t, x) for x in c[word])
+            return f"({joined})"
+    label = (schema.field(t, c.get("field", "")) or {"label": c.get("field", "")})["label"]
+    return f"{label} {str(c.get('op', '')).replace('_', ' ')} {c.get('value', '')}".strip()
+
+
 def _policies_said(t):
     """A table's permissions, locks and rules in the owner's words, for the change list (and so the reply knows)."""
     said, access = [], t.get("access") or {}
@@ -1424,11 +1437,10 @@ def _policies_said(t):
     if secret:
         said.append(f"{', '.join(secret)} kept encrypted and shown masked")
     if t.get("row_access"):
-        by = schema.field(t, t["row_access"].get("field", "")) or {"label": t["row_access"].get("field", "")}
-        said.append(f"each person seeing only their own (by {by['label']})")
+        by = [schema.field(t, r.get("field", "")) or {"label": r.get("field", "")} for r in schema.row_rules(t)]
+        said.append(f"each person seeing only their own (by {' and by '.join(b['label'] for b in by)})")
     if t.get("lock_if"):
-        said.append("locked when " + " and ".join(f"{(schema.field(t, c['field']) or {'label': c['field']})['label']} "
-                                                  f"{c['op'].replace('_', ' ')} {c.get('value', '')}".strip() for c in t["lock_if"]))
+        said.append("locked when " + " and ".join(_condition_words(t, c) for c in t["lock_if"]))
     if t.get("rules"):
         said.append(f"{len(t['rules'])} rule{'s' if len(t['rules']) != 1 else ''} every save must keep")
     if t.get("workflow") and schema.stages(t):
@@ -1757,7 +1769,7 @@ def _apply_one(bp, op, raw, result, where):
             existing["fields"].extend(added)
             if added:
                 changes.append(f"Added {len(added)} column{'s' if len(added) != 1 else ''} to {existing['label']}: {', '.join(f['label'] for f in added)}")
-            for key in ("access", "row_access", "rules", "lock_if", "lock_except", "colors", "wizard", "portal", "workflow",
+            for key in ("access", "row_access", "row_access_also", "rules", "lock_if", "lock_except", "colors", "wizard", "portal", "workflow",
                         "unique_together", "limits", "approve_changes", "sealed", "audit_views", "journey"):
                 if t.get(key) and t[key] != existing.get(key):
                     existing[key] = t[key]
@@ -1839,6 +1851,15 @@ def _apply_one(bp, op, raw, result, where):
                     t[key] = shaped[key]
                 else:
                     t.pop(key, None)
+            if t.get("sealed"):  # every opening of a sealed record is kept in its history, however it was sealed
+                t["audit_views"] = True
+            if given.get("workflow") and t.get("workflow"):  # a person field of its own named like a role word stays that field
+                t["workflow"] = schema.normalize_workflow(given["workflow"], t["label"], {f["key"] for f in t["fields"]})
+            if "row_access" in given:  # several rules given: the ones after the first must hold too
+                if given["row_access"] and shaped.get("row_access_also"):
+                    t["row_access_also"] = shaped["row_access_also"]
+                else:
+                    t.pop("row_access_also", None)
             if "lock_if" not in t:
                 t.pop("lock_except", None)
             label = t["label"]

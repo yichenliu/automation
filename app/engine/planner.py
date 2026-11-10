@@ -676,9 +676,13 @@ class Planner:
             return True, True
         if not e.can(self.t):
             return False, False
-        owner = e._owner_rule(self.t)
-        if owner is None:
+        rules = e._row_rules(self.t)
+        owners = [r["field"] for r in rules]
+        if not owners:
             return True, True
+        if len(owners) > 1 or any(r.get("shared_when_empty") for r in rules):  # several, or empty ones shared: the engine checks
+            return None
+        owner = owners[0]
         if owner == "created_by":
             mine = Record.created_by_id == e.user_id if e.user_id is not None else False
         else:

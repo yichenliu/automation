@@ -181,3 +181,99 @@ def test_a_lists_form_can_be_set_out_in_sections():
                   {"label": "1 Describe", "fields": ["what"]}, {"label": "2 Details", "fields": ["by"]}]}}])
     t = schema.table(bp, "asks")
     assert t["wizard"] is True and [s["label"] for s in t["sections"]] == ["1 Describe", "2 Details"]
+
+
+def test_a_list_can_keep_several_rules_for_who_sees_which_records(app):
+    """Each organisation sees only its own records, and of those each marker only their own marks: two rules, each of which
+    must hold. One rule per list was all there was, and setting the second took the first away."""
+    bp = _ok([{"do": "add_list", "key": "orgs", "label": "Orgs", "singular": "Org", "fields": [
+                  {"type": "text", "key": "name", "label": "Name"}, {"type": "person", "key": "members", "label": "Members", "many": True}]},
+              {"do": "add_list", "key": "marks", "label": "Marks", "singular": "Mark", "fields": [
+                  {"type": "text", "key": "name", "label": "Name"}, {"type": "link", "key": "org", "label": "Org", "to": "orgs"},
+                  {"type": "person", "key": "marker", "label": "Marker"}]},
+              {"do": "design_op", "op": {"op": "update_table", "table": "marks", "row_access": [
+                  {"field": "org.members", "roles": ["editor"]}, {"field": "marker", "roles": ["editor"]}]}}])
+    t = schema.table(bp, "marks")
+    assert t["row_access"]["field"] == "org.members" and t["row_access_also"][0]["field"] == "marker"
+    ws = _ws(app, bp)
+    people = {}
+    for name in ("ann", "bob", "cy"):
+        user = User(email=f"{name}@example.com", name=name.title())
+        user.set_password("x" * 12)
+        db.session.add(user)
+        db.session.flush()
+        db.session.add(Membership(workspace_id=ws.id, user_id=user.id, role="editor"))
+        people[name] = user
+    db.session.commit()
+    e = Engine(ws)
+    ours, theirs = e.create("orgs", {"name": "Ours", "members": [people["ann"].id, people["bob"].id]}), e.create("orgs", {"name": "Theirs", "members": [people["cy"].id]})
+    anns = e.create("marks", {"name": "Ann's", "org": ours.id, "marker": people["ann"].id})
+    bobs = e.create("marks", {"name": "Bob's", "org": ours.id, "marker": people["bob"].id})
+    cys_in_ours = e.create("marks", {"name": "Cy's, in ours", "org": ours.id, "marker": people["cy"].id})
+
+    def sees(name):
+        member = Membership.query.filter_by(workspace_id=ws.id, user_id=people[name].id).first()
+        return {r.data["name"] for r in Engine(ws, by=name, member=member).visible_rows("marks")}
+    assert sees("ann") == {"Ann's"} and sees("bob") == {"Bob's"}
+    assert sees("cy") == set()  # their own mark, but in another organisation's records
+    del anns, bobs, cys_in_ours, theirs
+
+
+def test_a_record_naming_no_organisation_can_be_everyones(app):
+    """The platform's standard clauses (no organisation) are every buyer's, beside each buyer's own (seen by it alone)."""
+    bp = _ok([{"do": "add_list", "key": "orgs", "label": "Orgs", "singular": "Org", "fields": [
+                  {"type": "text", "key": "name", "label": "Name"}, {"type": "person", "key": "members", "label": "Members", "many": True}]},
+              {"do": "add_list", "key": "clauses", "label": "Clauses", "singular": "Clause", "fields": [
+                  {"type": "text", "key": "name", "label": "Name"}, {"type": "link", "key": "org", "label": "Org", "to": "orgs"}]},
+              {"do": "design_op", "op": {"op": "update_table", "table": "clauses", "row_access": {
+                  "field": "org.members", "roles": ["editor"], "shared_when_empty": True}}}])
+    ws = _ws(app, bp)
+    users = {}
+    for name in ("ann", "cy"):
+        users[name] = User(email=f"{name}@example.com", name=name.title())
+        users[name].set_password("x" * 12)
+        db.session.add(users[name])
+        db.session.flush()
+        db.session.add(Membership(workspace_id=ws.id, user_id=users[name].id, role="editor"))
+    db.session.commit()
+    e = Engine(ws)
+    ours = e.create("orgs", {"name": "Ours", "members": [users["ann"].id]})
+    e.create("orgs", {"name": "Theirs", "members": [users["cy"].id]})
+    e.create("clauses", {"name": "Standard liability"})
+    e.create("clauses", {"name": "Our liability", "org": ours.id})
+
+    def sees(name):
+        member = Membership.query.filter_by(workspace_id=ws.id, user_id=users[name].id).first()
+        return {r.data["name"] for r in Engine(ws, by=name, member=member).visible_rows("clauses")}
+    assert sees("ann") == {"Standard liability", "Our liability"} and sees("cy") == {"Standard liability"}
+
+
+def test_a_person_field_named_like_a_role_word_stays_that_field():
+    """A contract's "manager" (its contract manager) was read as the word for an admin: "not by the manager" kept every
+    admin out instead of the contract's own manager."""
+    bp = _ok([{"do": "add_list", "key": "deals", "label": "Deals", "singular": "Deal", "fields": [
+        {"type": "text", "key": "name", "label": "Name"}, {"type": "person", "key": "manager", "label": "Manager"}],
+        "stages": {"stages": ["Draft", "Approved"], "moves": [{"from": ["Draft"], "to": "Approved", "button": "Approve", "not_by": ["manager"]}]}}])
+    assert schema.table(bp, "deals")["workflow"]["transitions"][0]["not_by"] == ["manager"]
+
+
+def test_a_new_lists_formula_can_read_a_field_added_to_another_list_in_the_same_batch():
+    bp = _ok([{"do": "add_list", "key": "lines", "label": "Lines", "singular": "Line", "fields": [
+        {"type": "text", "key": "name", "label": "Name"}, {"type": "money", "key": "price", "label": "Price"}]}])
+    bp = _ok([{"do": "add_field", "list": "lines", "field": {"type": "percent", "key": "share", "label": "Share"}},
+              {"do": "add_list", "key": "runs", "label": "Runs", "singular": "Run", "fields": [
+                  {"type": "link", "key": "line", "label": "Line", "to": "lines"},
+                  {"type": "formula", "key": "moved", "label": "Moved", "formula": "line.price * line.share / 100"}]}], bp)
+    assert schema.field(schema.table(bp, "runs"), "moved")
+
+
+def test_a_lock_written_as_a_formula_is_kept_and_said():
+    """Locking a bid once its tender closes (a formula, not a field's test) crashed while it was said in words."""
+    bp = _ok([{"do": "add_list", "key": "rounds", "label": "Rounds", "singular": "Round", "fields": [
+                  {"type": "text", "key": "name", "label": "Name"}, {"type": "datetime", "key": "closes_at", "label": "Closes"}]},
+              {"do": "add_list", "key": "bids", "label": "Bids", "singular": "Bid", "fields": [
+                  {"type": "link", "key": "round", "label": "Round", "to": "rounds"}, {"type": "money", "key": "price", "label": "Price"}]},
+              {"do": "design_op", "op": {"op": "update_table", "table": "bids", "lock_if": ["round.closes_at <= now()"],
+                                         "sealed": {"until": "round.closes_at"}}}])
+    t = schema.table(bp, "bids")
+    assert t["lock_if"] == [{"formula": "round.closes_at <= now()"}] and t["sealed"]["until"] == "round.closes_at" and t["audit_views"]

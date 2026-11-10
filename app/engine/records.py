@@ -535,10 +535,18 @@ class Engine:
         return {**self.bp, "tables": tables, "pages": pages}
 
     def _owner_rule(self, t):
-        rows = t.get("row_access") if t else None
-        if not rows or self.role is None or self.role not in rows["roles"] or self.teams & set(rows.get("teams") or []):
-            return None
-        return rows["field"]
+        rules = self._owner_rules(t)
+        return rules[0] if rules else None
+
+    def _owner_rules(self, t):
+        """The person fields that decide which of a table's records this person sees, every one of which must name them
+        (their organisation's records, and of those their own scores)."""
+        return [rows["field"] for rows in self._row_rules(t)]
+
+    def _row_rules(self, t):
+        if self.role is None:
+            return []
+        return [rows for rows in schema.row_rules(t) if self.role in rows["roles"] and not self.teams & set(rows.get("teams") or [])]
 
     def allowed(self, record):
         """Whether this person may see this record (tables can limit people to the records that are theirs)."""
@@ -547,8 +555,15 @@ class Engine:
         t = self.tables.get(record.table)
         if not self.can(t):
             return False
-        owner = self._owner_rule(t)
-        if owner is None or record.id in self._asked():
+        rules = self._row_rules(t)
+        if not rules or record.id in self._asked():
+            return True
+        return all(self._names_me(record, rows["field"], rows.get("shared_when_empty")) for rows in rules)
+
+    def _names_me(self, record, owner, shared_when_empty=False):
+        """Whether a record's person field (or a linked record's) is this person; with shared_when_empty, a record with
+        nobody there (no organisation: the platform's own) is everyone's."""
+        if shared_when_empty and self._nobody_at(record, owner):
             return True
         if owner == "created_by":  # by who they are, not their name (anyone can change their name)
             return record.created_by_id is not None and record.created_by_id == self.user_id
@@ -562,6 +577,20 @@ class Engine:
         if isinstance(value, list):
             return str(self.user_id) in [str(v) for v in value]
         return value is not None and str(value) == str(self.user_id)
+
+    def _nobody_at(self, record, owner):
+        """Whether a record names nobody where a rule looks (its link is empty, or the person field is)."""
+        if owner == "created_by":
+            return record.created_by_id is None
+        head, _, rest = owner.partition(".")
+        value = (record.data or {}).get(head)
+        if value in (None, "", []):
+            return True
+        if rest:
+            f = self.field(record.table, head)
+            linked = self.get(value, f["table"]) if f and f["type"] == "link" and not isinstance(value, list) else None
+            return linked is None or (linked.data or {}).get(rest) in (None, "", [])
+        return False
 
     def _asked(self):
         """The records this person was asked to approve or do something on, or answered for: they may open those, whoever
@@ -626,7 +655,7 @@ class Engine:
         t = self.tables.get(table)
         if not self.can(t):
             return []
-        return rows if self._owner_rule(t) is None else [r for r in rows if self.allowed(r)]
+        return rows if not self._owner_rules(t) else [r for r in rows if self.allowed(r)]
 
     # --- reading ------------------------------------------------------------------------------------------------
     def reset(self):
