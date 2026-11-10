@@ -202,6 +202,23 @@ def test_anthropic_is_asked_its_way_and_its_stream_read(app, server):
     assert (calls["provider"], calls["model"], calls["tokens_in"], calls["tokens_out"]) == ("anthropic", "claude-opus-5-5", 140, 12)
 
 
+def test_a_model_without_the_effort_asked_for_steps_down_a_level_at_a_time(app, server, monkeypatch):
+    """xhigh is the effort a step thinks at unless AI_EFFORT says otherwise; a model without a level is asked the one
+    below it, not dropped straight to high."""
+    assert ai._efforts("xhigh") == ["xhigh", "high"] and ai._efforts("max") == ["max", "xhigh", "high"] and ai._efforts("low") == ["low", "high"] and ai._efforts("minimal") == ["minimal", "high"]
+    monkeypatch.setitem(app.config, "AI_EFFORT", "max")
+
+    def reply(h, body):
+        effort = (body.get("output_config") or {}).get("effort")
+        if effort == "max":
+            return refuse(h, "output_config.effort: 'max' is not supported for this model", anthropic=True)
+        anthropic_stream(h, "fine")
+    server.reply = reply
+    choose("anthropic", "claude-haiku-5-5", server.url)
+    assert ai.chat([{"role": "user", "content": "hi"}], think=True)[0] == "fine"
+    assert server.seen[-1]["body"]["output_config"]["effort"] == "xhigh"
+
+
 def test_a_claude_model_that_always_thinks_is_asked_the_least_it_does(app, server):
     def reply(h, body):
         kind = (body.get("thinking") or {}).get("type")

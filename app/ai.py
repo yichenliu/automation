@@ -977,6 +977,18 @@ def _openai_messages(messages):
     return out
 
 
+EFFORTS = ("low", "medium", "high", "xhigh", "max")
+
+
+def _efforts(effort):
+    """The effort to ask for, then the ones to step to when a model hasn't it: each level below, down to high (a model
+    without max is asked xhigh, not dropped to high); one below high is raised to high; one a provider names its own
+    way (OpenAI's minimal) is tried as said."""
+    effort = effort or "high"
+    below = reversed(EFFORTS[2:EFFORTS.index(effort)]) if effort in EFFORTS else ()
+    return list(dict.fromkeys([effort, *below, "high"]))
+
+
 def _openai_parts(p, ask, schema):
     """The optional parts of a chat completions request, most likely to be what a refusal names first."""
     cfg, n = settings(), ask["max_tokens"]
@@ -993,9 +1005,9 @@ def _openai_parts(p, ask, schema):
             parts.append(_Part("seed", ("seed",), [{"seed": ask["seed"]}, {}]))
         parts.append(_Part("top_p", ("top_p",), [{"top_p": ask["top_p"]}, {}]))
         parts.append(_Part("temperature", ("temperature",), [{"temperature": ask["temperature"]}, {}]))
-    effort = cfg.get("AI_EFFORT") or "high"
+    effort = cfg.get("AI_EFFORT") or "xhigh"
     if p.think == "effort":  # OpenAI's reasoning models and those that copy them: low to high (none, minimal, xhigh on some)
-        on = [{"reasoning_effort": e} for e in dict.fromkeys([effort, "high"])]
+        on = [{"reasoning_effort": e} for e in _efforts(effort)]
         off = [{"reasoning_effort": e} for e in ("none", "minimal", "low")]
         parts.append(_Part("think:on" if ask["think"] else "think:off", ("reasoning_effort", "reasoning effort", "reasoning.effort", "reasoning"),
                            (on if ask["think"] else off) + [{}]))
@@ -1145,12 +1157,12 @@ def _anthropic_turns(messages):
 
 def _anthropic_parts(ask, schema):
     cfg, n = settings(), ask["max_tokens"]
-    effort = cfg.get("AI_EFFORT") or "high"
+    effort = cfg.get("AI_EFFORT") or "xhigh"
     budget = max(1024, min(int(ask.get("think_room") or cfg.get("AI_THINK_TOKENS") or 8000), n - 2048))
     if ask["think"]:  # Claude decides how much to think (adaptive), shown in summary; older models by a budget
         thinking = [{"thinking": {"type": "adaptive", "display": "summarized"}}, {"thinking": {"type": "adaptive"}},
                     {"thinking": {"type": "enabled", "budget_tokens": budget}}, {}]
-        efforts = [{"output_config": {"effort": e}} for e in dict.fromkeys([effort, "high"])] + [{}]
+        efforts = [{"output_config": {"effort": e}} for e in _efforts(effort)] + [{}]
     else:  # off where it can be (some newest models always think: the least they do, at low effort)
         thinking = [{"thinking": {"type": "disabled"}}, {"thinking": {"type": "between_tools"}}, {}]
         efforts = [{"output_config": {"effort": "low"}}, {}]
