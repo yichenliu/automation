@@ -2,7 +2,7 @@
 {% block title %}Home{% endblock %}
 {% block content %}{% set kinds = {'approval': ('amber', 'Approve'), 'task': ('blue', 'To do'), 'review': ('violet', 'Check the AI'), 'change': ('teal', 'Change')} %}
 <div class="page-head"><div class="titles"><h1>{{ hello }}, {{ first }}</h1>
-  <p class="sub">{% if waiting %}{{ waiting|length }} thing{{ 's' if waiting|length != 1 }} {{ 'is' if waiting|length == 1 else 'are' }} waiting for you.{% else %}Nothing is waiting for you right now.{% endif %}</p></div></div>
+  {% set n = waiting|length + (moves or [])|length %}<p class="sub">{% if n %}{{ n }} thing{{ 's' if n != 1 }} {{ 'is' if n == 1 else 'are' }} waiting for you.{% else %}Nothing is waiting for you right now.{% endif %}</p></div></div>
 
 {% if steps %}
 <div class="card mb-3 getting-started"><div class="card-head"><h2 class="grow">{{ icon('flag') }}Getting started</h2>
@@ -18,7 +18,11 @@
     <div class="card-head"><h2 class="grow">{{ icon('list-todo') }}Waiting for you</h2>{% if waiting %}<a class="small" href="{{ url_for('app.approvals', wid=ws.id) }}">See all</a>{% endif %}</div>
     {% if waiting %}<div class="card-body tight">{% for a in waiting[:6] %}{% set rec = e.get(a.record_id) if a.record_id else none %}
       <a class="list-row big-row" href="{{ url_for('app.approvals', wid=ws.id) }}#a{{ a.id }}"><span class="pill {{ kinds[a.kind or 'approval'][0] }}">{{ kinds[a.kind or 'approval'][1] }}</span>
-        <span class="grow ellipsis">{{ a.message }}{% set facts = ask_facts(e, rec) %}{% if facts %} <span class="muted">· {{ facts }}</span>{% endif %}</span><span class="btn sm">Open{{ icon('chevron-right') }}</span></a>{% endfor %}</div>
+        <span class="grow ellipsis">{{ a.message }}{% set facts = ask_facts(e, rec) %}{% if facts %} <span class="muted">· {{ facts }}</span>{% endif %}</span><span class="btn sm">Open{{ icon('chevron-right') }}</span></a>{% endfor %}
+      {% for x in (moves or [])[:[8 - waiting[:6]|length, 3]|max] %}<a class="list-row big-row" href="{{ url_for('app.record', wid=ws.id, table=x.t.key, rid=x.r.id) }}"><span class="pill blue">{{ x.stage }}</span>
+        <span class="grow ellipsis">{{ e.title(x.r) }} <span class="muted">· yours to {{ x.move|lc }} · waiting since {{ (x.r.updated_at or x.r.created_at)|ago }}</span></span><span class="btn sm">Open{{ icon('chevron-right') }}</span></a>{% endfor %}</div>
+    {% elif moves %}<div class="card-body tight">{% for x in moves[:8] %}<a class="list-row big-row" href="{{ url_for('app.record', wid=ws.id, table=x.t.key, rid=x.r.id) }}"><span class="pill blue">{{ x.stage }}</span>
+        <span class="grow ellipsis">{{ e.title(x.r) }} <span class="muted">· yours to {{ x.move|lc }} · waiting since {{ (x.r.updated_at or x.r.created_at)|ago }}</span></span><span class="btn sm">Open{{ icon('chevron-right') }}</span></a>{% endfor %}</div>
     {% else %}<div class="card-body calm">{{ icon('circle-check') }}<div><b>You're all caught up.</b><div class="small muted">When something needs your OK or your hand, it shows up here.</div></div></div>{% endif %}
   </section>
 

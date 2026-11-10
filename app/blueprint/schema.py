@@ -3362,7 +3362,7 @@ def stages(t):
     return list(f.get("options") or []) if f and f["type"] == "select" else []
 
 
-SAYS_NO = re.compile(r"\bnot\b|reject|declin|refus|lost|fail|unsuccess|cancel|void|withdrawn|abandon", re.I)
+SAYS_NO = re.compile(r"\bnot\b|reject|declin|refus|lost|fail|unsuccess|cancel|void|withdrawn|abandon|turned down|sent back|returned\b", re.I)
 
 
 ENDED = re.compile(r"clos|complet|\bdone\b|paid|finish|resolv|archiv", re.I)  # the work's end, not the next step of a new one

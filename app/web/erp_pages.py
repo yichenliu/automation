@@ -40,6 +40,8 @@ def home(request: Request, wid: int, user=Depends(signed_in)):
                                         Message.status.in_(["queued", "thinking", "waiting_ai"])).first()
         return render(request, "app/empty.html", ws=ws, building=building)
     waiting = my_approvals(ws, request.state.member)
+    from .erp import ready_for
+    moves = ready_for(engine)
     # what people start themselves: the lists they've added to by hand lately, then the ones with stages or documents
     made = dict(db.session.query(Record.table, db.func.count(RecordChange.id)).join(Record, Record.id == RecordChange.record_id)
                 .filter(RecordChange.workspace_id == ws.id, RecordChange.kind == "created", RecordChange.by_id.isnot(None),
@@ -103,7 +105,7 @@ def home(request: Request, wid: int, user=Depends(signed_in)):
                 x["next"] = i == nxt
     hour = engine.now.hour
     hello = "Good morning" if hour < 12 else "Good afternoon" if hour < 18 else "Good evening"
-    return render(request, "app/home.html", ws=ws, e=engine, waiting=waiting, start=start, recent=recent, pages=pages, steps=steps,
+    return render(request, "app/home.html", ws=ws, e=engine, waiting=waiting, moves=moves, start=start, recent=recent, pages=pages, steps=steps,
                   hello=hello, first=user.display.split(" ")[0])
 
 
@@ -335,10 +337,12 @@ def page_widgets(engine, p, period=None):
         if w["type"] == "activity":
             widgets.append({**w, "items": _activity(engine, w)})
             continue
-        if w["type"] == "my_work":  # what's waiting for whoever is looking
+        if w["type"] == "my_work":  # what's waiting for whoever is looking: what they're asked, and their own next moves
+            from .erp import ready_for
             mine = my_approvals(engine.ws, member) if member is not None else []
+            moves = ready_for(engine)
             widgets.append({**w, "items": [{"a": a, "r": engine.get(a.record_id) if a.record_id else None} for a in mine[:8]],
-                            "total": len(mine)})
+                            "moves": moves[:max(8 - len(mine), 3)], "total": len(mine) + len(moves)})
             continue
         t = engine.tables.get(w.get("table"))
         t = engine.tables.get(w.get("table"))

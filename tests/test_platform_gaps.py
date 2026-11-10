@@ -313,3 +313,34 @@ def test_an_example_meets_a_control_that_needs_another_record(app):
     _, (one, two) = trial.try_out(ws, [went, stopped], screens=False)
     assert one["ok"], one
     assert two["ok"], two
+
+
+def test_what_waits_for_someone_includes_their_own_next_moves(app):
+    """The original's "Needs you": an order the seller proposed changes to waits for the purchasing officer's Send again,
+    though nobody asked them anything; a request turned down waits for whoever raised it to change and send it again."""
+    from app.web.erp import ready_for
+    bp = _ok([{"do": "set_team", "key": "buyers", "name": "Buyers"},
+              {"do": "add_list", "key": "orders", "label": "Orders", "singular": "Order", "fields": [{"type": "text", "key": "name", "label": "Name"}],
+               "stages": {"stages": ["Draft", "Changes proposed", "Sent", "Turned down"], "moves": [
+                   {"from": ["Draft"], "to": "Sent", "button": "Send"},
+                   {"from": ["Changes proposed"], "to": "Sent", "button": "Send again", "who": ["buyers"]},
+                   {"from": ["Turned down"], "to": "Draft", "button": "Change and resubmit"}]}}])
+    ws = _ws(app, bp)
+    people = {}
+    for name, teams in (("bea", ["buyers"]), ("sam", [])):
+        people[name] = User(email=f"{name}@example.com", name=name.title())
+        people[name].set_password("x" * 12)
+        db.session.add(people[name])
+        db.session.flush()
+        db.session.add(Membership(workspace_id=ws.id, user_id=people[name].id, role="editor", teams=teams))
+    db.session.commit()
+
+    def engine(name):
+        return Engine(ws, by=name, member=Membership.query.filter_by(workspace_id=ws.id, user_id=people[name].id).one())
+    e = Engine(ws)
+    proposed = e.create("orders", {"name": "Hose", "status": "Changes proposed"})
+    e.create("orders", {"name": "Draft one"})
+    mine = engine("sam").create("orders", {"name": "Gloves"})
+    e.update(e.get(mine.id), {"status": "Turned down"})
+    assert [(x["r"].id, x["move"]) for x in ready_for(engine("bea"))] == [(proposed.id, "Send again")]
+    assert [(x["r"].id, x["move"]) for x in ready_for(engine("sam"))] == [(mine.id, "Change and resubmit")]

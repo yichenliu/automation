@@ -188,6 +188,42 @@ def my_approvals(ws, member):
                                              engine=engine) and in_my_queue(a)]
 
 
+def ready_for(engine, most=20):
+    """The records whose next move is this person's own (what the original "Needs you" lists besides approvals): a stage
+    button only their team, role or a person field naming them may press (an order the seller proposed changes to, for
+    the purchasing officer: Send again), or, on their own record turned down, the button that takes it on again. Oldest
+    waiting first: [{"r", "t", "move", "stage"}]."""
+    if engine is None or engine.role is None or engine.portal_contact is not None:
+        return []
+    from ..models import Approval
+    asked = {a.record_id for a in Approval.query.filter_by(workspace_id=engine.ws.id, status="pending").all()}
+    teams = {tm["key"] for tm in schema.teams(engine.bp)}
+    out = []
+    for t in engine.visible_blueprint().get("tables", []):
+        flow = t.get("workflow")
+        if not flow or t.get("embedded") or not engine.can(t, "edit"):
+            continue
+        field, start = flow["field"], schema.start_stage(t)
+        for m in flow.get("transitions") or []:
+            who = [w for w in m.get("who") or [] if w != "portal"]
+            if schema.says_no(m["to"]) or not m.get("from"):
+                continue
+            named = [w for w in who if w in teams and w in engine.teams or "." in w or (w not in teams and w not in schema.WHO_WORDS and w != "creator")]
+            again = not who and any(schema.says_no(x) for x in m["from"])  # their own, turned down: changed and sent again
+            if not named and not again:
+                continue
+            for r in engine.query(t["key"], [{"field": field, "op": "one_of", "value": list(m["from"])}])[:most]:
+                if r.id in asked or any(x["r"].id == r.id for x in out):
+                    continue
+                if again and getattr(r, "created_by_id", None) != engine.user_id:
+                    continue
+                if named and not any(engine.is_who(w, r) for w in named):
+                    continue
+                out.append({"r": r, "t": t, "move": m.get("label") or f"Move to {m['to']}", "stage": (r.data or {}).get(field)})
+    out.sort(key=lambda x: x["r"].updated_at or x["r"].created_at)
+    return out[:most]
+
+
 def in_my_queue(a, later=False):
     """A task someone else in its team took isn't in anyone else's queue; one put off ("not now") comes back on its day.
     With `later`, the ones put off instead."""
@@ -212,7 +248,7 @@ def ai_count(ws):
 
 @context_processor
 def chrome():
-    return {"nav_for": nav, "unread_for": unread, "approvals_for": my_approvals, "suggestions_for": open_suggestions, "ai_count_for": ai_count,
+    return {"nav_for": nav, "unread_for": unread, "approvals_for": my_approvals, "ready_for": ready_for, "suggestions_for": open_suggestions, "ai_count_for": ai_count,
             "feedback_for": lambda ws: url_for("app.feedback", wid=ws.id), "checks_for": lambda ws: url_for("app.checks", wid=ws.id)}
 
 
