@@ -105,8 +105,6 @@ recording = contextvars.ContextVar("recording", default=None)
 # The builder at work (a turn, or writing an owner's check): it asks with less chance and a fixed seed, so the same
 # request gets the same design, not a different one each time it's asked (AI_BUILDER_TEMPERATURE, AI_BUILDER_SEED).
 building = contextvars.ContextVar("building", default=False)
-# characters of thinking a call may do before it's taken to have run away (Stuck): a step that never needs more says so
-think_limit = contextvars.ContextVar("think_limit", default=None)
 # how many times the builder has asked again after the model went round in a loop: each new go a little less fixed
 # (warmer, another seed), so it doesn't take the same path into the same loop
 again = contextvars.ContextVar("again", default=0)
@@ -637,7 +635,7 @@ def _settings(think, purpose, priority):
     off part way (a step that ran out answered again without any thinking, all of it wasted), and said outright, so no
     server's own smaller default (4,096 at some) applies. A model that allows less says so, and its own limit is learned
     (_step); it's charged only for what it writes. A model that runs away is still stopped: going round in circles or
-    repeating itself, far past what a step needs (build.THINK_LIMITS), and at the deadline."""
+    repeating itself, and at the deadline."""
     cfg = settings()
     thinks = cfg["AI_THINK"] if think is None else think
     steady, tries = building.get() or purpose == "builder", again.get()
@@ -771,16 +769,12 @@ class _Answer:
         self.response, self.on_progress, self.deadline, self.url = response, on_progress, deadline, url
         self.thinking, self.content, self.reason, self.last = [], [], None, 0.0
         self.thought = self.pondered = self.size = self.looked = self.blank = 0
-        self.limit = think_limit.get()
 
     def think(self, text):
         if not text:
             return
         self.thinking.append(text)
         self.thought += len(text)
-        if self.limit and self.thought > self.limit:  # far past what this step needs when it comes out right
-            _close(self.response)
-            raise Stuck("The AI thought for far longer than this step needs.")
         if self.thought - self.pondered >= 3000:  # thinking that goes round in circles: stop it now, not at the length limit
             self.pondered = self.thought
             if _repeating("".join(self.thinking)):

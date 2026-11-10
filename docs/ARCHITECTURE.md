@@ -113,8 +113,7 @@ Only 1 was the model's own judgment.
     low, medium, xhigh). "think": true alone is the model's default, medium. There's no thinking budget: every model is
     asked for the same length, AI_MAX_TOKENS (128,000 unless set), thinking and answer together, said outright so no
     server's smaller default applies. A model that allows less names its own limit in the refusal, and that's learned;
-    a server that names only its context is sent no length. Runaways are stopped by loop detection, per-step ceilings
-    measured from real runs (build.THINK_LIMITS) and the deadline.
+    a server that names only its context is sent no length. Runaways are stopped by loop detection and the deadline.
   - Search by meaning stays on this computer unless chosen elsewhere. Changing its model reads the knowledge again.
   - A key turned away, or an account out of credit, waits like a server that's down: the work carries on once fixed.
   - Recorded builder calls say which provider and model wrote them, so cloud answers can be kept apart from the

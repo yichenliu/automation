@@ -295,29 +295,19 @@ def test_a_fix_that_changed_nothing_asks_what_should_happen_instead_of_offering_
     assert "Fix these" not in again and "in your own words what should happen" in again and "Approves quotes" in again
 
 
-def test_a_step_that_thinks_far_past_what_it_needs_is_stopped_early(app):
-    """Round 44: the understand step ran away in 5 of 56 calls, about 12 minutes each before the length limit; when it
-    came out right it never thought more than 15,000 characters. Past its ceiling it's stopped there (and then answered
-    without thinking, as any runaway)."""
+def test_no_step_s_thinking_is_cut_off_for_its_length(app):
+    """How much a model thinks is its effort level. The understand step had a ceiling, set from what it needed at medium
+    effort (round 44): at xhigh it cut off the step's normal thinking, and the step answered without any. Only thinking
+    that goes round in circles is stopped (and the deadline)."""
     from app import ai
-    from app.builder import build
     import hashlib
 
-    def fresh(n, salt):  # thinking that never repeats itself: only the ceiling stops it
+    def fresh(n, salt):  # thinking that never repeats itself
         return " ".join(hashlib.sha256(f"{salt}{i}".encode()).hexdigest()[:9] for i in range(n))
-    token = ai.think_limit.set(build.THINK_LIMITS["understand"])
-    try:
-        answer = ai._Answer(None, None, None, "http://model")
-        for k in range(15):  # 15,000 or so: within it
-            answer.think(fresh(100, f"a{k}"))
-        with __import__("pytest").raises(ai.Stuck, match="far longer than this step needs"):
-            for k in range(20):
-                answer.think(fresh(100, f"b{k}"))
-    finally:
-        ai.think_limit.reset(token)
-    unlimited = ai._Answer(None, None, None, "http://model")
-    for k in range(60):  # other steps: no ceiling but the length limit
-        unlimited.think(fresh(100, f"c{k}"))
+    answer = ai._Answer(None, None, None, "http://model")
+    for k in range(200):  # 200,000 characters of thinking: never stopped for its length
+        answer.think(fresh(100, f"t{k}"))
+    assert answer.thought > 190000
 
 
 def test_the_candidate_fixes_made_at_once_are_kept_with_the_turns_calls(app, monkeypatch):

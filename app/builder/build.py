@@ -258,13 +258,6 @@ def _patch_lines(classes):
 
 # --- asking ---------------------------------------------------------------------------------------------------------
 
-# How much a step may think (characters) before it's taken to have run away and is answered straight away instead: what
-# it needed when it came out right, with room to spare. Round 44: the understand step never thought more than 15,000
-# characters when it came out right, but ran away in 5 of 56 calls (mostly an owner's follow-up), each about 12 minutes
-# before the length limit stopped it. Steps not named here think as long as their effort level takes them.
-THINK_LIMITS = {"understand": 30000}
-
-
 def thinks(kind):
     """Whether this step of the builder thinks before it answers (AI_THINK_STEPS, or AI_THINK_BUILDER for all of them)."""
     cfg = settings()
@@ -282,7 +275,6 @@ def _ask(system, user, schema_, progress=None, tries=0, kind=None, unreadable=Fa
     token = ai.again.set(tries)
     messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
     think, lost = thinks(kind), None
-    ceiling = ai.think_limit.set(THINK_LIMITS.get(kind or ""))
     try:
         # thinking that went round in circles, or used up the room for the answer: answered straight away instead, not
         # asked again to think the same way (round 43: three such tries took the owner's turn 38 minutes)
@@ -292,7 +284,6 @@ def _ask(system, user, schema_, progress=None, tries=0, kind=None, unreadable=Fa
             think = False
     finally:
         ai.again.reset(token)
-        ai.think_limit.reset(ceiling)
     calls = ai.recording.get()
     if calls is not None and kind:
         mine = next((c for c in reversed(calls) if c.get("messages") == messages and c.get("content") == content), None)
