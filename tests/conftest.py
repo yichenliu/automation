@@ -16,6 +16,7 @@ def _no_cloud(monkeypatch):
     monkeypatch.setattr(providers, "_list", lambda p, url, key: real(p, url, key)
                         if str(url).startswith(("http://127.0.0.1", "http://localhost")) else [])
     ai._levels.clear()  # what one test's fake Ollama said a model's thinking levels were isn't another's
+    ai._short.clear()  # nor which servers cut answers short at a length of their own
 
 
 @pytest.fixture(scope="session")

@@ -97,7 +97,7 @@ class Config:
     AI_THINK = (os.getenv("AI_THINK") or "false").lower() == "true"
     # The builder's own reasoning-heavy work (designing, fixing what the try-out found, writing worked examples) thinks
     # first when this is on, whatever AI_THINK says for the quick jobs. How hard it thinks is AI_EFFORT; there's no budget
-    # (ai._settings: a step that thinks may write as much as the model allows).
+    # or length limit (ai._settings: an answer is as long as it takes).
     TENANCY_RLS = (os.getenv("TENANCY_RLS") or "true").lower() != "false"  # PostgreSQL row-level security behind the workspace filters
     FILES_BACKEND = (os.getenv("FILES_BACKEND") or "local").lower()  # local (the data folder) or s3 (S3-compatible object storage)
     S3_BUCKET = os.getenv("S3_BUCKET") or ""
@@ -112,7 +112,6 @@ class Config:
     # of them when AI_THINK_BUILDER is on, none when it's off.
     AI_THINK_STEPS = os.getenv("AI_THINK_STEPS") or ""
     AI_NUM_CTX = int(os.getenv("AI_NUM_CTX") or 0)  # 0: use the context size Ollama already has loaded
-    AI_MAX_TOKENS = int(os.getenv("AI_MAX_TOKENS") or 12000)  # an answer's room when the model doesn't think first
     AI_TEMPERATURE = float(os.getenv("AI_TEMPERATURE") or 0.6)  # lower than most models' 1.0: designs and records need care, not flair
     # The builder's own work is steadier: less chance, and a fixed seed, so the same request gets the same design
     # (AI_BUILDER_SEED=none for a different one each time)

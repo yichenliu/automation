@@ -565,13 +565,27 @@ def _ask(messages, schema, think, on_progress, purpose, priority, workspace_id, 
         try:
             began = time.monotonic()
             _skip_if_down(route.url)  # it went while this call waited
-            asking = _settings(think, purpose, priority, cloud=bool(p.cloud))
+            asking = _settings(think, purpose, priority)
+
+            def once(route):
+                """Asked with no length; a server that cut the answer short at a default of its own (some cloud ones
+                stop at 4,096 tokens unless told more) is asked again for the most it allows, and remembered."""
+                sent = {**asking, "max_tokens": MOST_OUT} if (route.url, route.model) in _short else asking
+                try:
+                    return ask(route, messages, schema, sent, on_progress, deadline, usage)
+                except CutOff:
+                    if sent["max_tokens"]:  # cut off at the most it allows: it ran that long
+                        raise
+                    _short.add((route.url, route.model))
+                    log.info("The AI at %s (%s) cut an answer short at a length of its own; asking again for the most it allows",
+                             route.url, route.model)
+                    return ask(route, messages, schema, {**asking, "max_tokens": MOST_OUT}, on_progress, deadline, usage)
             try:
-                content, thinking = ask(route, messages, schema, asking, on_progress, deadline, usage)
+                content, thinking = once(route)
             except _Named as named:  # the model chosen as people write it: asked again by the provider's own name for it
                 _named[(route.provider, route.url, route.model)] = named.model
                 route = route._replace(model=named.model)
-                content, thinking = ask(route, messages, schema, asking, on_progress, deadline, usage)
+                content, thinking = once(route)
             took = time.monotonic() - began
         finally:
             gate.done(workspace_id)
@@ -628,26 +642,28 @@ def _waiting_note(on_progress):
     return note
 
 
-# What a cloud model that thinks is asked for: as long an answer as it allows. It says its limit when that's less, and
-# that's learned (_step); it's charged only for what it writes.
+# The most a model is asked for when a length must be sent: Anthropic's API won't take a request without one, and a
+# server that cut an answer short at a default of its own is asked for this after (_short). A model that allows less
+# says so, and that's learned (_step); it's charged only for what it writes.
 MOST_OUT = 128000
 
+_short = set()  # (address, model) whose server cut an answer short at a default of its own when sent no length
 
-def _settings(think, purpose, priority, cloud=False):
+
+def _settings(think, purpose, priority):
     """What's asked of the model besides the conversation, the same whichever server answers: whether it thinks first,
-    how long the answer may be, and how much chance it takes.
+    and how much chance it takes.
 
-    A step that thinks has no budget of ours: how much it thinks is its effort level (AI_EFFORT), and a length limit
-    only cut thinking off part way, wasting it all (the step then answered without any). So it may write as much as the
-    model allows: on the platform's own machines no limit is sent, and a cloud model is asked for MOST_OUT. Thinking
-    that runs away is still stopped: going round in circles, far past what a step needs (build.THINK_LIMITS), and at
-    the deadline. One that doesn't think has AI_MAX_TOKENS: the answer's room."""
+    No length limit: an answer is as long as it takes, thinking and all. How much a model thinks is its effort level
+    (AI_EFFORT); a limit only cut answers and thinking off part way (a step that ran out answered again without any
+    thinking, all of it wasted). A model that runs away is still stopped: going round in circles or repeating itself,
+    far past what a step needs (build.THINK_LIMITS), and at the deadline. Where a length must be sent, it's the most the
+    model allows (MOST_OUT, learned down to its own)."""
     cfg = settings()
     thinks = cfg["AI_THINK"] if think is None else think
     steady, tries = building.get() or purpose == "builder", again.get()
     seed = cfg.get("AI_BUILDER_SEED")
-    return {"think": thinks, "priority": priority,
-            "max_tokens": cfg["AI_MAX_TOKENS"] if not thinks else MOST_OUT if cloud else None,
+    return {"think": thinks, "priority": priority, "max_tokens": None,
             "temperature": min(0.9, (cfg.get("AI_BUILDER_TEMPERATURE", 0.3) if steady else cfg.get("AI_TEMPERATURE", 0.6)) + 0.2 * tries),
             "top_p": 0.9, "seed": seed + tries if steady and seed is not None else None, "num_ctx": cfg.get("AI_NUM_CTX") or 0}
 
@@ -891,7 +907,7 @@ def _ollama_chat(route, messages, schema, ask, on_progress, deadline, usage):
     body = {"model": route.model, "messages": messages, "stream": True, "think": think}
     if schema:
         body["format"] = schema
-    body["options"] = {"num_predict": ask["max_tokens"] or -1, "top_p": ask["top_p"], "temperature": ask["temperature"],
+    body["options"] = {**({"num_predict": -1} if ask["max_tokens"] else {}), "top_p": ask["top_p"], "temperature": ask["temperature"],
                        **({"seed": ask["seed"]} if ask["seed"] is not None else {}),
                        **({"num_ctx": ask["num_ctx"]} if ask["num_ctx"] else {})}
     response = _post(route, "/api/chat", body, deadline, usage)
@@ -1060,7 +1076,7 @@ def _openai_parts(p, ask, schema):
         parts.append(_Part("think:on" if ask["think"] else "think:off", ("reasoning",),
                            [{"reasoning": {"effort": effort if effort in ("low", "medium", "high") else "high"}} if ask["think"] else
                             {"reasoning": {"enabled": False}}, {}]))
-    if n:  # none when thinking on the platform's own machines: as long as the server allows
+    if n:  # none unless the server cut an answer short at a default of its own (_short)
         first, other = p.tokens, "max_tokens" if p.tokens == "max_completion_tokens" else "max_completion_tokens"
         parts.append(_Part("tokens", ("max_tokens", "max_completion_tokens"), [{first: n}, {other: n}, {}]))
     if schema:
@@ -1208,9 +1224,9 @@ def _anthropic_turns(messages):
 
 
 def _old_claude_budget(most):
-    """A Claude model from before adaptive thinking is given a budget to think in: all it may write but the answer's
-    room."""
-    return max(1024, most - max(2048, int(settings().get("AI_MAX_TOKENS") or 4096)))
+    """A Claude model from before adaptive thinking thinks only in a budget (newer ones decide for themselves): three
+    quarters of all it may write, the rest the answer's."""
+    return max(1024, most * 3 // 4)
 
 
 def _anthropic_parts(ask, schema):

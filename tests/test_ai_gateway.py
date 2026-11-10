@@ -406,7 +406,7 @@ def test_ollama_still_answers_as_it_did_and_says_what_it_cost(app, fake, monkeyp
     chats = lambda: [s for s in fake.seen if s["path"] == "/api/chat"]  # noqa: E731 - besides asking what levels it has
     sent = chats()[0]
     assert sent["body"]["format"] == SCHEMA and sent["body"]["think"] is True  # an Ollama that names no levels: on
-    assert sent["body"]["options"]["num_predict"] == -1  # thinking: as long as the model takes, its effort level says how long
+    assert "num_predict" not in sent["body"]["options"]  # no length: as long as it takes, its effort level says how long
     calls = _calls("assistant")
     assert (calls["provider"], calls["tokens_in"], calls["tokens_out"]) == ("ollama", 50, 3)
     fake.reply = lambda h, body: h.send_json(400, {"error": "invalid format"})
