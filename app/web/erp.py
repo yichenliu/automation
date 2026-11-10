@@ -60,6 +60,12 @@ def my_space(engine):
     return next((sp for sp in schema.spaces(engine.bp) if set(sp["for"]) & engine.teams or engine.role in sp["for"]), None)
 
 
+def _home_of(engine, page):
+    """Whether a page is this person's home (Home opens it), so it isn't in their menu a second time."""
+    who = set(page.get("home_for") or [])
+    return bool(who) and engine is not None and (engine.role in who or bool(who & engine.teams))
+
+
 def _space_sections(engine, space):
     from ..engine import flows
     visible = engine.visible_blueprint()
@@ -78,7 +84,7 @@ def _space_sections(engine, space):
                 items.append({"kind": "table", "key": t["key"], "view": item.get("view") if view else None, "icon": t.get("icon") or "table",
                               "label": item.get("label") or (view["label"] if view and view["label"] not in ("All", t["label"]) else t["label"]),
                               "count": count})
-            elif item.get("page") in pages:
+            elif item.get("page") in pages and not _home_of(engine, pages[item["page"]]):  # (their home is what Home opens)
                 p = pages[item["page"]]
                 items.append({"kind": "page", "key": p["key"], "label": p["label"], "icon": p.get("icon") or "layout-dashboard"})
             elif item.get("flow") in starts:
@@ -112,7 +118,7 @@ def nav(ws):
             sections.append({"label": m["label"], "items": items})
             used |= {(i["kind"], i["key"]) for i in items}
     loose = [{"kind": "page", "key": p["key"], "label": p["label"], "icon": p.get("icon") or "layout-dashboard"}
-             for p in bp_.get("pages", []) if ("page", p["key"]) not in used]
+             for p in bp_.get("pages", []) if ("page", p["key"]) not in used and not _home_of(engine, p)]
     loose += [{"kind": "table", "key": t["key"], "label": t["label"], "icon": t.get("icon") or "table"} for t in tables if ("table", t["key"]) not in used]
     if loose:
         sections.insert(0, {"label": None, "items": loose})

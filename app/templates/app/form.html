@@ -13,14 +13,18 @@
   {% for fid in attach or [] %}<input type="hidden" name="attach_file" value="{{ fid }}">{% endfor %}
   {% if errors.get('_') %}<div class="flash error">{{ icon('triangle-alert') }}<span>{{ errors['_'] }}</span></div>{% endif %}
   {% if errors and not errors.get('_') %}<div class="flash error">{{ icon('triangle-alert') }}<span>{{ errors|length }} thing{{ 's' if errors|length != 1 }} below need{{ 's' if errors|length == 1 }} a look.</span></div>{% endif %}
+  {% set placed = sections|selectattr('lines')|map(attribute='lines')|list %}
   {% for s in sections %}
+  {% if s.rest %}{# the lines nobody placed come before what's left over #}
+  {% for c in children if c.table.key not in placed %}{% set rows = line_rows.get(c.table.key, []) %}{% set step_label = none %}{% include "app/_lines_card.html" %}{% endfor %}
+  {% endif %}
   {% if s.lines %}{# a step that is the record's lines (a tender's What to price), where it stands among the others #}
   {% for c in children if c.table.key == s.lines %}{% set rows = line_rows.get(c.table.key, []) %}{% set step_label = s.label %}{% include "app/_lines_card.html" %}{% endfor %}
   {% endif %}
   {% set editable = s.fields|rejectattr('type', 'in', ['formula', 'rollup', 'lookup', 'autonumber', 'created_time', 'modified_time', 'created_by', 'modified_by', 'button'])|list %}
   {% set auto = s.fields|selectattr('type', 'in', ['formula', 'rollup', 'lookup', 'autonumber', 'created_time', 'modified_time', 'created_by', 'modified_by', 'button'])|rejectattr('type', 'equalto', 'button')|list %}
   {% if editable %}
-  <div class="card mb-2" data-step="{{ s.label or 'Details' }}" {% if s.show_if %}data-show-if='{{ s.show_if|json }}'{% endif %}>{% if s.label %}<div class="card-head"><h2>{{ s.label }}</h2></div>{% endif %}
+  <div class="card mb-2" data-step="{{ (s.label or 'Details')|unnumbered }}" {% if s.show_if %}data-show-if='{{ s.show_if|json }}'{% endif %}>{% if s.label %}<div class="card-head"><h2>{{ s.label|unnumbered }}</h2></div>{% endif %}
     {% set asked = editable|rejectattr('key', 'equalto', stage_lock.key if (not r and stage_lock) else '')|list %}
     {# a long form shows what must be filled in, what already is, and the first few; the rest wait under "More details" #}
     {% set more = asked|selectattr('key', 'in', waiting or [])|list %}
@@ -38,8 +42,9 @@
     <div class="card-body summary">{% for f in auto %}<div><span class="muted small">{{ f.label }}</span><b>{{ e.display(f, e.value(r, f.key)) }}</b></div>{% endfor %}</div></div>
   {% endif %}
   {% endfor %}
-  {% set placed = sections|selectattr('lines')|map(attribute='lines')|list %}
+  {% if not sections|selectattr('rest')|list %}
   {% for c in children if c.table.key not in placed %}{% set rows = line_rows.get(c.table.key, []) %}{% set step_label = none %}{% include "app/_lines_card.html" %}{% endfor %}
+  {% endif %}
   <div class="form-actions">
     {% if first_move %}<button class="btn primary" name="then" value="{{ first_move[0] }}">{{ icon('send') }}{{ first_move[1].label or ('Save and move to ' ~ first_move[1].to) }}</button>
       <button class="btn">{{ icon('check') }}Save for later{% if stage_lock and stage_lock.value %} ({{ stage_lock.value|lower }}){% endif %}</button>

@@ -247,6 +247,9 @@ td.editable, dd.editable { cursor: text; } td.editable:hover, dd.editable:hover 
 .tabs a { display: inline-flex; align-items: center; gap: 6px; padding: 8px 12px; color: var(--muted); font-weight: 560; border-bottom: 2px solid transparent; margin-bottom: -1px; white-space: nowrap; }
 .tabs a:hover { color: var(--text); text-decoration: none; }
 .tabs a.active { color: var(--accent-text); border-bottom-color: var(--accent); }
+.tab-count { font-size: 11.5px; font-weight: 600; padding: 1px 7px; border-radius: 999px; background: var(--surface-2, #eef0f4); color: var(--muted); }
+.tabs a.active .tab-count { background: var(--accent-soft, #ecebfd); color: var(--accent-text); }
+.quiet-related summary { cursor: pointer; list-style: none; } .quiet-related summary::-webkit-details-marker { display: none; }
 .toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
 .search-box { display: flex; align-items: center; gap: 7px; padding: 0 10px; height: 32px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
   background: var(--panel); color: var(--faint); width: 260px; max-width: 100%; }

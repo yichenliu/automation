@@ -53,6 +53,13 @@ def home(request: Request, wid: int, user=Depends(signed_in)):
     start = sorted([t for t in tables if engine.can(t, "edit") and (made.get(t["key"]) or t["key"] not in started_by_rules)],
                    key=lambda t: (-made.get(t["key"], 0), -((t["key"] in linked_to) + bool(t.get("workflow") or t.get("documents"))),
                                   order[t["key"]]))[:4]
+    from .erp import my_space
+    space = my_space(engine)
+    if space is not None:  # someone with their team's own menu starts what's in it (a requester: a request), in its order
+        theirs = [i["table"] for g in space["groups"] for i in g["items"] if i.get("table")]
+        by_key = {t["key"]: t for t in tables}
+        own = [by_key[k] for k in dict.fromkeys(theirs) if k in by_key and engine.can(by_key[k], "edit") and k not in started_by_rules]
+        start = own[:4] or start
     seen, recent = set(), []
     for change in (RecordChange.query.filter_by(workspace_id=ws.id, by_id=user.id).order_by(RecordChange.id.desc()).limit(60)):
         if change.record_id in seen or len(recent) >= 6:

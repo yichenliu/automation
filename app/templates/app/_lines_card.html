@@ -1,5 +1,5 @@
 {# a line table's editor on a record's form (c: the child table; rows: its lines) #}
-  <div class="card mb-2" id="lines-{{ c.table.key }}" data-step="{{ step_label or c.table.label }}"><div class="card-head"><h2 class="grow">{{ step_label or c.table.label }}</h2><span class="faint small hide-phone">A new row appears as you type.</span></div>
+  <div class="card mb-2" id="lines-{{ c.table.key }}" data-step="{{ (step_label or c.table.label)|unnumbered }}"><div class="card-head"><h2 class="grow">{{ (step_label or c.table.label)|unnumbered }}</h2><span class="faint small hide-phone">A new row appears as you type.</span></div>
     <div class="table-wrap"><table class="grid lines-editor" data-lines="{{ c.table.key }}" data-next="{{ rows|length }}">
       <thead><tr>{% for f in c.fields %}<th class="{{ 'num' if f.type in ('number', 'money', 'percent', 'duration') or (f.type == 'formula' and f.format in ('number', 'money', 'percent')) }}">{{ f.label }}</th>{% endfor %}<th></th></tr></thead>
       <tbody>

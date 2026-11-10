@@ -539,7 +539,8 @@ def _rule_moves_on(engine, t, field, at, later):
         if a["trigger"]["type"] == "button":
             continue
         for x in schema.steps_of(a["actions"]):
-            if x.get("type") != "update_record" or str((x.get("values") or {}).get(field, "")) not in later:
+            said = str((x.get("values") or {}).get(field, ""))
+            if x.get("type") != "update_record" or (said not in later and "{{" not in said):  # (one set from what came in: any)
                 continue
             own = a["trigger"].get("table") == t["key"] and not x.get("target")
             linked = x.get("target") and (engine.tables.get(a["trigger"].get("table")) or {}) and \
@@ -1337,6 +1338,10 @@ def _take_along(engine, record, t, target, trial=None, last=True, given=(), othe
         if str(at or "").lower() == str(target).lower():
             return
         way = _way(t, at, str(target))
+        if not way and engine.role == "owner" and last and str(target).lower() in schema.stages_set_by_rules(engine.bp, t):
+            # only the app's rules move records there (an approval, a receipt): the owner may put it there, as the app lets them
+            engine.update(record, {field: next(s for s in schema.stages(t) if s.lower() == str(target).lower())})
+            return
         if not way:
             open_ = [m["to"] for _, m, _ in engine.moves(record)]
             raise FieldErrors({"_": f"from {at} there's no way to move it to {target} (it can go to: {', '.join(open_) or 'nowhere'})"})

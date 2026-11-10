@@ -823,11 +823,17 @@ class Engine:
         key = (table, said, part)
         if key not in self._titled:
             from .planner import Planner
+            head = said.split(" · ")[0].strip()  # "40141700 · pipe fittings": the code is what's kept
             if table in self._rows or table not in self.tables:
                 rows = self.rows(table)
             else:
-                rows = Planner(self, table).titled(said, part)
-            self._titled[key] = {r.id for r in rows if (said in self.title(r).lower() if part else self.title(r).lower() == said)}
+                rows = Planner(self, table).titled(head, part)
+            tk = schema.title_field(self.tables[table]) if table in self.tables else None
+
+            def called(r):  # by its full name, or the number or code alone (CC100 for "CC100 · Maintenance")
+                names = {self.title(r).lower(), str((r.data or {}).get(tk) or "").strip().lower()} - {""}
+                return any(said in n for n in names) if part else said in names
+            self._titled[key] = {r.id for r in rows if called(r)}
         return self._titled[key]
 
     # --- sealed records (bids until the tender closes) -----------------------------------------------------------------
@@ -999,7 +1005,11 @@ class Engine:
             value = self.value(record, key) if key else None
             text = self.display(schema.field(t, key), value) if key else ""
             kind = schema.field(t, key)["type"] if key else None
-            if text not in ("", "—") and kind in ("link", "autonumber") and record.id is not None and len(self._naming) == 1:
+            own = schema.name_field(t, key) if key and kind in ("autonumber", "text") else None
+            named = str((record.data or {}).get(own) or "").strip() if own else ""
+            if text not in ("", "—") and named and (kind == "autonumber" or schema.is_code(key)):
+                text = f"{text} · {named}"  # REQ-0001 · Pipe fittings for the wash plant; 40141700 · Pipe fittings
+            elif text not in ("", "—") and kind in ("link", "autonumber") and record.id is not None and len(self._naming) == 1:
                 others = [self.display(f, self.value(record, f["key"])) for f in t["fields"]
                           if f["type"] == "link" and f["key"] != key and not f.get("multiple") and (record.data or {}).get(f["key"])][:2]
                 text = " · ".join([text] + [o for o in others if o not in ("", "—")])

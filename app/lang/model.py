@@ -176,13 +176,14 @@ OPS = ("equals", "not_equals", "contains", "is_empty", "not_empty", "greater_tha
 
 class Condition(Base):
     """field: a field of the record, or a linked record's through dots (order.status). value: what it's compared with
-    (a choice in the owner's words, a number, a date; days for within_… and more_than_days_ago; a list for one_of).
+    (a choice in the owner's words, a number, a date; days for within_… and more_than_days_ago; a list for one_of
+    and not_one_of).
     Or, as text, a formula that must hold, which can look at other records: 'count(client.invoices where status =
     "Unpaid" and days_since(due_date) > 30) == 0'. Or a group: {"any": [conditions]} holds when one does, {"all":
     [...]} when every one does."""
     field: str | None = None
     op: Literal["equals", "not_equals", "contains", "is_empty", "not_empty", "greater_than", "less_than", "at_least",
-                "at_most", "one_of", "before_today", "after_today", "within_next_days", "within_last_days",
+                "at_most", "one_of", "not_one_of", "before_today", "after_today", "within_next_days", "within_last_days",
                 "more_than_days_ago", "today", "this_week", "last_week", "this_month", "last_month", "this_quarter",
                 "last_quarter", "this_year", "last_year", "this_financial_year", "last_financial_year", "changed",
                 "changed_to"] | None = None

@@ -705,3 +705,21 @@ def test_a_percentage_two_links_on_and_one_inside_a_product():
     assert schema.percents_fixed(inv, "subtotal * discount_percent / 100 > 5", tables) == "subtotal * discount_percent > 5"
     assert schema.percents_fixed(inv, "discount_percent + 5 > 10", tables) == "discount_percent + 5 > 10"
     assert schema.percents_fixed(inv, "(discount_percent > 10) and subtotal > 100", tables) == "(discount_percent > 0.1) and subtotal > 100"
+
+
+def test_a_button_the_platform_added_goes_once_a_rule_moves_records_there():
+    """Requests made before their approval rule: the platform added "Move to Approved" so the stage wasn't out of reach,
+    and it stayed after the rule came, letting anyone approve their own request. A plain list of stages keeps its own."""
+    bp = _ok([{"do": "add_list", "key": "asks", "label": "Asks", "singular": "Ask", "fields": [{"type": "text", "key": "name", "label": "Name"}],
+               "stages": {"stages": ["Draft", "Submitted", "Approved"], "moves": [{"from": ["Draft"], "to": "Submitted", "button": "Submit"}]}}])
+    moves = schema.table(bp, "asks")["workflow"]["transitions"]
+    assert any(m["to"] == "Approved" and m.get("filled") for m in moves)
+    bp = _ok([{"do": "add_rule", "rule": {"key": "ok", "name": "Approve it", "when": {"on": "reaches", "list": "asks", "stage": "Submitted"},
+                                          "steps": [{"do": "approval", "who": "admin", "message": "OK?"},
+                                                    {"do": "set", "values": [{"field": "status", "to": "Approved"}]}]}}], bp)
+    assert [m["to"] for m in schema.table(bp, "asks")["workflow"]["transitions"]] == ["Submitted"]
+    plain = _ok([{"do": "add_list", "key": "jobs", "label": "Jobs", "singular": "Job", "fields": [{"type": "text", "key": "name", "label": "Name"}],
+                  "stages": {"stages": ["Booked", "In progress", "Done"]}},
+                 {"do": "add_rule", "rule": {"key": "go", "name": "Go", "when": {"on": "added", "list": "jobs"},
+                                             "steps": [{"do": "set", "values": [{"field": "status", "to": "In progress"}]}]}}])
+    assert "In progress" in [m["to"] for m in schema.table(plain, "jobs")["workflow"]["transitions"]]

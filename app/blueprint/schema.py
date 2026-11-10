@@ -83,6 +83,7 @@ AGGREGATES = ["count", "sum", "avg", "min", "max", "median"]
 AGG_ALIASES = {"average": "avg", "mean": "avg", "total": "sum", "number": "count", "minimum": "min", "maximum": "max", "middle": "median",
                "typical": "median"}
 
+NOT_ONE_OF = ("not_one_of", "none_of", "not_in", "is_not_one_of", "neither", "not_any_of")  # said as "isn't this or that"
 CONDITION_OPS = ["equals", "not_equals", "contains", "is_empty", "not_empty", "greater_than", "less_than", "at_least",
                  "at_most", "one_of", "before_today", "after_today", "within_next_days", "within_last_days",
                  "more_than_days_ago", "this_week", "last_week", "this_month", "last_month", "this_quarter", "last_quarter",
@@ -690,6 +691,8 @@ def normalize_workflow(raw, label="", fields=()):
         who = _first(m, "who", "by", "role", "roles", "allowed", "can")
         if who:
             move["who"] = [slug(x) if slug(x) in fields and slug(x) not in WHO_WORDS else _person(x) for x in _names(who)]
+        if m.get("filled") is True:  # added by the platform so no stage is out of reach: worked out again as the design changes
+            move["filled"] = True
         needs = _first(m, "requires", "required", "require", "needs", "required_fields")
         if needs:
             move["requires"] = [slug(f) for f in _names(needs)]
@@ -843,9 +846,16 @@ def normalize_condition(raw):
     if not field:
         raise SchemaError("a condition needs the field it checks")
     op_raw = str(_first(raw, "op", "operator", "comparison", "condition", "is", default="equals")).strip().lower()
+    if slug(op_raw) in NOT_ONE_OF:  # "isn't Paid or Cancelled": each one it mustn't be
+        values = raw.get("value", raw.get("values"))
+        values = [v for v in (values if isinstance(values, list) else str(values or "").split(",")) if str(v).strip()]
+        if not values:
+            raise SchemaError("not_one_of needs the values it mustn't be")
+        parts = [normalize_condition({"field": field, "op": "not_equals", "value": v.strip() if isinstance(v, str) else v}) for v in values]
+        return parts[0] if len(parts) == 1 else {"all": parts}
     op = OP_ALIASES.get(op_raw, OP_ALIASES.get(slug(op_raw), slug(op_raw)))
     if op not in CONDITION_OPS:
-        raise SchemaError(f"“{op_raw}” isn't a condition; use one of: {', '.join(CONDITION_OPS)}")
+        raise SchemaError(f"“{op_raw}” isn't a condition; use one of: {', '.join(CONDITION_OPS)}, not_one_of")
     if as_formula(field, op, raw.get("value", raw.get("values", raw.get("to")))):  # "field": "days_since(due_date)"
         return {"formula": as_formula(field, op, raw.get("value", raw.get("values", raw.get("to"))))}
     path = [SYSTEM_TIMES.get(slug(part), slug(part)) for part in str(field).split(".")[:2]]
@@ -2493,15 +2503,32 @@ def stages_set_by_rules(bp, t):
     key = (t.get("workflow") or {}).get("field") or "status"
     out = {str(o["value"]).strip().lower() for f in flows(bp) if f["table"] == t["key"]
            for s in f["steps"] if s["kind"] == "decide" and s.get("field") == key for o in s["options"]}
+    tables = {x["key"]: x for x in bp.get("tables", [])}
     for a in bp.get("automations", []):
         for act in steps_of(a["actions"]):
             mine = (act["type"] == "update_record" and a["trigger"].get("table") == t["key"] and not act.get("target")) or \
                 (act["type"] in ("create_record", "create_for_each", "update_each") and act.get("table") == t["key"]) or \
-                (act["type"] == "update_record" and act.get("target"))  # a linked record's stage: counted, to be safe
+                (act["type"] == "update_record" and act.get("target") and _targets(tables, a["trigger"].get("table"), act["target"], t["key"]))
             value = (act.get("values") or {}).get(key)
-            if mine and isinstance(value, str):
+            if mine and isinstance(value, str) and "{{" in value:  # set from what came in (a DocuSign event's status): any of them
+                out |= {x.lower() for x in stages(t)}
+            elif mine and isinstance(value, str):
                 out.add(value.strip().lower())
     return out
+
+
+def _targets(tables, trigger_table, target, table):
+    """Whether a step that changes a linked record (its "target": a link of the rule's record, or "created") may change a
+    record of `table`."""
+    if target == "created" or trigger_table not in tables:
+        return True  # what was made isn't known here: counted, to be safe
+    here = tables[trigger_table]
+    for part in str(target).split("."):
+        f = field(here, part)
+        if f is None or f["type"] != "link":
+            return True
+        here = tables.get(f["table"]) or {}
+    return here.get("key") == table
 
 
 def complete_moves(bp, t):
@@ -2560,6 +2587,21 @@ HOPS = 3  # links a lookup, a rollup or a document's list follows at most (a ren
 
 def field(t, key):
     return next((f for f in (t or {}).get("fields", []) if f["key"] == key), None)
+
+
+CODE_KEYS = ("code", "sku", "ref", "reference", "abn", "number", "no", "id_code")
+NAME_KEYS = ("title", "name", "subject", "summary", "trading_name", "full_name", "item_name", "product_name")
+
+
+def is_code(key):
+    """A field that holds a code people look up, not what they call it (a category's 40141700, a cost centre's CC100)."""
+    return bool(key) and (key in CODE_KEYS or key.endswith(("_code", "_number", "_no", "_ref")))
+
+
+def name_field(t, title_key=None):
+    """The field a record is called by beside its number or code (a request's title, a category's name), or None."""
+    keys = {f["key"]: f for f in t["fields"] if f["type"] == "text" and f["key"] != title_key}
+    return next((k for k in NAME_KEYS if k in keys), None) or next((k for k in keys if k.endswith(("_name", "_title"))), None)
 
 
 def title_field(t):

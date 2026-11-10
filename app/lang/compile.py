@@ -471,6 +471,12 @@ def ir_condition(d, t, c, where, about=None):
     if not c.field or not c.op:
         raise Problem(f"{where}: a condition names a field and an op ({{\"field\": \"status\", \"op\": \"equals\", \"value\": \"Paid\"}}), "
                       f"or is a formula, or a group (any / all)")
+    if c.op == "not_one_of":  # isn't any of them: each one it mustn't be
+        values = [v for v in (c.value if isinstance(c.value, list) else [c.value]) if v not in (None, "")]
+        if not values:
+            raise Problem(f"{where}: “not_one_of” needs the values {c.field} mustn't be")
+        parts = [ir_condition(d, t, m.Condition(field=c.field, op="not_equals", value=v), where, about=about) for v in values]
+        return parts[0] if len(parts) == 1 else {"all": parts}
     said = schema.as_formula(c.field, c.op, c.value)
     if said:  # "field": "days_since(due_date)", "op": "greater_than", "value": 3: the formula days_since(due_date) > 3
         _check_formula(d, t, said, where)
@@ -1417,14 +1423,26 @@ def apply(bp, raw_patches, allowed=None):
     return out
 
 
+def _filled_in(m):
+    """A move the platform added so no stage was out of reach, not the builder's (nor a plain list of stages' own buttons)."""
+    return bool(m.get("filled"))
+
+
 def _complete_stages(out):
     """What the platform works out rather than the builder: every stage can be got to, and none with stages after it
-    is a dead end (each a button to the stage after, unless a rule moves records on)."""
+    is a dead end (each a button to the stage after, unless a rule moves records on). Worked out again on every change:
+    a button added before a rule moved records there (Approved, once the approval rule came) goes again, as it would let
+    anyone skip the rule."""
     for t in out.blueprint.get("tables", []):
-        added = schema.complete_moves(out.blueprint, t)
-        if not added:
+        if not t.get("workflow"):
             continue
-        flow = {**t["workflow"], "transitions": list(t["workflow"].get("transitions") or []) + added}
+        before = list(t["workflow"].get("transitions") or [])
+        kept = [m for m in before if not _filled_in(m)]
+        added = schema.complete_moves(out.blueprint, {**t, "workflow": {**t["workflow"], "transitions": kept}})
+        moves = kept + [{**m, "filled": True} for m in added]
+        if [(m["to"], tuple(m.get("from") or [])) for m in moves] == [(m["to"], tuple(m.get("from") or [])) for m in before]:
+            continue
+        flow = {**t["workflow"], "transitions": moves}
         said = len(out.problems)
         if not _apply_ops(out, [{"op": "update_table", "table": t["key"], "workflow": flow}], f"the stages of {t['label']}"):
             del out.problems[said:]  # not the builder's to put right: left as it was

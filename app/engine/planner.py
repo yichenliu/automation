@@ -644,6 +644,10 @@ class Planner:
             return self.e.rows(self.table)
         v = self.value(key)
         named = v.low().contains(said, autoescape=True) if part else v.low() == said
+        also = schema.name_field(t, key) if schema.is_code(key) else None  # a code named with its name (40141700 · Pipe fittings)
+        if also and KEY.match(also):
+            n = self.value(also)
+            named = _any(named, n.low().contains(said, autoescape=True) if part else n.low() == said)
         nameless = v.text.in_(("", "—"))  # named "Supplier #12" instead
         test = _sure(_any(and_(v.string(), _any(named, v.foreign(), nameless)), _not(v.string())))
         return db.session.query(Record).filter(*live(self.e, self.table), test).order_by(Record.id).all()

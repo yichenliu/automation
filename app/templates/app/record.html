@@ -18,8 +18,11 @@
   {% if e.can(t, 'edit') %}
   <div class="row wrap">
     {% for fl in flows_here or [] %}<form method="post" action="{{ url_for('app.flow_start', wid=ws.id, key=fl.key) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="record" value="{{ r.id }}"><button class="btn primary" title="Step by step, a screen at a time">{{ icon(fl.icon) }}{{ fl.label }}</button></form>{% endfor %}
+    {% set folded = buttons|length > 2 %}
+    {% if folded %}<div class="menu-wrap"><button class="btn" type="button" data-menu>{{ icon('zap') }}Actions {{ icon('chevron-down') }}</button><div class="menu" hidden>{% endif %}
     {% for a, held in buttons %}{% if held %}<span class="held-button"><button class="btn" type="button" disabled aria-describedby="held-{{ a.key }}">{{ icon('zap') }}{{ a.trigger.label }}</button><span class="faint tiny" id="held-{{ a.key }}">{{ held }}</span></span>
-    {% else %}<form method="post" action="{{ url_for('app.press', wid=ws.id, table=t.key, rid=r.id, key=a.key) }}" data-busy><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn primary">{{ icon('zap') }}{{ a.trigger.label }}</button></form>{% endif %}{% endfor %}
+    {% else %}<form method="post" action="{{ url_for('app.press', wid=ws.id, table=t.key, rid=r.id, key=a.key) }}" data-busy><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="{{ '' if folded else 'btn' }}">{{ icon('zap') }}{{ a.trigger.label }}</button></form>{% endif %}{% endfor %}
+    {% if folded %}</div></div>{% endif %}
     {% for d in documents if d.format != 'label' %}<form method="post" action="{{ url_for('app.document', wid=ws.id, table=t.key, rid=r.id, key=d.key) }}" data-busy="download"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn">{{ icon('file-down') }}{{ (d.label ~ ' PDF') if d.format != 'text' else ('Download the ' ~ d.label|lc) }}</button></form>{% endfor %}
     {% set label_printer = printer_for(ws, 'labels') %}{% set doc_printer = printer_for(ws, 'documents') %}
     {% for d in documents if d.format == 'label' %}{% if label_printer %}<form method="post" action="{{ url_for('app.label_print', wid=ws.id, table=t.key, rid=r.id) }}" data-busy><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="doc" value="{{ d.key }}"><button class="btn" title="Prints on {{ label_printer }}">{{ icon('tag') }}Print {{ d.label|lc }}</button></form>
@@ -70,7 +73,7 @@
         {% elif f.type in ('user', 'link') %}<select name="fill_{{ f.key }}" required><option value=""></option>{% for id, title in x.options %}<option value="{{ id }}">{{ title }}</option>{% endfor %}</select>
         {% else %}<input name="fill_{{ f.key }}" required type="{{ {'date': 'date', 'datetime': 'datetime-local', 'email': 'email', 'url': 'url'}.get(f.type, 'text') }}"{% if f.type in ('number', 'money', 'percent', 'rating', 'duration') %} inputmode="decimal"{% endif %}{% if f.type == 'date' %} value="{{ e.today.isoformat() }}"{% endif %}>{% endif %}</label>{% endfor %}
       {% if m.step_up and not stepped %}<input type="password" name="step_up_code" class="step-up" autocomplete="one-time-code" required placeholder="Code or password" aria-label="Confirm it's you: your authenticator code or password" title="{{ m.label or m.to }} needs you to confirm it's you">{% endif %}
-      <button class="btn {{ 'primary' if loop.first }}" title="Moves it to {{ m.to }}">{{ icon('shield' if m.step_up else 'arrow-right') }}{{ m.label or ('Move to ' ~ m.to) }}</button></form>{% endfor %}</div>
+      <button class="btn {{ 'primary' if loop.first and not says_no(m.to) else 'ghost' if says_no(m.to) }}" title="Moves it to {{ m.to }}">{{ icon('shield' if m.step_up else 'arrow-right') }}{{ m.label or ('Move to ' ~ m.to) }}</button></form>{% endfor %}</div>
   {% elif blocked and can_edit and blocked[0][2].startswith('Fill in') %}<a class="btn" href="{{ url_for('app.edit', wid=ws.id, table=t.key, rid=r.id) }}">{{ icon('pencil') }}Fill it in</a>{% endif %}
 </div>{% endif %}
 {% for a in approvals if a.kind == 'change' or (a.id in mine and a != first) %}{% if a.kind == 'change' %}
@@ -95,14 +98,17 @@
   <div class="stack">
     {% if t.layout == 'tabs' and sections|length > 1 %}<div class="tabs record-tabs" data-tabs>{% for s in sections %}<a href="#" data-tab="{{ loop.index0 }}" class="{{ 'active' if loop.first }}">{{ s.label or 'Details' }}</a>{% endfor %}</div>{% endif %}
     {% for s in sections if (not s.show_if or e.matches(r, s.show_if)) and not hidden %}
-    <div class="card" {% if t.layout == 'tabs' and sections|length > 1 %}data-tab-panel="{{ loop.index0 }}" {{ 'hidden' if not loop.first }}{% endif %}>{% if s.label %}<div class="card-head"><h2>{{ s.label }}</h2></div>{% endif %}<div class="card-body"><dl class="fields">
-      {% for f in s.fields if field_visible(e, r, f) %}{% set v = e.value(r, f.key) %}
+    {% set shown_fields = s.fields|select('filled_on', e, r)|list %}{% set empty_fields = s.fields|reject('filled_on', e, r)|list %}
+    {% if shown_fields or t.layout == 'tabs' %}
+    <div class="card" {% if t.layout == 'tabs' and sections|length > 1 %}data-tab-panel="{{ loop.index0 }}" {{ 'hidden' if not loop.first }}{% endif %}>{% if s.label %}<div class="card-head"><h2>{{ s.label|unnumbered }}</h2></div>{% endif %}<div class="card-body"><dl class="fields">
+      {% for f in shown_fields if field_visible(e, r, f) %}{% set v = e.value(r, f.key) %}
       <dt>{{ f.label }}{% if f.type in ('formula', 'rollup', 'lookup') %}{% set kind, detail = about_field(e, t, f) %}<span class="calc icon-only" title="Worked out for you{{ ': ' ~ detail if detail }}">{{ icon('calculator') }}</span>{% elif f.ai and f.key in (r.data.get('_ai') or []) %}<span class="calc ai" title="Filled in by the AI; edit it and it's yours">{{ icon('sparkles') }}AI</span>{% endif %}</dt>
       {% set inline_ok = (can_edit or f.key in still_editable) and f.type in inline and not (stages and f.key == t.workflow.field and e.role != 'owner') and not (f.readonly_if and e.matches(r, f.readonly_if) and not e._at_least('admin')) %}
       {% if f.sensitive and v and can_edit %}<dd class="sensitive"><span data-secret>{{ v }}</span> <button type="button" class="btn sm ghost" data-reveal="{{ url_for('app.reveal', wid=ws.id, table=t.key, rid=r.id, key=f.key) }}" title="Show it (kept in the history)">{{ icon('eye') }}Show</button></dd>{% else %}
       <dd class="{{ 'editable' if inline_ok }}" {% if inline_ok %}data-field="{{ f.key }}" data-type="{{ f.type }}" data-raw="{{ v|json if v is not none else '' }}" data-set="{{ url_for('app.table', wid=ws.id, table=t.key) }}/{{ r.id }}/set" {% if f.type == 'select' %}data-options='{{ (e.choices(t, f, r) if f.options_by else f.options)|json }}'{% endif %}{% if f.type == 'user' %}data-options='{{ e.members()|json }}'{% endif %}{% endif %}>{{ full_value(e, f, v, r) }}</dd>{% endif %}
       {% endfor %}
-    </dl></div></div>
+    </dl>{% set unsaid = empty_fields|select('field_visible_on', e, r)|list %}{% if unsaid %}<p class="faint tiny mt-1">Not filled in: {{ unsaid|map(attribute='label')|join(', ') }}{% if can_edit %} · <a href="{{ url_for('app.edit', wid=ws.id, table=t.key, rid=r.id) }}">Fill in</a>{% endif %}</p>{% endif %}</div></div>
+    {% endif %}
     {% endfor %}
     {% for l in lines if not hidden %}
     <div class="card"><div class="card-head"><h2 class="grow">{{ l.table.label }} <span class="faint small">{{ l.rows|length }}</span></h2>
@@ -113,7 +119,8 @@
       {% else %}<div class="card-body faint small">No {{ l.table.label|lc }} yet.</div>{% endif %}
     </div>
     {% endfor %}
-    {% for rel in related %}
+    {% set nothing_yet = related|rejectattr('rows')|list %}
+    {% for rel in related if rel.rows %}
     <div class="card"><div class="card-head"><h2 class="grow">{{ icon(rel.table.icon or 'table') }}{{ rel.table.label }}{% if rel.via.label|lc != t.singular|lc %} <span class="muted">· {{ rel.via.label }}</span>{% endif %} <span class="faint small">{{ rel.rows|length }}</span></h2>
       {% if rel.rows|length > 1 %}<a class="btn sm ghost" href="{{ url_for('app.compare', wid=ws.id, table=rel.table.key, ids=rel.rows[:8]|map(attribute='id')|list) }}">{{ icon('scale') }}Compare</a>{% endif %}
       {% if can_edit and e.can(rel.table, 'edit') %}<a class="btn sm" href="{{ url_for('app.new', wid=ws.id, table=rel.table.key, back=request.url.path, **{('f_' ~ rel.via.key): r.id}) }}">{{ icon('plus') }}Add {{ rel.table.singular|lc }}</a>{% endif %}</div>
@@ -123,6 +130,8 @@
       </table></div>{% else %}<div class="card-body faint small">No {{ rel.table.label|lc }} yet.</div>{% endif %}
     </div>
     {% endfor %}
+    {% if nothing_yet %}<details class="card fold quiet-related"><summary class="card-head"><span class="faint small grow">{{ icon('link') }}Nothing linked to it yet: {{ nothing_yet|map(attribute='table.label')|map('lc')|join(', ') }}</span>{{ icon('chevron-down', 'caret') }}</summary>
+      {% if can_edit %}<div class="card-body row wrap">{% for rel in nothing_yet if e.can(rel.table, 'edit') %}<a class="btn sm ghost" href="{{ url_for('app.new', wid=ws.id, table=rel.table.key, back=request.url.path, **{('f_' ~ rel.via.key): r.id}) }}">{{ icon('plus') }}Add {{ rel.table.singular|lc }}</a>{% endfor %}</div>{% endif %}</details>{% endif %}
   </div>
   <div class="stack side">
     {% if ai_work %}

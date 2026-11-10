@@ -115,8 +115,22 @@ def _ran(engine, request=None):
 
 
 def columns(t, view):
-    keys = (view or {}).get("columns") or [f["key"] for f in t["fields"] if f["type"] not in ("long_text", "rich_text", "file")][:7]
+    """A list's columns: as its view says, or its name first, then where each is (its stage), then the rest in order."""
+    keys = (view or {}).get("columns")
+    if not keys:
+        shown = [f["key"] for f in t["fields"] if f["type"] not in ("long_text", "rich_text", "file", "image", "signature")
+                 and not f.get("sensitive")]
+        first = [k for k in (schema.title_field(t), ((t.get("workflow") or {}).get("field"))) if k in shown]
+        keys = (list(dict.fromkeys(first)) + [k for k in shown if k not in first])[:7]
     return [schema.field(t, k) for k in keys if schema.field(t, k)]
+
+
+def _only_one(engine, f):
+    """A link column that can only ever say one thing to this person (a buyer's own organisation, to its members): left
+    out of a list nobody chose the columns of."""
+    if f["type"] != "link" or f.get("multiple") or f["table"] not in engine.tables or engine.role is None or engine._at_least("admin"):
+        return False
+    return len(engine.page(f["table"], limit=2)[0]) == 1
 
 
 def children(engine, t):
@@ -187,7 +201,8 @@ def table(request: Request, wid: int, table: str, user=Depends(signed_in)):
             choices[f["key"]] = [(engine.title(r), engine.title(r)) for r in engine.page(f["table"], limit=300)[0]]
     from ..models import SavedView
     mine = SavedView.query.filter_by(workspace_id=ws.id, user_id=user.id, table=t["key"]).order_by(SavedView.id).all()
-    common = dict(ws=ws, e=engine, t=t, views=views, view=view, total=total, quick=quick, q=q, filterable=filterable, mine=mine,
+    counts = {v["key"]: engine.count(t["key"], v["filters"]) for v in views if v.get("filters")}  # each tab says how many are in it
+    common = dict(ws=ws, e=engine, t=t, views=views, view=view, total=total, quick=quick, q=q, filterable=filterable, mine=mine, counts=counts,
                   here_query=request.url.query[:1000],
                   choices=choices, args={"view": view["key"], "q": q or None, **{f"f_{k}": v for k, v in quick.items()}})
     if kind == "board":
@@ -224,7 +239,7 @@ def table(request: Request, wid: int, table: str, user=Depends(signed_in)):
         return render(request, "app/sheet.html", rows=rows, columns=cols, editable=SHEET, more=max(total - 500, 0),
                                options=_options(engine, t), **common)
     shown = rows
-    cols = columns(t, view)
+    cols = [f for f in columns(t, view) if not (not view.get("columns") and _only_one(engine, f))]
     if group_field is None:  # the whole list's totals: SQL's sums of kept amounts, worked-out ones added up here
         totals = {f["key"]: engine.total(t["key"], "sum", f["key"], filters, q=q) for f in cols if engine.summable(f)}
     else:
@@ -532,21 +547,49 @@ def _related(engine, t, record):
     return out
 
 
-def _sections(t, lines=False):
+def _sections(t, lines=False, later=()):
     """The record's fields grouped for its page and form: the table's sections, then any field not in one. With `lines`
-    (the form), a section that is the record's lines (What to price) too, where it stands."""
+    (the form), a section that is the record's lines (What to price) too, where it stands. `later`: fields left off a
+    new record's form, unless a section places them (what the app fills in itself, what a later stage asks for)."""
     sections, placed = [], set()
     for s in t.get("sections", []):
         fields = [schema.field(t, k) for k in s["fields"] if schema.field(t, k)]
         if fields or (lines and s.get("lines")):
             sections.append({"label": s["label"], "fields": fields, "show_if": s.get("show_if"), "lines": s.get("lines") if lines else None})
             placed |= {f["key"] for f in fields}
-    rest = [f for f in t["fields"] if f["key"] not in placed]
+    rest = [f for f in t["fields"] if f["key"] not in placed and f["key"] not in later]
     if rest and sections:
-        sections.append({"label": "More", "fields": rest})
+        sections.append({"label": "More", "fields": rest, "rest": True})
     elif rest:
-        sections.append({"label": None, "fields": rest})
+        sections.append({"label": None, "fields": rest, "rest": True})
     return sections
+
+
+def set_by_the_app(engine, t):
+    """A list's fields that people don't fill in when they add a record: what its rules set on it (a request's approver's
+    brief, who it waits on), what the AI writes, a stage's own "ordered at" and "approved by", and what only a later stage
+    asks for (why it was rejected). Never one that must be filled in."""
+    out = set()
+    for a in engine.bp.get("automations", []):
+        if (a.get("trigger") or {}).get("table") != t["key"]:
+            continue
+        for act in schema.steps_of(a["actions"]):
+            if act["type"] == "update_record" and not act.get("target"):
+                out |= set(act.get("values") or {})
+            elif act["type"] in ("ai_fill", "ai_check"):
+                out |= {act.get("field"), act.get("notes_field"), act.get("confidence")} - {None}
+    flow = (t.get("workflow") or {}).get("field")
+    start = schema.start_stage(t) if flow else None
+    later = [s for s in schema.stages(t) if s != start] if flow else []
+    words = {"_".join(p for p in re.split(r"\W+", s.lower()) if p) for s in later}
+    for f in t["fields"]:
+        if any(f["key"] in (f"{w}_at", f"{w}_on", f"{w}_by", f"{w}_date") for w in words):
+            out.add(f["key"])
+        conds = f.get("required_if") or []
+        if flow and conds and all(c.get("field") == flow and c.get("value") not in (None, start) and start not in (c.get("value") if isinstance(c.get("value"), list) else [c.get("value")])
+                                  for c in conds if isinstance(c, dict)):
+            out.add(f["key"])
+    return {k for k in out if (schema.field(t, k) or {}).get("required") is not True}
 
 
 def visible(engine, record, f):
@@ -983,7 +1026,7 @@ def _render_form(ws, engine, t, r, values, errors, line_rows=None, status=200, r
     hidden = {k: v for k, v in (errors or {}).items() if k != "_" and (k not in shown_keys or (stage_lock and k == stage_lock["key"] and r is None))}
     if hidden:  # a problem with something the form doesn't show (the stage, a rule on two fields): said at the top
         errors = {**{k: v for k, v in errors.items() if k not in hidden}, "_": "; ".join(([errors["_"]] if errors.get("_") else []) + list(hidden.values()))}
-    sections = _sections(t, lines=True)
+    sections = _sections(t, lines=True, later=set_by_the_app(engine, t) if r is None else ())
     page = render(request, "app/form.html", status_code=status, ws=ws, e=engine, t=t, r=r, values=values, errors=errors, sections=sections,
                   stage_lock=stage_lock, first_move=first_move,
                   waiting=_waiting(t, sections, kids, values, errors, stage_lock and r is None and stage_lock["key"], r is None),
@@ -1053,8 +1096,30 @@ def new(request: Request, wid: int, table: str, form: Form = Depends(form_of)):
     for f in _form_fields(t):
         if f["key"] not in values and f.get("default") not in (None, ""):
             default = f["default"]
+            if isinstance(default, str) and "{{" in default:  # read from what the new record is given: worked out when it's saved
+                continue
             values[f["key"]] = engine.today.isoformat() if f["type"] == "date" and str(default).lower() in ("today", "{{today()}}", "now") else default
+    values = {**_started_as(engine, t, values), **values}
     return _render_form(ws, engine, t, None, values, {}, request=request, back=request.query_params.get("back"))[0]
+
+
+RAISING = ("requested", "raised", "submitted", "reported", "logged", "entered", "prepared", "recorded", "created", "added", "uploaded")
+
+
+def _started_as(engine, t, given):
+    """What a new record's form starts with besides its defaults: the person filling it in where the field is who's asking
+    (Requested by), and a choice that must be made where only one is open to them (their own organisation)."""
+    out = {}
+    for f in _form_fields(t):
+        if f["key"] in given:
+            continue
+        if f["type"] == "user" and engine.user_id and any(f["key"] in (f"{w}_by", "requester", "requestor") for w in RAISING):
+            out[f["key"]] = engine.user_id
+        elif f["type"] == "link" and f.get("required") and not f.get("multiple") and f["table"] in engine.tables:
+            rows = engine.page(f["table"], limit=2)[0]
+            if len(rows) == 1:
+                out[f["key"]] = rows[0].id
+    return out
 
 
 @router.api_route("/t/{table}/quick", methods=["POST"], name="app.quick_add", dependencies=[Depends(signed_in)])
