@@ -319,16 +319,21 @@ def _database(out, key):
 
 def same_as(folder, only=()):
     """The businesses of an earlier run, as they were: the trade, the owner's first words (and what they really meant,
-    for a vague one), how they spoke, and the checks they wrote. Only what the builder answers differs."""
+    for a vague one), how they spoke, and the checks they wrote. Only what the builder answers differs.
+
+    An owner's checks are written from what they told the builder. One who answered its questions told that builder
+    things this one may never ask about, so their checks are written again from what they tell this one; only an owner
+    whose first words were all they said keeps the checks they wrote then."""
     out = []
     for line in (Path(folder) / "results.jsonl").open():
         r = json.loads(line)
         if not r.get("said") or (only and r["key"] not in only):
             continue
         trade = r["title"].removeprefix("Fresh: ")
+        answered = sum(1 for t in r.get("turns") or [] if t.get("say")) > 1
         out.append({"key": r["key"], "title": r["title"], "fresh": trade, "style": r.get("style", "plain"),
                     "turns": [{"say": r["said"], "expect": {}}], "real": r.get("real") or r["said"], "said_again": True,
-                    "checks": [c["check"] for c in r.get("owner_checks") or [] if c.get("check")]})
+                    "checks": None if answered else [c["check"] for c in r.get("owner_checks") or [] if c.get("check")]})
     return out
 
 

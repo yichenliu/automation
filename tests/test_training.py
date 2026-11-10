@@ -121,6 +121,20 @@ def test_an_eval_builds_with_the_ai_the_platform_chose(app, tmp_path):
     assert analyst._ai_line(used).startswith("built by Anthropic (Claude) claude-opus-5-5, owner played by ")
 
 
+def test_a_round_built_again_keeps_only_the_checks_an_owner_wrote_from_their_first_words(tmp_path):
+    """An owner who answered the first builder's questions wrote checks from those answers; another builder asks other
+    questions, so holding it to them tests what it was never told. Their checks are written again from what they tell it."""
+    check = lambda text: {"check": text, "result": "pass"}  # noqa: E731
+    runs = [{"key": "fresh1", "title": "Fresh: fridge repairer", "said": "fridge biz is chaos", "style": "vague", "real": "We fix fridges.",
+             "turns": [{"say": "fridge biz is chaos"}, {"say": "Book it straight away, invoice after"}], "owner_checks": [check("Invoices at once")]},
+            {"key": "fresh2", "title": "Fresh: surf school", "said": "We teach surfing.", "style": "plain",
+             "turns": [{"say": "We teach surfing."}], "owner_checks": [check("A beginner gets a beginner class")]}]
+    (tmp_path / "results.jsonl").write_text("".join(json.dumps(r) + "\n" for r in runs))
+    again = {s["key"]: s for s in analyst.same_as(tmp_path)}
+    assert again["fresh1"]["checks"] is None and again["fresh1"]["turns"] == [{"say": "fridge biz is chaos", "expect": {}}]
+    assert again["fresh2"]["checks"] == ["A beginner gets a beginner class"]
+
+
 def test_an_evals_lessons_are_collected_where_a_temporary_folder_cant_lose_them(tmp_path, monkeypatch):
     monkeypatch.setenv("TRAINING_DIR", str(tmp_path / "kept"))
     folder = tmp_path / "run45" / "fresh3" / "training"
