@@ -273,10 +273,11 @@ def move(request: Request, wid: int, table: str, rid: int, index: int, user=Depe
 
 @router.api_route("/asks/{aid:int}", methods=["POST"], name="portal.answer")
 def answer(request: Request, wid: int, aid: int, user=Depends(signed_in), form: Form = Depends(form_of)):
-    """An approval or task sent to them (sign the contract, confirm the delivery date)."""
+    """An approval or task sent to them (sign the contract, confirm the delivery date), or a change to their records a
+    colleague made that waits for someone else of theirs to approve it (a second person confirms new bank details)."""
     ws, engine, portal, contact = _ctx(wid, user)
     ask = db.session.get(Approval, aid)
-    if ask is None or ask.workspace_id != ws.id or ask.assignee_id != user.id or ask.status != "pending" or ask.kind == "change":
+    if ask is None or ask.workspace_id != ws.id or ask.assignee_id != user.id or ask.status != "pending":
         raise HTTPException(404)
     decision = form.get("decision")
     by = f"{user.display} (through the portal)"
@@ -287,6 +288,8 @@ def answer(request: Request, wid: int, aid: int, user=Depends(signed_in), form: 
             automations.complete(engine, ask, by, values, form.get("comment"))
         elif decision in ("approve", "reject") and (ask.kind or "approval") == "approval":
             automations.decide(engine, ask, decision == "approve", by, form.get("comment"))
+        elif decision in ("approve", "reject") and ask.kind == "change":  # never their own: the maker isn't asked
+            automations.decide_change(engine, ask, decision == "approve", by, form.get("comment"))
         else:
             raise HTTPException(400)
     except FieldErrors as exc:
@@ -424,7 +427,13 @@ def _ids_reaching(engine, t, middle):
     mt = engine.tables.get(middle.table) or {}
     on = schema.field(mt, hop) if hop else next((f for f in mt.get("fields", []) if f["type"] == "link" and f["table"] == portal_people), None)
     value = (middle.data or {}).get(on["key"]) if on else None
-    return [int(x) for x in (value if isinstance(value, list) else [value]) if str(x).isdigit()]
+    ids = [int(x) for x in (value if isinstance(value, list) else [value]) if str(x).isdigit()]
+    if on is not None and on.get("table") not in (None, portal_people):  # one more record on: a case's seller, whose people they are
+        last = next((f for f in (engine.tables.get(on["table"]) or {}).get("fields", []) if f["type"] == "link" and f["table"] == portal_people), None)
+        reached = [engine.get(i, on["table"]) for i in ids] if last else []
+        ids = [int(x) for r in reached if r is not None for x in (lambda v: v if isinstance(v, list) else [v])((r.data or {}).get(last["key"]))
+               if str(x).isdigit()]
+    return ids
 
 
 join = APIRouter(route_class=PageRoute, dependencies=[Depends(check_csrf)])

@@ -1758,12 +1758,13 @@ def apply(out, p, where, quiet=False):
     ir_ops = []
     wanted_rules = set()
     given_up = set((_entry(out.blueprint, key) or {}).get("given_up") or [])  # its rules someone has since made their own
+    rules = []
     for a in made.rules:
         if a["key"] in given_up:
             continue
         a = {**a, "feature": key}
         wanted_rules.add(a["key"])
-        ir_ops.append({"op": "add_automation", "automation": a})
+        rules.append({"op": "add_automation", "automation": a})
     wanted_fields = set()
     for tk, f in made.fields:
         f = {**f, "feature": f.get("feature", key)}
@@ -1776,6 +1777,9 @@ def apply(out, p, where, quiet=False):
             ir_ops.append({"op": "add_field", "table": tk, "field": f})
         elif {k: v for k, v in have.items() if k != "feature"} != {k: v for k, v in f.items() if k != "feature"} and have.get("feature") in (None, key):
             ir_ops.append({"op": "update_field", "table": tk, "key": f["key"], "changes": f})
+    # its rules after its fields: a rule reading a field the feature makes (when it last reminded) was placed while its
+    # list didn't have it yet, and was moved to another list that did (two reminders before two lists' expiry dates)
+    ir_ops += rules
     ir_ops += made.ops
     for a in out.blueprint.get("automations", []):  # what this feature made before and doesn't now
         if a.get("feature") == key and a["key"] not in wanted_rules:

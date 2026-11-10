@@ -14,6 +14,8 @@ def _field(d, f):
         bits.append("[" + ", ".join(f.get("options") or []) + "]")
     elif ftype == "link":
         bits[-1] = f"link→{f.get('table')}" + ("(many)" if f.get("multiple") else "")
+    elif ftype == "user" and f.get("multiple"):
+        bits[-1] = "person(many)"
     elif ftype == "formula":
         bits[-1] = f"formula({f.get('format') or 'number'}) = {f.get('expression')}"
     elif ftype == "rollup":

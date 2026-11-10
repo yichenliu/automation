@@ -148,7 +148,7 @@ class RecordProxy:
         self._engine, self.record = engine, record
 
     def field(self, name):
-        if name not in ("id", "created_at", "updated_at") and self._engine.field(self.record.table, name) is None:
+        if name not in ("id", "created_at", "updated_at", "created_by") and self._engine.field(self.record.table, name) is None:
             many = self._engine.linking(self.record, name)  # a client's invoices
             if many is not None:
                 return many
@@ -156,7 +156,7 @@ class RecordProxy:
 
     def has(self, name):
         """Whether `name` is something of this record: a field, or the records linking to it (its invoices)."""
-        return name in ("id", "created_at", "updated_at") or self._engine.field(self.record.table, name) is not None \
+        return name in ("id", "created_at", "updated_at", "created_by") or self._engine.field(self.record.table, name) is not None \
             or schema.backlink(self._engine.tables, self._engine.tables.get(self.record.table), name) is not None
 
     def __str__(self):
@@ -330,7 +330,7 @@ class RecordContext(expr.Context):
             return RecordProxy(self.engine, self.record) if self.record is not None else None
         if self.record is not None:
             t = self.engine.tables.get(self.record.table)
-            if name in ("id", "created_at", "updated_at") or (t and schema.field(t, name)):
+            if name in ("id", "created_at", "updated_at", "created_by") or (t and schema.field(t, name)):
                 return self.engine.value(self.record, name, typed=True)
             many = self.engine.linking(self.record, name)  # this job's payments
             if many is not None:
@@ -845,8 +845,13 @@ class Engine:
         else:
             middle = self.tables.get(via["table"]) or {}
             on = schema.field(middle, hop) if hop else next((f for f in middle.get("fields", []) if f["type"] == "link" and f["table"] == people), None)
-            found = on is not None and any(contact_id in ids((m.data or {}).get(on["key"]))
-                                           for m in (self.get(x, via["table"]) for x in targets) if m is not None)
+            mids = [m for m in (self.get(x, via["table"]) for x in targets) if m is not None]
+            if on is not None and on["type"] == "link" and on["table"] != people:  # one more record on: a document's case's seller
+                last = next((f for f in (self.tables.get(on["table"]) or {}).get("fields", []) if f["type"] == "link" and f["table"] == people), None)
+                found = last is not None and any(contact_id in ids((e.data or {}).get(last["key"]))
+                                                 for m in mids for e in (self.get(x, on["table"]) for x in ids((m.data or {}).get(on["key"]))) if e is not None)
+            else:
+                found = on is not None and any(contact_id in ids((m.data or {}).get(on["key"])) for m in mids)
         return found and (not portal.get("show_if") or self.matches(record, portal["show_if"]))
 
     def members(self):
@@ -919,6 +924,9 @@ class Engine:
         """A field's value: stored ones as saved, formulas and rollups worked out. typed: dates as dates, links as records."""
         if key == "id":
             return record.id
+        if key == "created_by":  # who added it: a person, as a person field's value is (whoever added a seller doesn't approve its bank details)
+            uid = getattr(record, "created_by_id", None)
+            return (self._person(uid) if typed else uid) if uid else None
         if key in ("created_at", "updated_at"):
             stamp = getattr(record, key)
             if typed and stamp:  # stored in UTC; the day is the business's

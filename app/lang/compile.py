@@ -172,6 +172,10 @@ def _ir_field(d, t, f, where):
             out["help"] = f.help
         if f.sensitive:
             out["sensitive"] = True
+        if f.many and f.type == "person":
+            out["multiple"] = True
+        elif f.many:
+            raise Problem(f"{where}: only a person field (or a link) can hold several: “{f.key}” is {f.type}")
         if f.visible_to:
             out["access"] = _role_or_team(d, f.visible_to, f"{where} › visible_to")
     elif isinstance(f, m.Choice):
@@ -850,7 +854,10 @@ def ir_step(d, t, s, where, made=None):
         raise Problem(f"{where}: unknown step")
     if getattr(s, "only_if", None):
         out["only_if"] = only()
-    return out, (out.get("table") and d.list(out["table"])) or made
+    # "created" is the record a step made: one added (or made by the AI), never a line of add_each, which the engine
+    # keeps as the record made before it (an order's lines are added, then the order is sent: on created)
+    makes_one = out.get("type") in ("create_record", "ai_create_record")
+    return out, (d.list(out["table"]) if makes_one and out.get("table") else made)
 
 
 def _ai_step(d, t, s, where):
@@ -951,10 +958,15 @@ def _follow_up(d, t, s, out, where):
             raise Problem(f"{where} › escalate_to: {exc}") from None
 
 
-def _not_by(d, t, names, where):
-    """Whoever mustn't do it: creator (whoever raised it), or the person in a field of the record."""
+def _not_by(d, t, names, where, stages=()):
+    """Whoever mustn't do it: creator (whoever raised it), the person in a field of the record, a team, or (for a move)
+    whoever moved the record to one of its stages."""
     out = []
     for name in names:
+        stage = next((s for s in stages if s.lower() == str(name).strip().lower()), None)
+        if stage:  # whoever moved it there: the one who recommended an award doesn't approve it
+            out.append(stage)
+            continue
         said = schema.slug(name)
         if said in ("creator", "created_by", "raised_by", "requester", "whoever_raised_it"):
             out.append("creator")
@@ -962,9 +974,18 @@ def _not_by(d, t, names, where):
         if said in schema.WHO_WORDS or said in d.teams():  # never someone in this team, or with this role
             out.append(said)
             continue
+        if t and "." in str(name):  # a person through links (the order's request's requester): the engine follows it
+            try:
+                found, _, keys = d.path(t, name)
+            except NameProblem:
+                found = None
+            if found is not None and found.get("type") == "user":
+                out.append(".".join(keys))
+                continue
         f = d.field(t, name) if t else None
         if f is None or f["type"] not in ("user", "link"):
-            raise Problem(f"{where}: “{name}” is creator (whoever raised it), a team, or a person field of {(t or {}).get('label', 'the record')}")
+            raise Problem(f"{where}: “{name}” is creator (whoever raised it), a team, a person field of {(t or {}).get('label', 'the record')}"
+                          + (f", or one of its stages ({', '.join(stages)})" if stages else ""))
         out.append(f["key"])
     return out
 
@@ -1062,6 +1083,12 @@ def ir_stages(d, t, st, where):
             move["requires"] = [d.field(t, x)["key"] for x in mv.needs]
         if mv.only_if:
             move["only_if"] = ir_conditions(d, t, mv.only_if, f"{here} › only_if")
+        # separation of duties and a fresh sign-in, as a move added on its own keeps them: written with the list's
+        # stages they were dropped without a word, so whoever raised a request could approve it after all
+        if mv.not_by:
+            move["not_by"] = _not_by(d, t, mv.not_by, f"{here} › not_by", stages=names)
+        if mv.step_up:
+            move["step_up"] = True
         moves.append(move)
     if not moves:  # each stage a button to the next
         moves = [{"from": [a], "to": b, "label": f"Move to {b}"[:60]} for a, b in zip(names, names[1:])]
@@ -1112,7 +1139,8 @@ ESCAPE = {"add_page", "update_page", "remove_page", "add_document", "update_docu
           "set_portal", "set_team", "set_space", "remove_space", "set_sync", "remove_sync", "add_flow", "update_flow",
           "remove_flow", "set_theme", "rename_app", "set_module", "update_view", "remove_view", "order_fields", "update_table"}
 POLICY_KEYS = {"op", "table", "access", "permissions", "row_access", "own_records", "rules", "validations", "unique_together",
-               "approve_changes", "sealed", "colors", "journey", "portal", "audit_views", "wizard"}
+               "approve_changes", "sealed", "colors", "journey", "portal", "audit_views", "wizard",
+               "sections", "layout"}  # how a record's fields are grouped on its form (a step-by-step form's steps), and tabs
 
 
 def apply(bp, raw_patches, allowed=None):
@@ -1138,6 +1166,18 @@ def apply(bp, raw_patches, allowed=None):
                   key=lambda np: (-1 if isinstance(np[1], m.RemoveFeature) else 0 if isinstance(np[1], order) else
                                   1 if isinstance(np[1], patterns.ALL) else
                                   2 if isinstance(np[1], (m.AddRule, m.ChangeRule, m.RemoveRule)) else 3, np[0]))
+    # first the teams: a new list's moves, fields and access can be for one made in the same batch (only Purchasing
+    # officers send an order); made after the lists, they weren't there yet when the lists named them
+    teams = [(n, p) for n, p in rest if isinstance(p, m.SetTeam) or (isinstance(p, m.DesignOp) and p.op.get("op") == "set_team")]
+    for n, p in teams:
+        try:
+            ok = _apply_ops(out, translate(Design(out.blueprint), p, where(n, p)), where(n, p))
+        except Problem as exc:
+            out.problems.append(str(exc))
+            ok = False
+        if not ok:
+            refused.add(n)
+    rest = [(n, p) for n, p in rest if n not in {t for t, _ in teams}]
     # phase A: each new list, its plain fields and its stage field
     for n, p in lists:
         here, d = where(n, p), Design(out.blueprint)
@@ -1204,6 +1244,22 @@ def apply(bp, raw_patches, allowed=None):
         for (n, _), problems in said.items():
             out.problems.extend(problems)
             refused.add(n)
+    # the new lists' own settings (their portal, who sees them, their policies), now their fields are there: their moves
+    # can then be for whoever those settings make (the supplier through the portal acknowledges an order). One that can't
+    # be made yet waits for the rest, as before.
+    early = [(n, p) for n, p in rest if isinstance(p, m.DesignOp) and p.op.get("op") == "update_table"
+             and schema.slug(str(p.op.get("table") or p.op.get("key") or "")) in made_here]
+    for n, p in early:
+        before, snapshot = len(out.problems), copy.deepcopy(out.blueprint)
+        try:
+            ok = _apply_ops(out, translate(Design(out.blueprint), p, where(n, p)), where(n, p))
+        except Problem:
+            ok = False
+        if ok:
+            rest = [(k, x) for k, x in rest if k != n]
+        else:  # tried again with the rest
+            out.blueprint = snapshot
+            del out.problems[before:]
     # phase D: each new list's stage moves, and its fields in the order given
     for n, p in lists:
         d = Design(out.blueprint)
@@ -1426,7 +1482,7 @@ def _move_parts(d, t, names, mv, where):
     if mv.only_if:
         extra["only_if"] = ir_conditions(d, t, mv.only_if, f"{where} › only_if")
     if mv.not_by:
-        extra["not_by"] = [mv.not_by]
+        extra["not_by"] = _not_by(d, t, mv.not_by, f"{where} › not_by", stages=names)
     if mv.step_up:
         extra["step_up"] = True
     return change, extra

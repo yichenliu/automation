@@ -1072,8 +1072,8 @@ def normalize_change_approval(raw, label=""):
     if wait and wait > 0:
         out["wait_days"] = min(wait, 60)
     tell = _first(raw, "tell", "notify_field", "confirm_with", "tell_contact", "email_field")
-    if tell:
-        out["tell"] = slug(tell)
+    if tell:  # an email field, or one through a link (the seller's registered contact's email)
+        out["tell"] = ".".join(slug(p) for p in str(tell).split(".")[:2] if slug(p))
     if _yes(_first(raw, "step_up", "reauthenticate", "confirm_sign_in", "second_factor")):
         out["step_up"] = True
     return out
@@ -1246,9 +1246,12 @@ def portal_shows(tables, t, people):
     via = field(t, head)
     if via is None or via["type"] != "link":
         return False
-    if hop:  # through a named link of the record it links to: a clarification's tender's invited suppliers
+    if hop:  # through a named link of the record it links to: a clarification's tender's invited suppliers; or on to a
+        # record that links to them (a verification document's case's seller, whose people they are)
         on = field(tables.get(via["table"]), hop)
-        return bool(on) and on["type"] == "link" and on["table"] == people
+        if not on or on["type"] != "link":
+            return False
+        return on["table"] == people or any(f["type"] == "link" and f["table"] == people for f in (tables.get(on["table"]) or {}).get("fields", []))
     return via["table"] == people or any(f["type"] == "link" and f["table"] == people for f in (tables.get(via["table"]) or {}).get("fields", []))
 
 
@@ -2463,7 +2466,7 @@ def _check_expression(source, allowed, where, problems, record_fields=None, tabl
         import ast
         for node in ast.walk(expr.parse(source)):
             if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id in ("record", "this") \
-                    and node.attr not in record_fields and node.attr not in ("id", "title", "created_at", "updated_at"):
+                    and node.attr not in record_fields and node.attr not in ("id", "title", "created_at", "updated_at", "created_by"):
                 problems.append(f"{where}: record.{node.attr} isn't a field of this table")
 
 
@@ -2672,7 +2675,7 @@ def reach(t, source, via, tables):
 
 
 def _check_conditions(conditions, t, where, problems, tables):
-    keys = {f["key"] for f in t["fields"]} | {"created_at", "updated_at"}
+    keys = {f["key"] for f in t["fields"]} | {"created_at", "updated_at", "created_by"}
     for source in formulas(conditions):
         _check_expression(source, keys | {"record", "id"}, where, problems, tables=tables, t=t)
     for c in condition_leaves(conditions):
@@ -2682,7 +2685,7 @@ def _check_conditions(conditions, t, where, problems, tables):
             linked = tables.get(link["table"]) if link and link["type"] == "link" else None
             if linked is None:
                 problems.append(f"{where}: the condition checks “{c['field']}”, but “{head}” isn't a link field of {t['label']}")
-            elif not field(linked, rest) and rest not in ("created_at", "updated_at"):
+            elif not field(linked, rest) and rest not in ("created_at", "updated_at", "created_by"):
                 problems.append(f"{where}: the condition checks “{c['field']}”, but “{rest}” isn't a field of {linked['label']}")
         elif c["field"] not in keys:
             problems.append(f"{where}: the condition checks “{c['field']}”, which isn't a field of {t['label']}")
@@ -2692,11 +2695,15 @@ CONTEXT = {"record", "created", "item", "email", "file", "payload", "today", "no
 
 
 _MORE_CONTEXT = contextvars.ContextVar("more_context", default=frozenset())  # {{flow.…}}, while a flow's "then" is checked
+# the design's lists while a rule is checked: its values and messages can look at a whole list, as formulas do
+# (first(people where login == record.created_by).default_site)
+_TABLES = contextvars.ContextVar("tables", default=None)
 
 
 def _check_template(text, where, problems, context_fields):
     for m in expr.TEMPLATE.finditer(text or ""):
-        _check_expression(m.group(1), set(context_fields) | CONTEXT | _MORE_CONTEXT.get(), where, problems, record_fields=set(context_fields))
+        _check_expression(m.group(1), set(context_fields) | CONTEXT | _MORE_CONTEXT.get(), where, problems, record_fields=set(context_fields),
+                          tables=_TABLES.get())
 
 
 def _check_values(values, target, where, problems, context_fields):
@@ -2761,7 +2768,7 @@ def _check_table(t, tables, modules, problems):
                 elif ours not in keys:
                     problems.append(f"{where} only offers {other['label'].lower()} matching this record's “{ours}”, which isn't one of its fields")
         if f["type"] == "formula":
-            _check_expression(f["expression"], set(keys) | {"record", "id", "created_at", "updated_at"}, where, problems, tables=tables, t=t)
+            _check_expression(f["expression"], set(keys) | {"record", "id", "created_at", "updated_at", "created_by"}, where, problems, tables=tables, t=t)
             if f["key"] in expr.names_in(f["expression"]):
                 problems.append(f"{where}: a formula can't use itself")
         if f["type"] == "lookup" and "where" in f:
@@ -2979,8 +2986,12 @@ def _check_table(t, tables, modules, problems):
                 problems.append(f"{where} watches “{keys[k]['label']}”, which is worked out, not filled in")
         if not who_fits(t, held["approver"], tables):
             problems.append(f"{where} asks “{held['approver']}” to approve: use {_who_words(t)}")
-        if held.get("tell") and (keys.get(held["tell"]) or {}).get("type") != "email" and not person_path(t, held["tell"], tables):
-            problems.append(f"{where} tells “{held['tell']}” about each change: it must be an email field of {t['label']}")
+        head, _, rest = (held.get("tell") or "").partition(".")
+        through = tables.get((keys.get(head) or {}).get("table") or "") if rest and (keys.get(head) or {}).get("type") == "link" else None
+        if held.get("tell") and (keys.get(held["tell"]) or {}).get("type") != "email" and not person_path(t, held["tell"], tables) \
+                and (field(through, rest) or {}).get("type") != "email":
+            problems.append(f"{where} tells “{held['tell']}” about each change: it must be an email field of {t['label']}, or one through "
+                            "a link (registered_contact.email)")
     sealed = t.get("sealed")
     if sealed:
         end = _path_field(t, sealed["until"], tables)
@@ -3223,6 +3234,14 @@ def _apart_fits(t, who, tables):
 
 
 def _check_automation(a, tables, problems, documents, bp_pages=(), automations=None):
+    token = _TABLES.set(tables)
+    try:
+        _check_automation_in(a, tables, problems, documents, bp_pages, automations)
+    finally:
+        _TABLES.reset(token)
+
+
+def _check_automation_in(a, tables, problems, documents, bp_pages=(), automations=None):
     where = f"the automation “{a['name']}”"
     trig = a["trigger"]
     t = tables.get(trig.get("table")) if trig.get("table") else None

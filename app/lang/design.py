@@ -75,8 +75,9 @@ class Design:
         for i, part in enumerate(parts):
             f = self.field(here, part)
             if f is None:
-                if part in schema.SYSTEM_TIMES.values() or part in ("created_at", "updated_at", "id"):
-                    return {"key": part, "type": "datetime" if part != "id" else "number", "label": part}, here, keys + [part]
+                if part in schema.SYSTEM_TIMES.values() or part in ("created_at", "updated_at", "id", "created_by"):
+                    kind = {"id": "number", "created_by": "user"}.get(part, "datetime")
+                    return {"key": part, "type": kind, "label": part}, here, keys + [part]
                 near = closest(part, self.field_names(here))
                 raise NameProblem(f"“{part}” isn't a field of {here['label']}" + (f" (did you mean {', '.join(near)}?)" if near else "")
                                   + f"; its fields: {', '.join(self.field_names(here))}")
@@ -135,8 +136,8 @@ class Design:
             if whole is not None:
                 here, many = whole, True
                 continue
-            if part in ("id", "created_at", "updated_at") and i == len(parts) - 1:
-                return {"key": part, "type": "number" if part == "id" else "datetime", "label": part}, here, many
+            if part in ("id", "created_at", "updated_at", "created_by") and i == len(parts) - 1:
+                return {"key": part, "type": {"id": "number", "created_by": "user"}.get(part, "datetime"), "label": part}, here, many
             near = closest(part, self.field_names(here))
             linking = self.linking(here)
             raise NameProblem(f"“{part}” isn't a field of {here['label']}" + (f" (did you mean {', '.join(near)}?)" if near else "")

@@ -9,8 +9,12 @@
     <span class="grow">Someone changed your {{ (a.proposal.shown or {})|list|join(' and ')|lower }}{% if first %} to <b>{{ first[1][1] }}</b>{% endif %} on {{ a.created_at|when }}. <b>Was this you?</b></span>
     <form method="post" action="{{ url_for('portal.confirm', wid=ws.id, aid=a.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn sm">{{ icon('check') }}Yes, it was me</button></form>
     <form method="post" action="{{ url_for('portal.cancel', wid=ws.id, aid=a.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn sm danger">No, cancel it</button></form></div>{% endfor %}
-  {% for a in asks %}{% set rec = e.get(a.record_id) if a.record_id else none %}<div class="list-row"><span class="pill {{ 'blue' if a.kind == 'task' else 'amber' }}">{{ 'To do' if a.kind == 'task' else 'Your answer' }}</span><span class="grow">{{ a.message }}</span>
-    {% if rec %}<a class="btn sm primary" href="{{ url_for('portal.record', wid=ws.id, table=rec.table, rid=rec.id) }}">Open</a>{% endif %}</div>{% endfor %}
+  {% for a in asks %}{% set rec = e.get(a.record_id) if a.record_id else none %}{% if a.kind == 'change' %}<div class="list-row"><span class="pill amber">{{ icon('shield') }}Your colleague's change</span>
+    <span class="grow">{{ a.proposal.by }} changed {{ (a.proposal.shown or {})|list|join(' and ')|lower }}{% for label, pair in (a.proposal.shown or {})|dictsort %}: {{ label }} <b>{{ pair[1] }}</b>{% endfor %}. Another of you approves it{% if a.proposal.ready_at %}, from {{ a.proposal.ready_at[:10] }}{% endif %}.</span>
+    <form method="post" action="{{ url_for('portal.answer', wid=ws.id, aid=a.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="decision" value="approve"><button class="btn sm primary">{{ icon('check') }}Approve</button></form>
+    <form method="post" action="{{ url_for('portal.answer', wid=ws.id, aid=a.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="decision" value="reject"><button class="btn sm danger">Turn down</button></form></div>
+  {% else %}<div class="list-row"><span class="pill {{ 'blue' if a.kind == 'task' else 'amber' }}">{{ 'To do' if a.kind == 'task' else 'Your answer' }}</span><span class="grow">{{ a.message }}</span>
+    {% if rec %}<a class="btn sm primary" href="{{ url_for('portal.record', wid=ws.id, table=rec.table, rid=rec.id) }}">Open</a>{% endif %}</div>{% endif %}{% endfor %}
   {% for t, r, moves in waiting %}<div class="list-row"><span class="pill blue">{{ t.singular }}</span><span class="grow">{{ e.title(r) }}: {{ moves|map(attribute='label')|select|join(' or ') or 'move it on' }}</span>
     <a class="btn sm primary" href="{{ url_for('portal.record', wid=ws.id, table=t.key, rid=r.id) }}">Open</a></div>{% endfor %}
 </div></div>{% endif %}

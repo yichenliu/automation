@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from typing import Annotated, Any, Literal, Union
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field
+from pydantic import AfterValidator, BaseModel, BeforeValidator, ConfigDict, Field
 
 from .registry import register, union
 
@@ -46,7 +46,8 @@ PLAIN_TYPES = ("text", "long_text", "rich_text", "email", "phone", "url", "addre
 @register("field", {"type": "date", "key": "due_date", "label": "Due date", "required": True})
 class Plain(Base):
     """A field people fill in. visible_to: only this role (admin, owner) or team sees it (prices kept from the makers);
-    sensitive: kept encrypted and shown masked (a bank account, a tax number)."""
+    sensitive: kept encrypted and shown masked (a bank account, a tax number); many, on a person: several people (a
+    team's members, an order's approvers)."""
     type: Literal["text", "long_text", "rich_text", "email", "phone", "url", "address", "barcode", "tags", "number", "money", "percent",
                   "duration", "rating", "date", "datetime", "time", "yes_no", "person", "file", "image", "signature"]
     key: str
@@ -57,6 +58,7 @@ class Plain(Base):
     unique: bool = False
     visible_to: str | None = None
     sensitive: bool = False
+    many: bool = Field(False, description="a person field holding several people")
     show_if: list["Condition | str"] = Field(default_factory=list, description="shown only while these hold (a reason, when declined)")
     required_if: list["Condition | str"] = Field(default_factory=list, description="must be filled in while these hold")
 
@@ -148,7 +150,9 @@ class Move(Base):
     who: list[str] = Field(default_factory=list)
     needs: list[str] = Field(default_factory=list)
     only_if: list["Condition | str"] = Field(default_factory=list)
-    not_by: str | None = Field(None, description="never by this person (a person field, or creator): someone else checks it")
+    not_by: Annotated[list[str], BeforeValidator(lambda v: [v] if isinstance(v, str) else v or [])] = Field(
+        default_factory=list, description="never by these: creator (whoever raised it), a person field, a team, or whoever moved it to "
+                                          "a stage (Recommended): someone else does it (whoever recommends an award can't approve it)")
     step_up: bool = Field(False, description="the person confirms their sign-in first (a payment run)")
 
 
