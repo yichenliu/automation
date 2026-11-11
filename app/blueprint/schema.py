@@ -1509,6 +1509,9 @@ def normalize_document(raw):
                "footer": str(_first(raw, "footer", "last_line", "bottom", "trailer", default=""))[:4000]}
         if isinstance(lines, dict) and _first(lines, "table"):
             doc["lines"] = _listing(lines)
+        sealed = _first(raw, "sealed_in", "fingerprint_field", "fingerprint_in")
+        if sealed:  # its fingerprint kept on the record once it's made: a download that doesn't match is refused
+            doc["sealed_in"] = slug(sealed)
         if not doc["line"] and not doc["header"]:
             raise SchemaError(f"the file “{doc['label']}” needs \"line\" (a template for each line) or \"header\"")
         only = _first(raw, "only_if", "when", "show_if")

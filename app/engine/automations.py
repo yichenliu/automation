@@ -1347,6 +1347,14 @@ def _do(engine, automation, action, record, run):
             target = _linked(engine, record, action["target"])
         if target is None:
             return {"result": "No document produced: there was no record to produce it for"}
+        doc = next((x for x in (engine.tables.get(target.table) or {}).get("documents", []) if x["key"] == action["document"]), None) or {}
+        if doc.get("format") == "text" and doc.get("sealed_in"):  # sealed: its fingerprint kept; a private one isn't kept itself
+            from ..documents import text_file
+            name, content, sha, sensitive = text_file(engine, target, action["document"])
+            engine.update(engine.get(target.id), {doc["sealed_in"]: sha}, by=_by(automation))
+            if sensitive:
+                return {"result": f"Made {name} and sealed it with its fingerprint {sha[:12]}…; it holds bank details, so it's made again "
+                                  f"when someone downloads it (and checked against the fingerprint), never kept", "link": _link(target.table, target.id)}
         file = produce(engine, target, action["document"], field=action.get("field", ""), by=_by(automation))
         return {"result": f"Produced {file.name}", "file": file.id, "link": _link(target.table, target.id)}
     if kind == "run_automation":

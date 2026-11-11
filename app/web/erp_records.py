@@ -1442,6 +1442,14 @@ def document(request: Request, wid: int, table: str, rid: int, key: str, user=De
         except expr.ExprError as exc:
             flash(request, f"{doc['label']} couldn't be made: its layout has a mistake ({exc}). Ask the builder to fix it.", "error")
             return redirect(url_for("app.record", wid=wid, table=t["key"], rid=r.id))
+        sealed = (r.data or {}).get(doc["sealed_in"]) if doc.get("sealed_in") else None
+        if sealed and sealed != sha:  # what was approved and sealed has changed since: never handed out as if it hadn't
+            db.session.add(RecordChange(workspace_id=ws.id, record_id=r.id, kind="updated", by=user.display, by_id=user.id,
+                                        changes={"_files": [None, f"Refused {name}: its fingerprint {sha[:12]} isn't the sealed {sealed[:12]}"]}))
+            db.session.commit()
+            flash(request, f"{doc['label']} no longer matches the one sealed when it was approved, so it can't be downloaded: "
+                           "something in it changed since. Look at its history.", "error")
+            return redirect(url_for("app.record", wid=wid, table=t["key"], rid=r.id))
         db.session.add(RecordChange(workspace_id=ws.id, record_id=r.id, kind="updated", by=user.display, by_id=user.id,
                                     changes={"_files": [None, f"Made {name} (fingerprint {sha[:12]})"]}))
         db.session.commit()

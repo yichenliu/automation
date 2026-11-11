@@ -1995,6 +1995,11 @@ def translate(d, p, where):
                     for name in re.findall(r"\{\{\s*line\.(\w+)", text):
                         if d.field(lt, name) is None:
                             raise Problem(f"{where} › line: “{name}” isn't a field of {lt['label']} (its fields: {', '.join(d.field_names(lt))})")
+            if p.sealed_in:
+                f = d.field(t, p.sealed_in)
+                if f is None or f["type"] != "text":
+                    raise Problem(f"{where} › sealed_in: {p.sealed_in} must be a text field of {t['label']} (to keep the file's fingerprint in)")
+                doc["sealed_in"] = f["key"]
             return [{"op": "add_document", "table": t["key"], "document": doc}]
         return [{"op": "add_document", "table": t["key"], "document": {"key": schema.slug(p.key), "label": p.label, "title": p.title or p.label}}]
     if isinstance(p, (m.ChangeRule, m.RemoveRule)):

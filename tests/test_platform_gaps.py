@@ -903,3 +903,35 @@ def test_a_rule_copying_a_sensitive_field_copies_the_value_not_its_mask(app):
     Engine(ws).create("a", {"acct": "123456789"})
     copied = Engine(ws).rows("b")[0].data["acct"]
     assert reveal(copied) == "123456789" and copied["masked"] == "••••789"
+
+
+def test_a_payment_file_is_sealed_with_its_fingerprint_and_a_changed_one_is_refused(app, client):
+    """An approved run's bank file holds account numbers, so it's never kept: its fingerprint is, and a download is
+    made again and handed out only while it still matches (an account changed since is refused)."""
+    bp = _ok([
+        {"do": "add_list", "key": "runs", "label": "Runs", "singular": "Run", "fields": [
+            {"type": "text", "key": "name", "label": "Name"}, {"type": "text", "key": "fingerprint", "label": "Fingerprint"}],
+         "stages": {"stages": ["Draft", "Approved"]}},
+        {"do": "add_list", "key": "items", "label": "Items", "singular": "Item", "fields": [
+            {"type": "link", "key": "run", "label": "Run", "to": "runs"}, {"type": "money", "key": "amount", "label": "Amount"},
+            {"type": "text", "key": "account", "label": "Account", "sensitive": True}]},
+        {"do": "add_document", "list": "runs", "key": "aba", "label": "Bank file", "format": "text", "extension": "aba", "lines": "items",
+         "line": "1{{lpad(digits(line.account), 9, \" \")}}{{lpad(cents(line.amount), 10, \"0\")}}", "sealed_in": "fingerprint"},
+        {"do": "add_rule", "rule": {"key": "seal", "name": "Seal", "when": {"on": "reaches", "list": "runs", "stage": "Approved"}, "steps": [
+            {"do": "document", "document": "aba"}]}}])
+    ws = _ws(app, bp)
+    e = Engine(ws)
+    run = e.create("runs", {"name": "Friday"})
+    item = e.create("items", {"run": run.id, "amount": 120.5, "account": "123456789"})
+    e.update(e.get(run.id), {"status": "Approved"})
+    sealed = Engine(ws).get(run.id).data["fingerprint"]
+    assert sealed and len(sealed) == 64
+    from app.models import File
+    assert File.query.filter_by(record_id=run.id).count() == 0  # never kept
+    client.post("/login", data={"email": "owner@example.com", "password": "x" * 12})
+    got = client.post(f"/w/{ws.id}/app/t/runs/{run.id}/document/aba")
+    assert got.status_code == 200 and b"123456789" in got.data and got.headers["X-Content-SHA256"] == sealed
+    e2 = Engine(ws)
+    e2.update(e2.get(item.id), {"account": "999999999"})
+    refused = client.post(f"/w/{ws.id}/app/t/runs/{run.id}/document/aba")
+    assert refused.status_code in (302, 303) and b"999999999" not in refused.data

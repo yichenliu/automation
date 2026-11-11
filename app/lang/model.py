@@ -988,6 +988,8 @@ class AddDocument(Base):
     footer: str | None = None
     lines: str | None = Field(None, description="a text file's line records: a list linking to this one")
     via: str | None = Field(None, description="their link to this record")
+    sealed_in: str | None = Field(None, description="a text field its fingerprint is kept in once it's made: a file with bank details "
+                                                    "isn't kept, and a download that doesn't match it is refused")
 
 
 @register("patch", {"do": "import_rows", "file": 12, "sheet": "Customers", "list": "customers", "columns": {"Customer name": "name", "E-mail": "email"}}, "data")
