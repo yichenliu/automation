@@ -73,6 +73,7 @@ def copy_of(workspace, blueprint=None):
     named = _looked_up_by_name(blueprint or workspace.blueprint or {})
     kept = [(r.id, r.table, copy.deepcopy(r.data)) for r in Record.query.filter(Record.workspace_id == workspace.id, Record.deleted_at.is_(None),
                                                                                   Record.table.in_(named)).limit(2000)] if named else []
+    kept += _starting_data(workspace, {k[0] for k in kept}, 2000 - len(kept))
     design = {"name": workspace.name, "about": workspace.about, "blueprint": copy.deepcopy(blueprint or workspace.blueprint or schema.empty(workspace.name)),
               "settings": copy.deepcopy(workspace.settings or {}), "timezone": workspace.timezone, "currency": workspace.currency,
               "version": workspace.version}
@@ -124,7 +125,8 @@ def copy_of(workspace, blueprint=None):
 
 
 def _looked_up_by_name(bp):
-    """The tables whose records automations name in their steps (an account "Wages" a journal line goes to)."""
+    """The tables whose records automations name in their steps (an account "Wages" a journal line goes to), and those
+    a link's default names one of (a new item's unit: EA)."""
     out = set()
     for a in bp.get("automations", []):
         for act in schema.steps_of(a["actions"]):
@@ -133,7 +135,24 @@ def _looked_up_by_name(bp):
                 f = schema.field(t, key)
                 if f is not None and f["type"] == "link" and isinstance(value, str) and "{{" not in value:
                     out.add(f["table"])
+    for t in bp.get("tables", []):
+        for f in t["fields"]:
+            if f["type"] == "link" and isinstance(f.get("default"), str) and f["default"].strip() and "{{" not in f["default"]:
+                out.add(f["table"])
     return out
+
+
+def _starting_data(workspace, have, most):
+    """The records the builder added as the app's starting data, in its lists with no stages (its units of measure,
+    categories, tax codes): the copy has them, as the app does, so an example can name them. Never the business's own
+    records, nor work in progress."""
+    from .chat import BUILDER_BY
+    lists = [t["key"] for t in (workspace.blueprint or {}).get("tables", []) if not t.get("workflow")]
+    if most <= 0 or not lists:
+        return []
+    rows = Record.query.filter(Record.workspace_id == workspace.id, Record.created_by == BUILDER_BY, Record.deleted_at.is_(None),
+                               Record.table.in_(lists)).limit(most + len(have))
+    return [(r.id, r.table, copy.deepcopy(r.data)) for r in rows if r.id not in have][:most]
 
 
 # --- sample values ----------------------------------------------------------------------------------------------------
@@ -1046,13 +1065,13 @@ def _act_outside(trial, doer, step, names, hold=False):
     try:
         if do == "add":
             t = _table(engine, step.get("table"))
-            names["_adding"] = step.get("as")
+            names["_adding"] = step.get("as")  # (the rules it starts, the AI's too, know which of the example's it is)
             try:
                 given = _values(engine, t, step.get("values"), names)
+                record = outside.add_line(engine, contact, t["key"], given) if t.get("embedded") else \
+                    outside.add(engine, doer.portal, contact, t["key"], given, automations=not hold)
             finally:
                 names.pop("_adding", None)
-            record = outside.add_line(engine, contact, t["key"], given) if t.get("embedded") else \
-                outside.add(engine, doer.portal, contact, t["key"], given, automations=not hold)
             if step.get("as"):
                 names[step["as"]] = record.id
             names.setdefault("_added", []).append((t["key"], record.id))
@@ -2060,6 +2079,8 @@ def _ai_answers(trial, engine, example, names):
     filled = {(a["trigger"].get("table"), k) for a in engine.bp.get("automations", []) for act in schema.steps_of(a["actions"])
               for k in ([act.get("field")] if act.get("type") in ("ai_fill", "ai_check") else act.get("fields") or []
                         if act.get("type") == "ai_extract" else [])}
+    sureness = {(a["trigger"].get("table"), act["confidence"]) for a in engine.bp.get("automations", []) for act in schema.steps_of(a["actions"])
+                if act.get("type") in ("ai_fill", "ai_check") and act.get("confidence")}  # how sure it was: only as the example says
     wanted = {}
     for c in example.get("expect") or []:
         if c.get("record") and c.get("field") and "." not in str(c["field"]) and "equals" in c:
@@ -2067,13 +2088,15 @@ def _ai_answers(trial, engine, example, names):
 
     def answer(record, key):
         f = engine.field(record.table, key)
-        if f is None or (record.table, key) not in filled:
+        if f is None or (record.table, key) not in filled | sureness:
             return None
         alias = next((a for a, rid in names.items() if rid == record.id and key in wanted.get(a, {})), None)
         adding = names.get("_adding")  # a rule run as the record is added, before the example has named it
         if alias is None and key in wanted.get(adding, {}) and record.id not in names.values():
             alias = adding
         value = wanted[alias][key] if alias else None
+        if (record.table, key) in sureness and (record.table, key) not in filled:
+            return value  # how sure the AI was, only when the example says (unsaid, it's sure, as it always was)
         if value is None or (isinstance(value, str) and FILLED.match(value)):  # "anything": an ordinary value
             value = sample_value(engine, engine.tables[record.table], f, trial.owner_id, {}, 300, 0)
         elif f["type"] == "link":  # the record the example calls inv1, as the AI would name it

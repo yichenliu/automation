@@ -88,8 +88,9 @@ class Link(Base):
     to: str = Field(description="the list it links to")
     many: bool = False
     required: bool = False
-    default: str | None = Field(None, description="what a new record that doesn't say is linked to, read from what it was given: "
-                                                  "\"{{tender.buyer}}\" (an award's buyer is its tender's)")
+    default: str | None = Field(None, description="what a new record that doesn't say is linked to: a record by its name or code "
+                                                  "(\"EA\", a unit of measure), or read from what it was given: \"{{tender.buyer}}\" "
+                                                  "(an award's buyer is its tender's)")
     help: str | None = None
     show_if: list["Condition | str"] = Field(default_factory=list)
     required_if: list["Condition | str"] = Field(default_factory=list)

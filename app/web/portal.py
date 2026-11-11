@@ -341,7 +341,8 @@ def new(request: Request, wid: int, table: str, user=Depends(signed_in), form: F
     except outside.NotTheirs:
         raise HTTPException(404) from None
     t, fields, lines, options = adding["t"], adding["fields"], adding["lines"], adding["options"]
-    errors, values = {}, dict(request.query_params) if request.method == "GET" else {}
+    starting = {f["key"]: engine.starting_value(f) for f in fields if f.get("default") not in (None, "")}
+    errors, values = {}, {**{k: v for k, v in starting.items() if v is not None}, **dict(request.query_params)} if request.method == "GET" else {}
     if request.method == "POST":
         values = {f["key"]: form.get(f["key"]) if f["type"] != "checkbox" else bool(form.get(f["key"])) for f in fields}
         if any(f["type"] == "multi_select" for f in fields):

@@ -976,6 +976,19 @@ class Engine:
                 out |= {int(x) for x in (value if isinstance(value, list) else [value]) if str(x).isdigit()}
         return out
 
+    def starting_value(self, f):
+        """What a new record's form starts with in a field that has a default: today for a date that says so, the record a
+        link's default names (EA: that unit's id), or the default as it is. None for one read from what's given ({{x.y}})."""
+        default = f.get("default")
+        if default in (None, "") or isinstance(default, str) and "{{" in default:
+            return None
+        if f["type"] == "date" and str(default).lower() in ("today", "{{today()}}", "now"):
+            return self.today.isoformat()
+        if f["type"] == "link" and f.get("table") in self.tables:
+            found = self._find_linked(f["table"], default)
+            return found.id if found is not None else None
+        return default
+
     def address(self, record, which="app_link"):
         """A record's web address for an email: its page in the app (app_link), or in the portal (portal_link: the page of
         it there when its list is in a portal, otherwise the portal's home)."""

@@ -742,7 +742,12 @@ def _ai_work(engine, automation, action, record, run, at=None, learned=None):
                   and (kind != "ai_extract" or (record.data or {}).get(k) in (None, "", []))}
         if not values:
             return {"result": "Not tried: the AI isn't asked while an app is tried out"}
-        return {"proposal": {"table": record.table, "record_id": record.id, "values": values, "sure": True, "unsure": [],
+        sure, said = True, answer(record, action["confidence"]) if action.get("confidence") and kind in ("ai_fill", "ai_check") else None
+        if said not in (None, ""):  # as sure as the example says (92%: sure above 80; 60%: a person checks it)
+            judged = _sureness(action, {"confidence": expr.to_number(str(said).rstrip("% ")), "sure": True}, values, _percent(engine, record, action))
+            values, sure = judged["values"], judged["sure"]
+        return {"proposal": {"table": record.table, "record_id": record.id, "values": values, "sure": sure,
+                             "unsure": [] if sure else [engine.field(record.table, action["field"])["label"]],
                              "why": "As the example expects (the AI isn't asked while an app is tried out)"}}
     if learned is None:
         learned = corrections(engine, automation["key"], at) if at is not None and action.get("learn", True) else []

@@ -202,12 +202,14 @@ def _ir_field(d, t, f, where):
             out["multiple"] = True
         if f.required:
             out["required"] = True
-        if f.default:  # {{tender.buyer}}: read from the new record, so its path must be one there
-            inner = re.fullmatch(r"\s*\{\{\s*(.+?)\s*\}\}\s*", f.default)
-            if inner is None:
-                raise Problem(f"{where} › default: a link's default is read from the new record, as {{{{tender.buyer}}}}")
-            _check_formula(d, t, inner.group(1), f"{where} › default")
-            out["default"] = f.default
+        if f.default:  # {{tender.buyer}}: read from the new record, so its path must be one there; or a record by its
+            inner = re.fullmatch(r"\s*\{\{\s*(.+?)\s*\}\}\s*", f.default)  # name or code (EA: a unit of measure)
+            if inner is not None:
+                _check_formula(d, t, inner.group(1), f"{where} › default")
+            elif "{{" in f.default:
+                raise Problem(f"{where} › default: a link's default is a record of {target['label']} by its name or code (EA), or "
+                              f"read from the new record, as {{{{tender.buyer}}}}")
+            out["default"] = f.default.strip()
     elif isinstance(f, m.AutoNumber):
         out.update(type="autonumber", prefix=f.prefix)
     elif isinstance(f, m.Formula):

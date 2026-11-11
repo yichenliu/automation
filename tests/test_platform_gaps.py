@@ -3,6 +3,7 @@ text tests in formulas, a call out held to its allowed hosts (an address from a 
 into a list by a rule, the AI's confidence kept and judged, a held change approved only once its notice went out,
 everyone made to sign in with two steps, record access through several links, a step-by-step form whose step is the
 record's lines, a file's fingerprint in formulas, and records kept only as long as the list says."""
+import re
 from datetime import timedelta
 
 import pytest
@@ -571,3 +572,47 @@ def test_a_sensitive_field_shows_as_many_of_its_last_digits_as_it_says(app):
     assert "account_number" in [f["key"] for f in outside.editable(e, t, e.get(acme.id))]
     outside.change(e, ann, t, e.get(acme.id), {"account_number": "123456789"})
     assert Engine(ws).value(Engine(ws).get(acme.id), "account_number") == "••••789" == mask("123456789", 3)
+
+
+def test_a_link_defaults_to_a_record_named_by_its_code(app, client):
+    """An item's unit is EA unless said otherwise: a new one is linked to that unit, and its form starts with it picked."""
+    bp = _ok([
+        {"do": "add_list", "key": "uom", "label": "Units", "singular": "Unit", "fields": [{"type": "text", "key": "code", "label": "Code"}]},
+        {"do": "add_list", "key": "items", "label": "Items", "singular": "Item", "fields": [
+            {"type": "text", "key": "name", "label": "Name"}, {"type": "link", "key": "unit", "label": "Unit", "to": "uom", "default": "EA"}]}])
+    ws = _ws(app, bp)
+    e = Engine(ws)
+    e.create("uom", {"code": "KG"})
+    each = e.create("uom", {"code": "EA"})
+    assert e.create("items", {"name": "Gloves"}).data["unit"] == each.id
+    assert e.starting_value(schema.field(schema.table(bp, "items"), "unit")) == each.id
+    client.post("/login", data={"email": "owner@example.com", "password": "x" * 12})
+    page = client.get(f"/w/{ws.id}/app/t/items/new").get_data(as_text=True)
+    unit = page[page.index('name="unit"'):][:1500]
+    assert re.search(rf'value="{each.id}"[^>]*selected', unit), unit
+
+
+def test_a_check_names_the_apps_starting_data(app):
+    """Units of measure the builder added as the app's starting data are in the simulator's copy too, so a check can
+    name one (a pair of gloves, PR), and an item left without a unit gets its default (EA)."""
+    from app.lang import tools
+    owner = User(email="o2@example.com", name="Olive")
+    owner.set_password("x" * 12)
+    db.session.add(owner)
+    db.session.flush()
+    ws = Workspace(owner_id=owner.id, name="Catalogue", blueprint={}, state={}, settings={}, version=0)
+    db.session.add(ws)
+    db.session.flush()
+    db.session.add(Membership(workspace_id=ws.id, user_id=owner.id, role="owner"))
+    db.session.commit()
+    done = tools.apply(ws, [
+        {"do": "add_list", "key": "uom", "label": "Units", "singular": "Unit", "fields": [{"type": "text", "key": "code", "label": "Code"}]},
+        {"do": "add_records", "list": "uom", "records": [{"code": "EA"}, {"code": "PR"}]},
+        {"do": "add_list", "key": "items", "label": "Items", "singular": "Item", "fields": [
+            {"type": "text", "key": "name", "label": "Name"}, {"type": "link", "key": "unit", "label": "Unit", "to": "uom", "default": "EA"}]}], 0)
+    assert done["saved"], done
+    kept = tools.add_check(ws, "Gloves come in pairs, bolts each", [
+        {"do": "add", "table": "items", "as": "i1", "values": {"name": "Gloves", "unit": "PR"}},
+        {"do": "add", "table": "items", "as": "i2", "values": {"name": "Bolt"}}],
+        [{"record": "i1", "field": "unit", "equals": "PR"}, {"record": "i2", "field": "unit", "equals": "EA"}])
+    assert kept["kept"] and kept["ok"], kept
