@@ -230,7 +230,8 @@ def press(engine, automation, record, by):
     held = button_held(engine, automation, record)
     if held:
         raise FieldErrors({"_": held})
-    return start(engine, automation, record, f"{by} clicked “{automation['trigger'].get('label') or automation['name']}”")
+    return start(engine, automation, record, f"{by} clicked “{automation['trigger'].get('label') or automation['name']}”",
+                 context={"acting": engine.user_id} if engine.user_id and engine.role is not None else None)  # me: whoever pressed it
 
 
 def button_held(engine, automation, record):
@@ -309,6 +310,9 @@ def _context(engine, run, record, item=None):
     for kind in ("email", "file", "payload", "flow"):  # what started it: {{email.subject}}; a flow's answers: {{flow.count.reason}}
         names[kind] = _Item((run.context or {}).get(kind)) if (run.context or {}).get(kind) is not None else None
     names["join_link"] = engine.join_link()  # the portal's sign-up page, for an invitation to join
+    acting = (run.context or {}).get("acting")
+    if acting:  # a button someone pressed: me is them in its steps (who ran the tool, who made the order)
+        names["me"] = engine._person(acting)
     names["approver"] = (run.context or {}).get("approver")  # who said yes to the run's last approval (its "Approved by"), or
     # checked the AI's work
     names["reason"] = (run.context or {}).get("reason")  # what they wrote when they answered it (why they said no)

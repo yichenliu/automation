@@ -952,3 +952,19 @@ def test_count_distinct_tells_how_many_different_ones(app):
     for buyer in (a, a, b):
         e.create("asks", {"cat": gloves.id, "buyer": buyer.id})
     assert Engine(ws).value(Engine(ws).get(gloves.id), "buyers") == 2
+
+
+def test_a_buttons_rule_knows_who_pressed_it(app):
+    """A tool run a button makes is run by whoever pressed the button (me), not by nobody."""
+    from app.engine import automations
+    bp = _ok([{"do": "add_list", "key": "asks", "label": "Asks", "singular": "Ask", "fields": [{"type": "text", "key": "title", "label": "Title"}]},
+              {"do": "add_list", "key": "runs", "label": "Runs", "singular": "Run", "fields": [
+                  {"type": "link", "key": "ask", "label": "Ask", "to": "asks"}, {"type": "person", "key": "run_by", "label": "Run by"}]},
+              {"do": "add_rule", "rule": {"key": "go", "name": "Go", "when": {"on": "button", "list": "asks", "label": "Go"}, "steps": [
+                  {"do": "add", "list": "runs", "copy_same": False, "values": [{"field": "ask", "formula": "record"}, {"field": "run_by", "formula": "me"}]}]}}])
+    ws = _ws(app, bp)
+    owner = User.query.filter_by(email="owner@example.com").one()
+    mine = Engine(ws, member=Membership.query.filter_by(workspace_id=ws.id, user_id=owner.id).one())
+    ask = mine.create("asks", {"title": "Pumps"})
+    automations.press(mine, next(a for a in bp["automations"] if a["key"] == "go"), mine.get(ask.id), "Olive")
+    assert Engine(ws).rows("runs")[0].data["run_by"] == owner.id
