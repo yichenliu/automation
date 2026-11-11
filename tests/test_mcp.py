@@ -94,3 +94,21 @@ def test_the_owners_own_agent_changes_the_app_in_the_keel_language_with_the_buil
     assert stale["saved"] is False and "describe it again" in stale["why"]
     done, _ = _tool(client, key, "keel_apply", {"patches": [patch], "version": now["version"]})
     assert done["saved"] and done["version"] == now["version"] + 1 and all(c["ok"] for c in done["checks"])
+
+
+def test_the_builders_apply_tool_adds_the_records_its_patches_bring(app, client, owner):
+    """The usual units, the owner's staff: add_records through keel_apply saved the list but not its records (only the
+    builder's chat added them)."""
+    from app import lang
+    from app.blueprint import schema as design
+    user, ws = owner
+    ws.blueprint = lang.apply(design.empty("Shop"), [
+        {"do": "add_list", "key": "units", "label": "Units", "singular": "Unit", "fields": [{"type": "text", "key": "name", "label": "Name"}]}]).blueprint
+    from app.extensions import db
+    db.session.commit()
+    _, key = make_key(ws, "Owner's agent", "admin", user.id)
+    now, _ = _tool(client, key, "keel_describe", {})
+    done, _ = _tool(client, key, "keel_apply", {"patches": [{"do": "add_records", "list": "units", "records": [{"name": "Each"}, {"name": "Pair"}]}],
+                                               "version": now["version"]})
+    assert done["saved"], done
+    assert sorted(r.data["name"] for r in Engine(ws).rows("units")) == ["Each", "Pair"]

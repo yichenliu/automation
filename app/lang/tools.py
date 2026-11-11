@@ -15,6 +15,8 @@ definition, as everywhere in the language.
 """
 from pydantic import BaseModel, Field
 
+from ..extensions import db
+
 from . import apply as apply_patches, checks as feature_checks, describe as describe_app
 from .registry import catalog, fingerprint
 
@@ -75,10 +77,15 @@ def apply(ws, patches, version, by=None):
     out = apply_patches(ws.blueprint or {}, patches)
     if out.problems:
         return {"saved": False, "why": "some patches were refused", "refused": out.refused, "problems": out.problems}
-    if not out.changes:
+    if not out.changes and not out.data:
         return {"saved": False, "why": "nothing would change"}
-    number = save_version(ws, out.blueprint, out.changes, "api", by=by)
-    return {"saved": True, "version": number, "changes": out.changes, **_tried(ws, ws.blueprint)}
+    number = save_version(ws, out.blueprint, out.changes, "api", by=by) if out.changes else (ws.version or 0)
+    added = []
+    if out.data:  # the records the patches add (the owner's staff, the usual units), as the builder's own save adds them
+        from ..builder.chat import _data
+        added, _ = _data(ws, out.data, by=by)
+        db.session.commit()
+    return {"saved": True, "version": number, "changes": out.changes + added, **_tried(ws, ws.blueprint)}
 
 
 def test(ws):

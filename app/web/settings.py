@@ -571,6 +571,22 @@ def api_keys(request: Request, wid: int, ws=Depends(member_of("admin")), form: F
     return render(request, "settings/api.html", ws=ws, keys=keys, made=made, hooks=hooks, section="api", base=current_app.config["BASE_URL"])
 
 
+@router.api_route("/delete", methods=["GET", "POST"], name="settings.delete_app")
+def delete_app(request: Request, wid: int, ws=Depends(member_of("owner")), form: Form = Depends(form_of)):
+    """Delete this app and everything in it, for its owner: they type its name to say they mean it."""
+    error = None
+    if request.method == "POST":
+        if (form.get("name") or "").strip() != ws.name:
+            error = f"Type the app's name, {ws.name}, exactly, to delete it."
+        else:
+            from ..closing import delete_app as close
+            name = ws.name
+            close(ws, current_user(request).display)
+            flash(request, f"{name} and everything in it was deleted.", "success")
+            return redirect(url_for("workspaces.index"))
+    return render(request, "settings/delete.html", status_code=400 if error else 200, ws=ws, section="data", error=error)
+
+
 @router.api_route("/data/backup", methods=["POST"], name="settings.make_backup")
 def make_backup(request: Request, wid: int, ws=Depends(member_of("owner"))):
     path = backup.make()

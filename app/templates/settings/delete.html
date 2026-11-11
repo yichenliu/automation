@@ -1,0 +1,11 @@
+{% extends "settings/_layout.html" %}
+{% block title %}Delete this app{% endblock %}
+{% block content %}
+<h1>Delete {{ ws.name }}</h1><p class="muted mt-1">Everything in it goes for good: its lists and records, their history and files, its rules and what they did, and everyone's access to it. Export what you want to keep first (Settings › Data).</p>
+<form method="post" class="card mt-3"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  <div class="card-body stack">
+    {% if error %}<div class="flash error">{{ icon('triangle-alert') }}<span>{{ error }}</span></div>{% endif %}
+    <label class="field"><span>To delete it, type its name: <b>{{ ws.name }}</b></span><input name="name" autocomplete="off" required></label>
+    <div><button class="btn danger">{{ icon('trash-2') }}Delete this app for good</button> <a class="btn ghost" href="{{ url_for('settings.data', wid=ws.id) }}">Keep it</a></div>
+  </div></form>
+{% endblock %}

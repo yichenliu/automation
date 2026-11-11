@@ -14,4 +14,7 @@
   {% if database %}<p>PostgreSQL {{ database.version }} on this computer, {{ database.size }}{% if database.vector %}, with pgvector {{ database.vector }} so the AI finds things by meaning{% endif %}.</p>
   <p class="muted small mt-1">Records, files' details and everything the AI has read are kept here; nothing is sent anywhere else.</p>
   {% else %}<p class="bad-text">The database couldn't be asked just now: see Health.</p>{% endif %}</div></div>
+{% if member and member.role == 'owner' %}<div class="card mt-2"><div class="card-head">{{ icon('trash-2') }}<h2>Delete this app</h2></div><div class="card-body">
+  <p class="small muted">Everything in it goes for good. Only you, its owner, can do this.</p>
+  <p class="mt-2"><a class="btn danger" href="{{ url_for('settings.delete_app', wid=ws.id) }}">{{ icon('trash-2') }}Delete {{ ws.name }}</a></p></div></div>{% endif %}
 {% endblock %}

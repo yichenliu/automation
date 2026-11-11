@@ -394,3 +394,28 @@ def test_whoever_raised_it_hears_it_was_decided_and_who_is_next(app):
     e = Engine(ws)
     assert e.get(ask.id).data["status"] == "Approved"
     assert next_up(e, schema.table(bp, "asks"), e.get(ask.id)) == "Purchasing, to order it"
+
+
+def test_an_owner_deletes_their_app_and_everything_in_it(app, client):
+    from app.models import Record, RecordChange, Version
+    owner = User(email="olive@example.com", name="Olive")
+    owner.set_password("password1234")
+    db.session.add(owner)
+    db.session.flush()
+    ws = Workspace(owner_id=owner.id, name="Old shop", blueprint=_ok([{"do": "add_list", "key": "jobs", "label": "Jobs", "singular": "Job",
+                                                                      "fields": [{"type": "text", "key": "name", "label": "Name"}]}]),
+                   state={}, settings={}, version=1)
+    db.session.add(ws)
+    db.session.flush()
+    db.session.add(Membership(workspace_id=ws.id, user_id=owner.id, role="owner"))
+    db.session.add(Version(workspace_id=ws.id, number=1, blueprint=ws.blueprint, changes=[], source="start", by="Olive"))
+    db.session.commit()
+    Engine(ws).create("jobs", {"name": "Fence"})
+    wid = ws.id
+    client.post("/login", data={"email": "olive@example.com", "password": "password1234"})
+    refused = client.post(f"/w/{wid}/settings/delete", data={"name": "Wrong"})
+    assert refused.status_code == 400 and db.session.get(Workspace, wid) is not None
+    done = client.post(f"/w/{wid}/settings/delete", data={"name": "Old shop"})
+    assert done.status_code in (302, 303) and db.session.get(Workspace, wid) is None
+    assert not Record.query.filter_by(workspace_id=wid).count() and not RecordChange.query.filter_by(workspace_id=wid).count()
+    assert not Membership.query.filter_by(workspace_id=wid).count() and not Version.query.filter_by(workspace_id=wid).count()
