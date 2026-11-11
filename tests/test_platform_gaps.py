@@ -852,3 +852,31 @@ def test_a_person_field_of_the_record_named_like_creator_stays_that_field_in_not
         {"type": "money", "key": "amount", "label": "Amount"}, {"type": "person", "key": "raised_by", "label": "Raised by"}],
         "stages": {"stages": ["Raised", "Approved"], "moves": [{"from": ["Raised"], "to": "Approved", "button": "Approve", "not_by": ["raised_by", "creator"]}]}}])
     assert schema.table(bp, "claims")["workflow"]["transitions"][0]["not_by"] == ["raised_by", "creator"]
+
+
+def test_a_line_being_changed_is_item_inside_a_where_too(app):
+    """Approved new prices go on a contract's lines: each line being changed (item) finds its own new price among the
+    adjustment's lines, inside the where."""
+    bp = _ok([
+        {"do": "add_list", "key": "contracts", "label": "Contracts", "singular": "Contract", "fields": [{"type": "text", "key": "title", "label": "Title"}]},
+        {"do": "add_list", "key": "lines", "label": "Lines", "singular": "Line", "fields": [
+            {"type": "link", "key": "contract", "label": "Contract", "to": "contracts"}, {"type": "text", "key": "name", "label": "Name"},
+            {"type": "money", "key": "price", "label": "Price"}]},
+        {"do": "add_list", "key": "adjs", "label": "Adjustments", "singular": "Adjustment", "fields": [
+            {"type": "link", "key": "contract", "label": "Contract", "to": "contracts"}], "stages": {"stages": ["Draft", "Approved"]}},
+        {"do": "add_list", "key": "alines", "label": "Adjustment lines", "singular": "Adjustment line", "fields": [
+            {"type": "link", "key": "adj", "label": "Adjustment", "to": "adjs"}, {"type": "link", "key": "line", "label": "Line", "to": "lines"},
+            {"type": "money", "key": "new_price", "label": "New price"}]},
+        {"do": "add_rule", "rule": {"key": "apply", "name": "Apply", "when": {"on": "reaches", "list": "adjs", "stage": "Approved"}, "steps": [
+            {"do": "update_each", "list": "lines", "link": "contract", "of": "contract", "values": [
+                {"field": "price", "formula": "first(alines where adj == record.id and line == item.id).new_price"}]}]}}])
+    ws = _ws(app, bp)
+    e = Engine(ws)
+    c = e.create("contracts", {"title": "Pumps"})
+    a, b = e.create("lines", {"contract": c.id, "name": "Pump", "price": 100}), e.create("lines", {"contract": c.id, "name": "Seal", "price": 10})
+    adj = e.create("adjs", {"contract": c.id})
+    e.create("alines", {"adj": adj.id, "line": a.id, "new_price": 103.85})
+    e.create("alines", {"adj": adj.id, "line": b.id, "new_price": 10.39})
+    e.update(e.get(adj.id), {"status": "Approved"})
+    after = Engine(ws)
+    assert (after.get(a.id).data["price"], after.get(b.id).data["price"]) == (103.85, 10.39)

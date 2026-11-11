@@ -243,8 +243,12 @@ class ItemContext(Context):
         return self.outer.functions
 
     def resolve(self, name):
-        if name in ("item", "it"):
-            return self.item
+        if name in ("item", "it"):  # the record a step is about outside (the line being changed or copied), if there is
+            try:  # one: inside the where, the looked-at record's fields are their own names; otherwise the one looked at
+                outside = self.outer.resolve(name)
+            except ExprError:
+                outside = None
+            return outside if outside is not None else self.item
         if name != "this":
             has = getattr(self.item, "has", None)
             if callable(has) and has(name):
@@ -520,6 +524,8 @@ def reference():
              "48 hours, 30m, 3 days, 2w, on a date or a time or compared (returned_at > due_back_at + 2h; "
              "confirmed_at < now() - 48h; ends_at - starts_at > 30m)"]
     lines += [f"- {said}" for said in SAID.values() if said]
+    lines.append("- inside count/first/sum(… where …) in a step that changes or copies records one by one, item is still the one "
+                 "being changed (first(adjustment_lines where contract_line == item.id).new_price)")
     lines.append("- several (a field holding several people or records): panel + [record.member] adds one to them, "
                  "panel - [record.member] takes one away; x in panel whether one is among them")
     lines.append("- me: whoever is acting (pressing the button, saving), empty for the app's own rules: a move's only_if "
