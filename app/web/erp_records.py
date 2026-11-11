@@ -907,21 +907,30 @@ def _form_fields(t):
 
 
 def _options(engine, t, extra_tables=()):
-    out = {}
+    """The choices of every link field on the form: the record's own by their key, its lines' by "lines.key" too (a
+    request's Unit is its business unit; its line's Unit, a unit of measure)."""
+    out, read = {}, {}
     for table_ in [t, *extra_tables]:
         for f in table_["fields"]:
-            if f["type"] == "link" and f["table"] in engine.tables and f["key"] not in out:
+            if f["type"] != "link" or f["table"] not in engine.tables:
+                continue
+            names = [f"{table_['key']}.{f['key']}"] + ([f["key"]] if table_ is t or f["key"] not in out else [])
+            if f["table"] not in read:
                 target = engine.tables[f["table"]]
-                rows = engine.page(f["table"], sort={"field": schema.title_field(target), "dir": "asc"}, limit=1000)[0]
-                out[f["key"]] = [(x.id, engine.title(x)) for x in rows]
-                parent = next((g for g in table_["fields"] if g["type"] == "link" and not (engine.tables.get(g["table"]) or {}).get("embedded")), None)
-                fills = schema.fill_from(table_, f, target) if table_.get("embedded") and f is not parent else {}
-                if fills:  # what each choice fills in beside it, for the form to do as it's picked
-                    out[f["key"] + "__fill"] = {x.id: {ours: (x.data or {}).get(theirs) for ours, theirs in fills.items()
-                                                       if (x.data or {}).get(theirs) not in (None, "", [])} for x in rows}
-                if f.get("match"):  # each choice says what it belongs to, so the form can offer only the right ones
-                    theirs, ours = next(iter(f["match"].items()))
-                    out[f["key"] + "__match"] = {"field": ours, "by": {x.id: str((x.data or {}).get(theirs) or "") for x in rows}}
+                read[f["table"]] = engine.page(f["table"], sort={"field": schema.title_field(target), "dir": "asc"}, limit=1000)[0]
+            rows, target = read[f["table"]], engine.tables[f["table"]]
+            for name in names:
+                out[name] = [(x.id, engine.title(x)) for x in rows]
+            parent = next((g for g in table_["fields"] if g["type"] == "link" and not (engine.tables.get(g["table"]) or {}).get("embedded")), None)
+            fills = schema.fill_from(table_, f, target) if table_.get("embedded") and f is not parent else {}
+            if fills:  # what each choice fills in beside it, for the form to do as it's picked
+                for name in names:
+                    out[name + "__fill"] = {x.id: {ours: (x.data or {}).get(theirs) for ours, theirs in fills.items()
+                                                   if (x.data or {}).get(theirs) not in (None, "", [])} for x in rows}
+            if f.get("match"):  # each choice says what it belongs to, so the form can offer only the right ones
+                theirs, ours = next(iter(f["match"].items()))
+                for name in names:
+                    out[name + "__match"] = {"field": ours, "by": {x.id: str((x.data or {}).get(theirs) or "") for x in rows}}
     return out
 
 

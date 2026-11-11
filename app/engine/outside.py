@@ -130,6 +130,15 @@ def options(engine, fields_, contact=None):
     return out
 
 
+def line_options(engine, lines_, contact=None):
+    """The choices of the link fields on a record's lines, by "lines.key" (a line's Unit isn't its record's Unit)."""
+    out = {}
+    for c in lines_:
+        for key, choices in options(engine, c["cols"], contact).items():
+            out[f"{c['t']['key']}.{key}"] = choices
+    return out
+
+
 def ids_reaching(engine, t, middle):
     """The outside people a record that a table's records hang off reaches (a tender's invited suppliers)."""
     hop = t["portal"]["via"].partition(".")[2]
@@ -163,7 +172,7 @@ def addable(engine, portal, contact, table):
     if not direct and via not in fields_:
         fields_ = [via] + fields_
     lines_ = lines(engine, t)
-    choices = options(engine, fields_ + [f for c in lines_ for f in c["cols"]], contact)
+    choices = {**options(engine, fields_ + [f for c in lines_ for f in c["cols"]], contact), **line_options(engine, lines_, contact)}
     if not direct:
         choices[via["key"]] = [(x.id, engine.title(x)) for x in engine.rows(via["table"]) if contact.id in ids_reaching(engine, t, x)]
     return {"t": t, "via": via, "direct": direct, "fields": fields_, "lines": lines_, "options": choices}

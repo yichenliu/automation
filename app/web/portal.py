@@ -181,7 +181,8 @@ def record(request: Request, wid: int, table: str, rid: int, user=Depends(signed
                   fields=[f for f in _fields(t) if f["key"] != t["portal"]["via"].partition(".")[0]], lines=lines, files=files,
                   messages=messages, documents=[d for d in t.get("documents", []) if d.get("format") != "text"],
                   editable=editable, moves=engine.moves(r), asks=asks, locked=_locked(engine, t, r),
-                  sealed=engine.seal_note(r), options=_options(engine, editable + [f for c in lines for f in c["cols"]], contact),
+                  sealed=engine.seal_note(r), options={**_options(engine, editable + [f for c in lines for f in c["cols"]], contact),
+                                                       **outside.line_options(engine, lines, contact)},
                   edit_lines=bool(open_), open_lines=open_, starts_here=_starts_here(engine, portal, t))
 
 

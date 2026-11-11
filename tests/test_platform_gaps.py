@@ -344,3 +344,20 @@ def test_what_waits_for_someone_includes_their_own_next_moves(app):
     e.update(e.get(mine.id), {"status": "Turned down"})
     assert [(x["r"].id, x["move"]) for x in ready_for(engine("bea"))] == [(proposed.id, "Send again")]
     assert [(x["r"].id, x["move"]) for x in ready_for(engine("sam"))] == [(mine.id, "Change and resubmit")]
+
+
+def test_a_line_field_named_like_its_records_field_has_its_own_choices(app):
+    """A request's Unit is its business unit; its line's Unit is a unit of measure. The line's picker was offered the
+    business units (none), so a line could never be saved."""
+    from app.web.erp_records import _options
+    bp = _ok([{"do": "add_list", "key": "units", "label": "Business units", "singular": "Business unit", "fields": [{"type": "text", "key": "name", "label": "Name"}]},
+              {"do": "add_list", "key": "measures", "label": "Measures", "singular": "Measure", "fields": [{"type": "text", "key": "name", "label": "Name"}]},
+              {"do": "add_list", "key": "asks", "label": "Asks", "singular": "Ask", "fields": [
+                  {"type": "text", "key": "name", "label": "Name"}, {"type": "link", "key": "unit", "label": "Unit", "to": "units"}]},
+              {"do": "add_list", "key": "ask_lines", "label": "Ask lines", "singular": "Ask line", "inside": "asks", "fields": [
+                  {"type": "link", "key": "ask", "label": "Ask", "to": "asks"}, {"type": "link", "key": "unit", "label": "Unit", "to": "measures"}]}])
+    ws = _ws(app, bp)
+    e = Engine(ws)
+    each = e.create("measures", {"name": "Each"})
+    got = _options(e, schema.table(bp, "asks"), [schema.table(bp, "ask_lines")])
+    assert got["unit"] == [] and got["ask_lines.unit"] == [(each.id, "Each")]

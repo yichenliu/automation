@@ -9,7 +9,7 @@
         <td class="{{ 'num' if f.type in ('number', 'money', 'percent', 'duration') }}">
           {% if f.type in ('formula', 'rollup', 'lookup', 'autonumber') %}<span class="calc-cell" data-expr="{{ f.expression if f.type == 'formula' else '' }}" data-format="{{ f.format or 'number' }}">{{ e.display(f, e.value(row, f.key)) if row is not none else '' }}</span>
           {% elif f.type == 'select' %}<select name="{{ n }}"><option value=""></option>{% for o in f.options %}<option {{ 'selected' if v and v|string|lower == o|lower }}>{{ o }}</option>{% endfor %}</select>
-          {% elif f.type == 'link' %}<select name="{{ n }}"><option value=""></option>{% for id, title in options.get(f.key, []) %}<option value="{{ id }}" {{ 'selected' if v is not none and v|string == id|string }}>{{ title }}</option>{% endfor %}</select>
+          {% elif f.type == 'link' %}<select name="{{ n }}"><option value=""></option>{% for id, title in options.get(c.t.key ~ '.' ~ f.key, options.get(f.key, [])) %}<option value="{{ id }}" {{ 'selected' if v is not none and v|string == id|string }}>{{ title }}</option>{% endfor %}</select>
           {% elif f.type == 'checkbox' %}<input type="checkbox" name="{{ n }}" value="1" {{ 'checked' if v }}>
           {% elif f.type == 'date' %}<input type="date" name="{{ n }}" value="{{ v or '' }}">
           {% else %}<input type="text" name="{{ n }}" value="{{ ('%.2f'|format(v) if f.type == 'money' and v is number else v) if v is not none else '' }}" data-key="{{ f.key }}" {% if f.type in ('number', 'money', 'percent', 'duration') %}inputmode="decimal"{% endif %}>{% endif %}
