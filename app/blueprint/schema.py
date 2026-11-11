@@ -2660,7 +2660,8 @@ def title_field(t):
     return t["fields"][0]["key"] if t["fields"] else None
 
 
-WEB_ADDRESSES = ("app_link", "portal_link", "join_link")  # a record's pages in the app and the portal, the portal's sign-up page
+WEB_ADDRESSES = ("app_link", "portal_link", "join_link", "me")  # a record's pages in the app and the portal, the portal's sign-up
+# page; and me, whoever is acting
 
 
 def _check_expression(source, allowed, where, problems, record_fields=None, tables=None, t=None):

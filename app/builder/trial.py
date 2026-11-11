@@ -727,15 +727,23 @@ def _followed(engine, names, alias):
     """A record named through another's links, as a formula reads it: j1.invoices (the latest invoice of job j1, made by a
     rule), i1.customer (that invoice's customer). None when the path doesn't lead to one."""
     from ..engine.records import RecordProxy
-    head, *rest = alias.split(".")
+    head, *rest = re.split(r"\.(?![^\[]*\])", alias)  # (a dot inside [...] is part of what it picks by)
     found = engine.get(names[head]) if head in names else None
     for part in rest:
         if found is None:
             return None
-        got = RecordProxy(engine, found).field(part.strip())
+        pick = re.fullmatch(r"\s*(\w+)\s*\[\s*(.+?)\s*\]\s*", part)  # r1.approvals[step_no=2], r1.approvals[1] (the first made)
+        got = RecordProxy(engine, found).field((pick.group(1) if pick else part).strip())
         if isinstance(got, (expr.Many, expr.Lazy, list)):
-            items = [x for x in got if isinstance(x, RecordProxy)]
-            found = max(items, key=lambda x: x.record.id).record if items else None
+            items = sorted((x for x in got if isinstance(x, RecordProxy)), key=lambda x: x.record.id)
+            if pick and pick.group(2).isdigit():
+                n = int(pick.group(2))
+                items = items[n - 1:n] if n >= 1 else []
+            elif pick:
+                key, _, value = pick.group(2).partition("=")
+                items = [x for x in items if _same(engine, engine.field(x.record.table, key.strip()), engine.value(x.record, key.strip()),
+                                                    value.strip().strip("\"'"), names)]
+            found = items[-1].record if items else None
         elif isinstance(got, RecordProxy):
             found = got.record
         else:
@@ -744,7 +752,7 @@ def _followed(engine, names, alias):
 
 
 def _record(engine, names, alias):
-    if isinstance(alias, str) and "." in alias and alias.split(".")[0] in names:  # through its links: j1.invoices
+    if isinstance(alias, str) and "." in alias and re.split(r"[.\[]", alias)[0] in names:  # through its links: j1.invoices
         engine.reset()
         found = _followed(engine, names, alias)
         if found is None:
@@ -882,7 +890,7 @@ def _values(engine, t, values, names):
         if f["type"] == "link":
             many = value if isinstance(value, list) else [value]
             for v in many:
-                if isinstance(v, str) and v not in names and "." in v and v.split(".")[0] in names:  # s1.bids: the bid the app made for s1
+                if isinstance(v, str) and v not in names and "." in v and re.split(r"[.\[]", v)[0] in names:  # s1.bids: the bid the app made for s1
                     engine.reset()
                     found = _followed(engine, names, v)
                     if found is None:
@@ -1740,10 +1748,12 @@ def _same(engine, f, actual, wanted, names):
     if f is not None and (f["type"] == "link" or _shows_a_link(engine, f)):  # a lookup of a link (a note's patient, by its visit) too
         ids = actual if isinstance(actual, list) else [actual]
 
-        def among(w):  # one the example named ("f1"), or by its name ("Mike Foreman"), is one of those linked
-            wanted_id = names.get(w, w) if isinstance(w, str) else w
-            return any(str(i) == str(wanted_id) for i in ids) or any(engine.title(engine.get(i)).lower() == str(w).strip().lower()
-                                                                     for i in ids if i and engine.get(i))
+        def among(w):  # one the example named ("f1"), or by its name ("Mike Foreman", or "Processing plant" for the cost
+            wanted_id = names.get(w, w) if isinstance(w, str) else w  # centre titled "4100 · Processing plant", or its code)
+            said = str(w).strip().lower()
+            return any(str(i) == str(wanted_id) for i in ids) or any(
+                said == title or said in [part.strip() for part in title.split(" · ")]
+                for title in (engine.title(engine.get(i)).lower() for i in ids if i and engine.get(i)))
         return all(among(w) for w in (wanted if isinstance(wanted, list) else [wanted]))  # a crew of five: each of them
     if kind == "checkbox":
         return bool(actual) == (str(wanted).strip().lower() in ("true", "yes", "1", "ticked", "on"))

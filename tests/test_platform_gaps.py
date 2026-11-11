@@ -616,3 +616,69 @@ def test_a_check_names_the_apps_starting_data(app):
         {"do": "add", "table": "items", "as": "i2", "values": {"name": "Bolt"}}],
         [{"record": "i1", "field": "unit", "equals": "PR"}, {"record": "i2", "field": "unit", "equals": "EA"}])
     assert kept["kept"] and kept["ok"], kept
+
+
+def test_a_new_record_starts_from_the_defaults_of_whoever_adds_it(app, client):
+    """A request is requested by whoever adds it, and starts with their own cost centre, read from their record among
+    the business's people: when it's saved, and on its form before then."""
+    bp = _ok([
+        {"do": "add_list", "key": "cost_centres", "label": "Cost centres", "singular": "Cost centre", "fields": [{"type": "text", "key": "name", "label": "Name"}]},
+        {"do": "add_list", "key": "people", "label": "People", "singular": "Person", "fields": [
+            {"type": "text", "key": "name", "label": "Name"}, {"type": "person", "key": "login", "label": "Signs in as"},
+            {"type": "link", "key": "default_cost_centre", "label": "Default cost centre", "to": "cost_centres"}]},
+        {"do": "add_list", "key": "requests", "label": "Requests", "singular": "Request", "fields": [
+            {"type": "text", "key": "title", "label": "Title"}, {"type": "person", "key": "requested_by", "label": "Requested by", "default": "me"},
+            {"type": "link", "key": "cost_centre", "label": "Cost centre", "to": "cost_centres",
+             "default": "{{first(people where login == this.requested_by).default_cost_centre}}"}]}])
+    ws = _ws(app, bp)
+    e = Engine(ws)
+    e.create("cost_centres", {"name": "Admin"})
+    plant = e.create("cost_centres", {"name": "Processing plant"})
+    owner = User.query.filter_by(email="owner@example.com").one()
+    e.create("people", {"name": "Olive", "login": owner.id, "default_cost_centre": plant.id})
+    mine = Engine(ws, member=Membership.query.filter_by(workspace_id=ws.id, user_id=owner.id).one())
+    made = mine.create("requests", {"title": "Gloves"})
+    assert made.data["requested_by"] == owner.id and made.data["cost_centre"] == plant.id
+    client.post("/login", data={"email": "owner@example.com", "password": "x" * 12})
+    page = client.get(f"/w/{ws.id}/app/t/requests/new").get_data(as_text=True)
+    picker = page[page.index('name="cost_centre"'):][:1500]
+    assert re.search(rf'value="{plant.id}"[^>]*selected', picker), picker
+
+
+def test_nobody_approves_above_their_own_limit(app):
+    """A move held to whoever presses it: their delegation limit covers the amount exactly at the limit, and not one cent
+    above it; someone with no limit can't approve at all."""
+    bp = _ok([
+        {"do": "add_list", "key": "limits", "label": "Delegation limits", "singular": "Delegation limit", "fields": [
+            {"type": "person", "key": "person", "label": "Person"}, {"type": "money", "key": "limit", "label": "Limit"}]},
+        {"do": "add_list", "key": "asks", "label": "Asks", "singular": "Ask", "fields": [{"type": "money", "key": "amount", "label": "Amount"}],
+         "stages": {"stages": ["Pending", "Approved"], "moves": [{"from": ["Pending"], "to": "Approved", "button": "Approve",
+                                                                  "only_if": ["count(limits where person == me and limit >= this.amount) > 0"]}]}}])
+    ws = _ws(app, bp)
+    bea = User(email="bea@example.com", name="Bea")
+    bea.set_password("x" * 12)
+    cy = User(email="cy@example.com", name="Cy")
+    cy.set_password("x" * 12)
+    db.session.add_all([bea, cy])
+    db.session.flush()
+    db.session.add_all([Membership(workspace_id=ws.id, user_id=bea.id, role="editor"), Membership(workspace_id=ws.id, user_id=cy.id, role="editor")])
+    db.session.commit()
+    Engine(ws).create("limits", {"person": bea.id, "limit": 5000})
+    as_bea = lambda: Engine(ws, member=Membership.query.filter_by(user_id=bea.id).one())  # noqa: E731
+    as_cy = Engine(ws, member=Membership.query.filter_by(user_id=cy.id).one())
+    at_limit, over = Engine(ws).create("asks", {"amount": 5000}), Engine(ws).create("asks", {"amount": 5000.01})
+
+    def approve(engine, record):
+        i, _, problem = next(x for x in engine.moves(engine.get(record.id)) if x[1]["to"] == "Approved")
+        if problem:
+            raise FieldErrors({"_": problem})
+        engine.move(engine.get(record.id), i)
+    with pytest.raises(FieldErrors):
+        approve(as_bea(), over)
+    with pytest.raises(FieldErrors):  # and pressed all the same, the engine refuses it
+        bea_now = as_bea()
+        bea_now.move(bea_now.get(over.id), next(i for i, m, _ in bea_now.moves(bea_now.get(over.id)) if m["to"] == "Approved"))
+    with pytest.raises(FieldErrors):
+        approve(as_cy, at_limit)
+    approve(as_bea(), at_limit)
+    assert Engine(ws).get(at_limit.id).data["status"] == "Approved" and Engine(ws).get(over.id).data["status"] == "Pending"

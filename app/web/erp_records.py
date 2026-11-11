@@ -1158,7 +1158,7 @@ def new(request: Request, wid: int, table: str, form: Form = Depends(form_of)):
     values = {k[2:]: v for k, v in request.query_params.items() if k.startswith("f_")}
     for f in _form_fields(t):
         if f["key"] not in values and f.get("default") not in (None, ""):
-            start = engine.starting_value(f)  # (one read from what the new record is given is worked out when it's saved)
+            start = engine.starting_value(f, t, values)  # (one read from what it's given: as it comes out for them now)
             if start is not None:
                 values[f["key"]] = start
     values = {**_started_as(engine, t, values), **values}

@@ -5,7 +5,7 @@ import difflib
 from ..blueprint import schema
 
 CONTEXT_NAMES = {"record", "this", "created", "item", "it", "today", "now", "approver", "reason", "email", "file", "payload", "true",
-                 "false", "none", "null", "owner", "join_link"}
+                 "false", "none", "null", "owner", "join_link", "me"}
 TYPE_OF = {"yes_no": "checkbox", "choice": "select", "choices": "multi_select", "person": "user", "auto_number": "autonumber",
            "total": "rollup"}
 TYPE_BACK = {v: k for k, v in TYPE_OF.items()}

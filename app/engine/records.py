@@ -379,6 +379,9 @@ class RecordContext(expr.Context):
             return self.names[name]
         if name in ("record", "this"):
             return RecordProxy(self.engine, self.record) if self.record is not None else None
+        if name == "me" and not (self.record is not None and schema.field(self.engine.tables.get(self.record.table) or {}, "me")):
+            # whoever is acting (pressing the button, saving): their delegation limit, their own team; the app's own rules are nobody
+            return self.engine._person(self.engine.user_id) if self.engine.user_id and self.engine.role is not None else None
         if self.record is not None:
             t = self.engine.tables.get(self.record.table)
             if name in ("id", "created_at", "updated_at", "created_by") or (t and schema.field(t, name)):
@@ -976,12 +979,24 @@ class Engine:
                 out |= {int(x) for x in (value if isinstance(value, list) else [value]) if str(x).isdigit()}
         return out
 
-    def starting_value(self, f):
+    def starting_value(self, f, t=None, given=None):
         """What a new record's form starts with in a field that has a default: today for a date that says so, the record a
-        link's default names (EA: that unit's id), or the default as it is. None for one read from what's given ({{x.y}})."""
+        link's default names (EA: that unit's id), the default as it is, or, read from what the new record is given (with
+        t), what that comes to for whoever is filling it in (their own cost centre). None when it comes to nothing yet."""
         default = f.get("default")
-        if default in (None, "") or isinstance(default, str) and "{{" in default:
+        if default in (None, "") or isinstance(default, str) and "{{" in default and t is None:
             return None
+        if isinstance(default, str) and "{{" in default:
+            me = ("me", "{{me}}", "current_user", "{{user}}")
+            data = {k: v for k, v in (given or {}).items() if v not in (None, "", []) and not (isinstance(v, str) and v.strip().lower() in me)}
+            for x in t["fields"]:
+                if x["type"] == "user" and x["key"] not in data and self.user_id and \
+                        (x in self._mine_when_blank(t) or str(x.get("default") or "").strip().lower() in ("me", "{{me}}", "current_user", "{{user}}")):
+                    data[x["key"]] = [self.user_id] if x.get("multiple") else self.user_id
+            try:
+                return self.coerce(f, expr.render(default, RecordContext(self, Record(workspace_id=self.ws.id, table=t["key"], data=data))))
+            except (ValueError, expr.ExprError):
+                return None
         if f["type"] == "date" and str(default).lower() in ("today", "{{today()}}", "now"):
             return self.today.isoformat()
         if f["type"] == "link" and f.get("table") in self.tables:
@@ -2031,6 +2046,12 @@ class Engine:
                     values[f["key"]] = self.coerce(f, f["default"])
                 except ValueError:
                     pass
+        mine = {f["key"] for f in self._mine_when_blank(t)} if creating and read_later else set()
+        for f in t["fields"] if read_later else []:  # who's adding it, where a person field starts as them ("me", Requested
+            # by), is known before what's read from it (the requester's own cost centre)
+            if f["type"] == "user" and f["key"] not in data and values.get(f["key"]) in (None, "", []) and self.user_id and \
+                    (f["key"] in mine or str(f.get("default") or "").strip().lower() in ("me", "{{me}}", "current_user", "{{user}}")):
+                values[f["key"]] = [self.user_id] if f.get("multiple") else self.user_id
         for f in read_later:
             draft = Record(workspace_id=self.ws.id, table=t["key"], data=dict(values))
             try:

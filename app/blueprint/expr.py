@@ -520,6 +520,8 @@ def reference():
              "48 hours, 30m, 3 days, 2w, on a date or a time or compared (returned_at > due_back_at + 2h; "
              "confirmed_at < now() - 48h; ends_at - starts_at > 30m)"]
     lines += [f"- {said}" for said in SAID.values() if said]
+    lines.append("- me: whoever is acting (pressing the button, saving), empty for the app's own rules: a move's only_if "
+                 "\"count(delegation_limits where person == me and limit >= this.amount) > 0\" (nobody approves above their limit)")
     lines.append("- in a message or email ({{…}}): record.app_link, the record's page in the app; record.portal_link, its page "
                  "in the portal (for outside people: a seller opening the tender they're invited to); join_link, the portal's "
                  "sign-up page (an invitation to join)")

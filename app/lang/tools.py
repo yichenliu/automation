@@ -149,7 +149,7 @@ def add_check(ws, title, steps, expect, by=None):
     names what isn't in the app; one the app doesn't yet pass is kept, failing, until it does.
     Steps ("do"): "add" a record of "table" with "values" ({field key: value}), named by "as" (r1); a link's value is
     an earlier "as" name, and a record the app made is named through its links ("r1.purchase_orders": the latest one
-    linked to r1). "change" "record" to "values". "move" "record" to the stage "to", as its button would. "press" the
+    linked to r1; "r1.approvals[step_no=2]": the one whose step is 2; "r1.approvals[1]": the first made). "change" "record" to "values". "move" "record" to the stage "to", as its button would. "press" the
     button rule "button" on "record". "approve" / "reject" what's waiting for someone's OK on "record" (with
     "comment"). "wait" "days" (the app's scheduled rules run each day of it). "run" a scheduled "rule" now. "by" has
     someone else do a step: "staff", a team's key, "another <team>" (a second person of it: four eyes), "admin", a
