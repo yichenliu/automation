@@ -158,6 +158,8 @@ class Move(Base):
         default_factory=list, description="never by these: creator (whoever raised it), a person field, a team, or whoever moved it to "
                                           "a stage (Recommended): someone else does it (whoever recommends an award can't approve it)")
     step_up: bool = Field(False, description="the person confirms their sign-in first (a payment run)")
+    message: str | None = Field(None, description="what people are told while only_if doesn't hold, in plain words (Your "
+                                                  "delegation limit doesn't cover this amount)")
 
 
 class Stages(Base):

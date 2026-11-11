@@ -811,3 +811,35 @@ def test_a_portal_reaches_outside_people_through_several_links(app):
     from app.engine import outside
     form = outside.addable(e, schema.portal_of(bp, "seller_people"), ann, "changes")
     assert [i for i, _ in form["options"]["round"]] == [rnd.id]
+
+
+def test_a_move_held_back_says_why_in_the_owners_words(app):
+    """Approving over the limit is refused with what the owner wrote ("Your delegation limit doesn't cover this"), not the
+    formula read out in words."""
+    bp = _ok([{"do": "add_list", "key": "asks", "label": "Asks", "singular": "Ask", "fields": [{"type": "money", "key": "amount", "label": "Amount"}],
+               "stages": {"stages": ["Pending", "Approved"], "moves": [{"from": ["Pending"], "to": "Approved", "button": "Approve",
+                                                                      "only_if": ["amount < 100"], "message": "Your delegation limit doesn't cover this"}]}}])
+    ws = _ws(app, bp)
+    e = Engine(ws)
+    ask = e.create("asks", {"amount": 250})
+    assert [p for _, m, p in e.moves(e.get(ask.id)) if m["to"] == "Approved"] == ["Your delegation limit doesn't cover this"]
+
+
+def test_a_changed_move_is_exactly_as_sent(app):
+    """change_move sends a move whole: a separation of duties left out of it is taken away, not kept from before."""
+    bp = _ok([{"do": "add_list", "key": "asks", "label": "Asks", "singular": "Ask", "fields": [{"type": "money", "key": "amount", "label": "Amount"}],
+               "stages": {"stages": ["Pending", "Approved"], "moves": [{"from": ["Pending"], "to": "Approved", "button": "Approve", "not_by": ["creator"], "step_up": True}]}}])
+    bp = _ok([{"do": "change_move", "list": "asks", "button": "Approve", "move": {"from": ["Pending"], "to": "Approved", "button": "Approve"}}], bp)
+    move = schema.table(bp, "asks")["workflow"]["transitions"][0]
+    assert "not_by" not in move and "step_up" not in move
+
+
+def test_a_person_field_that_starts_as_me_is_whoever_adds_the_record(app):
+    """A contract's manager is whoever drafts it, whatever the field is called; the app's own rules are nobody."""
+    bp = _ok([{"do": "add_list", "key": "contracts", "label": "Contracts", "singular": "Contract", "fields": [
+        {"type": "text", "key": "title", "label": "Title"}, {"type": "person", "key": "contract_manager", "label": "Contract manager", "default": "me"}]}])
+    ws = _ws(app, bp)
+    owner = User.query.filter_by(email="owner@example.com").one()
+    mine = Engine(ws, member=Membership.query.filter_by(workspace_id=ws.id, user_id=owner.id).one())
+    assert mine.create("contracts", {"title": "Pumps"}).data["contract_manager"] == owner.id
+    assert Engine(ws).system().create("contracts", {"title": "By a rule"}).data.get("contract_manager") is None

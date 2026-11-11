@@ -1167,6 +1167,8 @@ def ir_stages(d, t, st, where):
             move["not_by"] = _not_by(d, t, mv.not_by, f"{here} › not_by", stages=names)
         if mv.step_up:
             move["step_up"] = True
+        if mv.message:
+            move["message"] = mv.message.strip()[:300]
         moves.append(move)
     if not moves:  # each stage a button to the next
         moves = [{"from": [a], "to": b, "label": f"Move to {b}"[:60]} for a, b in zip(names, names[1:])]
@@ -1604,14 +1606,22 @@ def _move_parts(d, t, names, mv, where):
         extra["not_by"] = _not_by(d, t, mv.not_by, f"{where} › not_by", stages=names)
     if mv.step_up:
         extra["step_up"] = True
+    if mv.message and mv.only_if:  # said as the owner would say it while its conditions don't hold
+        extra["message"] = mv.message.strip()[:300]
     return change, extra
 
 
-def _with_move_extra(ops_, index, extra):
+MOVE_EXTRAS = ("only_if", "not_by", "step_up", "message")  # what a move has beyond the App map's form of it
+
+
+def _with_move_extra(ops_, index, extra, whole=False):
+    """The move's extras put on it; whole (a move changed, sent whole as it should be): the ones it had and wasn't sent
+    again with go (a not_by left out is taken away, never kept from before)."""
     for op in ops_:
         flow = op.get("workflow") if op.get("op") == "update_table" else None
-        if flow and extra:
-            flow["transitions"][index] = {**flow["transitions"][index], **extra}
+        if flow and (extra or whole):
+            kept = {k: v for k, v in flow["transitions"][index].items() if not (whole and k in MOVE_EXTRAS)}
+            flow["transitions"][index] = {**kept, **extra}
     return ops_
 
 
@@ -1733,7 +1743,7 @@ def translate(d, p, where):
         if isinstance(p, m.AddMove):
             return _with_move_extra(_studio(studio.stage_ops, d, {"do": "add_move", "table": t["key"], **change}, where), -1, extra)
         i = _button_at(d, t, flow, p.button, where, p.to)
-        return _with_move_extra(_studio(studio.stage_ops, d, {"do": "update_move", "table": t["key"], "i": i, **change}, where), i, extra)
+        return _with_move_extra(_studio(studio.stage_ops, d, {"do": "update_move", "table": t["key"], "i": i, **change}, where), i, extra, whole=True)
     if isinstance(p, m.RemoveMove):
         t = _list(d, p.list, where)
         flow, _ = _stages_of(d, t, where)

@@ -707,6 +707,9 @@ def normalize_workflow(raw, label="", fields=()):
             move["not_by"] = apart
         if _yes(_first(m, "step_up", "reauthenticate", "confirm_sign_in", "second_factor")):
             move["step_up"] = True  # a fresh sign-in code first (putting a contract in force, approving a payment run)
+        said = _first(m, "message", "refused_message", "why_not")
+        if said and move.get("only_if"):  # what people are told while its conditions don't hold, in the owner's words
+            move["message"] = str(said).strip()[:300]
         if m.get("feature"):  # made by a feature of the Keel language (app/lang): an approval's own moves
             move["feature"] = slug(m["feature"])
         moves.append(move)

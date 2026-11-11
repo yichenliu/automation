@@ -1888,6 +1888,8 @@ class Engine:
                 return raw.uid
             if str(raw).strip().isdigit() and int(raw) in members:
                 return int(raw)
+            if str(raw).strip().lower() in ("me", "{{me}}", "current_user", "{{user}}"):  # whoever is acting (a default "me":
+                return self.user_id if self.user_id and self.user_id in members else None  # the platform itself is nobody)
             text = str(raw).strip().lower()
             found = [uid for uid, name in members.items() if name.lower() == text or self._emails.get(uid, "").lower() == text]
             if len(found) != 1:
@@ -2371,6 +2373,8 @@ class Engine:
             if twin is not None:
                 when = f" when {automations_words(self, twin['only_if'], t['key'])}" if twin.get("only_if") else ""
                 return f"Only {self._who_words(twin.get('who'))} can {what[:1].lower() + what[1:]}{when}"
+            if move.get("message"):  # said in the owner's own words (your delegation limit doesn't cover this amount)
+                return move["message"]
             return f"You can {what[:1].lower() + what[1:]} once {automations_words(self, move['only_if'], t['key'])}"
         apart = self.kept_from(record, move.get("not_by"))
         if apart:
