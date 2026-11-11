@@ -1056,7 +1056,7 @@ def normalize_table(raw):
         if not isinstance(portal, dict) or not _first(portal, "via", "link", "field"):
             raise SchemaError(f"portal on {label} looks like {{\"via\": \"customer\"}}: the link to the portal's people "
                               "(each sees the records linked to them)")
-        table["portal"] = {"via": ".".join(slug(p) for p in str(_first(portal, "via", "link", "field")).split(".")[:2] if slug(p)),
+        table["portal"] = {"via": ".".join(slug(p) for p in str(_first(portal, "via", "link", "field")).split(".")[:4] if slug(p)),
                            "fields": [slug(f) for f in _list(_first(portal, "fields", "show", "columns", default=[]))],
                            "can_add": _first(portal, "can_add", "create", "add") in (True, "true", "yes", 1)}
         edit = _first(portal, "edit", "can_edit", "editable", "they_fill_in", "they_can_change")
@@ -1336,19 +1336,25 @@ def portal_shows(tables, t, people):
     named, or any)."""
     if (t.get("portal") or {}).get("everyone"):
         return not t["portal"].get("people") or t["portal"]["people"] == people
-    head, _, hop = (t.get("portal") or {}).get("via", "").partition(".")
-    via = field(t, head)
-    if via is None and head and not hop:  # the people's own link to it: the seller each seller person's record names
-        return theirs_by_own_link(tables, t, people) is not None
-    if via is None or via["type"] != "link":
-        return False
-    if hop:  # through a named link of the record it links to: a clarification's tender's invited suppliers; or on to a
-        # record that links to them (a verification document's case's seller, whose people they are)
-        on = field(tables.get(via["table"]), hop)
-        if not on or on["type"] != "link":
-            return False
-        return on["table"] == people or _joined(tables, on["table"], people)
-    return via["table"] == people or _joined(tables, via["table"], people)
+    head = (t.get("portal") or {}).get("via", "")
+    if field(t, head.partition(".")[0]) is None and head and "." not in head:  # the people's own link to it: the seller
+        return theirs_by_own_link(tables, t, people) is not None  # each seller person's record names
+    links = portal_route(tables, t)
+    return links is not None and (links[-1]["table"] == people or _joined(tables, links[-1]["table"], people))
+
+
+def portal_route(tables, t):
+    """The link fields a list's portal goes through, in order ("round.contract.seller": a clause change's round, its
+    contract, its seller), or None when a part isn't a link of the record it's on. Where it ends are the portal's
+    people, a record that links to them (a stage's project's client), or one their own records name (a seller)."""
+    here, links = t, []
+    for part in [x for x in (t.get("portal") or {}).get("via", "").split(".") if x]:
+        f = field(here or {}, part)
+        if f is None or f["type"] != "link":
+            return None
+        links.append(f)
+        here = tables.get(f["table"])
+    return links or None
 
 
 def _joined(tables, table, people):
@@ -3219,9 +3225,9 @@ def _check_table(t, tables, modules, problems):
         elif not via or via["type"] != "link":
             problems.append(f"the portal on {t['label']} needs “{head}” to be a link field (to the portal's people, or to a record "
                             "that links to them), or a link of the portal's people's own records to it (their seller)")
-        elif hop and (field(tables.get(via["table"]), hop) or {}).get("type") != "link":
-            problems.append(f"the portal on {t['label']} goes through “{portal['via']}”: “{hop}” must be a link field of "
-                            f"{(tables.get(via['table']) or {}).get('label', via['table'])} to the portal's people")
+        elif hop and portal_route(tables, t) is None:
+            problems.append(f"the portal on {t['label']} goes through “{portal['via']}”: each part must be a link field of the record "
+                            "before it, on to the portal's people (or a record that links to them, or that their own records name)")
         own_lines = {x["key"] for x in tables.values() if x.get("embedded") and any(f["type"] == "link" and f.get("table") == t["key"] for f in x["fields"])}
         for k in portal["fields"] + portal.get("edit", []):
             if k in own_lines and k in portal.get("edit", []):  # its lines they fill in (a bid's prices)

@@ -1715,8 +1715,13 @@ class Lock(Feature):
         if editable is None:
             return []
         value = "today+30" if d.kind(editable) == "date" else 999 if d.kind(editable) == "number" else "Changed after"
+        # moved there as its own button allows: by someone of the team it's for, never whoever raised it when that's
+        # kept apart (a clause version approved by a second person)
+        into = next((m for m in (t.get("workflow") or {}).get("transitions") or [] if m["to"] == stage), None) or {}
+        team = next((w for w in into.get("who") or [] if w in d.teams()), None)
+        mover = {"by": team} if team and into.get("not_by") else {}
         return [{"title": f"{_a(t['singular'])} at {stage} can't be changed by staff",
-                 "steps": adding(d, t, "r1") + [{"do": "move", "record": "r1", "to": stage},
+                 "steps": adding(d, t, "r1") + [{"do": "move", "record": "r1", "to": stage, **mover},
                                                  {"do": "change", "record": "r1", "by": "staff", "values": {editable["key"]: value}, "refused": True}],
                  "expect": [{"record": "r1", "field": f["key"], "equals": stage}]}]
 

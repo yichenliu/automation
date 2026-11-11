@@ -149,37 +149,15 @@ def line_options(engine, lines_, contact=None):
 
 
 def ids_reaching(engine, t, middle):
-    """The outside people a record that a table's records hang off reaches (a tender's invited suppliers)."""
-    hop = t["portal"]["via"].partition(".")[2]
+    """The outside people a record that a table's records hang off reaches (a tender's invited suppliers): along the
+    rest of the portal's route from it."""
     portal_people = next((p["table"] for p in schema.portals(engine.bp) if schema.portal_shows(engine.tables, t, p["table"])), None)
-    mt = engine.tables.get(middle.table) or {}
-    on = schema.field(mt, hop) if hop else next((f for f in mt.get("fields", []) if f["type"] == "link" and f["table"] == portal_people), None)
-    value = (middle.data or {}).get(on["key"]) if on else None
-    ids = [int(x) for x in (value if isinstance(value, list) else [value]) if str(x).isdigit()]
-    if on is not None and on.get("table") not in (None, portal_people):  # one more record on: a case's seller, whose people they are
-        last = next((f for f in (engine.tables.get(on["table"]) or {}).get("fields", []) if f["type"] == "link" and f["table"] == portal_people), None)
-        if last is None:  # its people belong to it instead (each seller person linked to their seller)
-            return _belonging(engine, portal_people, on["table"], ids)
-        reached = [engine.get(i, on["table"]) for i in ids]
-        ids = [int(x) for r in reached if r is not None for x in (lambda v: v if isinstance(v, list) else [v])((r.data or {}).get(last["key"]))
-               if str(x).isdigit()]
-    elif on is None and not hop and portal_people:  # the people belong to the record itself (a seller's people)
-        return _belonging(engine, portal_people, middle.table, [middle.id])
-    return ids
-
-
-def _belonging(engine, people, table, ids):
-    """The outside people whose own record links to one of these records of a list (a seller's people)."""
-    links = [f["key"] for f in (engine.tables.get(people) or {}).get("fields", []) if f["type"] == "link" and f["table"] == table]
-    wanted = set(ids)
-    out = []
-    for person in engine.rows(people) if links and wanted else []:
-        for key in links:
-            value = (person.data or {}).get(key)
-            if wanted & {int(x) for x in (value if isinstance(value, list) else [value]) if str(x).isdigit()}:
-                out.append(person.id)
-                break
-    return out
+    links = schema.portal_route(engine.tables, t)
+    if not links or portal_people is None:
+        return []
+    rest = links[1:]
+    ends = engine._along(middle, rest) if rest else {middle.id}
+    return sorted(engine.portal_people_of(ends, (rest[-1] if rest else links[0])["table"], portal_people))
 
 
 def addable(engine, portal, contact, table):

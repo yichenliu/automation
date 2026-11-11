@@ -765,3 +765,49 @@ def test_one_record_for_each_person_chosen_and_a_list_of_people_that_grows(app):
         e2 = Engine(ws)
         e2.update(e2.get(seat.id), {"status": "Cleared"})
     assert sorted(Engine(ws).get(tender.id).data["cleared"]) == sorted(u.id for u in people)
+
+
+def test_a_lock_on_a_four_eyes_stage_is_checked_by_someone_else_moving_it(app):
+    """A clause version is approved by a second person and then fixed: the lock's own check moves it as someone of the
+    approving team (not whoever wrote it), and finds it fixed."""
+    from app.builder import trial
+    from app.lang import checks
+    bp = _ok([{"do": "set_team", "key": "legal", "name": "Legal"},
+              {"do": "add_list", "key": "versions", "label": "Versions", "singular": "Version", "fields": [
+                  {"type": "long_text", "key": "wording", "label": "Wording"}, {"type": "person", "key": "written_by", "label": "Written by", "default": "me"}],
+               "stages": {"stages": ["Draft", "Approved"], "moves": [{"from": ["Draft"], "to": "Approved", "button": "Approve", "who": ["legal"],
+                                                                      "not_by": ["written_by", "creator"]}]}},
+              {"do": "lock", "list": "versions", "stages": ["Approved"]}])
+    ws = _ws(app, bp)
+    _, results = trial.try_out(ws, checks(bp), screens=False, blueprint=bp)
+    assert all(r["ok"] for r in results), [(r["title"], r.get("plain") or r.get("problem")) for r in results if not r["ok"]]
+
+
+def test_a_portal_reaches_outside_people_through_several_links(app):
+    """A clause change belongs to a negotiation round of a contract with a seller: it reaches that seller's people along
+    all three links, and never another seller's."""
+    bp = _ok([
+        {"do": "add_list", "key": "sellers", "label": "Sellers", "singular": "Seller", "fields": [{"type": "text", "key": "name", "label": "Name"}]},
+        {"do": "add_list", "key": "seller_people", "label": "Seller people", "singular": "Seller person", "fields": [
+            {"type": "text", "key": "name", "label": "Name"}, {"type": "email", "key": "email", "label": "Email"},
+            {"type": "link", "key": "seller", "label": "Seller", "to": "sellers"}]},
+        {"do": "add_list", "key": "contracts", "label": "Contracts", "singular": "Contract", "fields": [
+            {"type": "text", "key": "title", "label": "Title"}, {"type": "link", "key": "seller", "label": "Seller", "to": "sellers"}]},
+        {"do": "add_list", "key": "rounds", "label": "Rounds", "singular": "Round", "fields": [
+            {"type": "number", "key": "no", "label": "Round"}, {"type": "link", "key": "contract", "label": "Contract", "to": "contracts"}]},
+        {"do": "add_list", "key": "changes", "label": "Changes", "singular": "Change", "fields": [
+            {"type": "text", "key": "wording", "label": "Wording"}, {"type": "link", "key": "round", "label": "Round", "to": "rounds"}]},
+        {"do": "design_op", "op": {"op": "set_portal", "table": "seller_people", "email_field": "email", "title": "Seller portal"}},
+        {"do": "design_op", "op": {"op": "update_table", "table": "changes", "portal": {"via": "round.contract.seller", "can_add": True}}}])
+    assert schema.table(bp, "changes")["portal"]["via"] == "round.contract.seller"
+    ws = _ws(app, bp)
+    e = Engine(ws)
+    acme, bolt = e.create("sellers", {"name": "Acme"}), e.create("sellers", {"name": "Bolt"})
+    ann = e.create("seller_people", {"name": "Ann", "email": "ann@acme.example", "seller": acme.id})
+    bo = e.create("seller_people", {"name": "Bo", "email": "bo@bolt.example", "seller": bolt.id})
+    rnd = e.create("rounds", {"no": 1, "contract": e.create("contracts", {"title": "Pumps", "seller": acme.id}).id})
+    change = e.create("changes", {"wording": "Cap at 2x", "round": rnd.id})
+    assert e.portal_reaches(change, ann.id) and not e.portal_reaches(change, bo.id)
+    from app.engine import outside
+    form = outside.addable(e, schema.portal_of(bp, "seller_people"), ann, "changes")
+    assert [i for i, _ in form["options"]["round"]] == [rnd.id]
