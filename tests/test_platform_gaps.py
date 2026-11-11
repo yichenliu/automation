@@ -935,3 +935,20 @@ def test_a_payment_file_is_sealed_with_its_fingerprint_and_a_changed_one_is_refu
     e2.update(e2.get(item.id), {"account": "999999999"})
     refused = client.post(f"/w/{ws.id}/app/t/runs/{run.id}/document/aba")
     assert refused.status_code in (302, 303) and b"999999999" not in refused.data
+
+
+def test_count_distinct_tells_how_many_different_ones(app):
+    """Demand for a category is published to sellers only when at least five different buyers stand behind it."""
+    bp = _ok([{"do": "add_list", "key": "orgs", "label": "Organisations", "singular": "Organisation", "fields": [{"type": "text", "key": "name", "label": "Name"}]},
+              {"do": "add_list", "key": "cats", "label": "Categories", "singular": "Category", "fields": [
+                  {"type": "text", "key": "name", "label": "Name"},
+                  {"type": "formula", "key": "buyers", "label": "Buyers", "formula": "count_distinct(asks where cat == this.id, buyer)", "shows": "number"}]},
+              {"do": "add_list", "key": "asks", "label": "Asks", "singular": "Ask", "fields": [
+                  {"type": "link", "key": "cat", "label": "Category", "to": "cats"}, {"type": "link", "key": "buyer", "label": "Buyer", "to": "orgs"}]}])
+    ws = _ws(app, bp)
+    e = Engine(ws)
+    gloves = e.create("cats", {"name": "Gloves"})
+    a, b = e.create("orgs", {"name": "A"}), e.create("orgs", {"name": "B"})
+    for buyer in (a, a, b):
+        e.create("asks", {"cat": gloves.id, "buyer": buyer.id})
+    assert Engine(ws).value(Engine(ws).get(gloves.id), "buyers") == 2

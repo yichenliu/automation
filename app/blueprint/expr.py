@@ -453,7 +453,7 @@ ALIASES = {"if": "iif", "datediff": "days_between", "dateadd": "add_days", "edat
            "sumif": "sumif", "sumifs": "sumif", "average": "avg", "averageif": "avgif", "mean": "avg", "overlap": "overlaps",
            "includes": "contains", "startswith": "starts_with", "endswith": "ends_with", "substitute": "replace", "strip": "trim"}
 # what looks at several records: count(client.invoices where status = "Unpaid"), sum(job.payments, amount)
-QUERIES = {"count", "sum", "sumif", "avg", "avgif", "min", "max", "any", "all", "none", "where", "first", "last"}
+QUERIES = {"count", "sum", "sumif", "avg", "avgif", "min", "max", "any", "all", "none", "where", "first", "last", "count_distinct"}
 TODAY_FUNCTIONS = {"days_since", "days_until"}  # days from a date to today, and from today to a date
 NOW_FUNCTIONS = {"hours_since", "hours_until"}  # hours from a time to now, and from now to a time
 RECORD_FUNCTIONS = ("convert", "workday", "add_workdays", "workdays_between", "networkdays", "moved_by")  # a record's context gives these
@@ -504,6 +504,7 @@ SAID = {
     "any": None, "all": None, "none": None,
     "sum": "sum(job.payments, amount) added up; avg(…), min(…), max(…) the same way (min/max of plain values too: max(a, b))",
     "avg": None, "min": None, "max": None,
+    "count_distinct": "count_distinct(requests where category == this.id, buyer) how many different ones (buyers asking for it)",
     "where": "where(…), first(…), last(…) the records that hold, the first or last of them (first(client.jobs where …).finished_on)",
     "first": None, "last": None,
     "sumif": "sumif(items, cond, value), avgif(…) a spreadsheet's SUMIF / AVERAGEIF",
@@ -1037,6 +1038,16 @@ def _query(name, node, items, ctx):
         if len(args) != 1:
             raise ExprError("where takes what each must be: client.invoices where status = \"Unpaid\"")
         return Many(x for x in items if holds(x, args[0]))
+    if name == "count_distinct":  # how many different buyers asked for a category (count_distinct(requests where …, buyer))
+        if len(args) != 1:
+            raise ExprError("count_distinct() takes the records and what of each to tell apart: count_distinct(requests, buyer)")
+        seen = set()
+        for x in items:
+            v = value(x, args[0])
+            v = getattr(getattr(v, "record", None), "id", v)  # a linked record: told apart by which one it is
+            if v not in (None, ""):
+                seen.add(str(v))
+        return len(seen)
     if name in ("sumif", "avgif"):  # SUMIF(range, which, what to add up)
         if len(args) != 2:
             raise ExprError(f"{node.func.id}() takes the records, which of them count, and what of each to add up")
