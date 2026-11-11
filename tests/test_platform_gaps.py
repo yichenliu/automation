@@ -880,3 +880,11 @@ def test_a_line_being_changed_is_item_inside_a_where_too(app):
     e.update(e.get(adj.id), {"status": "Approved"})
     after = Engine(ws)
     assert (after.get(a.id).data["price"], after.get(b.id).data["price"]) == (103.85, 10.39)
+
+
+def test_a_documents_passages_know_their_page(app):
+    """A contract PDF's passages each carry the page they start on, so an answer cites the document and the page."""
+    from app.knowledge import paged
+    text = "\n\n".join(f"--- page {n} ---\nClause {n}. " + " ".join(f"term{n}x{i}" for i in range(260)) for n in range(1, 4))
+    pages = [page for _, page in paged(text)]
+    assert pages[0] == 1 and pages[-1] == 3 and pages == sorted(pages)

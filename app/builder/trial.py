@@ -1236,7 +1236,7 @@ def _act(trial, engine, step, names, hold=False):
         try:
             pressed = _press_move(engine, record, t, lambda m: m["to"].lower() == wanted, attach=not step.get("refused"))
         except FieldErrors as exc:  # a control that needs another record (a delegation limit covering it): added, then again
-            if step.get("refused") or not _provide(trial, engine, record, t, exc):
+            if step.get("refused") or not _provide(trial, engine, record, t, exc, lambda m: m["to"].lower() == wanted):
                 raise
             pressed = _press_move(engine, engine.get(record.id), t, lambda m: m["to"].lower() == wanted, attach=True)
         if not pressed:
@@ -1385,7 +1385,7 @@ def _take_along(engine, record, t, target, trial=None, last=True, given=(), othe
                     break
                 except FieldErrors as exc:
                     # a control that needs another record (a delegation limit covering it): the one a person would add
-                    if trial is not None and on_the_way and provided < 2 and _provide(trial, engine, record, t, exc):
+                    if trial is not None and on_the_way and provided < 2 and _provide(trial, actor, record, t, exc, pick):
                         provided += 1
                         continue
                     # kept from whoever's doing it (someone else approves what they recommended): a colleague who may, does
@@ -1413,7 +1413,12 @@ def _fill_asked(trial, engine, record, t, pick, given=(), others=None):
     asked = [f for f in engine.to_fill(t, record, move) if engine.kind(f) not in schema.FILES]
     # a link it asks for (a category, a cost centre) is one that's there, or an ordinary one added first
     linked = {f["table"]: got for f in asked if f["type"] == "link" for got in [_one_of(engine, f["table"], trial.owner_id)] if got}
-    needs = {f["key"]: v for f in asked for v in [sample_value(engine, t, f, trial.owner_id, linked, 300, 0)] if v is not None}
+    needs, nth = {}, 0
+    for f in asked:  # dates a day apart in the order they come, so a finish is after its start (a contract ends after it starts)
+        v = sample_value(engine, t, f, trial.owner_id, linked, 300, nth)
+        nth += engine.kind(f) in ("date", "datetime")
+        if v is not None:
+            needs[f["key"]] = v
     if move.get("only_if") and not engine.matches(record, move["only_if"]):  # “once the clearance date is filled in”
         linked = []
         meet = _meeting(trial, engine, record, t, move["only_if"], given, others or {}, linked)
@@ -1446,17 +1451,21 @@ def _fill_asked(trial, engine, record, t, pick, given=(), others=None):
                 needs[f["key"]] = tries[attempt % len(tries)] if tries else needs[f["key"]]
 
 
-def _provide(trial, engine, record, t, refused):
+def _provide(trial, engine, record, t, refused, pick=None):
     """When a move is stopped by a rule asking for another record ("count(delegation_limits where buyer == this.buyer and
     document == \"Contract\" and up_to >= this.value) > 0"), add one that meets it, as the person told so would (an
-    administrator sets the delegation limit). Returns whether it added one."""
+    administrator sets the delegation limit). The rule is a list's own (by its message) or the move's own only_if
+    (`pick`: which move was pressed). Returns whether it added one."""
     import ast
     said = set(str(v) for v in refused.errors.values())
-    for rule in t.get("rules") or []:
-        if rule.get("message") not in said:
-            continue
+    checks = [rule["check"] for rule in t.get("rules") or [] if rule.get("message") in said]
+    move = next((m for _, m, _ in engine.moves(engine.get(record.id) or record) if pick(m)), None) if pick else None
+    current = engine.get(record.id) or record  # only a condition that fails for whoever's pressing it (not one met already)
+    checks += [c["formula"] for c in (move or {}).get("only_if") or [] if isinstance(c, dict) and c.get("formula")
+               and not engine.matches(current, [c])]
+    for check in checks:
         try:
-            tree = expr.parse(schema.percents_fixed(t, rule["check"], engine.tables)).body
+            tree = expr.parse(schema.percents_fixed(t, check, engine.tables)).body
         except expr.ExprError:
             continue
         for node in ast.walk(tree):
@@ -1489,6 +1498,14 @@ def _wanted(engine, record, other, cond):
     parts = cond.values if isinstance(cond, ast.BoolOp) and isinstance(cond.op, ast.And) else [cond]
     out = {}
     for c in parts:
+        empties = [x for x in c.values if isinstance(x, ast.Call) and getattr(x.func, "id", "") == "is_empty" and x.args
+                   and isinstance(x.args[0], ast.Name)] if isinstance(c, ast.BoolOp) and isinstance(c.op, ast.Or) else []
+        if empties:  # (is_empty(category) or category == this.category): left empty, it's any of them (never a sample value)
+            for x in empties:
+                f = schema.field(other, x.args[0].id)
+                if f is not None:
+                    out[f["key"]] = None
+            continue
         if not (isinstance(c, ast.Compare) and len(c.ops) == 1 and isinstance(c.left, ast.Name)):
             return None
         f = schema.field(other, c.left.id)
@@ -1499,6 +1516,11 @@ def _wanted(engine, record, other, cond):
             value = right.value
         elif isinstance(right, ast.Attribute) and isinstance(right.value, ast.Name) and right.value.id in ("this", "record"):
             value = (record.data or {}).get(right.attr) if right.attr != "id" else record.id
+        elif isinstance(right, ast.Name) and right.id == "me":  # whoever is pressing it (their own delegation limit)
+            value = engine.user_id
+        elif isinstance(right, ast.Call) and getattr(right.func, "id", "") == "abs" and right.args and isinstance(right.args[0], ast.Attribute) \
+                and isinstance(right.args[0].value, ast.Name) and right.args[0].value.id in ("this", "record"):
+            value = abs(to_number((record.data or {}).get(right.args[0].attr)) or 0)
         else:
             return None
         op = c.ops[0]

@@ -153,9 +153,18 @@ def record_text(engine, record):
 def passages(text, size=PASSAGE, overlap=OVERLAP):
     """Text cut into passages of about `size` characters, at paragraph or sentence ends, overlapping a little so a
     sentence cut in two is whole in one of them."""
+    return [p for p, _ in _cut(text, size, overlap)]
+
+
+def _cut(text, size=PASSAGE, overlap=OVERLAP):
+    """(passage, the page it starts on) for passages(): the page from the reader's marks before it (0: no pages)."""
     text = re.sub(r"[ \t]+", " ", re.sub(r"\n{3,}", "\n\n", (text or "").strip()))
+    if not text:
+        return []
+    marks = [(m.start(), int(m.group(1))) for m in PAGE_MARK.finditer(text)]
+    page_at = lambda i: next((n for at, n in reversed(marks) if at <= i + 5), 0)  # noqa: E731  (a mark just inside counts)
     if len(text) <= size:
-        return [text] if text else []
+        return [(text, page_at(0))]
     out, start = [], 0
     while start < len(text):
         end = min(start + size, len(text))
@@ -164,11 +173,20 @@ def passages(text, size=PASSAGE, overlap=OVERLAP):
             cut = max(text.rfind("\n\n", floor, end), text.rfind("\n", floor, end), text.rfind(". ", floor, end))
             if cut > start:
                 end = cut + 1
-        out.append(text[start:end].strip())
+        out.append((text[start:end].strip(), page_at(start)))
         if end >= len(text):
             break
         start = max(end - overlap, start + 1)
-    return [p for p in out if p]
+    return [(p, n) for p, n in out if p]
+
+
+PAGE_MARK = re.compile(r"--- page (\d+) ---")  # how the reader marks where each page of a PDF starts
+
+
+def paged(text):
+    """(passage, page) for a document's text: the page each passage starts on, so an answer cites the document and page
+    with its words (a contract's liability cap, page 7); 0 for text without pages."""
+    return _cut(text)
 
 
 def _documents(engines, task):
@@ -192,8 +210,8 @@ def _documents(engines, task):
             return []
         content = readers.read(path_of(f), f.name, max_chars=400_000, max_rows=2000, max_images=0)
         record = db.session.get(Record, f.record_id) if f.record_id else None
-        return [{"title": f.name, "text": p, "link": f"file:{f.id}", "table": record.table if record else None,
-                 "record_id": f.record_id} for p in passages(content.text)]
+        return [{"title": f"{f.name}, page {page}" if page else f.name, "text": p, "link": f"file:{f.id}",
+                 "table": record.table if record else None, "record_id": f.record_id} for p, page in paged(content.text)]
     if task.source == "email":
         mail = task.data or {}
         head = f"From: {mail.get('from_name') or ''} <{mail.get('from') or ''}>\nReceived: {(mail.get('received') or '')[:16]}\n" \

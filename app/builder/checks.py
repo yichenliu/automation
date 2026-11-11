@@ -471,7 +471,8 @@ def nobody_asked(engine):
                 if isinstance(s.get("otherwise"), list):
                     maybe |= walk(s["otherwise"], asked, "otherwise" if not path else path)
                 walk(s.get("if_rejected"), asked, path)  # a no doesn't say who approved
-                asked = asked or maybe or s.get("type") == "request_approval"
+                asked = asked or maybe or s.get("type") == "request_approval" or \
+                    (str(s.get("type", "")).startswith("ai_") and s.get("review") == "always")  # who checked the AI's work
             return asked
         walk(a.get("actions"), False, "")
     return out

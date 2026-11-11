@@ -309,7 +309,8 @@ def _context(engine, run, record, item=None):
     for kind in ("email", "file", "payload", "flow"):  # what started it: {{email.subject}}; a flow's answers: {{flow.count.reason}}
         names[kind] = _Item((run.context or {}).get(kind)) if (run.context or {}).get(kind) is not None else None
     names["join_link"] = engine.join_link()  # the portal's sign-up page, for an invitation to join
-    names["approver"] = (run.context or {}).get("approver")  # who said yes to the run's last approval (its "Approved by")
+    names["approver"] = (run.context or {}).get("approver")  # who said yes to the run's last approval (its "Approved by"), or
+    # checked the AI's work
     names["reason"] = (run.context or {}).get("reason")  # what they wrote when they answered it (why they said no)
     own = {f["key"] for f in (engine.tables.get(record.table) or {}).get("fields", [])} if record is not None else set()
     names = {k: v for k, v in names.items() if v is not None or k not in own}  # nothing started it by email: {{email}} is the record's
@@ -658,6 +659,8 @@ def _ai_step(engine, automation, action, record, run, entry, log):
         changed = (done.proposal or {}).get("changed") or []
         entry.update(done=True, ai="checked", result=f"{done.decided_by} checked the AI's work: "
                      + (f"corrected {', '.join(changed)}" if changed else "right as it was"), link=_link(done.table, done.record_id))
+        if done.decided_by_id:  # who checked it, for the steps after ({{approver}}: the contract's fields checked by)
+            run.context = {**(run.context or {}), "approver": done.decided_by_id}
         return
     made = (no.proposal or {}).get("created") and engine.get(no.record_id)
     if made:  # what the AI made from it wasn't real (spam, a duplicate): it goes to the bin
