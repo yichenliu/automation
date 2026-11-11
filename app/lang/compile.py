@@ -1046,6 +1046,10 @@ def _not_by(d, t, names, where, stages=()):
             out.append(stage)
             continue
         said = schema.slug(name)
+        own = d.field(t, said) if t else None
+        if own is not None and own["type"] == "user" and said != "creator":  # the record's own person field (a claim's "raised_by",
+            out.append(own["key"])  # set by the rule that found it) is that field, never taken for the word "creator"
+            continue
         if said in ("creator", "created_by", "raised_by", "requester", "whoever_raised_it"):
             out.append("creator")
             continue

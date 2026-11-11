@@ -843,3 +843,12 @@ def test_a_person_field_that_starts_as_me_is_whoever_adds_the_record(app):
     mine = Engine(ws, member=Membership.query.filter_by(workspace_id=ws.id, user_id=owner.id).one())
     assert mine.create("contracts", {"title": "Pumps"}).data["contract_manager"] == owner.id
     assert Engine(ws).system().create("contracts", {"title": "By a rule"}).data.get("contract_manager") is None
+
+
+def test_a_person_field_of_the_record_named_like_creator_stays_that_field_in_not_by(app):
+    """A claim a rule raises names who raised it in its own raised_by: approving it is never by that person, who isn't
+    the record's creator (the rule is)."""
+    bp = _ok([{"do": "add_list", "key": "claims", "label": "Claims", "singular": "Claim", "fields": [
+        {"type": "money", "key": "amount", "label": "Amount"}, {"type": "person", "key": "raised_by", "label": "Raised by"}],
+        "stages": {"stages": ["Raised", "Approved"], "moves": [{"from": ["Raised"], "to": "Approved", "button": "Approve", "not_by": ["raised_by", "creator"]}]}}])
+    assert schema.table(bp, "claims")["workflow"]["transitions"][0]["not_by"] == ["raised_by", "creator"]
