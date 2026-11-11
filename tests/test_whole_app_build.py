@@ -723,3 +723,12 @@ def test_a_button_the_platform_added_goes_once_a_rule_moves_records_there():
                  {"do": "add_rule", "rule": {"key": "go", "name": "Go", "when": {"on": "added", "list": "jobs"},
                                              "steps": [{"do": "set", "values": [{"field": "status", "to": "In progress"}]}]}}])
     assert "In progress" in [m["to"] for m in schema.table(plain, "jobs")["workflow"]["transitions"]]
+
+
+def test_only_a_team_changing_a_list_still_lets_everyone_pick_from_it():
+    """“Only the curators change units of measure”: written with edit alone, it kept the list from everyone else, so a
+    requester's line had no unit to pick and was dropped."""
+    bp = _ok([{"do": "set_team", "key": "curators", "name": "Curators"},
+              {"do": "add_list", "key": "units", "label": "Units", "singular": "Unit", "fields": [{"type": "text", "key": "name", "label": "Name"}]},
+              {"do": "set_access", "list": "units", "edit": "curators"}])
+    assert schema.table(bp, "units")["access"] == {"view": "viewer", "edit_teams": ["curators"]}
