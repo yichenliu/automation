@@ -9,5 +9,6 @@
     {{ icon({'file': 'file-text', 'email': 'mail', 'record': 'table'}.get(h.source, 'file-text')) }}<div class="grow"><b>{{ h.title }}</b><div class="faint small clamp-2">{{ h.text[:320] }}</div></div></a>{% endfor %}</div>{% endif %}
 {% for group in found %}<div class="card mb-2"><div class="card-head"><h2 class="grow">{{ icon(group.t.icon or 'table') }}{{ group.t.label }}</h2><span class="faint small">{{ group.total }}</span>
   <a class="btn sm ghost" href="{{ url_for('app.table', wid=ws.id, table=group.t.key, q=q) }}">All{{ icon('chevron-right') }}</a></div>
-  {% for r in group.rows %}<a class="list-row link" href="{{ url_for('app.record', wid=ws.id, table=group.t.key, rid=r.id) }}">{{ e.title(r) }}</a>{% endfor %}</div>{% endfor %}
+  {% set stage = (group.t.workflow or {}).get('field') %}
+  {% for r in group.rows %}<a class="list-row link" href="{{ url_for('app.record', wid=ws.id, table=group.t.key, rid=r.id) }}"><span class="grow">{{ e.title(r) }}</span>{% if stage and (r.data or {}).get(stage) %}{% set sv = (r.data or {}).get(stage) %}<span class="pill {{ pill(group.t.fields|selectattr('key', 'equalto', stage)|first, sv) }}">{{ sv }}</span>{% endif %}<span class="faint tiny nowrap">{{ (r.updated_at or r.created_at)|ago }}</span></a>{% endfor %}</div>{% endfor %}
 {% endblock %}

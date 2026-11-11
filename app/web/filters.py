@@ -222,6 +222,7 @@ def register(app):
     app.jinja_env.tests["blank_in"] = blank_in
     app.jinja_env.tests["filled_on"] = filled_on
     app.jinja_env.tests["field_visible_on"] = field_visible_on
+    app.jinja_env.tests["can_add_in"] = lambda t, engine: engine.can(t, "edit")
     app.jinja_env.filters.update(lc=lc, unnumbered=unnumbered, ago=ago, markdown=render_markdown, size=human_size, when=when, status_words=status_words, rule_words=rule_words,
                                  json=lambda v: escape(json.dumps(v, default=str)))  # for data-* attributes: quotes escaped, decoded by the browser
     from ..documents.labels import SIZES as LABEL_SIZES

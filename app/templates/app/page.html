@@ -4,7 +4,7 @@
 {% block content %}
 <div class="page-head"><div class="titles"><h1>{{ icon(p.icon or 'layout-dashboard') }}{{ p.label }}</h1><p class="sub">{{ e.today.strftime('%A %-d %B %Y') }}</p></div>
   <div class="row wrap">{% if has_dates %}<form method="get" class="inline-form"><select name="period" data-autosubmit aria-label="Period" class="{{ 'on' if period }}">{% for k, label in periods %}<option value="{{ k }}" {{ 'selected' if k == period }}>{{ label }}</option>{% endfor %}</select></form>{% endif %}
-  <a class="btn ghost" href="{{ url_for('app.page_pdf', wid=ws.id, key=p.key, period=period or none) }}" target="_blank" rel="noopener">{{ icon('printer') }}PDF</a></div></div>
+  {% if not p.home_for and not p.widgets|selectattr('type', 'equalto', 'my_work')|list %}<a class="btn ghost" href="{{ url_for('app.page_pdf', wid=ws.id, key=p.key, period=period or none) }}" target="_blank" rel="noopener">{{ icon('printer') }}PDF</a>{% endif %}</div></div>
 {% if not widgets %}<div class="card">{{ empty_state('This page is empty', 'Ask the builder to add numbers, charts, lists, forms or buttons to it.', ico='layout-dashboard') }}</div>{% endif %}
 <div class="widgets">
   {% for w in widgets %}{% set span = 'w' ~ w.width %}

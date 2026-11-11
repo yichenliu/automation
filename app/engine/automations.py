@@ -43,6 +43,7 @@ SLOW = {"ai_fill", "ai_extract", "ai_create_record"}  # steps done by the backgr
 stand_in = contextvars.ContextVar("stand_in", default=None)
 
 
+AI_HOLD = timedelta(minutes=15)  # how long an unchecked AI step (a brief, a summary) holds up the steps after it when the AI is away
 SPOT_CHECK = 0.1  # of the AI's sure answers in a "check when unsure" step, the share a person still checks (keeps its record honest)
 CHECK_EVERY = timedelta(minutes=15)  # how often a run waiting for a record to meet conditions looks again (saves look at once)
 
@@ -609,8 +610,19 @@ def _ai_step(engine, automation, action, record, run, entry, log):
         entry.update(_ask(engine, automation, task, record, run, entry["at"]), done=True, ai="manual")
         return
     if entry.get("ai") != "checking":
-        work = _attempt(engine, automation, action, record, run, entry, log,
-                        do=lambda *args: _ai_work(*args, at=entry["at"]))
+        try:
+            work = _attempt(engine, automation, action, record, run, entry, log,
+                            do=lambda *args: _ai_work(*args, at=entry["at"]))
+        except ai.AIUnavailable:
+            # nobody checks it (a summary, a brief) and steps come after it (the approval it was to brief): it holds them up
+            # for a while at most, then they go on without it. Checked work, or a rule's last step, waits for the AI.
+            since = entry.setdefault("ai_waiting_since", utcnow().isoformat())
+            last = str(entry.get("at")) == str(len(automation.get("actions") or []) - 1)
+            held = utcnow() - datetime.fromisoformat(since)
+            if action.get("review", "never") != "never" or last or (held < AI_HOLD and not settings().get("TRYING_OUT")):
+                raise
+            entry.update(result="The AI wasn't available, so this was left as it was and the rest went on", done=True, ai="skipped")
+            return
         if "proposal" not in work:  # nothing the AI could do (no files to read, nothing it could tell)
             if work.get("fallback") is not None and action.get("review", "never") != "never" and ai_fields(action):
                 entry.update(work, fallback=work["fallback"] or "it couldn't tell", ai="manual")  # a person whose work it is does it instead

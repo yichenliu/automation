@@ -97,10 +97,18 @@ def _record(engine, t, rid):
 
 
 def _ran(engine, request=None):
-    """Tell the person what their change set off."""
+    """Tell the person what their change set off: whoever builds the app, every rule and what it did; anyone else, only
+    what it means for them (who it's gone to for approval), never the workings."""
     request = request or current_request()
+    builder = engine.role in (None, "owner", "admin")
     for run in engine.started:
         run = db.session.get(Run, run.id)
+        if not builder:
+            if run.status == "waiting_approval":
+                people = Approval.query.filter_by(run_id=run.id, status="pending").all()
+                if people:
+                    flash(request, f"Sent to {automations._named(engine, people)}" + (" to approve." if people[0].kind == "approval" else "."), "auto")
+            continue
         if run.status == "done":
             what = "; ".join(s.get("result", "") for s in run.steps or [] if s.get("result") and not s.get("skipped") and not s.get("quiet"))
             flash(request, f"⚡ Then, automatically ({run.name}): {what}" if what else f"⚡ Then, automatically: {run.name}", "auto")
@@ -128,8 +136,9 @@ def columns(t, view):
 def _only_one(engine, f):
     """A link column that can only ever say one thing to this person (a buyer's own organisation, to its members): left
     out of a list nobody chose the columns of."""
-    if f["type"] != "link" or f.get("multiple") or f["table"] not in engine.tables or engine.role is None or engine._at_least("admin"):
-        return False
+    if f["type"] != "link" or f.get("multiple") or not f.get("required") or f["table"] not in engine.tables or engine.role is None \
+            or engine._at_least("admin") or engine.can(engine.tables[f["table"]], "edit"):
+        return False  # (a site or cost centre they choose, though only one is there yet, is theirs to say)
     return len(engine.page(f["table"], limit=2)[0]) == 1
 
 
@@ -255,7 +264,11 @@ def table(request: Request, wid: int, table: str, user=Depends(signed_in)):
                    "totals": {f["key"]: engine.aggregate(by[label], "sum", f["key"]) for f in cols if engine.summable(f)}}
                   for label in order if label in by]
         shown, page = rows, 1
-    return render(request, "app/table.html", rows=shown, columns=cols, sort=sort, page=page, totals=totals, groups=groups,
+    from ..models import Approval
+    pending = Approval.query.filter(Approval.workspace_id == ws.id, Approval.status == "pending",
+                                    Approval.record_id.in_([x.id for x in shown] or [0])).all()
+    waits = {rid: automations._named(engine, [a for a in pending if a.record_id == rid]) for rid in {a.record_id for a in pending}}
+    return render(request, "app/table.html", rows=shown, columns=cols, sort=sort, page=page, totals=totals, groups=groups, waits=waits,
                            group_field=group_field, groupable=[f for f in t["fields"] if f["type"] in ("select", "link", "user", "checkbox", "date", "multi_select", "tags")],
                            tints={r.id: engine.colours(t, r) for r in shown} if t.get("colors") else {},
                            pages=max(1, -(-total // PAGE_SIZE)), inline=INLINE, **common)
@@ -581,8 +594,7 @@ def _facts(engine, t, r):
     title = schema.field(t, schema.title_field(t))
     if title is not None and title["type"] == "autonumber":
         said.add(title["key"])
-    said |= {f["key"] for f in t["fields"] if f["type"] == "link" and not f.get("required") is True and _only_one(engine, f)}
-    said |= {f["key"] for f in t["fields"] if f["type"] == "link" and f.get("required") and _only_one(engine, f)}
+    said |= {f["key"] for f in t["fields"] if _only_one(engine, f)}
     return facts, said
 
 
@@ -706,8 +718,9 @@ def record(request: Request, wid: int, table: str, rid: int, user=Depends(signed
     waiting_text = (f"Waiting for {automations._named(engine, others)} to "
                     + {"task": "do their part", "review": "check the AI's work", "change": "approve a change"}.get(others[0].kind, "approve it") + ".") if others else ""
     facts, said_already = _facts(engine, t, r)
+    app_fills = set_by_the_app(engine, t)
     sections = [{**s_, "fields": [f for f in s_["fields"] if f["key"] not in said_already]} for s_ in _sections(t)]
-    return render(request, "app/record.html", ws=ws, e=engine, t=t, r=r, sections=sections, facts=facts, related=_related(engine, t, r),
+    return render(request, "app/record.html", ws=ws, e=engine, t=t, r=r, sections=sections, facts=facts, app_fills=app_fills, related=_related(engine, t, r),
                            sealed=sealed, hidden=hidden, waiting_text=waiting_text, to_finish=to_finish, journey=journey(engine, t, r), stepped=engine.stepped_up,
                            teams={tm["key"]: tm["name"] for tm in schema.teams(engine.bp)},
                            lines=lines, history=history, runs=runs, buttons=buttons, approvals=approvals, comments=comments,
@@ -1050,11 +1063,14 @@ def _render_form(ws, engine, t, r, values, errors, line_rows=None, status=200, r
     if hidden:  # a problem with something the form doesn't show (the stage, a rule on two fields): said at the top
         errors = {**{k: v for k, v in errors.items() if k not in hidden}, "_": "; ".join(([errors["_"]] if errors.get("_") else []) + list(hidden.values()))}
     sections = _sections(t, lines=True, later=set_by_the_app(engine, t) if r is None else ())
+    if r is None:  # what sending it on needs is marked as needed, so a step-by-step form asks for it on its way
+        to_send = set(_to_send(engine, t))
+        sections = [{**s_, "fields": [({**f, "required": True} if f["key"] in to_send else f) for f in s_["fields"]]} for s_ in sections]
     page = render(request, "app/form.html", status_code=status, ws=ws, e=engine, t=t, r=r, values=values, errors=errors, sections=sections,
                   stage_lock=stage_lock, first_move=first_move,
                   waiting=_waiting(t, sections, kids, values, errors, stage_lock and r is None and stage_lock["key"], r is None),
                   options=_options(engine, t, [c["table"] for c in kids]), children=kids, line_rows=line_rows,
-                  members=engine.members(), locked=engine.locked(r) if r is not None else None, **extra)
+                  members=engine.staff(), locked=engine.locked(r) if r is not None else None, **extra)
     return page, status
 
 
@@ -1064,9 +1080,16 @@ def new(request: Request, wid: int, table: str, form: Form = Depends(form_of)):
     t = _table(engine, table, "edit")
     if request.method == "POST":
         try:
-            with engine.atomic():  # the record and its lines are saved together, once its rules hold
-                r = engine.create(t["key"], _form_values(form, t, engine), automations=False)
+            values = _form_values(form, t, engine)
+            if form.get("then") not in (None, ""):  # Submit: what sending it on needs is filled in, or nothing is saved yet
+                missing = [k for k in _to_send(engine, t) if values.get(k) in (None, "", [])]
+                if missing:
+                    raise FieldErrors({k: f"Fill in {schema.field(t, k)['label']} to send it on" for k in missing})
+            with engine.atomic():  # the record and its lines are saved together, once its rules hold: a line that can't be
+                r = engine.create(t["key"], values, automations=False)  # saved keeps the whole thing back, said on its row
                 line_problems = _save_lines(engine, t, r, form)
+                if line_problems:
+                    raise FieldErrors({table_: "; ".join(rows.values()) for table_, rows in line_problems.items()})
         except FieldErrors as exc:
             posted = {c["table"]["key"]: [{"id": x["id"], "values": x["values"]} for x in _posted_lines(c, form)] for c in children(engine, t)}
             return _render_form(ws, engine, t, None, form, exc.errors, posted, 400, request, back=form.get("back"),
@@ -1124,6 +1147,15 @@ def new(request: Request, wid: int, table: str, form: Form = Depends(form_of)):
             values[f["key"]] = engine.today.isoformat() if f["type"] == "date" and str(default).lower() in ("today", "{{today()}}", "now") else default
     values = {**_started_as(engine, t, values), **values}
     return _render_form(ws, engine, t, None, values, {}, request=request, back=request.query_params.get("back"))[0]
+
+
+def _to_send(engine, t):
+    """What a new record's Submit (its first move onwards) needs filled in, as a list of keys."""
+    if not t.get("workflow") or not schema.stages(t):
+        return []
+    ways = [m for _, m in schema.sending_on(engine.bp, t)]
+    needs = [set(m.get("requires") or []) for m in ways]
+    return sorted(set.intersection(*needs)) if needs else []
 
 
 RAISING = ("requested", "raised", "submitted", "reported", "logged", "entered", "prepared", "recorded", "created", "added", "uploaded")

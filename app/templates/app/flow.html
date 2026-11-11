@@ -15,7 +15,7 @@
 
   {% if step.kind == 'form' %}
     <div class="form-grid">{% for k in step.fields %}{% set f = t.fields|selectattr('key', 'equalto', k)|first %}{% if f %}
-      {{ input(e, f, (got.get(k) if got.get(k) is not none else (e.value(record, k) if record else none)), options, errors.get(k), e.members()) }}{% endif %}{% endfor %}</div>
+      {{ input(e, f, (got.get(k) if got.get(k) is not none else (e.value(record, k) if record else none)), options, errors.get(k), e.staff()) }}{% endif %}{% endfor %}</div>
 
   {% elif step.kind == 'scan' %}
     <input type="hidden" name="answer" data-flow-answer value='{{ {"scanned": got.get("scanned") or []}|tojson }}'>

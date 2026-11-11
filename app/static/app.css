@@ -713,7 +713,8 @@ ul.evidence { margin: 0; padding-left: 18px; font-size: 13.5px; } ul.evidence li
   font-size: 11px; font-weight: 700; color: var(--faint); }
 .journey-mark .i { width: 12px; height: 12px; }
 .journey li.done { color: var(--text); } .journey li.done .journey-mark { background: var(--good-weak); color: var(--good); }
-.journey li.current { color: var(--accent-text); font-weight: 650; } .journey li.current .journey-mark { background: var(--accent-weak); color: var(--accent-text); }
+.journey li.current { color: var(--text); font-weight: 560; } .journey li.current .journey-mark { background: transparent; border: 2px dashed var(--accent); }
+.journey-note { font-size: 11.5px; font-weight: 500; color: var(--muted); }
 .journey-record { font-size: 12px; padding: 1px 7px; border-radius: 999px; background: var(--sunken); }
 .step-up { width: 190px; height: 30px; font-size: 12.5px; }
 .suggest { display: inline-flex; align-items: center; gap: 3px; margin-left: 4px; padding: 0 7px; height: 20px; border-radius: 999px;
@@ -1206,3 +1207,4 @@ input.unsaved { border-color: var(--warn); box-shadow: 0 0 0 2px var(--warn-weak
 .nav-group[open] > summary .caret { transform: rotate(180deg); }
 .map-fold > summary { list-style: none; cursor: pointer; display: inline-flex; margin: 4px 0 2px; }
 .map-fold > summary::-webkit-details-marker { display: none; } .map-fold[open] > summary .i { transform: rotate(180deg); }
+.next-step .moves .btn.quiet-no { width: auto; color: var(--muted); }

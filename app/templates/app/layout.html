@@ -11,7 +11,7 @@
       <button class="btn sm ghost icon menu-toggle" type="button" data-toggle="#sidebar" aria-label="Menu">{{ icon('menu') }}</button></div>
     <form class="side-search" action="{{ url_for('app.search', wid=ws.id) }}" data-jump="{{ url_for('app.jump', wid=ws.id) }}" title="Search, or press ⌘K to jump anywhere">{{ icon('search') }}<input type="search" name="q" placeholder="Search" value="{{ request.query_params.get('q', '') if 'search' in here else '' }}" aria-label="Search everything"><kbd>/</kbd><button type="button" class="side-scan" data-scan data-scan-go="{{ url_for('app.scan', wid=ws.id) }}" title="Scan a label or barcode to open it" aria-label="Scan a label">{{ icon('camera') }}</button></form>
     <nav class="nav">
-      {% set home_url = url_for('app.home', wid=ws.id) %}<a href="{{ home_url }}?home=1" class="{{ 'active' if here.rstrip('/') == home_url.rstrip('/') }}">{{ icon('house') }}<span>Home</span></a>
+      {% set home_url = url_for('app.home', wid=ws.id) %}<a href="{{ home_url }}" class="{{ 'active' if here.rstrip('/') == home_url.rstrip('/') or '/app/p/' in here and request.query_params.get('home') is none and here.endswith(home_page_for(ws) or '#none') }}">{{ icon('house') }}<span>Home</span></a>
       {% for section in nav_for(ws) %}
         {% if section.fold %}{% set open_here = section['items']|selectattr('key')|selectattr('kind', 'in', ['table', 'page'])|map(attribute='key')|select('in', here)|list %}
         <details class="nav-group" {{ 'open' if open_here }}><summary class="section">{{ section.label }}{{ icon('chevron-down', 'caret') }}</summary>
@@ -28,7 +28,7 @@
     <div class="foot nav">
       <a href="{{ url_for('app.approvals', wid=ws.id) }}" class="{{ 'active' if 'approvals' in here }}" title="Approvals, tasks and checks waiting for you">{{ icon('list-todo') }}<span>To do</span>{% if approvals %}<span class="count hot">{{ approvals|length }}</span>{% endif %}</a>
       <a href="{{ url_for('app.notifications', wid=ws.id) }}" class="{{ 'active' if 'notifications' in here }}">{{ icon('bell') }}<span>Notifications</span>{% if unread %}<span class="count hot">{{ unread }}</span>{% endif %}</a>
-      {% if member and member.can('editor') %}{% set ai_n = ai_count_for(ws) %}{% set ideas = suggestions_for(ws) if member.can('admin') else 0 %}
+      {% if member and (member.can('admin') or member.can('editor') and not focused_for(ws)) %}{% set ai_n = ai_count_for(ws) %}{% set ideas = suggestions_for(ws) if member.can('admin') else 0 %}
       {% set in_setup = 'automations' in here or '/app/ai' in here or '/knowledge' in here or '/design' in here or '/improvements' in here or '/checks' in here or '/studio' in here %}
       <details class="setup-group" {{ 'open' if in_setup }}><summary title="How your app works: its lists, workflows, AI and settings">{{ icon('settings') }}<span>Set up</span>{% if ideas %}<span class="dot-hot" title="{{ ideas }} suggestion{{ 's' if ideas != 1 }}"></span>{% endif %}{{ icon('chevron-down', 'caret') }}</summary>
         <div class="setup-label">Your app</div>

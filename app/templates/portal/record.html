@@ -12,16 +12,17 @@
   <form method="post" action="{{ url_for('portal.answer', wid=ws.id, aid=a.id) }}" class="row"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="back" value="{{ request.url.path }}">
     {% if a.kind == 'task' %}{% for k in a.fields or [] %}{% set f = e.field(t.key, k) %}{% if f %}<input type="text" name="{{ k }}" placeholder="{{ f.label }}" aria-label="{{ f.label }}">{% endif %}{% endfor %}<button class="btn primary sm" name="decision" value="done">Done</button>
     {% else %}<input type="text" name="comment" placeholder="Comment (optional)" aria-label="Comment"><button class="btn primary sm" name="decision" value="approve">{{ icon('check') }}Agree</button><button class="btn sm danger" name="decision" value="reject">Decline</button>{% endif %}</form></div>{% endfor %}
-{% if editable %}
+{% if starts_here %}<div class="card mb-2"><div class="card-body row wrap"><span class="small muted grow">From here:</span>{% for o, key in starts_here %}<a class="btn sm" href="{{ url_for('portal.new', wid=ws.id, table=o.key, **{key: r.id}) }}">{{ icon('plus') }}New {{ o.singular|lc }}</a>{% endfor %}</div></div>{% endif %}
+{% if editable or edit_lines %}
 <form method="post" action="{{ url_for('portal.edit', wid=ws.id, table=t.key, rid=r.id) }}" class="form-card mb-2"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="_version" value="{{ r.version }}">
-  <div class="card mb-2"><div class="card-head"><h2>Your part</h2></div><div class="card-body form-grid">{% for f in editable %}{{ input(e, f, (r.data or {}).get(f.key), options, none, {}) }}{% endfor %}</div></div>
+  {% if editable %}<div class="card mb-2"><div class="card-head"><h2>Your part</h2></div><div class="card-body form-grid">{% for f in editable %}{{ input(e, f, (r.data or {}).get(f.key), options, none, {}) }}{% endfor %}</div></div>{% endif %}
   {% if edit_lines %}{% include "portal/_lines.html" %}{% endif %}
   <div class="form-actions"><button class="btn primary">{{ icon('check') }}Save</button></div></form>
 {% endif %}
 <div class="card mb-2"><div class="card-body"><dl class="fields">{% for f in fields if f.type not in ('file', 'image', 'signature') and f not in editable %}{% set v = e.value(r, f.key) %}{% if v not in (none, '', []) %}
   <dt>{{ f.label }}</dt><dd>{% if f.type in ('long_text', 'rich_text', 'address') %}<div class="pre">{{ v }}</div>{% elif f.type == 'select' %}{{ value(e, f, v, r) }}{% else %}{{ e.display(f, v, r) }}{% endif %}</dd>{% endif %}{% endfor %}</dl></div></div>
-{% if not edit_lines %}{% for l in lines if l.rows %}<div class="card mb-2"><div class="card-head"><h2>{{ l.t.label }}</h2></div><div class="table-wrap"><table class="grid"><thead><tr>{% for f in l.cols %}<th class="{{ is_num(e, f) }}">{{ f.label }}</th>{% endfor %}</tr></thead>
-  <tbody>{% for x in l.rows %}<tr>{% for f in l.cols %}<td class="{{ is_num(e, f) }}">{{ e.display(f, e.value(x, f.key), x) }}</td>{% endfor %}</tr>{% endfor %}</tbody></table></div></div>{% endfor %}{% endif %}
+{% for l in lines if l.rows and not (edit_lines and l.t.key in open_lines) %}<div class="card mb-2"><div class="card-head"><h2>{{ l.t.label }}</h2></div><div class="table-wrap"><table class="grid"><thead><tr>{% for f in l.cols %}<th class="{{ is_num(e, f) }}">{{ f.label }}</th>{% endfor %}</tr></thead>
+  <tbody>{% for x in l.rows %}<tr>{% for f in l.cols %}<td class="{{ is_num(e, f) }}">{{ e.display(f, e.value(x, f.key), x) }}</td>{% endfor %}</tr>{% endfor %}</tbody></table></div></div>{% endfor %}
 {% if files %}<div class="card mb-2"><div class="card-head"><h2>Files</h2></div><div class="card-body files">{% for f in files %}<a class="filechip" href="{{ url_for('portal.file', wid=ws.id, fid=f.id) }}">{{ icon('paperclip') }}{{ f.name }}</a>{% endfor %}</div></div>{% endif %}
 <div class="card" id="messages"><div class="card-head"><h2>Messages</h2></div><div class="card-body stack">
   {% for m in messages %}<div class="comment"><b>{{ m.user.display if m.user else 'Someone' }}</b> <span class="faint tiny">{{ m.created_at|ago }}</span><div class="pre">{{ m.text }}</div></div>{% else %}<p class="faint small">Questions about this {{ t.singular|lc }}? Write to us here.</p>{% endfor %}

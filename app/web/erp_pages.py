@@ -1077,7 +1077,9 @@ def decide(request: Request, wid: int, aid: int, user=Depends(signed_in), form: 
             db.session.rollback()
             flash(request, "; ".join(exc.errors.values()), "error")
             return redirect(back)
-        flash(request, f"{'Approved' if approved else 'You said no'}: {approval.message}", "success")
+        rec = engine.get(approval.record_id) if approval.record_id else None
+        said = engine.title(rec) if rec is not None else approval.message
+        flash(request, f"{'Approved' if approved else 'You said no to'} {said}." + (" It goes on from here." if approved else ""), "success")
     else:
         raise HTTPException(400)
     if run.status in ("done", "rejected", "waiting_approval"):

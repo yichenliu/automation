@@ -94,6 +94,18 @@ def lines(engine, t):
     return out
 
 
+def open_lines(engine, t, r):
+    """The line lists of a record an outside person may change while they may change the record: the lines of a record
+    they added themselves (their invoice's lines), and those its portal names among what they edit (a bid's prices, on a
+    bid the tender made for them). Never a buyer's order's lines because the seller may add a note to it."""
+    portal = t.get("portal") or {}
+    if "edit" not in portal or (portal.get("edit_if") and not engine.matches(r, portal["edit_if"])) or locked(engine, t, r):
+        return []
+    theirs = engine.user_id is not None and getattr(r, "created_by_id", None) == engine.user_id
+    named = set((t.get("portal") or {}).get("edit") or [])
+    return [c for c in lines(engine, t) if theirs or c["t"]["key"] in named]
+
+
 def options(engine, fields_, contact=None):
     """The choices of the link fields they fill in: records that are theirs (the tenders they're invited to), or reference
     records anyone may name (an item on a bid line); never other outside people's."""
@@ -194,8 +206,11 @@ def _parent_of(engine, contact, t, values=None, record=None):
     child = next((c for c in lines(engine, pt) if c["t"]["key"] == t["key"]), None)
     if child is None:
         raise NotTheirs(t["key"])
-    if not editable(engine, pt, parent):
-        raise FieldErrors({"_": locked(engine, pt, parent) or f"This {schema.lc(pt['singular'])} can't be changed here now."})
+    if not any(c["t"]["key"] == t["key"] for c in open_lines(engine, pt, parent)):
+        if locked(engine, pt, parent) or not editable(engine, pt, parent):
+            raise FieldErrors({"_": locked(engine, pt, parent) or f"This {schema.lc(pt['singular'])} can't be changed here now."})
+        raise FieldErrors({"_": f"The {schema.lc(t['label'])} of this {schema.lc(pt['singular'])} are {schema.lc(pt['singular'])}'s own: "
+                                f"propose a change instead"})
     return via, child
 
 

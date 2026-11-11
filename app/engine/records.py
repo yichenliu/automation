@@ -955,6 +955,15 @@ class Engine:
             self._emails = {u.id: u.email for u in rows}
         return self._members
 
+    def staff(self):
+        """{user id: name} of the business's own people, to pick for a person field: never its outside people (a seller's
+        person signed in to the portal) nor a stand-in."""
+        if getattr(self, "_staff", None) is None:
+            rows = db.session.query(User).join(Membership, Membership.user_id == User.id).filter(
+                Membership.workspace_id == self.ws.id, Membership.role != "portal", User.email != "stand-in@example.com").all()
+            self._staff = {u.id: u.display for u in rows}
+        return self._staff
+
     def files(self, record, key):
         """The files in a file or image field: [{"id", "name", "mime", "size"}]."""
         if record is None or record.id is None:

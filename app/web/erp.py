@@ -60,6 +60,14 @@ def my_space(engine):
     return next((sp for sp in schema.spaces(engine.bp) if set(sp["for"]) & engine.teams or engine.role in sp["for"]), None)
 
 
+def home_page_for(ws):
+    """The key of the page that is this person's home (Home opens it), or None."""
+    engine = _here("engine")
+    if engine is None or engine.ws.id != ws.id:
+        return None
+    return next((p["key"] for p in engine.visible_blueprint().get("pages", []) if _home_of(engine, p)), None)
+
+
 def _home_of(engine, page):
     """Whether a page is this person's home (Home opens it), so it isn't in their menu a second time."""
     who = set(page.get("home_for") or [])
@@ -248,7 +256,8 @@ def ai_count(ws):
 
 @context_processor
 def chrome():
-    return {"nav_for": nav, "unread_for": unread, "approvals_for": my_approvals, "ready_for": ready_for, "suggestions_for": open_suggestions, "ai_count_for": ai_count,
+    return {"nav_for": nav, "unread_for": unread, "approvals_for": my_approvals, "ready_for": ready_for, "home_page_for": home_page_for,
+            "focused_for": lambda ws: (lambda e: e is not None and e.ws.id == ws.id and my_space(e) is not None)(_here("engine")), "suggestions_for": open_suggestions, "ai_count_for": ai_count,
             "feedback_for": lambda ws: url_for("app.feedback", wid=ws.id), "checks_for": lambda ws: url_for("app.checks", wid=ws.id)}
 
 

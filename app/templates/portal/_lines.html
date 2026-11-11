@@ -1,5 +1,5 @@
 {# The line items of a record the outside person fills in (a bid's prices): rows appear as they type. #}
-{% for c in lines %}{% set rows = c.rows if c.rows is defined else [] %}
+{% for c in lines if open_lines is not defined or c.t.key in open_lines %}{% set rows = c.rows if c.rows is defined else [] %}
 <div class="card mb-2 wide"><div class="card-head"><h2 class="grow">{{ c.t.label }}</h2><span class="faint small">A new row appears as you type.</span></div>
   <div class="table-wrap"><table class="grid lines-editor" data-lines="{{ c.t.key }}" data-next="{{ rows|length }}">
     <thead><tr>{% for f in c.cols %}<th class="{{ 'num' if f.type in ('number', 'money', 'percent', 'duration') }}">{{ f.label }}</th>{% endfor %}<th></th></tr></thead>

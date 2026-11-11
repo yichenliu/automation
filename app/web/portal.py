@@ -95,7 +95,37 @@ def home(request: Request, wid: int, user=Depends(signed_in)):
                          "moves": {r.id: [m for _, m, problem in engine.moves(r) if not problem] for r in rows[:100]}})
     asks, changes = _waiting(engine, ws, contact, user)
     return render(request, "portal/home.html", ws=ws, e=engine, portal=portal, contact=contact, sections=sections, asks=asks,
-                  changes=changes)
+                  changes=changes, starters=_starters(engine, portal, sections))
+
+
+def _starts_here(engine, portal, t):
+    """What an outside person starts from a record of theirs (a question on a tender, an invoice for an order): lists
+    they may add to with a link to it, as [(list, link key)]."""
+    out = []
+    for other in _tables(engine, portal):
+        if not other["portal"].get("can_add") or other["key"] == t["key"]:
+            continue
+        link = next((f for f in other["fields"] if f["type"] == "link" and f.get("table") == t["key"] and not f.get("multiple")), None)
+        if link is not None:
+            out.append((other, link["key"]))
+    return out
+
+
+def _starters(engine, portal, sections):
+    """What an outside person starts by themselves from their home (a location, a certificate, an item): lists of their
+    own they may add to, that need no other record chosen first. A question on a tender, a debrief, a response to a form
+    are started from the record they're about."""
+    out = []
+    for s_ in sections:
+        t = s_["t"]
+        head = t["portal"].get("via", "").partition(".")[0]
+        via = schema.field(t, head)
+        if not t["portal"].get("can_add") or via is None or via["type"] != "link" or "." in t["portal"].get("via", ""):
+            continue
+        others = [f for f in t["fields"] if f["type"] == "link" and f.get("required") and f["key"] != head]
+        if not others:
+            out.append(t)
+    return out
 
 
 @router.api_route("/me", methods=["GET", "POST"], name="portal.profile")
@@ -140,7 +170,7 @@ def record(request: Request, wid: int, table: str, rid: int, user=Depends(signed
                                     by_id=user.id))
         db.session.commit()
     editable = _editable(engine, t, r)
-    lines = []
+    lines, open_ = [], {c["t"]["key"] for c in outside.open_lines(engine, t, r)}
     for child in _lines(engine, t):
         lines.append({**child, "rows": engine.children(child["t"]["key"], child["via"]["key"], r.id)})
     shown = {f["key"] for f in _fields(t) if f["type"] in schema.FILES}
@@ -152,7 +182,7 @@ def record(request: Request, wid: int, table: str, rid: int, user=Depends(signed
                   messages=messages, documents=[d for d in t.get("documents", []) if d.get("format") != "text"],
                   editable=editable, moves=engine.moves(r), asks=asks, locked=_locked(engine, t, r),
                   sealed=engine.seal_note(r), options=_options(engine, editable + [f for c in lines for f in c["cols"]], contact),
-                  edit_lines=bool(editable) and bool(lines))
+                  edit_lines=bool(open_), open_lines=open_, starts_here=_starts_here(engine, portal, t))
 
 
 @router.api_route("/t/{table}/{rid:int}/edit", methods=["POST"], name="portal.edit")
@@ -161,15 +191,16 @@ def edit(request: Request, wid: int, table: str, rid: int, user=Depends(signed_i
     ws, engine, portal, contact = _ctx(wid, user)
     t, r = _record(engine, contact, table, rid)
     editable = _editable(engine, t, r)
-    if not editable:
+    if not editable and not outside.open_lines(engine, t, r):
         flash(request, _locked(engine, t, r) or "This can't be changed here now.", "error")
         return redirect(url_for("portal.record", wid=wid, table=table, rid=rid))
     values = {f["key"]: (bool(form.get(f["key"])) if f["type"] == "checkbox" else
                          form.getlist(f["key"]) if f["type"] == "multi_select" else form.get(f["key"])) for f in editable}
     try:
         with engine.atomic():
-            outside.change(engine, contact, t, r, values, expected_version=form.get("_version"))
-            problems = _save_lines(form, engine, t, r, _lines(engine, t))
+            if values:
+                outside.change(engine, contact, t, r, values, expected_version=form.get("_version"))
+            problems = _save_lines(form, engine, t, r, outside.open_lines(engine, t, r))
             if problems:
                 raise FieldErrors({"_": "; ".join(problems)})
     except Conflict:

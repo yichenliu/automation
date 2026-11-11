@@ -3182,9 +3182,12 @@ def _check_table(t, tables, modules, problems):
         elif hop and (field(tables.get(via["table"]), hop) or {}).get("type") != "link":
             problems.append(f"the portal on {t['label']} goes through “{portal['via']}”: “{hop}” must be a link field of "
                             f"{(tables.get(via['table']) or {}).get('label', via['table'])} to the portal's people")
+        own_lines = {x["key"] for x in tables.values() if x.get("embedded") and any(f["type"] == "link" and f.get("table") == t["key"] for f in x["fields"])}
         for k in portal["fields"] + portal.get("edit", []):
+            if k in own_lines and k in portal.get("edit", []):  # its lines they fill in (a bid's prices)
+                continue
             if k not in keys:
-                problems.append(f"the portal on {t['label']} shows “{k}”, which isn't a field")
+                problems.append(f"the portal on {t['label']} shows “{k}”, which isn't a field (nor its lines, to fill in)")
             elif k in portal.get("edit", []) and keys[k]["type"] in CALCULATED:
                 problems.append(f"the portal on {t['label']} lets them change “{keys[k]['label']}”, which is worked out, not filled in")
         flow = t.get("workflow")

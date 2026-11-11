@@ -47,7 +47,7 @@
 </div>
 {% set at = stages.index(stage) if stages and stage in stages else -1 %}
 {% if journey %}<ol class="journey" aria-label="Where it's got to">{% for j in journey %}<li class="{{ 'done' if j.done }}{{ ' current' if j.current }}">
-  <span class="journey-mark">{{ icon('check') if j.done else '' }}</span><span class="journey-label">{{ j.label }}</span>
+  <span class="journey-mark">{{ icon('check') if j.done else '' }}</span><span class="journey-label">{{ j.label }}</span>{% if j.current %}<span class="journey-note">in progress</span>{% endif %}
   {% for x in j.records %}<a class="journey-record" href="{{ x.url }}">{{ x.title }}{% if x.stage %} · {{ x.stage }}{% endif %}</a>{% endfor %}</li>{% endfor %}</ol>
 {% elif stages %}{% set at = path.index(stage) if stage in path else -1 %}<div class="stage-bar">
   <ol class="stage-path" aria-label="Stage">{% for s in path %}<li class="{{ 'done' if loop.index0 < at }}{{ ' current' if loop.index0 == at }}" {% if loop.index0 == at %}aria-current="step"{% endif %}>{{ s }}</li>{% endfor %}</ol>
@@ -61,7 +61,7 @@
     <div class="what">{% if first and first.kind == 'change' %}{{ icon('shield') }}<span><b>Waiting for you:</b> check a change to {{ (first.proposal.shown or {})|list|join(', ')|lower }}</span>
       {% elif first %}{{ icon('hand-coins' if first.kind == 'approval' else 'list-todo') }}<span><b>Waiting for you:</b> {{ first.message }}</span>
       {% elif waiting_on %}{{ icon('clock') }}{{ waiting_text }}
-      {% elif open_moves %}{{ icon('arrow-right') }}Next: {{ (open_moves[0][1].label or ('move it to ' ~ open_moves[0][1].to))|lc }}
+      {% elif open_moves and not says_no(open_moves[0][1].to) %}{{ icon('arrow-right') }}Next: {{ (open_moves[0][1].label or ('move it to ' ~ open_moves[0][1].to))|lc }}
       {% elif blocked %}{{ icon('info') }}<span>{% for b in blocked[:2] %}{{ b[2] }}.{{ ' ' if not loop.last }}{% endfor %}</span>
       {% else %}{{ icon('circle-check') }}Nothing more to do here.{% endif %}</div></div>
   {% if first and first.kind == 'approval' %}<form method="post" action="{{ url_for('app.decide', wid=ws.id, aid=first.id) }}" class="moves"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="back" value="{{ request.url.path }}">
@@ -74,7 +74,7 @@
         {% elif f.type in ('user', 'link') %}<select name="fill_{{ f.key }}" required><option value=""></option>{% for id, title in x.options %}<option value="{{ id }}">{{ title }}</option>{% endfor %}</select>
         {% else %}<input name="fill_{{ f.key }}" required type="{{ {'date': 'date', 'datetime': 'datetime-local', 'email': 'email', 'url': 'url'}.get(f.type, 'text') }}"{% if f.type in ('number', 'money', 'percent', 'rating', 'duration') %} inputmode="decimal"{% endif %}{% if f.type == 'date' %} value="{{ e.today.isoformat() }}"{% endif %}>{% endif %}</label>{% endfor %}
       {% if m.step_up and not stepped %}<input type="password" name="step_up_code" class="step-up" autocomplete="one-time-code" required placeholder="Code or password" aria-label="Confirm it's you: your authenticator code or password" title="{{ m.label or m.to }} needs you to confirm it's you">{% endif %}
-      <button class="btn {{ 'primary' if loop.first and not says_no(m.to) else 'ghost' if says_no(m.to) }}" title="Moves it to {{ m.to }}">{{ icon('shield' if m.step_up else 'arrow-right') }}{{ m.label or ('Move to ' ~ m.to) }}</button></form>{% endfor %}</div>
+      <button class="btn {{ 'primary' if loop.first and not says_no(m.to) else 'ghost sm quiet-no' if says_no(m.to) }}" title="Moves it to {{ m.to }}">{{ icon('shield' if m.step_up else 'arrow-right') }}{{ m.label or ('Move to ' ~ m.to) }}</button></form>{% endfor %}</div>
   {% elif blocked and can_edit and blocked[0][2].startswith('Fill in') %}<a class="btn" href="{{ url_for('app.edit', wid=ws.id, table=t.key, rid=r.id) }}">{{ icon('pencil') }}Fill it in</a>{% endif %}
 </div>{% endif %}
 {% for a in approvals if a.kind == 'change' or (a.id in mine and a != first) %}{% if a.kind == 'change' %}
@@ -106,9 +106,9 @@
       <dt>{{ f.label }}{% if f.type in ('formula', 'rollup', 'lookup') %}{% set kind, detail = about_field(e, t, f) %}<span class="calc icon-only" title="Worked out for you{{ ': ' ~ detail if detail }}">{{ icon('calculator') }}</span>{% elif f.ai and f.key in (r.data.get('_ai') or []) %}<span class="calc ai" title="Filled in by the AI; edit it and it's yours">{{ icon('sparkles') }}AI</span>{% endif %}</dt>
       {% set inline_ok = (can_edit or f.key in still_editable) and f.type in inline and not (stages and f.key == t.workflow.field and e.role != 'owner') and not (f.readonly_if and e.matches(r, f.readonly_if) and not e._at_least('admin')) %}
       {% if f.sensitive and v and can_edit %}<dd class="sensitive"><span data-secret>{{ v }}</span> <button type="button" class="btn sm ghost" data-reveal="{{ url_for('app.reveal', wid=ws.id, table=t.key, rid=r.id, key=f.key) }}" title="Show it (kept in the history)">{{ icon('eye') }}Show</button></dd>{% else %}
-      <dd class="{{ 'editable' if inline_ok }}" {% if inline_ok %}data-field="{{ f.key }}" data-type="{{ f.type }}" data-raw="{{ v|json if v is not none else '' }}" data-set="{{ url_for('app.table', wid=ws.id, table=t.key) }}/{{ r.id }}/set" {% if f.type == 'select' %}data-options='{{ (e.choices(t, f, r) if f.options_by else f.options)|json }}'{% endif %}{% if f.type == 'user' %}data-options='{{ e.members()|json }}'{% endif %}{% endif %}>{{ full_value(e, f, v, r) }}</dd>{% endif %}
+      <dd class="{{ 'editable' if inline_ok }}" {% if inline_ok %}data-field="{{ f.key }}" data-type="{{ f.type }}" data-raw="{{ v|json if v is not none else '' }}" data-set="{{ url_for('app.table', wid=ws.id, table=t.key) }}/{{ r.id }}/set" {% if f.type == 'select' %}data-options='{{ (e.choices(t, f, r) if f.options_by else f.options)|json }}'{% endif %}{% if f.type == 'user' %}data-options='{{ e.staff()|json }}'{% endif %}{% endif %}>{{ full_value(e, f, v, r) }}</dd>{% endif %}
       {% endfor %}
-    </dl>{% set unsaid = empty_fields|select('field_visible_on', e, r)|list %}{% if unsaid %}<p class="faint tiny mt-1">Not filled in: {{ unsaid|map(attribute='label')|join(', ') }}{% if can_edit %} · <a href="{{ url_for('app.edit', wid=ws.id, table=t.key, rid=r.id) }}">Fill in</a>{% endif %}</p>{% endif %}</div></div>
+    </dl>{% set unsaid = empty_fields|select('field_visible_on', e, r)|rejectattr('key', 'in', app_fills or [])|list %}{% if unsaid %}<p class="faint tiny mt-1">Not filled in: {{ unsaid|map(attribute='label')|join(', ') }}{% if can_edit %} · <a href="{{ url_for('app.edit', wid=ws.id, table=t.key, rid=r.id) }}">Fill in</a>{% endif %}</p>{% endif %}</div></div>
     {% endif %}
     {% endfor %}
     {% for l in lines if not hidden %}
@@ -131,6 +131,7 @@
       </table></div>{% else %}<div class="card-body faint small">No {{ rel.table.label|lc }} yet.</div>{% endif %}
     </div>
     {% endfor %}
+    {% set nothing_yet = nothing_yet|selectattr('table', 'can_add_in', e)|list if can_edit else [] %}
     {% if nothing_yet %}<details class="card fold quiet-related"><summary class="card-head"><span class="faint small grow">{{ icon('link') }}Nothing linked to it yet: {{ nothing_yet|map(attribute='table.label')|map('lc')|join(', ') }}</span>{{ icon('chevron-down', 'caret') }}</summary>
       {% if can_edit %}<div class="card-body row wrap">{% for rel in nothing_yet if e.can(rel.table, 'edit') %}<a class="btn sm ghost" href="{{ url_for('app.new', wid=ws.id, table=rel.table.key, back=request.url.path, **{('f_' ~ rel.via.key): r.id}) }}">{{ icon('plus') }}Add {{ rel.table.singular|lc }}</a>{% endfor %}</div>{% endif %}</details>{% endif %}
   </div>
