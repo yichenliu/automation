@@ -1982,6 +1982,20 @@ def translate(d, p, where):
         return _documents_for(d) + [{"op": "add_automation", "automation": rule}]
     if isinstance(p, m.AddDocument):
         t = _list(d, p.list, where)
+        if p.format == "text":
+            doc = {"key": schema.slug(p.key), "label": p.label, "format": "aba" if (p.extension or "").lower() == "aba" else "text",
+                   "extension": (p.extension or "txt").lower(), "header": p.header or "", "line": p.line or "", "footer": p.footer or ""}
+            if p.lines:
+                lt = _list(d, p.lines, f"{where} › lines")
+                link = d.field(lt, p.via) if p.via else next((f for f in lt["fields"] if f["type"] == "link" and f.get("table") == t["key"]), None)
+                if link is None or link["type"] != "link":
+                    raise Problem(f"{where} › via: {lt['label']} needs a link to {t['label']} for its lines")
+                doc["lines"] = {"table": lt["key"], "via": link["key"]}
+                for text in (p.line or "",):
+                    for name in re.findall(r"\{\{\s*line\.(\w+)", text):
+                        if d.field(lt, name) is None:
+                            raise Problem(f"{where} › line: “{name}” isn't a field of {lt['label']} (its fields: {', '.join(d.field_names(lt))})")
+            return [{"op": "add_document", "table": t["key"], "document": doc}]
         return [{"op": "add_document", "table": t["key"], "document": {"key": schema.slug(p.key), "label": p.label, "title": p.title or p.label}}]
     if isinstance(p, (m.ChangeRule, m.RemoveRule)):
         made = feature_rule(d.bp, p.rule)

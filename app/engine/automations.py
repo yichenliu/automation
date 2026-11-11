@@ -323,7 +323,8 @@ def _render(value, ctx):
     if not isinstance(value, str) or "{{" not in value:
         return value
     out = expr.render(value, ctx)
-    return re.sub(r"([$€£¥])\s*\1", r"\1", out) if isinstance(out, str) else out  # "${{record.total}}": the amount brings its own $
+    # "${{record.total}}": the amount brings its own $ (a value kept as it is, a sensitive one copied, isn't text to tidy)
+    return re.sub(r"([$€£¥])\s*\1", r"\1", out) if type(out) is str else out
 
 
 def _parent(engine, record, source, run):

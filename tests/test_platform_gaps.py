@@ -888,3 +888,18 @@ def test_a_documents_passages_know_their_page(app):
     text = "\n\n".join(f"--- page {n} ---\nClause {n}. " + " ".join(f"term{n}x{i}" for i in range(260)) for n in range(1, 4))
     pages = [page for _, page in paged(text)]
     assert pages[0] == 1 and pages[-1] == 3 and pages == sorted(pages)
+
+
+def test_a_rule_copying_a_sensitive_field_copies_the_value_not_its_mask(app):
+    """A seller's account number copied into a buyer's own copy by a rule is the account itself (sealed again, shown with
+    the copy's own number of digits), never the mask it shows as."""
+    from app.engine.records import reveal
+    bp = _ok([{"do": "add_list", "key": "a", "label": "As", "singular": "A", "fields": [{"type": "text", "key": "acct", "label": "Account", "sensitive": True}]},
+              {"do": "add_list", "key": "b", "label": "Bs", "singular": "B", "fields": [
+                  {"type": "link", "key": "a", "label": "A", "to": "a"}, {"type": "text", "key": "acct", "label": "Account", "sensitive": True, "shows_last": 3}]},
+              {"do": "add_rule", "rule": {"key": "c", "name": "Copy", "when": {"on": "added", "list": "a"}, "steps": [
+                  {"do": "add", "list": "b", "copy_same": False, "values": [{"field": "a", "formula": "record"}, {"field": "acct", "formula": "record.acct"}]}]}}])
+    ws = _ws(app, bp)
+    Engine(ws).create("a", {"acct": "123456789"})
+    copied = Engine(ws).rows("b")[0].data["acct"]
+    assert reveal(copied) == "123456789" and copied["masked"] == "••••789"

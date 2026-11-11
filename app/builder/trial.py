@@ -1750,7 +1750,11 @@ def _named(engine, w, names):
 def _same(engine, f, actual, wanted, names):
     if isinstance(wanted, str) and FILLED.match(wanted):
         return actual not in (None, "", [])
-    if f is not None and f.get("sensitive") and wanted not in (None, ""):  # kept private: its last few, as anyone sees it
+    if f is not None and f.get("sensitive") and wanted not in (None, ""):  # kept private: the value itself where the copy can
+        sealed = names.get("_sealed")  # read it (a bank file needs the account, not its mask), else its last few as anyone sees it
+        if isinstance(sealed, dict) and sealed.get("secret"):
+            from ..engine.records import reveal
+            return re.sub(r"\s+", "", str(reveal(sealed) or "")) == re.sub(r"\s+", "", str(wanted))
         return masked(actual) == mask(wanted, f.get("shows_last", 4))
     if wanted in (None, "") or (isinstance(wanted, list) and not wanted):
         return actual in (None, "", [])
@@ -1903,7 +1907,12 @@ def _expect(engine, c, names):
         actual = _shifted(engine, f, actual, names["_waited"])  # as the calendar shows it, the days waited later
     if engine.kind(f) in ("date", "datetime") and written_out and names.get("_moved"):
         wanted = _shifted(engine, f, wanted, names["_moved"])
+    if f is not None and f.get("sensitive"):  # what's kept, sealed, for the comparison to read the value itself
+        holder = engine._at_path(record, ".".join(path[:-1]))[1] if len(path) > 1 else record
+        holder = holder.record if hasattr(holder, "record") else holder if hasattr(holder, "data") else None
+        names["_sealed"] = ((holder.data or {}).get(path[-1]) if holder is not None else None)
     ok = _same(engine, f, actual, wanted, names)
+    names.pop("_sealed", None)
     label = automations._path_label(engine, t["key"], path)
     shown = engine.display(f, actual) if actual not in (None, "", []) else "empty"
     as_kept = schema.as_fraction(wanted) if engine.kind(f) == "percent" else \

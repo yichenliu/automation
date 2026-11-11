@@ -972,12 +972,22 @@ class OwnRecords(Base):
 @register("patch", {"do": "add_document", "list": "jobs", "key": "job_report", "label": "Job report", "title": "Job report"}, "data")
 class AddDocument(Base):
     """A PDF each record of a list can be made into (a quote, an invoice, a report, a certificate), laid out by the
-    platform from the record's fields and lines. A rule's document step or a send_document feature makes and sends it."""
+    platform from the record's fields and lines. A rule's document step or a send_document feature makes and sends it.
+    Or, with format "text", a file in another system's layout (a bank's payment file, a CSV for the accountant): a
+    header, a line for each record of lines (linked by via), and a footer, each a template of {{record.x}} or
+    {{line.x}} with pad(s, n), lpad(s, n, "0"), digits(s) and cents(x)."""
     do: Literal["add_document"]
     list: str
     key: str
     label: Words
     title: str | None = None
+    format: Literal["pdf", "text"] = "pdf"
+    extension: str | None = Field(None, description="a text file's extension: aba, csv, txt")
+    header: str | None = None
+    line: str | None = None
+    footer: str | None = None
+    lines: str | None = Field(None, description="a text file's line records: a list linking to this one")
+    via: str | None = Field(None, description="their link to this record")
 
 
 @register("patch", {"do": "import_rows", "file": 12, "sheet": "Customers", "list": "customers", "columns": {"Customer name": "name", "E-mail": "email"}}, "data")

@@ -79,6 +79,17 @@ def mask(text, last=4):
     return "••••" + text[-last:] if last and len(text) > last + 2 else "••••"
 
 
+class Secret(str):
+    """A sensitive field's value as formulas and rules see it: its mask wherever it's shown or written out (a message, an
+    email, the AI), and the sealed value inside, so a rule copying it (a seller's bank details into a buyer's own copy)
+    copies the account itself, never the mask."""
+
+    def __new__(cls, shown, sealed):
+        value = super().__new__(cls, shown or "")
+        value.sealed = sealed
+        return value
+
+
 def masked(stored):
     """What a sensitive field shows: its mask (stored with it), never the value."""
     if stored in (None, "", []):
@@ -1130,7 +1141,9 @@ class Engine:
             return None  # a sealed bid: nobody but its maker sees what's in it until it opens
         if f.get("sensitive"):
             stored = (record.data or {}).get(key)
-            return reveal(stored) if self.revealing else masked(stored)
+            if self.revealing:
+                return reveal(stored)
+            return Secret(masked(stored), stored) if typed and isinstance(stored, dict) else masked(stored)
         if f["type"] in schema.SYSTEM:
             raw = {"created_time": record.created_at, "modified_time": record.updated_at or record.created_at,
                    "created_by": record.created_by, "modified_by": record.updated_by or record.created_by}[f["type"]]
@@ -2032,6 +2045,10 @@ class Engine:
                 old = (record.data or {}).get(f["key"]) if record is not None else None
                 if isinstance(said, dict) and said.get("secret"):
                     values[f["key"]] = said  # already sealed (a change being approved, a copy)
+                    continue
+                if isinstance(said, Secret):  # copied from another sensitive field by a rule: the value itself, sealed again
+                    real = reveal(said.sealed) if isinstance(said.sealed, dict) else None
+                    values[f["key"]] = seal_value(real, f.get("shows_last", 4)) if real else None
                     continue
                 if said in (None, "") or str(said).strip() == masked(old):
                     continue
