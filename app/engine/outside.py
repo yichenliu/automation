@@ -322,10 +322,8 @@ def change(engine, contact, t, r, values, expected_version=None):
 
 
 def move(engine, contact, t, r, index, by):
-    """A move meant for them (Acknowledge the order, Submit the bid): not on a record that's locked."""
+    """A move meant for them (Acknowledge the order, Submit the bid). A record locked against changes still moves by its
+    buttons, as it does for staff (a sent order is acknowledged): each move's own conditions hold it back."""
     if not engine.portal_reaches(r, contact.id):
         raise NotTheirs(r.id)
-    reason = locked(engine, t, r) if (t.get("lock_if") and engine.matches(r, t["lock_if"])) else None
-    if reason:
-        raise FieldErrors({"_": reason})
     return engine.move(r, index, by=by)

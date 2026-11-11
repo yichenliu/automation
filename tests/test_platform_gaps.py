@@ -682,3 +682,51 @@ def test_nobody_approves_above_their_own_limit(app):
         approve(as_cy, at_limit)
     approve(as_bea(), at_limit)
     assert Engine(ws).get(at_limit.id).data["status"] == "Approved" and Engine(ws).get(over.id).data["status"] == "Pending"
+
+
+def test_a_new_lists_settings_can_name_fields_added_after_it_in_the_same_batch(app):
+    """An order made in one batch with its total added by a patch of its own, its portal showing the total, and the
+    seller's Acknowledge through that portal: none of it is refused for coming in the wrong order."""
+    out = apply({}, [
+        {"do": "add_list", "key": "sellers", "label": "Sellers", "singular": "Seller", "fields": [{"type": "text", "key": "name", "label": "Name"}]},
+        {"do": "add_list", "key": "seller_people", "label": "Seller people", "singular": "Seller person", "fields": [
+            {"type": "text", "key": "name", "label": "Name"}, {"type": "email", "key": "email", "label": "Email"},
+            {"type": "link", "key": "seller", "label": "Seller", "to": "sellers"}]},
+        {"do": "design_op", "op": {"op": "set_portal", "table": "seller_people", "email_field": "email", "title": "Seller portal"}},
+        {"do": "add_list", "key": "orders", "label": "Orders", "singular": "Order", "fields": [
+            {"type": "link", "key": "seller", "label": "Seller", "to": "sellers", "required": True}],
+         "stages": {"stages": ["Sent", "Acknowledged"], "moves": [{"from": ["Sent"], "to": "Acknowledged", "button": "Acknowledge", "who": ["portal"]}]}},
+        {"do": "add_list", "key": "order_lines", "label": "Order lines", "singular": "Order line", "inside": "orders", "fields": [
+            {"type": "link", "key": "order", "label": "Order", "to": "orders", "required": True}, {"type": "money", "key": "amount", "label": "Amount"}]},
+        {"do": "add_field", "list": "orders", "field": {"type": "total", "key": "total", "label": "Total", "of": "order_lines", "link": "order", "field": "amount"}},
+        {"do": "design_op", "op": {"op": "update_table", "table": "orders", "portal": {"via": "seller", "fields": ["seller", "status", "total"]}}}])
+    assert not out.problems, out.problems
+    t = schema.table(out.blueprint, "orders")
+    assert t["portal"]["fields"] == ["seller", "status", "total"] and t["workflow"]["transitions"][0]["who"] == ["portal"]
+
+
+def test_an_outside_person_moves_a_locked_record_by_its_buttons(app):
+    """A sent order is locked against changes, and the seller still acknowledges it in the portal, as staff move a
+    locked record by its buttons; changing it there is still refused."""
+    from app.engine import outside
+    bp = _ok([
+        {"do": "add_list", "key": "sellers", "label": "Sellers", "singular": "Seller", "fields": [{"type": "text", "key": "name", "label": "Name"}]},
+        {"do": "add_list", "key": "seller_people", "label": "Seller people", "singular": "Seller person", "fields": [
+            {"type": "text", "key": "name", "label": "Name"}, {"type": "email", "key": "email", "label": "Email"},
+            {"type": "link", "key": "seller", "label": "Seller", "to": "sellers"}]},
+        {"do": "design_op", "op": {"op": "set_portal", "table": "seller_people", "email_field": "email", "title": "Seller portal"}},
+        {"do": "add_list", "key": "orders", "label": "Orders", "singular": "Order", "fields": [
+            {"type": "link", "key": "seller", "label": "Seller", "to": "sellers", "required": True}, {"type": "text", "key": "note", "label": "Note"}],
+         "stages": {"stages": ["Sent", "Acknowledged"], "moves": [{"from": ["Sent"], "to": "Acknowledged", "button": "Acknowledge", "who": ["portal"]}]}},
+        {"do": "design_op", "op": {"op": "update_table", "table": "orders", "portal": {"via": "seller", "edit": ["note"]}}},
+        {"do": "lock", "list": "orders", "stages": ["Sent", "Acknowledged"]}])
+    ws = _ws(app, bp)
+    e = Engine(ws)
+    acme = e.create("sellers", {"name": "Acme"})
+    ann = e.create("seller_people", {"name": "Ann", "email": "ann@acme.example", "seller": acme.id})
+    order = e.create("orders", {"seller": acme.id})
+    t = schema.table(bp, "orders")
+    assert outside.editable(e, t, e.get(order.id)) == []  # locked: nothing to change
+    i = next(i for i, m, _ in e.moves(e.get(order.id)) if m["to"] == "Acknowledged")
+    outside.move(e, ann, t, e.get(order.id), i, by="Ann (through the portal)")
+    assert Engine(ws).get(order.id).data["status"] == "Acknowledged"

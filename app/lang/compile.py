@@ -1332,6 +1332,19 @@ def apply(bp, raw_patches, allowed=None):
         for (n, _), problems in said.items():
             out.problems.extend(problems)
             refused.add(n)
+    # fields added by patches of their own to the new lists (an order's totals, sent after it), before their settings,
+    # which can name them (what the portal shows of the order); one that can't be made yet waits for the rest, as before
+    for n, p in [(n, p) for n, p in rest if isinstance(p, (m.AddField, m.ChangeField)) and schema.slug(p.list) in made_here]:
+        before, snapshot = len(out.problems), copy.deepcopy(out.blueprint)
+        try:
+            ok = _apply_ops(out, translate(Design(out.blueprint), p, where(n, p)), where(n, p))
+        except Problem:
+            ok = False
+        if ok:
+            rest = [(k, x) for k, x in rest if k != n]
+        else:
+            out.blueprint = snapshot
+            del out.problems[before:]
     # the new lists' own settings (their portal, who sees them, their policies), now their fields are there: their moves
     # can then be for whoever those settings make (the supplier through the portal acknowledges an order). One that can't
     # be made yet waits for the rest, as before.
