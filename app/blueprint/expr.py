@@ -520,6 +520,8 @@ def reference():
              "48 hours, 30m, 3 days, 2w, on a date or a time or compared (returned_at > due_back_at + 2h; "
              "confirmed_at < now() - 48h; ends_at - starts_at > 30m)"]
     lines += [f"- {said}" for said in SAID.values() if said]
+    lines.append("- several (a field holding several people or records): panel + [record.member] adds one to them, "
+                 "panel - [record.member] takes one away; x in panel whether one is among them")
     lines.append("- me: whoever is acting (pressing the button, saving), empty for the app's own rules: a move's only_if "
                  "\"count(delegation_limits where person == me and limit >= this.amount) > 0\" (nobody approves above their limit)")
     lines.append("- in a message or email ({{…}}): record.app_link, the record's page in the app; record.portal_link, its page "
@@ -799,6 +801,13 @@ def _with_length(op, a, b):
 def _arith(op, a, b):
     if isinstance(a, timedelta) or isinstance(b, timedelta):
         return _with_length(op, a, b)
+    if isinstance(op, (ast.Add, ast.Sub)) and (isinstance(a, (list, tuple)) or isinstance(b, (list, tuple))):
+        # several (people, records): + adds to them (a panel member cleared), - takes away (one who declared a conflict)
+        many = lambda x: [] if x in (None, "") else list(x) if isinstance(x, (list, tuple)) else [x]  # noqa: E731
+        if isinstance(op, ast.Add):
+            return list(dict.fromkeys(many(a) + many(b)))
+        gone = {str(x) for x in many(b)}
+        return [x for x in many(a) if str(x) not in gone]
     if isinstance(op, ast.Add):
         if isinstance(a, date) and not isinstance(b, date):
             return a + timedelta(days=_num(b))

@@ -1208,7 +1208,7 @@ def _do(engine, automation, action, record, run):
                     continue
                 item_ctx = _context(engine, run, record, item=linked)
                 if f["type"] == "user":
-                    item_ctx.names["item"] = int(one)  # {{item}}: the person
+                    item_ctx.names["item"] = engine._person(int(one)) or int(one)  # {{item}}: the person (item.email theirs)
                 values = _render_values(action["values"], item_ctx, engine, action["table"])
                 if action.get("copy_matching"):
                     values = {**copy_matching(engine, action["table"], linked or record, also=[record]), **values}

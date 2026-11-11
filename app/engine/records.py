@@ -1876,6 +1876,8 @@ class Engine:
             return out or None
         if kind == "user":
             members = self.members()
+            if isinstance(raw, Person) and raw.uid in members:  # a person worked out (a panel member): that one, whatever their name
+                return raw.uid
             if str(raw).strip().isdigit() and int(raw) in members:
                 return int(raw)
             text = str(raw).strip().lower()

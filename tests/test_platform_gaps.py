@@ -730,3 +730,38 @@ def test_an_outside_person_moves_a_locked_record_by_its_buttons(app):
     i = next(i for i, m, _ in e.moves(e.get(order.id)) if m["to"] == "Acknowledged")
     outside.move(e, ann, t, e.get(order.id), i, by="Ann (through the portal)")
     assert Engine(ws).get(order.id).data["status"] == "Acknowledged"
+
+
+def test_one_record_for_each_person_chosen_and_a_list_of_people_that_grows(app):
+    """A tender's panel: a declaration for each member (item is that person, item.email theirs), and each one cleared
+    is added to the tender's cleared panel, the people already there kept."""
+    bp = _ok([
+        {"do": "add_list", "key": "tenders", "label": "Tenders", "singular": "Tender", "fields": [
+            {"type": "text", "key": "title", "label": "Title"}, {"type": "person", "key": "panel", "label": "Panel", "many": True},
+            {"type": "person", "key": "cleared", "label": "Cleared", "many": True}]},
+        {"do": "add_list", "key": "seats", "label": "Seats", "singular": "Seat", "fields": [
+            {"type": "link", "key": "tender", "label": "Tender", "to": "tenders"}, {"type": "person", "key": "member", "label": "Member"},
+            {"type": "email", "key": "email", "label": "Email"}], "stages": {"stages": ["To declare", "Cleared"]}},
+        {"do": "add_rule", "rule": {"key": "seats", "name": "Seats", "when": {"on": "added", "list": "tenders"}, "steps": [
+            {"do": "add_each", "list": "seats", "for_each": "panel", "copy_same": False, "values": [
+                {"field": "tender", "formula": "record"}, {"field": "member", "formula": "item"}, {"field": "email", "formula": "item.email"}]}]}},
+        {"do": "add_rule", "rule": {"key": "cleared", "name": "Cleared", "when": {"on": "reaches", "list": "seats", "stage": "Cleared"}, "steps": [
+            {"do": "set", "on": "tender", "values": [{"field": "cleared", "formula": "coalesce(tender.cleared, []) + [record.member]"}]}]}}])
+    ws = _ws(app, bp)
+    people = []
+    for name in ("Pat", "Quinn"):
+        u = User(email=f"{name.lower()}@example.com", name=name)
+        u.set_password("x" * 12)
+        db.session.add(u)
+        db.session.flush()
+        db.session.add(Membership(workspace_id=ws.id, user_id=u.id, role="editor"))
+        people.append(u)
+    db.session.commit()
+    e = Engine(ws)
+    tender = e.create("tenders", {"title": "Pumps", "panel": [u.id for u in people]})
+    seats = sorted(Engine(ws).rows("seats"), key=lambda r: r.id)
+    assert [(s.data["member"], s.data["email"]) for s in seats] == [(u.id, u.email) for u in people]
+    for seat in seats:
+        e2 = Engine(ws)
+        e2.update(e2.get(seat.id), {"status": "Cleared"})
+    assert sorted(Engine(ws).get(tender.id).data["cleared"]) == sorted(u.id for u in people)

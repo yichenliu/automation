@@ -347,6 +347,12 @@ def _set_list(d, t, node, scopes):
     return None
 
 
+# what "item" is in an add_each for each person chosen in a field (each panel member): that person, and what a person has
+PERSON_ITEM = {"key": "_person", "label": "Person", "singular": "Person", "fields": [
+    {"key": "name", "label": "Name", "type": "text"}, {"key": "first_name", "label": "First name", "type": "text"},
+    {"key": "email", "label": "Email", "type": "email"}]}
+
+
 def _check_formula(d, t, source, where, item=None, created=None, about=None):
     """Every name a formula reads is a field (or a linked one) of the record it's worked out on, or of the records a
     count(...), sum(...) or any(...) looks at (those linking to it, or a whole list). about: the list "record" names
@@ -689,10 +695,10 @@ def ir_step(d, t, s, where, made=None):
         f = d.field(t, s.for_each)
         if f is None or f["type"] not in ("link", "user"):
             raise Problem(f"{where} › for_each: {t['label']} has no link or person field “{s.for_each}”")
-        each = d.list(f.get("table")) if f["type"] == "link" else None
+        each = d.list(f.get("table")) if f["type"] == "link" else PERSON_ITEM  # each panel member: item is that person
         out = {"type": "create_for_each", "table": target["key"], "source": {"field": f["key"]},
                "values": ir_values(d, t, target, s.values, where, item=each, created=made), "copy_matching": s.copy_same}
-        if s.lines_where and each is not None:
+        if s.lines_where and each is not None and each is not PERSON_ITEM:
             out["where"] = ir_conditions(d, each, s.lines_where, f"{where} › lines_where")
     elif isinstance(s, m.AddEach):
         if not s.lines or not s.link:
