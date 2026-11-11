@@ -361,3 +361,36 @@ def test_a_line_field_named_like_its_records_field_has_its_own_choices(app):
     each = e.create("measures", {"name": "Each"})
     got = _options(e, schema.table(bp, "asks"), [schema.table(bp, "ask_lines")])
     assert got["unit"] == [] and got["ask_lines.unit"] == [(each.id, "Each")]
+
+
+def test_whoever_raised_it_hears_it_was_decided_and_who_is_next(app):
+    """After the approver says yes, the requester was told nothing, and the request said "Nothing more to do here" while
+    purchasing had it to order."""
+    from app.models import Approval, Notification
+    from app.web.erp import next_up
+    bp = _ok([{"do": "set_team", "key": "buyers", "name": "Purchasing"},
+              {"do": "add_list", "key": "asks", "label": "Asks", "singular": "Ask", "fields": [{"type": "text", "key": "name", "label": "Name"}],
+               "stages": {"stages": ["Draft", "Submitted", "Approved", "Ordered"], "moves": [
+                   {"from": ["Draft"], "to": "Submitted", "button": "Submit"},
+                   {"from": ["Approved"], "to": "Ordered", "button": "Order it", "who": ["buyers"]}]}},
+              {"do": "add_rule", "rule": {"key": "ok", "name": "Approve it", "when": {"on": "reaches", "list": "asks", "stage": "Submitted"},
+                                          "steps": [{"do": "approval", "who": "admin", "message": "OK?"},
+                                                    {"do": "set", "values": [{"field": "status", "to": "Approved"}]}]}}])
+    ws = _ws(app, bp)
+    rita = User(email="rita@example.com", name="Rita")
+    rita.set_password("x" * 12)
+    db.session.add(rita)
+    db.session.flush()
+    db.session.add(Membership(workspace_id=ws.id, user_id=rita.id, role="editor"))
+    db.session.commit()
+    mine = Engine(ws, by="Rita", member=Membership.query.filter_by(workspace_id=ws.id, user_id=rita.id).one())
+    ask = mine.create("asks", {"name": "Gloves"})
+    mine.move(mine.get(ask.id), next(i for i, m, _ in mine.moves(mine.get(ask.id)) if m["to"] == "Submitted"))
+    approval = Approval.query.filter_by(workspace_id=ws.id, status="pending").one()
+    owner = User.query.filter_by(email="owner@example.com").one()
+    automations.decide(Engine(ws), approval, True, "Olive", by_id=owner.id)
+    told = Notification.query.filter_by(workspace_id=ws.id, user_id=rita.id).all()
+    assert any("Olive approved your ask" in n.text for n in told)
+    e = Engine(ws)
+    assert e.get(ask.id).data["status"] == "Approved"
+    assert next_up(e, schema.table(bp, "asks"), e.get(ask.id)) == "Purchasing, to order it"

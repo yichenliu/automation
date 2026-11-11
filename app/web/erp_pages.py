@@ -412,6 +412,15 @@ def page_widgets(engine, p, period=None):
             item.update(_pivot(engine, t, w, rows))
         else:
             item["rows"] = rows[:w.get("limit", 5)]
+            if t.get("workflow"):  # where each is up to: who it waits for, or who takes it on next
+                from ..models import Approval
+                from .erp import next_up
+                ids = [x.id for x in item["rows"]]
+                pending = Approval.query.filter(Approval.workspace_id == engine.ws.id, Approval.status == "pending",
+                                                Approval.record_id.in_(ids or [0])).all()
+                item["waits"] = {x.id: ("Waiting for " + automations._named(engine, [a for a in pending if a.record_id == x.id])
+                                        if any(a.record_id == x.id for a in pending) else (("Next: " + n) if (n := next_up(engine, t, x)) else ""))
+                                 for x in item["rows"]}
             list_view = next((v for v in t["views"] if v["type"] == "list"), {})
             from .erp_records import _only_one, columns as list_columns
             if w.get("columns"):

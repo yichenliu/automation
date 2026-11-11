@@ -2048,6 +2048,7 @@ def decide(engine, approval, approved, by, comment=None, by_id=None, onward=True
     approval.status = "approved" if approved else "rejected"
     approval.decided_by, approval.comment, approval.decided_at = by, (comment or "").strip()[:1000] or None, utcnow()
     approval.decided_by_id = by_id
+    _tell_raiser(engine, approval, approved, by, by_id, comment)
     record = engine.get(approval.record_id) if approved and approval.record_id and (approval.kind or "approval") == "approval" else None
     if record is not None:  # held to what it was approved at
         engine.mark_approved(record, by=by, by_id=by_id)
@@ -2061,6 +2062,21 @@ def decide(engine, approval, approved, by, comment=None, by_id=None, onward=True
     if onward and stage and run.status == "done":
         _approved_onward(engine, record.id, stage, by)
     return run
+
+
+def _tell_raiser(engine, approval, approved, by, by_id, comment):
+    """Whoever raised the record (a request) hears it was approved or turned down, unless it was them who answered."""
+    if (approval.kind or "approval") != "approval" or not approval.record_id:
+        return
+    record = engine.get(approval.record_id)
+    maker = getattr(record, "created_by_id", None) if record is not None else None
+    if not maker or maker == by_id:
+        return
+    t = engine.tables.get(record.table) or {}
+    said = f" (“{comment.strip()[:200]}”)" if comment and comment.strip() else ""
+    db.session.add(Notification(workspace_id=engine.ws.id, user_id=maker, kind="info", link=_link(record.table, record.id),
+                                text=f"{by} {'approved' if approved else 'said no to'} your {schema.lc(t.get('singular') or 'record')} "
+                                     f"“{engine.title(record)}”{said}"))
 
 
 def _approved_onward(engine, record_id, stage, by):

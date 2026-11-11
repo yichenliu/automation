@@ -87,7 +87,7 @@
   <div class="card widget {{ span }}"><div class="card-head"><h2 class="grow">{{ w.label or w.t.label }}</h2><span class="faint small">{{ w.total }}</span>
     <a class="btn sm ghost" href="{{ url_for('app.table', wid=ws.id, table=w.table) }}">All{{ icon('chevron-right') }}</a></div>
     {% if w.rows %}<div class="table-wrap"><table class="grid"><tbody>{% for r in w.rows %}{% set tint = e.colours(w.t, r) if w.t.colors else {} %}<tr data-open="{{ url_for('app.record', wid=ws.id, table=w.table, rid=r.id) }}" class="{{ 'tint ' ~ tint.row if tint.row }}">
-      {% for f in w.columns %}<td class="{{ is_num(e, f) }}">{{ value(e, f, e.value(r, f.key), r) }}</td>{% endfor %}</tr>{% endfor %}</tbody></table></div>
+      {% for f in w.columns %}<td class="{{ is_num(e, f) }}">{{ value(e, f, e.value(r, f.key), r) }}{% if w.waits and w.t.workflow and f.key == w.t.workflow.field and w.waits.get(r.id) %}<div class="faint tiny">{{ w.waits[r.id] }}</div>{% endif %}</td>{% endfor %}</tr>{% endfor %}</tbody></table></div>
     {% else %}<div class="card-body faint small">{{ icon('circle-check') }} Nothing here right now.</div>{% endif %}</div>
   {% endif %}
   {% endfor %}

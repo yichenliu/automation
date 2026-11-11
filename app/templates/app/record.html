@@ -63,6 +63,7 @@
       {% elif waiting_on %}{{ icon('clock') }}{{ waiting_text }}
       {% elif open_moves and not says_no(open_moves[0][1].to) %}{{ icon('arrow-right') }}Next: {{ (open_moves[0][1].label or ('move it to ' ~ open_moves[0][1].to))|lc }}
       {% elif blocked %}{{ icon('info') }}<span>{% for b in blocked[:2] %}{{ b[2] }}.{{ ' ' if not loop.last }}{% endfor %}</span>
+      {% elif up_next %}{{ icon('arrow-right') }}<span>Next: {{ up_next }}.</span>
       {% else %}{{ icon('circle-check') }}Nothing more to do here.{% endif %}</div></div>
   {% if first and first.kind == 'approval' %}<form method="post" action="{{ url_for('app.decide', wid=ws.id, aid=first.id) }}" class="moves"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="back" value="{{ request.url.path }}">
       <input type="text" name="comment" placeholder="Add a note (optional)" aria-label="Note">{% if (first.proposal or {}).step_up and not stepped %}<input type="password" name="step_up_code" class="step-up" autocomplete="one-time-code" placeholder="Code or password" aria-label="Confirm it's you">{% endif %}

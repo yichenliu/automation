@@ -232,6 +232,31 @@ def ready_for(engine, most=20):
     return out[:most]
 
 
+def next_up(engine, t, r):
+    """Who takes a record on next when it isn't this person, in words ("someone in Purchasing officer (Ready to order)"):
+    a move on from its stage kept for a team, or a team whose own menu has a view it's now in. None when nobody's named."""
+    flow = t.get("workflow")
+    if not flow or r is None:
+        return None
+    stage = (r.data or {}).get(flow["field"])
+    names = {tm["key"]: tm.get("name") or tm["key"] for tm in schema.teams(engine.bp)}
+    for m in flow.get("transitions") or []:
+        if stage in (m.get("from") or []) and not schema.says_no(m["to"]):
+            teams = [names[w] for w in m.get("who") or [] if w in names]
+            if teams:
+                return f"{' or '.join(teams)}, to {(m.get('label') or 'move it to ' + m['to']).lower()}"
+    for sp in schema.spaces(engine.bp):
+        for g in sp["groups"]:
+            for i in g["items"]:
+                if i.get("table") != t["key"] or not i.get("view"):
+                    continue
+                view = next((v for v in t.get("views", []) if v["key"] == i["view"] and v.get("filters")), None)
+                if view and engine.matches(r, view["filters"]):
+                    who = [names.get(w, w) for w in sp["for"]]
+                    return f"{' or '.join(who)} (their “{i.get('label') or view['label']}” list)"
+    return None
+
+
 def in_my_queue(a, later=False):
     """A task someone else in its team took isn't in anyone else's queue; one put off ("not now") comes back on its day.
     With `later`, the ones put off instead."""

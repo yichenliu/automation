@@ -268,7 +268,12 @@ def table(request: Request, wid: int, table: str, user=Depends(signed_in)):
     pending = Approval.query.filter(Approval.workspace_id == ws.id, Approval.status == "pending",
                                     Approval.record_id.in_([x.id for x in shown] or [0])).all()
     waits = {rid: automations._named(engine, [a for a in pending if a.record_id == rid]) for rid in {a.record_id for a in pending}}
-    return render(request, "app/table.html", rows=shown, columns=cols, sort=sort, page=page, totals=totals, groups=groups, waits=waits,
+    from .erp import next_up
+    nexts = {x.id: next_up(engine, t, x) for x in shown if x.id not in waits} if t.get("workflow") else {}
+    shown_somewhere = lambda f: any(engine.value(x, f["key"]) not in (None, "", []) for x in shown)  # noqa: E731
+    keep = {schema.title_field(t), (t.get("workflow") or {}).get("field")}
+    cols = [f for f in cols if f["key"] in keep or not shown or shown_somewhere(f)]  # a column empty on every row says nothing
+    return render(request, "app/table.html", rows=shown, columns=cols, sort=sort, page=page, totals=totals, groups=groups, waits=waits, nexts=nexts,
                            group_field=group_field, groupable=[f for f in t["fields"] if f["type"] in ("select", "link", "user", "checkbox", "date", "multi_select", "tags")],
                            tints={r.id: engine.colours(t, r) for r in shown} if t.get("colors") else {},
                            pages=max(1, -(-total // PAGE_SIZE)), inline=INLINE, **common)
@@ -618,7 +623,7 @@ def set_by_the_app(engine, t):
     for f in t["fields"]:
         if any(f["key"] in (f"{w}_at", f"{w}_on", f"{w}_by", f"{w}_date") for w in words):
             out.add(f["key"])
-        conds = f.get("required_if") or []
+        conds = (f.get("required_if") or []) + (f.get("show_if") or [])
         if flow and conds and all(c.get("field") == flow and c.get("value") not in (None, start) and start not in (c.get("value") if isinstance(c.get("value"), list) else [c.get("value")])
                                   for c in conds if isinstance(c, dict)):
             out.add(f["key"])
@@ -719,8 +724,10 @@ def record(request: Request, wid: int, table: str, rid: int, user=Depends(signed
                     + {"task": "do their part", "review": "check the AI's work", "change": "approve a change"}.get(others[0].kind, "approve it") + ".") if others else ""
     facts, said_already = _facts(engine, t, r)
     app_fills = set_by_the_app(engine, t)
+    from .erp import next_up
+    up_next = next_up(engine, t, r)
     sections = [{**s_, "fields": [f for f in s_["fields"] if f["key"] not in said_already]} for s_ in _sections(t)]
-    return render(request, "app/record.html", ws=ws, e=engine, t=t, r=r, sections=sections, facts=facts, app_fills=app_fills, related=_related(engine, t, r),
+    return render(request, "app/record.html", ws=ws, e=engine, t=t, r=r, sections=sections, facts=facts, app_fills=app_fills, up_next=up_next, related=_related(engine, t, r),
                            sealed=sealed, hidden=hidden, waiting_text=waiting_text, to_finish=to_finish, journey=journey(engine, t, r), stepped=engine.stepped_up,
                            teams={tm["key"]: tm["name"] for tm in schema.teams(engine.bp)},
                            lines=lines, history=history, runs=runs, buttons=buttons, approvals=approvals, comments=comments,
@@ -1146,7 +1153,8 @@ def new(request: Request, wid: int, table: str, form: Form = Depends(form_of)):
             if not engine.can(t, "view"):
                 return redirect(url_for("app.home", wid=wid))
             return redirect(url_for("app.table", wid=wid, table=t["key"]))
-        return redirect(back if back and back.startswith("/") and not back.startswith("//") else url_for("app.record", wid=wid, table=t["key"], rid=r.id))
+        to_record = not back or not back.startswith("/") or back.startswith("//") or "/t/" not in back  # from home or a page: open what was made
+        return redirect(url_for("app.record", wid=wid, table=t["key"], rid=r.id) if to_record else back)
     values = {k[2:]: v for k, v in request.query_params.items() if k.startswith("f_")}
     for f in _form_fields(t):
         if f["key"] not in values and f.get("default") not in (None, ""):

@@ -1208,3 +1208,7 @@ input.unsaved { border-color: var(--warn); box-shadow: 0 0 0 2px var(--warn-weak
 .map-fold > summary { list-style: none; cursor: pointer; display: inline-flex; margin: 4px 0 2px; }
 .map-fold > summary::-webkit-details-marker { display: none; } .map-fold[open] > summary .i { transform: rotate(180deg); }
 .next-step .moves .btn.quiet-no { width: auto; color: var(--muted); }
+
+label.field.has-error > span { color: var(--bad, #c0392b); }
+label.field.has-error input, label.field.has-error select, label.field.has-error textarea, label.field.has-error .search-select { outline: 2px solid var(--bad, #c0392b); outline-offset: 1px; }
+.lines-editor td input[type=text]:not([inputmode]) { min-width: 180px; }
