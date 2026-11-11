@@ -522,6 +522,9 @@ def normalize_field(raw):
     if _yes(_first(raw, "sensitive", "secret", "masked", "encrypted", "confidential")) and ftype in SENSITIVE_TYPES:
         field["sensitive"] = True  # a bank account: kept encrypted, shown masked, never sent to the AI or in emails
         field.pop("unique", None)
+        last = to_number_safe(_first(raw, "shows_last", "show_last", "visible_digits"))
+        if last is not None and 0 <= last <= 6 and int(last) != 4:  # how much of its end shows: ••••456
+            field["shows_last"] = int(last)
     access = slug(_first(raw, "access", "visible_to", "only_for", "restricted_to", default=""))
     access = {"admins": "admin", "owners": "owner", "editors": "editor", "managers": "admin", "manager": "admin", "staff": "editor",
               "internal": "editor", "private": "editor", "staff_only": "editor", "buyer_only": "editor", "hidden": "editor"}.get(access, access)
@@ -2657,6 +2660,9 @@ def title_field(t):
     return t["fields"][0]["key"] if t["fields"] else None
 
 
+WEB_ADDRESSES = ("app_link", "portal_link", "join_link")  # a record's pages in the app and the portal, the portal's sign-up page
+
+
 def _check_expression(source, allowed, where, problems, record_fields=None, tables=None, t=None):
     """tables, t: the design's lists and the one the expression is on, so it can name the records linking to its own
     (a client's invoices) and whole lists (bookings), as count(...), sum(...) and any(...) look at them."""
@@ -2666,7 +2672,7 @@ def _check_expression(source, allowed, where, problems, record_fields=None, tabl
         problems.append(f"{where}: {exc}")
         return
     names = {n for n in names if not (tables and ((t and backlink(tables, t, n)) or list_named(tables, n)))} - {"this"}
-    unknown = sorted(n for n in names if n not in allowed and n not in ("today", "now", "True", "False", "None"))
+    unknown = sorted(n for n in names if n not in allowed and n not in ("today", "now", "True", "False", "None") + WEB_ADDRESSES)
     if unknown:
         problems.append(f"{where}: “{', '.join(unknown)}” isn't a field here (fields: {', '.join(sorted(a for a in allowed if a != 'record')) or 'none'})")
     calls = expr.unknown_calls(source)
@@ -2677,7 +2683,7 @@ def _check_expression(source, allowed, where, problems, record_fields=None, tabl
         import ast
         for node in ast.walk(expr.parse(source)):
             if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id in ("record", "this") \
-                    and node.attr not in record_fields and node.attr not in ("id", "title", "created_at", "updated_at", "created_by"):
+                    and node.attr not in record_fields and node.attr not in ("id", "title", "created_at", "updated_at", "created_by") + WEB_ADDRESSES:
                 problems.append(f"{where}: record.{node.attr} isn't a field of this table")
 
 

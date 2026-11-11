@@ -73,16 +73,18 @@ def parse_duration(raw):
     return float(number) if number is not None else None
 
 
-def mask(text):
-    """A sensitive value as people see it: •••• and its last four characters."""
+def mask(text, last=4):
+    """A sensitive value as people see it: •••• and its last four characters (or as many as the field shows)."""
     text = re.sub(r"\s+", "", str(text or ""))
-    return "••••" + text[-4:] if len(text) > 6 else "••••"
+    return "••••" + text[-last:] if last and len(text) > last + 2 else "••••"
 
 
 def masked(stored):
     """What a sensitive field shows: its mask (stored with it), never the value."""
     if stored in (None, "", []):
         return None
+    if isinstance(stored, str) and stored.startswith("••••"):  # masked already, as the field shows it
+        return stored
     return stored.get("masked") if isinstance(stored, dict) else mask(stored)
 
 
@@ -95,9 +97,9 @@ def reveal(stored):
     return None if stored in (None, "", []) else str(stored)
 
 
-def seal_value(text):
+def seal_value(text, last=4):
     from .. import security
-    return {"masked": mask(text), "secret": security.encrypt(str(text))}
+    return {"masked": mask(text, last), "secret": security.encrypt(str(text))}
 
 
 class NoRate(expr.ExprError):
@@ -168,6 +170,9 @@ class Files(str):
         raise expr.ExprError(f"“.{name}” isn't something a file has: use .fingerprint, .name, .size or .count")
 
 
+LINKS = ("app_link", "portal_link")  # a record's own web addresses: its page in the app, and in the portal
+
+
 class RecordProxy:
     """A record as expressions see it: `client.payment_terms`, `record.name`, or the record itself (its title)."""
 
@@ -175,6 +180,8 @@ class RecordProxy:
         self._engine, self.record = engine, record
 
     def field(self, name):
+        if name in LINKS and self._engine.field(self.record.table, name) is None:  # where it is, for an email to link to
+            return self._engine.address(self.record, name)
         if name not in ("id", "created_at", "updated_at", "created_by") and self._engine.field(self.record.table, name) is None:
             many = self._engine.linking(self.record, name)  # a client's invoices
             if many is not None:
@@ -183,8 +190,9 @@ class RecordProxy:
 
     def has(self, name):
         """Whether `name` is something of this record: a field, or the records linking to it (its invoices)."""
-        return name in ("id", "created_at", "updated_at", "created_by") or self._engine.field(self.record.table, name) is not None \
+        return name in ("id", "created_at", "updated_at", "created_by") + LINKS or self._engine.field(self.record.table, name) is not None \
             or schema.backlink(self._engine.tables, self._engine.tables.get(self.record.table), name) is not None
+
 
     def __str__(self):
         return self._engine.title(self.record)
@@ -375,6 +383,8 @@ class RecordContext(expr.Context):
             t = self.engine.tables.get(self.record.table)
             if name in ("id", "created_at", "updated_at", "created_by") or (t and schema.field(t, name)):
                 return self.engine.value(self.record, name, typed=True)
+            if name in LINKS and self.record.id is not None:  # {{portal_link}}: the record's own page, for an email
+                return self.engine.address(self.record, name)
             many = self.engine.linking(self.record, name)  # this job's payments
             if many is not None:
                 return many
@@ -965,6 +975,22 @@ class Engine:
                 value = (contact.data or {}).get(f["key"])
                 out |= {int(x) for x in (value if isinstance(value, list) else [value]) if str(x).isdigit()}
         return out
+
+    def address(self, record, which="app_link"):
+        """A record's web address for an email: its page in the app (app_link), or in the portal (portal_link: the page of
+        it there when its list is in a portal, otherwise the portal's home)."""
+        base = (current_app.config.get("BASE_URL") or "").rstrip("/")
+        if which == "portal_link":
+            t = self.tables.get(record.table) or {}
+            shown = t.get("portal") and not t.get("embedded") and any(schema.portal_shows(self.tables, t, p["table"]) for p in schema.portals(self.bp))
+            return f"{base}/portal/{self.ws.id}/t/{record.table}/{record.id}" if shown else f"{base}/portal/{self.ws.id}/"
+        return f"{base}/w/{self.ws.id}/app/t/{record.table}/{record.id}"
+
+    def join_link(self):
+        """The portal's sign-up page (outside people joining by themselves: a seller registering), or its home."""
+        base = (current_app.config.get("BASE_URL") or "").rstrip("/")
+        joining = next((p for p in schema.portals(self.bp) if "sign_up" in p and p.get("enabled", True)), None)
+        return f"{base}/join/{self.ws.id}/{joining['table']}" if joining else f"{base}/portal/{self.ws.id}/"
 
     def members(self):
         """{user id: name} of the people in this workspace (for person fields)."""
@@ -1977,7 +2003,7 @@ class Engine:
                 if plain is not None and f.get("pattern") and not re.fullmatch(f["pattern"], str(plain)):
                     errors[f["key"]] = f["pattern_message"]  # checked on what was typed, before it's sealed
                     continue
-                values[f["key"]] = old if plain is not None and reveal(old) == str(plain) else (seal_value(plain) if plain is not None else None)
+                values[f["key"]] = old if plain is not None and reveal(old) == str(plain) else (seal_value(plain, f.get("shows_last", 4)) if plain is not None else None)
                 continue
             if f["key"] in data:
                 try:

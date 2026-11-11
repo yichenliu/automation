@@ -195,8 +195,9 @@ def edit(request: Request, wid: int, table: str, rid: int, user=Depends(signed_i
     if not editable and not outside.open_lines(engine, t, r):
         flash(request, _locked(engine, t, r) or "This can't be changed here now.", "error")
         return redirect(url_for("portal.record", wid=wid, table=table, rid=rid))
-    values = {f["key"]: (bool(form.get(f["key"])) if f["type"] == "checkbox" else
+    values = {f["key"]: (bool(form.get(f["key"])) if f["type"] == "checkbox" else _sent(form, f["key"]) if f["type"] in outside.UPLOADS else
                          form.getlist(f["key"]) if f["type"] == "multi_select" else form.get(f["key"])) for f in editable}
+    values = {k: v for k, v in values.items() if not (isinstance(v, list) and not v and (schema.field(t, k) or {}).get("type") in outside.UPLOADS)}
     try:
         with engine.atomic():
             if values:
@@ -212,6 +213,11 @@ def edit(request: Request, wid: int, table: str, rid: int, user=Depends(signed_i
         held = f" A change to {', '.join(engine.held)} is checked before it counts." if engine.held else ""
         flash(request, "Saved." + held, "success")
     return redirect(url_for("portal.record", wid=wid, table=table, rid=rid))
+
+
+def _sent(form, key):
+    """The files sent for a file field (none chosen: nothing)."""
+    return [u for u in form.files.getlist(key) if u is not None and getattr(u, "filename", "")]
 
 
 @router.api_route("/t/{table}/{rid:int}/move/{index:int}", methods=["POST"], name="portal.move")
@@ -340,6 +346,7 @@ def new(request: Request, wid: int, table: str, user=Depends(signed_in), form: F
         values = {f["key"]: form.get(f["key"]) if f["type"] != "checkbox" else bool(form.get(f["key"])) for f in fields}
         if any(f["type"] == "multi_select" for f in fields):
             values.update({f["key"]: form.getlist(f["key"]) for f in fields if f["type"] == "multi_select"})
+        values.update({f["key"]: _sent(form, f["key"]) for f in fields if f["type"] in outside.UPLOADS})
         try:
             r = outside.add(engine, portal, contact, table, values, then=lambda made, lines_: _save_lines(form, engine, t, made, lines_))
         except FieldErrors as exc:

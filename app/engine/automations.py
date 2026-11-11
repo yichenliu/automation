@@ -308,6 +308,7 @@ def _context(engine, run, record, item=None):
         names["created"] = RecordProxy(engine, last) if last else None
     for kind in ("email", "file", "payload", "flow"):  # what started it: {{email.subject}}; a flow's answers: {{flow.count.reason}}
         names[kind] = _Item((run.context or {}).get(kind)) if (run.context or {}).get(kind) is not None else None
+    names["join_link"] = engine.join_link()  # the portal's sign-up page, for an invitation to join
     names["approver"] = (run.context or {}).get("approver")  # who said yes to the run's last approval (its "Approved by")
     names["reason"] = (run.context or {}).get("reason")  # what they wrote when they answered it (why they said no)
     own = {f["key"] for f in (engine.tables.get(record.table) or {}).get("fields", [])} if record is not None else set()

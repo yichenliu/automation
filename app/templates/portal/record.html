@@ -14,7 +14,7 @@
     {% else %}<input type="text" name="comment" placeholder="Comment (optional)" aria-label="Comment"><button class="btn primary sm" name="decision" value="approve">{{ icon('check') }}Agree</button><button class="btn sm danger" name="decision" value="reject">Decline</button>{% endif %}</form></div>{% endfor %}
 {% if starts_here and not (moves|rejectattr(2)|list) %}<div class="card mb-2"><div class="card-body row wrap"><span class="small muted grow">From here:</span>{% for o, key in starts_here %}<a class="btn sm" href="{{ url_for('portal.new', wid=ws.id, table=o.key, **{key: r.id}) }}">{{ icon('plus') }}New {{ o.singular|lc }}</a>{% endfor %}</div></div>{% endif %}
 {% if editable or edit_lines %}
-<form method="post" action="{{ url_for('portal.edit', wid=ws.id, table=t.key, rid=r.id) }}" class="form-card mb-2"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="_version" value="{{ r.version }}">
+<form method="post" action="{{ url_for('portal.edit', wid=ws.id, table=t.key, rid=r.id) }}" class="form-card mb-2" enctype="multipart/form-data"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="_version" value="{{ r.version }}">
   {% if editable %}<div class="card mb-2"><div class="card-head"><h2>Your part</h2></div><div class="card-body form-grid">{% for f in editable %}{{ input(e, f, (r.data or {}).get(f.key), options, none, {}) }}{% endfor %}</div></div>{% endif %}
   {% if edit_lines %}{% include "portal/_lines.html" %}{% endif %}
   <div class="form-actions"><button class="btn primary">{{ icon('check') }}Save</button></div></form>

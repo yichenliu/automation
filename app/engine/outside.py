@@ -40,10 +40,19 @@ def tables(engine, portal):
 
 
 def fields(t):
-    """What the portal shows of a table: the fields the design lists, or everything people type in (never fields kept
-    from staff below admin, or to a team)."""
+    """What the portal shows of a table: the fields the design lists, or everything people type in. A field kept from
+    staff below admin, or to a team, only when the portal names it (a seller's own bank details, which buyers' staff
+    never see)."""
+    named = _named(t)
     chosen = [schema.field(t, k) for k in t["portal"].get("fields") or [] if schema.field(t, k)]
-    return [f for f in (chosen or t["fields"]) if not f.get("access")]
+    out = [f for f in (chosen or t["fields"]) if not f.get("access") or f["key"] in named]
+    return out + [f for f in t["fields"] if f.get("access") and f["key"] in named and f not in out]
+
+
+def _named(t):
+    """The fields a list's portal names outright, to show or to change."""
+    portal = t.get("portal") or {}
+    return set(portal.get("fields") or []) | set(portal.get("edit") or [])
 
 
 def mine(engine, t, contact):
@@ -78,8 +87,8 @@ def editable(engine, t, r):
         return []
     keys = portal["edit"] or [f["key"] for f in fields(t)]
     flow = (t.get("workflow") or {}).get("field")
-    return [f for f in (schema.field(t, k) for k in keys) if f and f["type"] in schema.STORED - {"autonumber"} and not f.get("access")
-            and f["key"] != flow and f["key"] != t["portal"]["via"].partition(".")[0]]
+    return [f for f in (schema.field(t, k) for k in keys) if f and f["type"] in (schema.STORED - {"autonumber"}) | UPLOADS
+            and (not f.get("access") or f["key"] in _named(t)) and f["key"] != flow and f["key"] != t["portal"]["via"].partition(".")[0]]
 
 
 def lines(engine, t):
@@ -185,7 +194,7 @@ def addable(engine, portal, contact, table):
     if via is None or via["type"] != "link":  # (a list shown to everyone in the portal isn't added to from it)
         raise NotTheirs(table)
     direct = via["table"] == portal["table"]
-    fields_ = [f for f in fields(t) if f["key"] != (head if direct else None) and f["type"] in schema.STORED - {"autonumber", "user"}
+    fields_ = [f for f in fields(t) if f["key"] != (head if direct else None) and f["type"] in (schema.STORED - {"autonumber", "user"}) | UPLOADS
                and f["key"] != (t.get("workflow") or {}).get("field")]
     if not direct and via not in fields_:
         fields_ = [via] + fields_
@@ -213,14 +222,50 @@ def add(engine, portal, contact, table, values, then=None, automations=True):
         if f["type"] == "link" and values.get(key) not in (None, "") and \
                 str(values[key]) not in {str(i) for i, _ in form["options"].get(key, [])}:
             errors[key] = f"Choose a {schema.lc(f['label'])} that's open to you"
+    sent = {k: values.pop(k) for k in [k for k, f in offered.items() if f["type"] in UPLOADS and k in values]}
+    for key, f in offered.items():  # a document the record can't be without (the certificate itself)
+        if f["type"] in UPLOADS and f.get("required") and not _uploads(sent.get(key)):
+            errors[key] = f"{f['label']} is required"
     if errors:
         raise FieldErrors(errors)
     with engine.atomic():
         record = engine.create(t["key"], values, automations=automations)
+        for key, given in sent.items():
+            attach(engine, record, offered[key], given)
         problems = then(record, form["lines"]) if then else []
         if problems:
             raise FieldErrors({"_": "; ".join(problems)})
     return record
+
+
+UPLOADS = {"file", "image"}  # what an outside person can send in the portal (a signature is drawn, at a move that needs it)
+
+
+def _uploads(given):
+    """What was sent for a file field, as a list: uploaded files, (name, bytes), or a file's name (the simulator's
+    stand-in for one)."""
+    items = given if isinstance(given, (list, tuple)) and not (len(given) == 2 and isinstance(given[1], (bytes, bytearray))) else [given]
+    return [x for x in items if x not in (None, "", b"") and (not hasattr(x, "filename") or x.filename)]
+
+
+def attach(engine, record, f, given):
+    """Keep the files an outside person sent for a file field of a record of theirs (a picture replaces the one before)."""
+    from ..models import File
+    from ..models import utcnow
+    from ..storage import save
+    items = _uploads(given)
+    if f["type"] == "image" and items:
+        for old in File.query.filter_by(record_id=record.id, field=f["key"], deleted_at=None):
+            old.deleted_at = utcnow()
+        items = items[:1]
+    for item in items[:20]:
+        if isinstance(item, str):  # a stand-in, as the simulator sends: a small file of that name
+            save(engine.ws.id, b"%PDF-1.4 sample", item if "." in item else f"{item}.pdf", record_id=record.id, field=f["key"], by=engine.by)
+        elif isinstance(item, tuple):
+            save(engine.ws.id, item[1], item[0], record_id=record.id, field=f["key"], by=engine.by)
+        else:
+            save(engine.ws.id, item, item.filename, record_id=record.id, field=f["key"], by=engine.by)
+    engine.reset()
 
 
 def _parent_of(engine, contact, t, values=None, record=None):
@@ -269,7 +314,11 @@ def change(engine, contact, t, r, values, expected_version=None):
     kept = [k for k in values if k not in allowed]
     if kept:
         raise FieldErrors({k: f"{schema.field(t, k)['label'] if schema.field(t, k) else k} can't be changed here" for k in kept})
-    return engine.update(r, values, expected_version=expected_version)
+    sent = {k: values.pop(k) for k in [k for k in values if (schema.field(t, k) or {}).get("type") in UPLOADS]}
+    with engine.atomic():
+        for key, given in sent.items():
+            attach(engine, r, schema.field(t, key), given)
+        return engine.update(r, values, expected_version=expected_version) if values or not sent else engine.get(r.id)
 
 
 def move(engine, contact, t, r, index, by):

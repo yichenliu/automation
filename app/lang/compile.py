@@ -172,6 +172,8 @@ def _ir_field(d, t, f, where):
             out["help"] = f.help
         if f.sensitive:
             out["sensitive"] = True
+            if f.shows_last is not None:
+                out["shows_last"] = f.shows_last
         if f.many and f.type == "person":
             out["multiple"] = True
         elif f.many:
@@ -522,6 +524,8 @@ def ir_condition(d, t, c, where, about=None):
 def _literal(d, f, value, where):
     if value is None:
         return None
+    if isinstance(value, str) and not value.strip() or value == []:  # "" empties it (the last call-back's answer, once details change)
+        return ""
     if f.get("type") == "user" and str(value).strip().lower() in ("owner", "the owner"):
         return "{{owner}}"  # the business's owner: one person, so a person field can hold them
     kind = d.kind(f)
@@ -1529,7 +1533,7 @@ def _studio(fn, d, change, where):
     return made[0]
 
 
-SETTINGS = {"label", "help", "required", "unique", "default", "placeholder", "options", "multiple", "sensitive", "readonly",
+SETTINGS = {"label", "help", "required", "unique", "default", "placeholder", "options", "multiple", "sensitive", "shows_last", "readonly",
             "decimals", "unit", "currency", "prefix", "digits", "min", "max", "visible_to", "access", "option_colors", "before",
             "after", "yes_label", "no_label", "many", "ai"}
 
@@ -1899,6 +1903,16 @@ def translate(d, p, where):
                 if f is None:
                     raise Problem(f"{where} › {attr}: {name} isn't a field of {t['label']}")
                 view[key] = f["key"]
+        for name in v.columns:
+            f = d.field(t, name)
+            if f is None:
+                raise Problem(f"{where} › columns: {name} isn't a field of {t['label']} (its fields: {', '.join(d.field_names(t))})")
+            view.setdefault("columns", []).append(f["key"])
+        if v.sort:
+            f = d.field(t, v.sort.lstrip("-").strip())
+            if f is None and v.sort.lstrip("-").strip() not in ("created_at", "updated_at"):
+                raise Problem(f"{where} › sort: {v.sort.lstrip('-')} isn't a field of {t['label']}")
+            view["sort"] = {"field": f["key"] if f else v.sort.lstrip("-").strip(), "dir": "desc" if v.sort.startswith("-") else "asc"}
         group = d.field(t, view.get("group_by") or "")
         if v.type == "board" and group is not None and group["type"] != "select":  # a board's columns are choices: by
             view["type"] = "list"  # anything else (a customer, a driver) it's the list grouped under each one

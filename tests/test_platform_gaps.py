@@ -467,3 +467,107 @@ def test_two_reminders_on_the_same_date_are_both_sent(app):
     ws = _ws(app, bp)
     _, results = trial.try_out(ws, checks(bp), screens=False, blueprint=bp)
     assert all(r["ok"] for r in results), [(r["title"], r.get("plain") or r.get("problem")) for r in results if not r["ok"]]
+
+
+def test_outside_people_send_documents_through_the_portal(app, client):
+    """A seller's person adds a certificate with the certificate itself attached, can't add one without it when it's
+    required, and adds another file to one of theirs while they may change it."""
+    from app.engine import outside
+    from app.models import File
+    bp = _ok([
+        {"do": "add_list", "key": "sellers", "label": "Sellers", "singular": "Seller", "fields": [{"type": "text", "key": "name", "label": "Name"}]},
+        {"do": "add_list", "key": "seller_people", "label": "Seller people", "singular": "Seller person", "fields": [
+            {"type": "text", "key": "name", "label": "Name"}, {"type": "email", "key": "email", "label": "Email"},
+            {"type": "link", "key": "seller", "label": "Seller", "to": "sellers"}]},
+        {"do": "add_list", "key": "certificates", "label": "Certificates", "singular": "Certificate", "fields": [
+            {"type": "text", "key": "kind", "label": "Kind"}, {"type": "link", "key": "seller", "label": "Seller", "to": "sellers", "required": True},
+            {"type": "file", "key": "document", "label": "Certificate", "required": True}]},
+        {"do": "design_op", "op": {"op": "set_portal", "table": "seller_people", "email_field": "email", "title": "Seller portal"}},
+        {"do": "design_op", "op": {"op": "update_table", "table": "certificates", "portal": {"via": "seller", "can_add": True, "edit": ["kind", "document"]}}},
+    ])
+    ws = _ws(app, bp)
+    e = Engine(ws)
+    acme = e.create("sellers", {"name": "Acme"})
+    ann = e.create("seller_people", {"name": "Ann", "email": "ann@acme.example", "seller": acme.id})
+    portal = schema.portal_of(bp, "seller_people")
+    assert "document" in [f["key"] for f in outside.addable(e, portal, ann, "certificates")["fields"]]
+    with pytest.raises(FieldErrors) as refused:
+        outside.add(e, portal, ann, "certificates", {"kind": "ISO 9001", "seller": acme.id})
+    assert "Certificate is required" in refused.value.errors["document"]
+    cert = outside.add(e, portal, ann, "certificates", {"kind": "ISO 9001", "seller": acme.id, "document": [("iso9001.pdf", b"%PDF-1.4 cert")]})
+    assert [f.name for f in File.query.filter_by(record_id=cert.id, field="document", deleted_at=None)] == ["iso9001.pdf"]
+    outside.change(e, ann, schema.table(bp, "certificates"), e.get(cert.id), {"document": [("surveillance-audit.pdf", b"%PDF-1.4 audit")]})
+    assert File.query.filter_by(record_id=cert.id, field="document", deleted_at=None).count() == 2
+    import io  # and on the portal's own pages: the form sends the file with the record
+    person = User(email="ann@acme.example", name="Ann")
+    person.set_password("password1234")
+    db.session.add(person)
+    db.session.flush()
+    db.session.add(Membership(workspace_id=ws.id, user_id=person.id, role="portal", contact_id=ann.id))
+    db.session.commit()
+    client.post("/login", data={"email": "ann@acme.example", "password": "password1234"})
+    assert 'type="file" name="document"' in client.get(f"/portal/{ws.id}/t/certificates/new").get_data(as_text=True)
+    sent = client.post(f"/portal/{ws.id}/t/certificates/new", data={"kind": "ISO 45001", "seller": acme.id,
+                                                                    "document": (io.BytesIO(b"%PDF-1.4 safety"), "iso45001.pdf")})
+    assert sent.status_code in (302, 303), sent.get_data(as_text=True)[:500]
+    made = next(r for r in Engine(ws).rows("certificates") if r.data.get("kind") == "ISO 45001")
+    assert [f.name for f in File.query.filter_by(record_id=made.id, field="document")] == ["iso45001.pdf"]
+    assert "iso45001.pdf" in client.get(f"/portal/{ws.id}/t/certificates/{made.id}").get_data(as_text=True)
+
+
+def test_an_email_links_to_the_record_in_the_portal_and_to_signing_up(app, monkeypatch):
+    """An invitation to bid takes the seller straight to the tender in their portal; an invitation to join takes a
+    newcomer to the portal's sign-up page; staff are sent to the record in the app."""
+    from app import outbox
+    from app.connectors import microsoft
+    from app.models import Outbox
+    monkeypatch.setattr(outbox, "at_once", lambda: False)
+    monkeypatch.setattr(microsoft, "status", lambda ws_: {"connected": True})
+    bp = _ok([
+        {"do": "add_list", "key": "sellers", "label": "Sellers", "singular": "Seller", "fields": [
+            {"type": "text", "key": "name", "label": "Name"}, {"type": "email", "key": "email", "label": "Email"}]},
+        {"do": "add_list", "key": "seller_people", "label": "Seller people", "singular": "Seller person", "fields": [
+            {"type": "text", "key": "name", "label": "Name"}, {"type": "email", "key": "email", "label": "Email"},
+            {"type": "link", "key": "seller", "label": "Seller", "to": "sellers"}]},
+        {"do": "add_list", "key": "invitations", "label": "Invitations", "singular": "Invitation", "fields": [
+            {"type": "text", "key": "tender", "label": "Tender"}, {"type": "link", "key": "seller", "label": "Seller", "to": "sellers", "required": True}]},
+        {"do": "design_op", "op": {"op": "set_portal", "table": "seller_people", "email_field": "email", "title": "Seller portal",
+                                   "sign_up": {"fields": ["name"]}}},
+        {"do": "design_op", "op": {"op": "update_table", "table": "invitations", "portal": {"via": "seller"}}},
+        {"do": "add_rule", "rule": {"key": "invite", "name": "Invite them", "when": {"on": "added", "list": "invitations"}, "steps": [
+            {"do": "email", "to": "seller.email", "subject": "Invited to bid", "body": "Open it: {{record.portal_link}} New here? {{join_link}} (staff: {{app_link}})"}]}},
+    ])
+    ws = _ws(app, bp)
+    e = Engine(ws)
+    acme = e.create("sellers", {"name": "Acme", "email": "bids@acme.example"})
+    invite = e.create("invitations", {"tender": "Haul road resurfacing", "seller": acme.id})
+    body = Outbox.query.filter_by(workspace_id=ws.id).one().body
+    assert f"/portal/{ws.id}/t/invitations/{invite.id}" in body
+    assert f"/join/{ws.id}/seller_people" in body
+    assert f"/w/{ws.id}/app/t/invitations/{invite.id}" in body
+
+
+def test_a_sensitive_field_shows_as_many_of_its_last_digits_as_it_says(app):
+    """A seller's account number shows ••••789 (three digits, as the owner asked), and a staff-restricted field the
+    portal names outright is the seller's to keep up to date."""
+    from app.engine import outside
+    from app.engine.records import mask
+    bp = _ok([
+        {"do": "add_list", "key": "sellers", "label": "Sellers", "singular": "Seller", "fields": [
+            {"type": "text", "key": "name", "label": "Name"},
+            {"type": "text", "key": "account_number", "label": "Account number", "sensitive": True, "shows_last": 3, "visible_to": "admin"}]},
+        {"do": "add_list", "key": "seller_people", "label": "Seller people", "singular": "Seller person", "fields": [
+            {"type": "text", "key": "name", "label": "Name"}, {"type": "email", "key": "email", "label": "Email"},
+            {"type": "link", "key": "seller", "label": "Seller", "to": "sellers"}]},
+        {"do": "design_op", "op": {"op": "set_portal", "table": "seller_people", "email_field": "email", "title": "Seller portal"}},
+        {"do": "design_op", "op": {"op": "update_table", "table": "sellers", "portal": {"via": "seller", "edit": ["name", "account_number"]}}},
+    ])
+    assert schema.field(schema.table(bp, "sellers"), "account_number")["shows_last"] == 3
+    ws = _ws(app, bp)
+    e = Engine(ws)
+    acme = e.create("sellers", {"name": "Acme"})
+    ann = e.create("seller_people", {"name": "Ann", "email": "ann@acme.example", "seller": acme.id})
+    t = schema.table(bp, "sellers")
+    assert "account_number" in [f["key"] for f in outside.editable(e, t, e.get(acme.id))]
+    outside.change(e, ann, t, e.get(acme.id), {"account_number": "123456789"})
+    assert Engine(ws).value(Engine(ws).get(acme.id), "account_number") == "••••789" == mask("123456789", 3)

@@ -58,6 +58,7 @@ class Plain(Base):
     unique: bool = False
     visible_to: str | None = None
     sensitive: bool = False
+    shows_last: int | None = Field(None, ge=0, le=6, description="a sensitive field: how many of its last characters show (3: ••••456; 4 when left out)")
     many: bool = Field(False, description="a person field holding several people")
     show_if: list["Condition | str"] = Field(default_factory=list, description="shown only while these hold (a reason, when declined)")
     required_if: list["Condition | str"] = Field(default_factory=list, description="must be filled in while these hold")
@@ -193,9 +194,9 @@ class Condition(Base):
 
 
 class Value(Base):
-    """One field a step fills in: "to" a value as it is ("Paid", 0, true), or "formula" worked out from the record the
-    rule is about (today(), "customer", "record" for that record itself, "created" for the one the step before made,
-    "item.x" for a line being copied)."""
+    """One field a step fills in: "to" a value as it is ("Paid", 0, true; "" empties it), or "formula" worked out from
+    the record the rule is about (today(), "customer", "record" for that record itself, "created" for the one the step
+    before made, "item.x" for a line being copied)."""
     field: str
     to: Scalar | list[str] = None
     formula: str | None = None
@@ -655,6 +656,8 @@ class View(Base):
     end_field: str | None = None
     image_field: str | None = None
     group_by: str | None = None
+    columns: list[str] = Field(default_factory=list, description="the fields it shows, in order (left out: the list's own)")
+    sort: str | None = Field(None, description="the field it's sorted by, \"-\" first for the latest or largest first (-expires_on)")
 
 
 # --- patches: the changes a builder sends -----------------------------------------------------------------------------
@@ -782,7 +785,7 @@ class AddStage(Base):
 @register("patch", {"do": "set_field", "list": "jobs", "field": "fax", "settings": {"required": False, "help": "Only some customers have one"}}, group="data")
 class SetField(Base):
     """Change some of a field's settings, leaving the rest as they are; null takes a setting away. Settings: label,
-    help, required, unique, default, placeholder, options, multiple, sensitive, readonly, decimals, unit, currency,
+    help, required, unique, default, placeholder, options, multiple, sensitive, shows_last, readonly, decimals, unit, currency,
     prefix, digits, min, max, visible_to (roles or teams who may see it), option_colors, before, after, yes_label,
     no_label."""
     do: Literal["set_field"]

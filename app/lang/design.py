@@ -5,7 +5,7 @@ import difflib
 from ..blueprint import schema
 
 CONTEXT_NAMES = {"record", "this", "created", "item", "it", "today", "now", "approver", "reason", "email", "file", "payload", "true",
-                 "false", "none", "null", "owner"}
+                 "false", "none", "null", "owner", "join_link"}
 TYPE_OF = {"yes_no": "checkbox", "choice": "select", "choices": "multi_select", "person": "user", "auto_number": "autonumber",
            "total": "rollup"}
 TYPE_BACK = {v: k for k, v in TYPE_OF.items()}
@@ -83,6 +83,8 @@ class Design:
                 if part in schema.SYSTEM_TIMES.values() or part in ("created_at", "updated_at", "id", "created_by"):
                     kind = {"id": "number", "created_by": "user"}.get(part, "datetime")
                     return {"key": part, "type": kind, "label": part}, here, keys + [part]
+                if part in ("app_link", "portal_link") and i == len(parts) - 1:  # its web address, for an email to link to
+                    return {"key": part, "type": "url", "label": part}, here, keys + [part]
                 near = closest(part, self.field_names(here))
                 raise NameProblem(f"“{part}” isn't a field of {here['label']}" + (f" (did you mean {', '.join(near)}?)" if near else "")
                                   + f"; its fields: {', '.join(self.field_names(here))}")
