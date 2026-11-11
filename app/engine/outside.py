@@ -149,10 +149,28 @@ def ids_reaching(engine, t, middle):
     ids = [int(x) for x in (value if isinstance(value, list) else [value]) if str(x).isdigit()]
     if on is not None and on.get("table") not in (None, portal_people):  # one more record on: a case's seller, whose people they are
         last = next((f for f in (engine.tables.get(on["table"]) or {}).get("fields", []) if f["type"] == "link" and f["table"] == portal_people), None)
-        reached = [engine.get(i, on["table"]) for i in ids] if last else []
+        if last is None:  # its people belong to it instead (each seller person linked to their seller)
+            return _belonging(engine, portal_people, on["table"], ids)
+        reached = [engine.get(i, on["table"]) for i in ids]
         ids = [int(x) for r in reached if r is not None for x in (lambda v: v if isinstance(v, list) else [v])((r.data or {}).get(last["key"]))
                if str(x).isdigit()]
+    elif on is None and not hop and portal_people:  # the people belong to the record itself (a seller's people)
+        return _belonging(engine, portal_people, middle.table, [middle.id])
     return ids
+
+
+def _belonging(engine, people, table, ids):
+    """The outside people whose own record links to one of these records of a list (a seller's people)."""
+    links = [f["key"] for f in (engine.tables.get(people) or {}).get("fields", []) if f["type"] == "link" and f["table"] == table]
+    wanted = set(ids)
+    out = []
+    for person in engine.rows(people) if links and wanted else []:
+        for key in links:
+            value = (person.data or {}).get(key)
+            if wanted & {int(x) for x in (value if isinstance(value, list) else [value]) if str(x).isdigit()}:
+                out.append(person.id)
+                break
+    return out
 
 
 def addable(engine, portal, contact, table):

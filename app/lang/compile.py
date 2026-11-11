@@ -1855,7 +1855,10 @@ def translate(d, p, where):
         rows = {"field": ".".join(keys), "roles": list(p.roles)}
         if p.see_all:
             rows["teams"] = [_role_or_team(d, x, f"{where} › see_all") for x in p.see_all]
-        return [{"op": "update_table", "table": t["key"], "row_access": rows}]
+        if p.shared_when_empty:
+            rows["shared_when_empty"] = True
+        kept = [r for r in schema.row_rules(t) if r.get("field") != rows["field"]]  # another field's rule holds too
+        return [{"op": "update_table", "table": t["key"], "row_access": kept + [rows] if kept else rows}]
     if isinstance(p, m.AddStage):
         t = _list(d, p.list, where)
         f = d.stage_field(t)

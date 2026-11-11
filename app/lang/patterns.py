@@ -928,7 +928,9 @@ class Limit(Feature):
         return [{"title": f"No more than {self.max} {t['label'].lower()} {what}", "steps": steps, "expect": expect}]
 
     def said(self, d):
-        return f"allows at most {self.max} {self.list}" + (f" per {', '.join(self.per)}" if self.per else " at a time")
+        t = d.list(self.list) or {"label": self.list, "fields": []}
+        named = [schema.lc((d.field(t, n) or {}).get("label") or n) for n in self.per]  # in the owner's words, not keys
+        return f"allows at most {self.max} {schema.lc(t['label'])}" + (f" for the same {' and '.join(named)}" if self.per else " at a time")
 
 
 @register("feature", {"do": "no_overlap", "list": "appointments", "per": ["client"], "starts": "starts_on"})
@@ -1333,8 +1335,9 @@ class ReminderBefore(Feature):
         if df is None or d.kind(df) != "date":
             raise Problem(f"{where} › date_field: {self.date_field} isn't a date field of {t['label']}")
         made = Made()
-        flag = schema.slug(f"reminded_{df['key']}")
-        made.fields.append((t["key"], {"key": flag, "label": f"Reminded ({df['label']})", "type": "date"}))
+        # each reminder keeps its own mark: one 30 days before and another on the day are both sent
+        flag = schema.slug(f"reminded_{df['key']}" + (f"_{self.days}_days" if self.days else "_on_the_day"))
+        made.fields.append((t["key"], {"key": flag, "label": f"Reminded {self._ahead(df['label'].lower())}", "type": "date"}))
         # the days before it, not the day itself; 0 days before: the day itself
         when = [{"field": df["key"], "op": "within_next_days", "value": self.days}, {"field": df["key"], "op": "after_today"}] \
             if self.days else [{"field": df["key"], "op": "today"}]

@@ -9,7 +9,7 @@ import pytest
 
 from app.blueprint import expr, schema
 from app.engine import automations, retention
-from app.engine.records import Engine
+from app.engine.records import Engine, FieldErrors
 from app.extensions import db
 from app.lang import apply
 from app.models import Membership, Record, User, Workspace
@@ -419,3 +419,51 @@ def test_an_owner_deletes_their_app_and_everything_in_it(app, client):
     assert done.status_code in (302, 303) and db.session.get(Workspace, wid) is None
     assert not Record.query.filter_by(workspace_id=wid).count() and not RecordChange.query.filter_by(workspace_id=wid).count()
     assert not Membership.query.filter_by(workspace_id=wid).count() and not Version.query.filter_by(workspace_id=wid).count()
+
+
+def test_outside_people_see_what_belongs_to_the_company_their_own_record_names(app):
+    """A seller's people each name their seller; the seller's profile and its certificates reach them through that, with
+    no list of people kept on the seller, and another seller's never do."""
+    from app.engine import outside
+    bp = _ok([
+        {"do": "add_list", "key": "sellers", "label": "Sellers", "singular": "Seller", "fields": [{"type": "text", "key": "name", "label": "Name"}]},
+        {"do": "add_list", "key": "seller_people", "label": "Seller people", "singular": "Seller person", "fields": [
+            {"type": "text", "key": "name", "label": "Name"}, {"type": "email", "key": "email", "label": "Email"},
+            {"type": "link", "key": "seller", "label": "Seller", "to": "sellers"}]},
+        {"do": "add_list", "key": "certificates", "label": "Certificates", "singular": "Certificate", "fields": [
+            {"type": "text", "key": "kind", "label": "Kind"}, {"type": "link", "key": "seller", "label": "Seller", "to": "sellers", "required": True}]},
+        {"do": "design_op", "op": {"op": "set_portal", "table": "seller_people", "email_field": "email", "title": "Seller portal"}},
+        {"do": "design_op", "op": {"op": "update_table", "table": "sellers", "portal": {"via": "seller", "edit": ["name"]}}},
+        {"do": "design_op", "op": {"op": "update_table", "table": "certificates", "portal": {"via": "seller", "can_add": True}}},
+    ])
+    assert not schema.check(bp)
+    ws = _ws(app, bp)
+    e = Engine(ws)
+    acme, bolt = e.create("sellers", {"name": "Acme"}), e.create("sellers", {"name": "Bolt"})
+    ann = e.create("seller_people", {"name": "Ann", "email": "ann@acme.example", "seller": acme.id})
+    e.create("seller_people", {"name": "Bo", "email": "bo@bolt.example", "seller": bolt.id})
+    mine, theirs = e.create("certificates", {"kind": "ISO 9001", "seller": acme.id}), e.create("certificates", {"kind": "ISO 9001", "seller": bolt.id})
+    assert e.portal_reaches(acme, ann.id) and not e.portal_reaches(bolt, ann.id)
+    assert e.portal_reaches(mine, ann.id) and not e.portal_reaches(theirs, ann.id)
+    form = outside.addable(e, schema.portal_of(bp, "seller_people"), ann, "certificates")
+    assert [i for i, _ in form["options"]["seller"]] == [acme.id]  # only their own seller to add it for
+    with pytest.raises(FieldErrors) as refused:  # never for another seller
+        outside.add(e, schema.portal_of(bp, "seller_people"), ann, "certificates", {"kind": "ISO 14001", "seller": bolt.id})
+    assert "open to you" in refused.value.errors["seller"]
+
+
+def test_two_reminders_on_the_same_date_are_both_sent(app):
+    """A certificate reminded 30 days before it expires and again on the day: each reminder keeps its own mark, so the
+    first never stops the second."""
+    from app.builder import trial
+    from app.lang import checks
+    bp = _ok([{"do": "add_list", "key": "certs", "label": "Certs", "singular": "Cert", "fields": [
+        {"type": "text", "key": "name", "label": "Name"}, {"type": "email", "key": "email", "label": "Email"},
+        {"type": "date", "key": "expires_on", "label": "Expiry date", "required": True}]},
+        {"do": "reminder_before", "key": "ahead", "list": "certs", "date_field": "expires_on", "days": 30, "email_to": "email"},
+        {"do": "reminder_before", "key": "on_day", "list": "certs", "date_field": "expires_on", "days": 0, "email_to": "email"}])
+    marks = [f["key"] for f in schema.table(bp, "certs")["fields"] if f["key"].startswith("reminded_")]
+    assert len(set(marks)) == 2
+    ws = _ws(app, bp)
+    _, results = trial.try_out(ws, checks(bp), screens=False, blueprint=bp)
+    assert all(r["ok"] for r in results), [(r["title"], r.get("plain") or r.get("problem")) for r in results if not r["ok"]]

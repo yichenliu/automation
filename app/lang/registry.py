@@ -87,6 +87,9 @@ def catalog(kinds=KINDS, examples=True):
     if "field" in kinds or "step" in kinds:  # formulas are written in fields, conditions and steps
         from ..blueprint import expr
         blocks.append(expr.reference())
+    if "patch" in kinds:  # what a design_op patch can say: portals, teams' menus, pages, a list's settings
+        from . import design_format
+        blocks.append(design_format.reference())
     return "\n\n".join(blocks)
 
 

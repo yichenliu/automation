@@ -29,7 +29,7 @@ from .. import ai, lang
 from ..blueprint import schema
 from ..engine.records import Engine
 from ..extensions import db
-from ..lang import model as m, registry
+from ..lang import design_format, model as m, registry
 from ..models import Membership, Message, Workspace, utcnow
 from . import checking, recipes, trial
 from ..core.settings import settings
@@ -244,7 +244,8 @@ def catalog(group):
         return registry.catalog(("field",)) + "\n\n" + _patch_lines(registry.items("patch", "data"))
     if group == "behaviour":
         return (registry.catalog(("feature", "when", "step")) + "\n\n"
-                + _patch_lines(registry.items("patch", "behaviour") + (m.AddList, m.AddField, m.ChangeField)) + "\n\n" + registry.catalog(("field",)))
+                + _patch_lines(registry.items("patch", "behaviour") + (m.AddList, m.AddField, m.ChangeField)) + "\n\n" + registry.catalog(("field",))
+                + "\n\n" + design_format.reference())
     return registry.catalog()
 
 

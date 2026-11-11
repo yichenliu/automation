@@ -112,3 +112,33 @@ def test_the_builders_apply_tool_adds_the_records_its_patches_bring(app, client,
                                                "version": now["version"]})
     assert done["saved"], done
     assert sorted(r.data["name"] for r in Engine(ws).rows("units")) == ["Each", "Pair"]
+
+
+def test_a_builder_keeps_its_own_worked_examples_as_the_apps_checks(app):
+    """add_check acts an example out and keeps it, run with every change from then on; one naming what isn't there isn't
+    kept; remove_check lets it go."""
+    from app.lang import tools
+    from app.models import User, Workspace, Membership
+    from app.extensions import db
+    owner = User(email="o@example.com", name="Olive")
+    owner.set_password("x" * 12)
+    db.session.add(owner)
+    db.session.flush()
+    ws = Workspace(owner_id=owner.id, name="Shop", blueprint={}, state={}, settings={}, version=0)
+    db.session.add(ws)
+    db.session.flush()
+    db.session.add(Membership(workspace_id=ws.id, user_id=owner.id, role="owner"))
+    db.session.commit()
+    out = tools.apply(ws, [{"do": "add_list", "key": "orders", "label": "Orders", "singular": "Order", "fields": [
+        {"type": "number", "key": "quantity", "label": "Quantity"}, {"type": "money", "key": "price", "label": "Price"},
+        {"type": "formula", "key": "total", "label": "Total", "formula": "quantity * price", "shows": "money"}]}], 0)
+    assert out["saved"]
+    kept = tools.call(ws, "keel_add_check", {"title": "Two at $5 come to $10", "steps": [{"do": "add", "table": "orders", "as": "o1",
+                                                                                          "values": {"quantity": 2, "price": 5}}],
+                                             "expect": [{"record": "o1", "field": "total", "equals": 10}]}, by=owner.id)
+    assert kept["kept"] and kept["ok"], kept
+    assert any(c["title"] == "Two at $5 come to $10" and c["ok"] for c in tools.test(ws)["checks"])
+    wrong = tools.add_check(ws, "Names a list that isn't there", [{"do": "add", "table": "invoices", "as": "i1", "values": {}}], [])
+    assert not wrong["kept"]
+    assert tools.remove_check(ws, "Two at $5 come to $10")["removed"]
+    assert not any(c["title"] == "Two at $5 come to $10" for c in tools.test(ws)["checks"])

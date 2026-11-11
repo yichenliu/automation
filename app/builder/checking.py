@@ -28,7 +28,7 @@ from ..core.settings import settings
 
 _log = logging.getLogger(__name__)
 
-KEEP = 30  # checks kept per app
+KEEP = 80  # checks kept per app (the builder's, an outside builder's and the owner's own)
 _PLATFORM = {}
 
 

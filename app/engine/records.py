@@ -929,6 +929,9 @@ class Engine:
         people = next((p["table"] for p in schema.portals(self.bp) if schema.portal_shows(self.tables, t, p["table"])), None)
         head, _, hop = portal["via"].partition(".")
         via = self.field(t["key"], head)
+        own = schema.theirs_by_own_link(self.tables, t, people) if people else None
+        if own is not None:  # it's the one their own record names (a seller person's seller)
+            return record.id in self._belongs_to(contact_id, t["key"]) and (not portal.get("show_if") or self.matches(record, portal["show_if"]))
         if via is None or via["type"] != "link" or people is None:
             return False
         ids = lambda v: [int(x) for x in (v if isinstance(v, list) else [v]) if str(x).isdigit()]  # noqa: E731
@@ -941,11 +944,27 @@ class Engine:
             mids = [m for m in (self.get(x, via["table"]) for x in targets) if m is not None]
             if on is not None and on["type"] == "link" and on["table"] != people:  # one more record on: a document's case's seller
                 last = next((f for f in (self.tables.get(on["table"]) or {}).get("fields", []) if f["type"] == "link" and f["table"] == people), None)
-                found = last is not None and any(contact_id in ids((e.data or {}).get(last["key"]))
-                                                 for m in mids for e in (self.get(x, on["table"]) for x in ids((m.data or {}).get(on["key"]))) if e is not None)
+                ends = [x for m in mids for x in ids((m.data or {}).get(on["key"]))]
+                found = any(contact_id in ids((e.data or {}).get(last["key"])) for e in (self.get(x, on["table"]) for x in ends) if e is not None) \
+                    if last is not None else bool(set(ends) & self._belongs_to(contact_id, on["table"]))
+            elif on is None and not hop:  # the people belong to it instead (a seller's people, each linked to their seller)
+                found = bool(set(targets) & self._belongs_to(contact_id, via["table"]))
             else:
                 found = on is not None and any(contact_id in ids((m.data or {}).get(on["key"])) for m in mids)
         return found and (not portal.get("show_if") or self.matches(record, portal["show_if"]))
+
+    def _belongs_to(self, contact_id, table):
+        """The records of a list an outside person belongs to, through their own record's links to it (a seller's person:
+        their seller)."""
+        contact = self.get(contact_id)
+        if contact is None:
+            return set()
+        out = set()
+        for f in (self.tables.get(contact.table) or {}).get("fields", []):
+            if f["type"] == "link" and f["table"] == table:
+                value = (contact.data or {}).get(f["key"])
+                out |= {int(x) for x in (value if isinstance(value, list) else [value]) if str(x).isdigit()}
+        return out
 
     def members(self):
         """{user id: name} of the people in this workspace (for person fields)."""

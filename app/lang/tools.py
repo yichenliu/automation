@@ -11,6 +11,8 @@ definition, as everywhere in the language.
                                    `version` (another change made meanwhile is never overwritten)
     test(ws)                       every check the app has, acted out in the simulator now
     explain(ws, record, check)     why: a record's rules, what ran on it and what's open to it; a check acted out, and why
+    add_check(ws, title, steps, …) keep a worked example as one of the app's checks, run with every change from then on
+    remove_check(ws, title)        stop keeping one
     undo(ws, version)              back to an earlier version
 """
 from pydantic import BaseModel, Field
@@ -36,6 +38,16 @@ class Explaining(BaseModel):
 
 class Version(BaseModel):
     version: int
+
+
+class Example(BaseModel):
+    title: str = Field(description="what it shows, in the owner's words (A request over the approver's limit is refused)")
+    steps: list[dict] = Field(description="what people do, in order: add, change, move, press, approve, reject, wait, run")
+    expect: list[dict] = Field(default_factory=list, description="what the app then shows: {record, field, equals} or {table, count}")
+
+
+class Titled(BaseModel):
+    title: str
 
 
 def _examples(ws, bp):
@@ -131,6 +143,48 @@ def explain(ws, record=None, check=None):
     return out or {"why": "say which record (its id) or which check (its title)"}
 
 
+def add_check(ws, title, steps, expect, by=None):
+    """Keep a worked example as one of the app's checks: acted out now in a copy of the app, then with every change to
+    it from then on (by any builder), so what it shows can't quietly stop being true. Kept unless the example itself
+    names what isn't in the app; one the app doesn't yet pass is kept, failing, until it does.
+    Steps ("do"): "add" a record of "table" with "values" ({field key: value}), named by "as" (r1); a link's value is
+    an earlier "as" name, and a record the app made is named through its links ("r1.purchase_orders": the latest one
+    linked to r1). "change" "record" to "values". "move" "record" to the stage "to", as its button would. "press" the
+    button rule "button" on "record". "approve" / "reject" what's waiting for someone's OK on "record" (with
+    "comment"). "wait" "days" (the app's scheduled rules run each day of it). "run" a scheduled "rule" now. "by" has
+    someone else do a step: "staff", a team's key, "another <team>" (a second person of it: four eyes), "admin", a
+    person's name, or an outside person: the "as" name of one the example added, or of the company they belong to
+    (they act only through what the portal lets them). "refused": true on a step the app must not allow. Dates as "today" or "today+N". Never set what's worked out; expect it instead.
+    Expect: {"record": an "as" name or a path through links, "field": a key, "equals": the value} (or "not_equals",
+    or "equals": "non-empty"), {"table": a list's key, "count": how many records it has then}, or {"record", "told":
+    true} (someone was told about it)."""
+    from ..builder import checking, trial
+    example = {"title": str(title).strip()[:160], "steps": steps, "expect": expect, "by": f"agent:{by}" if by else "agent"}
+    with trial.copy_of(ws) as copy:
+        result = trial.play(copy, example)
+    said = {"title": result["title"], "ok": result["ok"], "what": result.get("plain") or result.get("problem") or "",
+            **({"why": result["why"]} if result.get("why") else {})}
+    if result["kind"] in ("example", "missing"):
+        return {"kept": False, "why": "the example names what isn't in the app: put it right and send it again", **said}
+    state = dict(ws.state or {})
+    state["examples"] = ([trial.dated(example)] + [x for x in checking.examples(ws) if x.get("title") != example["title"]])[:checking.KEEP]
+    ws.state = state
+    db.session.commit()
+    return {"kept": True, **said}
+
+
+def remove_check(ws, title):
+    """Stop keeping one of the app's own checks (as test lists it), by its title. A feature's checks go with the feature."""
+    from ..builder import checking
+    kept = checking.examples(ws)
+    left = [x for x in kept if str(x.get("title", "")).strip().lower() != str(title).strip().lower()]
+    if len(left) == len(kept):
+        return {"removed": False, "why": f"there's no kept check called “{title}”: test lists them"}
+    ws.state = {**(ws.state or {}), "examples": left}
+    db.session.commit()
+    return {"removed": True}
+
+
 def undo(ws, version, by=None):
     """Put the app back as it was at an earlier version (saved as a new version, the same as that one)."""
     from ..builder.chat import restore
@@ -139,7 +193,8 @@ def undo(ws, version, by=None):
 
 
 TOOLS = {"language": (language, None), "describe": (describe, None), "what_if": (what_if, Patches), "apply": (apply, Applying),
-         "test": (test, None), "explain": (explain, Explaining), "undo": (undo, Version)}
+         "test": (test, None), "explain": (explain, Explaining), "undo": (undo, Version), "add_check": (add_check, Example),
+         "remove_check": (remove_check, Titled)}
 
 
 def schemas():
@@ -160,6 +215,6 @@ def call(ws, name, arguments, by=None):
     if key == "language":
         return fn()
     args = model.model_validate(arguments or {}).model_dump() if model else {}
-    if key in ("apply", "undo"):
+    if key in ("apply", "undo", "add_check"):
         args["by"] = by
     return fn(ws, **args)

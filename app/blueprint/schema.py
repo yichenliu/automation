@@ -580,7 +580,7 @@ def _person(raw):
 
 def normalize_keep_for(raw, table=None):
     """How long a list's records are kept: {"years": 7, "from": "invoice_date", "unless": [conditions]}. Past it a record
-    is deleted, unless a condition holds (a legal hold on it), and erased for good a while after (see app/engine/retention.py).
+    is deleted, unless a condition holds (a legal hold on it), and erased for good 30 days after.
     "from" is a date of the record's own, or when it was added (created_at)."""
     if isinstance(raw, (int, float)):
         raw = {"years": raw}
@@ -1335,6 +1335,8 @@ def portal_shows(tables, t, people):
         return not t["portal"].get("people") or t["portal"]["people"] == people
     head, _, hop = (t.get("portal") or {}).get("via", "").partition(".")
     via = field(t, head)
+    if via is None and head and not hop:  # the people's own link to it: the seller each seller person's record names
+        return theirs_by_own_link(tables, t, people) is not None
     if via is None or via["type"] != "link":
         return False
     if hop:  # through a named link of the record it links to: a clarification's tender's invited suppliers; or on to a
@@ -1342,8 +1344,25 @@ def portal_shows(tables, t, people):
         on = field(tables.get(via["table"]), hop)
         if not on or on["type"] != "link":
             return False
-        return on["table"] == people or any(f["type"] == "link" and f["table"] == people for f in (tables.get(on["table"]) or {}).get("fields", []))
-    return via["table"] == people or any(f["type"] == "link" and f["table"] == people for f in (tables.get(via["table"]) or {}).get("fields", []))
+        return on["table"] == people or _joined(tables, on["table"], people)
+    return via["table"] == people or _joined(tables, via["table"], people)
+
+
+def _joined(tables, table, people):
+    """Whether a list's records lead to a portal's people: one of its links is to them, or their own records link to it
+    (each seller person names their seller)."""
+    return any(f["type"] == "link" and f["table"] == people for f in (tables.get(table) or {}).get("fields", [])) \
+        or any(f["type"] == "link" and f.get("table") == table for f in (tables.get(people) or {}).get("fields", []))
+
+
+def theirs_by_own_link(tables, t, people):
+    """The link field of the portal people's own records that a list's portal goes through when it names one of theirs
+    rather than one of its own (a seller's profile, reached by each seller person's "seller"), or None."""
+    head = (t.get("portal") or {}).get("via", "")
+    if not head or "." in head or field(t, head) is not None:
+        return None
+    own = field(tables.get(people) or {}, head)
+    return own if own is not None and own["type"] == "link" and own.get("table") == t["key"] else None
 
 
 def portal_link(tables, t):
@@ -1442,6 +1461,9 @@ def to_number_or_path(raw):
 
 
 def normalize_section(raw):
+    """A part of a list's form and record page: {"label", "fields": [...]} or {"label", "lines": a lines list} (where the
+    record's lines are asked, among the other parts); "show_if": only while these conditions hold. With the list's
+    "wizard": true, a new record is asked part by part (a tender's Basics, What to price, Sellers, Scoring, Dates)."""
     if not isinstance(raw, dict):
         raise SchemaError("a section looks like {\"label\": \"Billing\", \"fields\": [\"rate\", \"terms\"]}")
     fields = [slug(f) for f in _list(_first(raw, "fields", "columns", default=[]))]
@@ -1626,6 +1648,13 @@ def system_key(key):
 
 
 def normalize_widget(raw):
+    """my_work (what's waiting for whoever looks: approvals, tasks, checks of the AI's work); list {table, label,
+    filters, columns, sort, limit}; metric {table, aggregate (count, sum, avg, min, max), field, filters, compare};
+    chart {table, group_by, aggregate, field, style (bar, line, donut, funnel), stack_by}; pivot {table, rows, across,
+    aggregate, field}; goal {table, aggregate, field, target}; actions {buttons: [{kind: new (add a record of table,
+    values) | view (open table, view) | page | automation | link (url), label}]}; form {table, fields, values, submit};
+    text {text}; heading {label}; activity {tables}; insight {focus} (what the numbers say, in words); map {table,
+    location_field}; embed {url}. Each can have width 1 to 4."""
     if not isinstance(raw, dict):
         raise SchemaError("a widget must be an object")
     raw = {k: (system_key(slug(v)) if k in ("group_by", "date_field", "rows", "across", "stack_by", "by", "group", "x", "dimension") and isinstance(v, str) else v)
@@ -1934,6 +1963,8 @@ def flows(bp):
 
 
 def normalize_page(raw):
+    """A page of the app (a home, a dashboard): {"key", "label", "widgets": [...], "home_for": [roles or teams' keys] (it
+    is their home: what's waiting for them first), "access": a role or team's key (only they see it), "module"}."""
     if not isinstance(raw, dict):
         raise SchemaError("a page must be an object")
     label = str(_first(raw, "label", "name", "title", default="")).strip()
@@ -3176,9 +3207,11 @@ def _check_table(t, tables, modules, problems):
     elif portal:
         head, _, hop = portal["via"].partition(".")
         via = keys.get(head)
-        if not via or via["type"] != "link":
+        if not via and not hop and any((field(x, head) or {}).get("type") == "link" and field(x, head).get("table") == t["key"] for x in tables.values()):
+            pass  # the portal's people's own records name it (each seller person's seller): checked against the portals below
+        elif not via or via["type"] != "link":
             problems.append(f"the portal on {t['label']} needs “{head}” to be a link field (to the portal's people, or to a record "
-                            "that links to them)")
+                            "that links to them), or a link of the portal's people's own records to it (their seller)")
         elif hop and (field(tables.get(via["table"]), hop) or {}).get("type") != "link":
             problems.append(f"the portal on {t['label']} goes through “{portal['via']}”: “{hop}” must be a link field of "
                             f"{(tables.get(via['table']) or {}).get('label', via['table'])} to the portal's people")
@@ -3869,6 +3902,9 @@ def _check_all(bp):
         via = field(t, (t.get("portal") or {}).get("via", ""))
         if t.get("portal") and via and not any(portal_shows(tables, t, people) for people in everyone):
             problems.append(f"the portal on {t['label']}: “{via['key']}” must link to {' or '.join(everyone)} (or to a record that does)")
+        elif t.get("portal") and not via and not t["portal"].get("everyone") and "." not in t["portal"]["via"] \
+                and not any(portal_shows(tables, t, people) for people in everyone):
+            problems.append(f"the portal on {t['label']}: “{t['portal']['via']}” must be a link of {' or '.join(everyone)} to {t['label']}")
     for p in bp.get("pages", []):
         if p.get("module") and p["module"] not in modules:
             problems.append(f"the page {p['label']} is in module “{p['module']}”, which doesn't exist")

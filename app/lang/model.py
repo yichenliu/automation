@@ -950,13 +950,17 @@ class SetAccess(Base):
 
 @register("patch", {"do": "own_records", "list": "jobs", "field": "assigned_to", "roles": ["editor"], "see_all": ["office"]}, "data")
 class OwnRecords(Base):
-    """People with these roles see only the records where a person field is them (each salesperson their own deals);
-    see_all: teams who still see every record."""
+    """People with these roles see only the records where a person field is them (each salesperson their own deals),
+    or one through a link (organisation.members: each organisation's people its own records); see_all: teams who still
+    see every record; shared_when_empty: a record with no one there is everyone's (the standard ones, beside each
+    organisation's own). Said again with another field, both must hold (an organisation's scores, and of them each
+    evaluator's own)."""
     do: Literal["own_records"]
     list: str
     field: str
     roles: list[Literal["viewer", "editor", "admin"]] = Field(default_factory=lambda: ["viewer", "editor"])
     see_all: list[str] = Field(default_factory=list)
+    shared_when_empty: bool = False
 
 
 @register("patch", {"do": "add_document", "list": "jobs", "key": "job_report", "label": "Job report", "title": "Job report"}, "data")

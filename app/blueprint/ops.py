@@ -1424,6 +1424,23 @@ def _condition_words(t, c):
     return f"{label} {str(c.get('op', '')).replace('_', ' ')} {c.get('value', '')}".strip()
 
 
+def _rows_said(t, rule):
+    """Whose records a row rule lets each person see, in words: their own (by Assigned to), or their organisation's (those
+    whose Organisation has them in Members), and who sees every one all the same."""
+    parts = [p for p in str(rule.get("field") or "").split(".") if p]
+    first = schema.field(t, parts[0]) if parts else None
+    label = (first or {"label": parts[0] if parts else "?"})["label"]
+    if len(parts) > 1:
+        said = f"those whose {label} has them in {' › '.join(x.replace('_', ' ').capitalize() for x in parts[1:])}"
+    else:
+        said = f"their own (by {label})"
+    if rule.get("shared_when_empty"):
+        said += f", and those with no {label.lower()}, which everyone sees"
+    if rule.get("teams"):
+        said += f"; {_and_words([schema.label_of(x) for x in rule['teams']])} see{'s' if len(rule['teams']) == 1 else ''} every one"
+    return said
+
+
 def _policies_said(t):
     """A table's permissions, locks and rules in the owner's words, for the change list (and so the reply knows)."""
     said, access = [], t.get("access") or {}
@@ -1442,8 +1459,7 @@ def _policies_said(t):
     if secret:
         said.append(f"{', '.join(secret)} kept encrypted and shown masked")
     if t.get("row_access"):
-        by = [schema.field(t, r.get("field", "")) or {"label": r.get("field", "")} for r in schema.row_rules(t)]
-        said.append(f"each person seeing only their own (by {' and by '.join(b['label'] for b in by)})")
+        said.append("each person seeing only " + " and of them ".join(_rows_said(t, r) for r in schema.row_rules(t)))
     if t.get("lock_if"):
         said.append("locked when " + " and ".join(_condition_words(t, c) for c in t["lock_if"]))
     if t.get("rules"):
@@ -1876,7 +1892,7 @@ def _apply_one(bp, op, raw, result, where):
                      "wizard": f"the step-by-step form for {label}", "portal": f"what the portal shows of {label}",
                      "layout": f"the layout of {label}", "workflow": f"how {label.lower()} move between stages",
                      "unique_together": f"what no two {label.lower()} may share", "approve_changes": f"which changes to {label.lower()} need approval",
-                     "limits": f"how many {label.lower()} may share a day or a time",
+                     "limits": f"how many {label.lower()} may be alike",
                      "sealed": f"when {label.lower()} open", "audit_views": f"who opened {label.lower()} (kept in their history)",
                      "journey": f"the journey shown on {label.lower()}", "keep_for": f"how long {label.lower()} are kept"}
             said = _policies_said(t) if given.keys() & {"access", "row_access", "rules", "lock_if", "lock_except", "workflow", "unique_together",
